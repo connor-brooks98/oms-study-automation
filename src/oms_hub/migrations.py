@@ -895,9 +895,20 @@ def _validate_imported_derived_adoptions_v23(database: "Database") -> None:
                 s.immutable_derived_path AS slide_path,
                 s.provenance_kind AS slide_provenance, s.import_id AS slide_import,
                 s.lecture_id AS slide_lecture, s.current AS slide_current, s.kind AS slide_kind,
-                s.canonical_derived_path AS slide_canonical, s.icloud_path AS slide_icloud
+                s.canonical_derived_path AS slide_canonical, s.icloud_path AS slide_icloud,
+                o.job_id AS current_outline_job, o.path AS current_outline_path,
+                o.sha256 AS current_outline_sha, o.provenance_kind AS current_outline_provenance,
+                g.lecture_id AS replacement_lecture, g.kind AS replacement_kind,
+                g.state AS replacement_state, g.stage AS replacement_stage,
+                g.pdf_revision_id AS replacement_slide,
+                g.transcript_revision_id AS replacement_transcript,
+                r.lecture_id AS review_lecture, r.import_id AS review_import,
+                r.operator AS review_operator, r.reason AS review_reason
             FROM existing_artifact_imports a
             LEFT JOIN study_revisions s ON s.id=a.slide_revision_id
+            LEFT JOIN outline_outputs o ON o.lecture_id=a.lecture_id AND o.current=1
+            LEFT JOIN generation_jobs g ON g.id=o.job_id
+            LEFT JOIN outline_replacement_reviews r ON r.generation_job_id=o.job_id
         """)
         ).mappings()
         for row in rows:
@@ -942,6 +953,22 @@ def _validate_imported_derived_adoptions_v23(database: "Database") -> None:
                 raise RuntimeError("schema v23 imported-derived adoption ID is invalid") from error
             complete = row["status"] == "complete"
             incomplete = row["status"] in {"preparing", "failed"}
+            approved_outline_replacement = (
+                complete
+                and row["current_outline_job"] is not None
+                and row["current_outline_path"] == row["canonical_outline_path"]
+                and row["current_outline_provenance"] == "notebooklm_generated"
+                and row["replacement_lecture"] == row["lecture_id"]
+                and row["replacement_kind"] == "outline"
+                and row["replacement_state"] == "complete"
+                and row["replacement_stage"] == "complete"
+                and row["replacement_slide"] == row["slide_revision_id"]
+                and row["replacement_transcript"] == row["transcript_revision_id"]
+                and row["review_lecture"] == row["lecture_id"]
+                and row["review_import"] == row["id"]
+                and bool(str(row["review_operator"] or "").strip())
+                and bool(str(row["review_reason"] or "").strip())
+            )
             if (complete and row["recovery_phase"] != "committed") or (
                 incomplete and row["recovery_phase"] == "committed"
             ):
@@ -987,6 +1014,14 @@ def _validate_imported_derived_adoptions_v23(database: "Database") -> None:
 
             v2_root = immutable_root(slide_immutable_source)
             import_root = v2_root.parent / "existing-imports" if v2_root is not None else None
+            generated_outline = (
+                v2_root.parent
+                / "generation"
+                / str(row["current_outline_job"])
+                / "outline.pdf"
+                if approved_outline_replacement and v2_root is not None
+                else None
+            )
 
             def safe_path(path: Path, *, require_regular_file: bool) -> bool:
                 try:
@@ -1083,6 +1118,10 @@ def _validate_imported_derived_adoptions_v23(database: "Database") -> None:
                     trusted_managed_path(path, import_root, require_regular_file=complete)
                     for path in (imported, transcript_path, outline_immutable)
                 )
+                or (
+                    generated_outline is not None
+                    and not safe_path(generated_outline, require_regular_file=True)
+                )
                 or not all(
                     safe_path(path, require_regular_file=False)
                     for path in (all_paths if complete else safe_incomplete_paths)
@@ -1165,8 +1204,18 @@ def _validate_imported_derived_adoptions_v23(database: "Database") -> None:
                         (transcript_path, row["transcript_sha256"]),
                         (transcript_canonical, row["transcript_sha256"]),
                         (outline_immutable, row["outline_sha256"]),
-                        (outline_canonical, row["outline_sha256"]),
+                        (
+                            outline_canonical,
+                            row["current_outline_sha"]
+                            if approved_outline_replacement
+                            else row["outline_sha256"],
+                        ),
                     )
+                ):
+                    raise RuntimeError("schema v23 imported-derived adoption files are invalid")
+                if (
+                    generated_outline is not None
+                    and digest(generated_outline) != row["current_outline_sha"]
                 ):
                     raise RuntimeError("schema v23 imported-derived adoption files are invalid")
                 expected_states: tuple[tuple[object, object], ...]

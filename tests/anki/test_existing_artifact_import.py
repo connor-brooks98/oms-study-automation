@@ -1032,6 +1032,7 @@ def test_approved_outline_replacement_keeps_imported_slide_audit_ready(
     revisions = _revisions(imported_derived_bundle)
     slide = revisions.get_study_revision(imported_derived_bundle.slide_revision_id)
     assert revisions.imported_derived_audit_matches(slide)
+    imported_derived_bundle.database.migrate()
 
 
 @pytest.mark.parametrize(
