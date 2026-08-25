@@ -881,7 +881,10 @@ class CardCentricClassifier:
         note_ids = tuple(card.note_id for card in cards)
         partition_instruction = (
             "Return exactly one result for each of these note IDs and no other note IDs: "
-            f"{json.dumps(note_ids, separators=(',', ':'))}. Copy every ID exactly."
+            f"{json.dumps(note_ids, separators=(',', ':'))}. Copy every ID exactly. "
+            "Copy supporting passage IDs and concept IDs verbatim from their allowed lists; "
+            "never synthesize IDs. If an exact supporting passage ID is uncertain, omit it "
+            "and do not return YES."
         )
         try:
             with provider_call_scope(batch_index=batch_index, batch_note_ids=note_ids):

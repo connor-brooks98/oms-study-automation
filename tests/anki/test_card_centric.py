@@ -745,6 +745,7 @@ def test_classifier_uses_cached_prefix_and_restores_parallel_batch_order() -> No
         in instruction
         for instruction in generator.instructions
     )
+    assert all("never synthesize IDs" in instruction for instruction in generator.instructions)
     assert all(options.cacheable_source_prefix == source.prefix for options in generator.options)
     assert result.telemetry.batch_count == 3
     assert [batch.note_ids for batch in result.telemetry.batches] == [(3,), (1,), (2,)]
