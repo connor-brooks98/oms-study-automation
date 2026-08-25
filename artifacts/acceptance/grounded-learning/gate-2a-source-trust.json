@@ -83,7 +83,7 @@
       "id": "mypy_source",
       "command": "PATH=/private/tmp/sol1-task16-full-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD mypy src",
       "status": "pass",
-      "evidence": "Success: no issues found in 185 source files.",
+      "evidence": "Success: no issues found in 193 source files.",
       "scope": "Repository source typing."
     },
     {
@@ -102,16 +102,16 @@
     },
     {
       "id": "native_windows_office",
-      "command": "PATH=/private/tmp/sol1-task16-full-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/document_processing/test_windows_office.py -q -rs",
+      "command": "python -m pytest tests/document_processing/test_windows_office.py -q -rs",
       "status": "pass",
-      "evidence": "Controlled Windows NUC run completed the marked repository test with '.' at 100% and no skip. Environment: WindowsProductName Windows 10 Pro; platform Windows-11-10.0.26200-SP0; build 26200; Python 3.12.10; PowerPoint 16.0.",
+      "evidence": "Controlled Windows NUC run at integration commit 26ca7d5423c1fdd7884fbb707d7a593ace421348 completed the committed repository test with '.' at 100% and no skip. Environment: platform Windows-11-10.0.26200-SP0; Python 3.12.10; PowerPoint 16.0.",
       "scope": "Native SerialOfficeConverter smoke coverage executed with desktop Microsoft PowerPoint."
     },
     {
       "id": "physical_pptx_pdf_mapping",
-      "command": "In a Sol-0-authorized Windows platform test, build at least three deterministic synthetic PPTX slides, export with SerialOfficeConverter on desktop Microsoft Office, assert PPTX slide count equals output PDF page count, and explicitly assert slide/locator 3 maps to PDF page 3.",
+      "command": "python -m pytest tests/document_processing/test_windows_office.py -q -rs",
       "status": "pass",
-      "evidence": "Controlled Windows NUC proof passed: 3 synthetic PPTX slides produced 3 PDF pages; GATE2A-SLIDE-3 appeared only on PDF page 3. PPTX SHA-256 10cf7cbf30d4d73f0f08828d74d5493f2c8c6d4fb7ccb93e4218ec4b009b5918; PDF SHA-256 0ddc86145d4ecf843f99972b1dd0d665ce4dffe63eb556a8cf07f82028ee1294.",
+      "evidence": "Controlled Windows NUC proof at integration commit 26ca7d5423c1fdd7884fbb707d7a593ace421348 passed: 3 synthetic PPTX slides produced 3 PDF pages and each unique marker appeared only on its corresponding page, including slide 3 on PDF page 3. PPTX SHA-256 a95954dca031bc0cb40e7b4f7ee031b392943d21288cd502d0065f80c3dc9a2d; PDF SHA-256 5775b710b7d1e4e9a12f10f7fa383c30e3f1978c5289f19de74203cd14ffff9f.",
       "scope": "Required physical proof that PowerPoint slide N maps to exported PDF page N."
     },
     {
@@ -123,10 +123,10 @@
     },
     {
       "id": "storekey_composition",
-      "command": "In a Sol-0-composed accepted tree: python -c 'from oms_hub.indexing.models import StoreKey; from oms_hub.knowledge.backfill import scope_ids; course_id, exam_id, _ = scope_ids(\"StoreKey Gate Fixture\", 1, 13); key = StoreKey.course(course_id, exam_id); assert StoreKey.parse(key.value) == key; assert key.course_id == course_id; assert key.exam_id == exam_id'",
+      "command": "python -m pytest tests/indexing/test_source_input_contract.py -q",
       "status": "pass",
-      "evidence": "Sol-0 composed integration head 7c29c83 with sol2/gemini-indexing 4abda3a in a disposable uncommitted worktree. The exact assertion command passed and produced course:storekey-gate-fixture-5792b3155cefbf427dae0c1f:exam:exam-1-22c6b5b530886d5caf1f5dd3.",
-      "scope": "CP-0002 cross-workstream StoreKey grammar/round-trip and opaque consumer composition."
+      "evidence": "1 passed at integration commit 26ca7d5423c1fdd7884fbb707d7a593ace421348.",
+      "scope": "CP-0002 test 8: the composed Sol-2 consumer accepts only IndexInputView, constructs StoreKey/provider input, and statically rejects legacy ID decoding plus ingestion/catalog imports or calls."
     },
     {
       "id": "dependency_staleness",
