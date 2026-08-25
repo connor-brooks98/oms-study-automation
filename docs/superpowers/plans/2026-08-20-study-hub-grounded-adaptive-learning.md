@@ -1889,6 +1889,15 @@ git commit -m "feat: expose source trust and evidence preview services"
 - Consumes: Tasks 1.1–1.7
 - Produces: stable source/evidence APIs required by Sol-2, Sol-3, Sol-5, Sol-6, and Sol-8
 
+**Sol-0 ruling — 2026-08-25:** Gate 2A requires a fail-closed dependent-artifact
+invalidation boundary, not durable stale propagation before provenance exists.
+Until Task 5.2 lands, `KnowledgeService.mark_dependents_stale(...)` must report
+that provenance is unavailable and must not mutate or infer dependencies. Task
+5.2 owns durable source/evidence links and `mark_stale_by_revision(...)`; its
+stale-propagation test closes the deferred behavior before Gate 4. Gate 2A must
+not claim that dependent artifacts were marked stale or fabricate legacy links.
+This resolves the Task 1.8/5.2 dependency cycle without changing the manifest.
+
 - [ ] **Step 1: Terra specification review**
 
 Terra verifies:
@@ -1900,7 +1909,8 @@ backfill is idempotent
 canonical files are not copied or modified
 evidence IDs are deterministic
 citation preview uses authenticated existing artifact service
-source changes can mark dependents stale
+missing dependency provenance fails closed without mutation
+durable dependent-artifact staleness remains assigned to Task 5.2
 ```
 
 - [ ] **Step 2: Run workstream tests**
@@ -3800,6 +3810,8 @@ Ordering of source revision IDs and evidence IDs must not alter the hash.
 - [ ] **Step 2: Write stale-propagation test.**
 
 Changing source revision `sr_old` marks dependent artifacts stale but does not delete them.
+This closes the behavior deferred by the Task 1.8 Sol-0 ruling; it is not a
+prerequisite for Gate 2A.
 
 - [ ] **Step 3: Implement persistence in current database style.**
 
