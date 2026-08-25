@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Barrier
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from oms_hub.db import Database
 from oms_hub.document_processing.domain import (
@@ -19,6 +19,7 @@ from oms_hub.document_processing.domain import (
 from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
 from oms_hub.knowledge.backfill import (
+    BackfillReport,
     SlideRevisionBackfill,
     backfill_slide_revision,
     scope_ids,
@@ -68,12 +69,12 @@ class FakeIngestion:
     def get_study_revision(self, revision_id: int) -> StudyRevision | None:
         return self.revisions.get(revision_id)
 
-    def list_current_revisions(self, lecture_id: int) -> dict[UploadKind, StudyRevision]:
-        return {
-            revision.kind: revision
+    def list_current_revisions(self, lecture_id: int) -> list[StudyRevision]:
+        return [
+            revision
             for revision in self.revisions.values()
             if revision.lecture_id == lecture_id and revision.current
-        }
+        ]
 
 
 class FakeParser:
@@ -181,6 +182,37 @@ def test_backfill_is_idempotent_and_repairs_incomplete_revision(
     assert len(knowledge.list_evidence(first.revision_id)) == 1
 
 
+def test_batch_is_numeric_limited_continues_after_failure_and_dry_run_writes_nothing(
+    tmp_path: Path, database: Database, capsys: pytest.CaptureFixture[str]
+) -> None:
+    valid_dir = tmp_path / "valid"
+    invalid_dir = tmp_path / "invalid"
+    valid_dir.mkdir()
+    invalid_dir.mkdir()
+    valid, catalog, parser = _fixture(valid_dir, revision_id=3)
+    invalid, _, _ = _fixture(invalid_dir, revision_id=20)
+    invalid = replace(invalid, immutable_source_path=invalid_dir / "missing.pptx")
+    ingestion = FakeIngestion({20: invalid, 3: valid})
+    knowledge = KnowledgeRepository(database)
+    knowledge.initialize()
+    service = SlideRevisionBackfill(ingestion, catalog, knowledge, parser=parser)
+
+    dry = service.backfill_all_ready_course_revisions(2, dry_run=True)
+    assert dry == BackfillReport(2, 1, 0, 1, ("20",))
+    assert capsys.readouterr().out == ""
+    assert knowledge.get_revision("sr_missing") is None
+
+    report = service.backfill_all_ready_course_revisions(2)
+    assert report.examined == 2
+    assert report.created == 1
+    assert report.already_present == 0
+    assert report.failed == 1
+    assert report.failure_ids == ("20",)
+    limited = service.backfill_all_ready_course_revisions(1)
+    assert limited.already_present == 1
+
+
+
 def test_scope_ids_are_bounded_and_digest_complete() -> None:
     first = scope_ids("A / B", 1, 2)
     second = scope_ids("A:B", 1, 2)
@@ -244,6 +276,7 @@ def test_atomic_replacement_is_family_scoped_and_races_independent_engines(
             "legacy-study-revision:2",
             "legacy-study-revision:3",
             "transcript:1",
+            "handout:1",
         ):
             repository.create_source(source_id, AuthorityClass.COURSE_MATERIAL)
         predecessor = repository.create_revision(
@@ -251,6 +284,9 @@ def test_atomic_replacement_is_family_scoped_and_races_independent_engines(
         )
         transcript = repository.create_revision(
             "transcript:1", "4" * 64, SourceRevisionState.READY
+        )
+        handout = repository.create_revision(
+            "handout:1", "5" * 64, SourceRevisionState.READY
         )
         repository.create_revision(
             "legacy-study-revision:2", "2" * 64, SourceRevisionState.NORMALIZING
@@ -269,6 +305,16 @@ def test_atomic_replacement_is_family_scoped_and_races_independent_engines(
                     transcript.revision_id,
                     source="transcript",
                     family_text="transcript",
+                ),
+            ),
+        )
+        repository.put_evidence_units(
+            handout.revision_id,
+            (
+                _ready_unit(
+                    handout.revision_id,
+                    source="handout",
+                    family_text="handout",
                 ),
             ),
         )
@@ -330,6 +376,9 @@ def test_atomic_replacement_is_family_scoped_and_races_independent_engines(
         assert transcript_state is not None
         assert predecessor_state is not None
         assert transcript_state.state is SourceRevisionState.READY
+        handout_state = repository.get_revision(handout.revision_id)
+        assert handout_state is not None
+        assert handout_state.state is SourceRevisionState.READY
         assert predecessor_state.state is SourceRevisionState.STALE
     finally:
         check.close()
@@ -368,5 +417,60 @@ def test_atomic_activation_rolls_back_evidence_and_preserves_predecessor(tmp_pat
         assert predecessor_state.state is SourceRevisionState.READY
         assert replacement_state.state is SourceRevisionState.NORMALIZING
         assert repository.list_evidence(replacement.revision_id) == ()
+    finally:
+        database.close()
+
+
+def test_activation_stales_predecessor_before_replacement_is_ready(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'ordering.db'}")
+    states: list[str] = []
+    try:
+        repository = KnowledgeRepository(database)
+        repository.initialize()
+        repository.create_source("legacy-study-revision:30", AuthorityClass.COURSE_MATERIAL)
+        repository.create_source("legacy-study-revision:31", AuthorityClass.COURSE_MATERIAL)
+        predecessor = repository.create_revision(
+            "legacy-study-revision:30", "a" * 64, SourceRevisionState.READY
+        )
+        replacement = repository.create_revision(
+            "legacy-study-revision:31", "b" * 64, SourceRevisionState.NORMALIZING
+        )
+        repository.put_evidence_units(
+            predecessor.revision_id,
+            (_ready_unit(predecessor.revision_id, source="old", family_text="old"),),
+        )
+        unit = _ready_unit(replacement.revision_id, source="new", family_text="new")
+
+        def observe(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            parameters: object,
+            _context: object,
+            _executemany: bool,
+        ) -> None:
+            if "UPDATE source_revisions SET state =" not in statement:
+                return
+            if "SET state = state" in statement:
+                return
+            if isinstance(parameters, dict):
+                states.append(str(parameters["state"]))
+            elif isinstance(parameters, (tuple, list)):
+                states.append(str(parameters[0]))
+
+        event.listen(database.engine, "after_cursor_execute", observe)
+        try:
+            repository.activate_revision(
+                replacement.revision_id,
+                source_family="legacy_slides",
+                authority_class=AuthorityClass.COURSE_MATERIAL,
+                course_id="course",
+                exam_id="exam",
+                lecture_id="lecture",
+                units=(unit,),
+            )
+        finally:
+            event.remove(database.engine, "after_cursor_execute", observe)
+        assert states == ["stale", "ready"]
     finally:
         database.close()
