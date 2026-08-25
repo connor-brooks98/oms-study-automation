@@ -44,7 +44,12 @@ class BackfillReport:
     already_present: int
     failed: int
     failure_ids: tuple[str, ...]
-    examined_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchResult:
+    report: BackfillReport
+    examined_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +137,14 @@ class SlideRevisionBackfill:
         *,
         dry_run: bool = False,
     ) -> BackfillReport:
+        return self._backfill_all_ready_course_revisions(limit, dry_run=dry_run).report
+
+    def _backfill_all_ready_course_revisions(
+        self,
+        limit: int,
+        *,
+        dry_run: bool,
+    ) -> _BatchResult:
         if limit < 0:
             raise ValueError("limit must not be negative")
         candidates = self._eligible_revisions()
@@ -158,12 +171,14 @@ class SlideRevisionBackfill:
                     created += 1
             except Exception:
                 failures.append(revision_id)
-        return BackfillReport(
-            examined=len(candidates),
-            created=created,
-            already_present=already_present,
-            failed=len(failures),
-            failure_ids=tuple(sorted(set(failures), key=int)),
+        return _BatchResult(
+            report=BackfillReport(
+                examined=len(candidates),
+                created=created,
+                already_present=already_present,
+                failed=len(failures),
+                failure_ids=tuple(sorted(set(failures), key=int)),
+            ),
             examined_ids=examined_ids,
         )
 
@@ -286,21 +301,22 @@ def main() -> int:
         from sqlalchemy import inspect
 
         if not inspect(database.engine).has_table("source_revisions"):
-            report = BackfillReport(0, 0, 0, 0, (), ())
+            report = BackfillReport(0, 0, 0, 0, ())
+            examined_ids: tuple[str, ...] = ()
             warnings = ["knowledge_schema_uninitialized"]
         else:
-            report = backfill_all_ready_course_revisions(
-                args.limit,
-                ingestion=IngestionRepository(database),
-                catalog=CatalogRepository(database),
-                knowledge=knowledge,
-                dry_run=True,
-            )
+            batch = SlideRevisionBackfill(
+                IngestionRepository(database),
+                CatalogRepository(database),
+                knowledge,
+            )._backfill_all_ready_course_revisions(args.limit, dry_run=True)
+            report = batch.report
+            examined_ids = batch.examined_ids
             warnings = []
         print(
             json.dumps(
                 {
-                    "examined_revision_ids": list(report.examined_ids),
+                    "examined_revision_ids": list(examined_ids),
                     "examined": report.examined,
                     "created": report.created,
                     "already_present": report.already_present,

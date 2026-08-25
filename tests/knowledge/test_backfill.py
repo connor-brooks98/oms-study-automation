@@ -355,7 +355,7 @@ def test_batch_is_numeric_limited_continues_after_failure_and_dry_run_writes_not
     )
 
     dry = service.backfill_all_ready_course_revisions(2, dry_run=True)
-    assert dry == BackfillReport(2, 1, 0, 1, ("20",), ("3", "20"))
+    assert dry == BackfillReport(2, 1, 0, 1, ("20",))
     assert capsys.readouterr().out == ""
     assert knowledge.get_revision("sr_missing") is None
 
@@ -388,7 +388,6 @@ def test_invalid_lower_id_does_not_consume_numeric_limit(
     report = SlideRevisionBackfill(
         FakeIngestion({3: invalid, 8: valid}), catalog, knowledge, parser=parser
     ).backfill_all_ready_course_revisions(1)
-    assert report.examined_ids == ("3", "8")
     assert report.failure_ids == ("3",)
     assert report.created == 1
     assert knowledge.get_revision("sr_missing") is None
