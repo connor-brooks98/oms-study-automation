@@ -358,11 +358,24 @@ class PinnedCurationInputValidator:
                 raise PinnedInputChanged(
                     "Pinned NotebookLM summary changed after the job was queued"
                 )
-            expects_imported_outline = any(
-                revision.provenance_kind == "imported_cleaned"
-                for revision in pinned_revisions.values()
-            )
-            if expects_imported_outline and outline.provenance_kind != "imported_notebooklm":
+            if outline.provenance_kind not in {
+                "imported_notebooklm",
+                "notebooklm_generated",
+            } or (
+                outline.provenance_kind == "notebooklm_generated"
+                and any(
+                    value is not None
+                    for value in (
+                        outline.import_id,
+                        outline.immutable_path,
+                        outline.slide_revision_id,
+                        outline.slide_sha256,
+                        outline.slide_source_sha256,
+                        outline.transcript_revision_id,
+                        outline.transcript_sha256,
+                    )
+                )
+            ):
                 raise PinnedInputChanged("Pinned imported NotebookLM summary provenance changed")
             if outline.provenance_kind == "imported_notebooklm":
                 if (

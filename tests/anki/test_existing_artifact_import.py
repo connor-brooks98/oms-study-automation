@@ -225,7 +225,7 @@ def _queued_job(bundle: ImportedBundle):
     revisions = _revisions(bundle)
     slide = revisions.get_study_revision(bundle.slide_revision_id)
     transcript = revisions.get_study_revision(bundle.imported_transcript_id)
-    outline = GenerationRepository(bundle.database).outline(bundle.outline_id)
+    outline = GenerationRepository(bundle.database).current_outline(bundle.lecture_id)
     assert outline is not None
     job = AnkiCurationRepository(bundle.database).create_job(
         CreateCurationJob(
@@ -1033,6 +1033,8 @@ def test_approved_outline_replacement_keeps_imported_slide_audit_ready(
     slide = revisions.get_study_revision(imported_derived_bundle.slide_revision_id)
     assert revisions.imported_derived_audit_matches(slide)
     imported_derived_bundle.database.migrate()
+    validator, job = _validator(imported_derived_bundle)
+    validator.validate(job.id)
 
 
 @pytest.mark.parametrize(
