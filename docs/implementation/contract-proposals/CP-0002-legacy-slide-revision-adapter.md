@@ -81,6 +81,7 @@ Map one legacy immutable study revision to one compatibility knowledge source:
 source_document_id = "legacy-study-revision:" + str(StudyRevision.id)
 file_sha256         = StudyRevision.source_sha256
 source_revision_id  = source_revision_id(source_document_id, file_sha256)
+source_family       = legacy_slides
 authority_class     = course_material
 state               = ready after the exact evidence set is persisted
 ```
@@ -98,6 +99,12 @@ receives a new compatibility `source_document_id` instead of becoming another
 knowledge revision under the same logical source. Sol-0 must explicitly accept
 this bounded deviation from the ideal logical-source grouping, or reject this
 proposal and own an additive durable crosswalk before Task 1.6 starts.
+
+`source_family` is an internal classification, not a new persisted field. For
+this adapter it is fixed as `legacy_slides` and is selected only by the exact
+`legacy-study-revision:<positive base-10 integer>` knowledge-source namespace.
+Future transcript, handout, objective, and other adapters must use distinct
+source-document namespaces and distinct source-family values.
 
 ### 3. Hash meaning
 
@@ -203,6 +210,7 @@ KnowledgeService.resolve_index_input(
 ```text
 source_document_id: str                 # opaque to consumers
 source_revision_id: str                 # preserved sr_ identity
+source_family: str                       # legacy_slides for this adapter
 revision_state: SourceRevisionState
 authority_class: AuthorityClass         # course_material for this adapter
 course_id: str
@@ -243,13 +251,15 @@ its exact deterministic evidence set already exist. A revision record with
 missing evidence is resumed/repaired on retry and is not counted as complete.
 
 Replacement activation is one Source Trust repository transaction keyed by
-`(authority_class, course_id, exam_id, lecture_id)`:
+`(source_family, authority_class, course_id, exam_id, lecture_id)`. This
+adapter always supplies `source_family="legacy_slides"`:
 
 1. Create or re-read the deterministic source and replacement revision in
    `normalizing`; it is not indexable.
 2. Insert or verify the exact deterministic evidence set.
-3. Change every other `ready` course-material revision in that exact scope to
-   `stale`.
+3. Change every other `ready` `legacy_slides` course-material revision in that
+   exact family/scope to `stale`. Revisions from all other source families are
+   excluded even when their authority and course/exam/lecture IDs match.
 4. Change the replacement from `normalizing` to `ready` as the transaction's
    final state change, then commit.
 
@@ -264,10 +274,12 @@ available for audit and cannot enter a new provider upload.
 Sol-1 may add a narrow transaction method and scoped query to
 `KnowledgeRepository` to enforce this sequence using the existing
 `source_revisions.state` and evidence scope columns. No new table, column, or
-central migration is proposed. Concurrent multi-process activation remains
-fail-closed and must not create two `ready` revisions for one scope; if the
-existing transaction boundary cannot prove that invariant on supported
-databases, implementation stops and requests a Sol-0-owned uniqueness schema
+central migration is proposed. Family membership is selected through the exact
+adapter-owned knowledge-source namespace above, never inferred from locator
+kind or shared lecture scope. Concurrent multi-process activation remains
+fail-closed and must not create two `ready` revisions for one
+source-family/scope; if independent SQLite connections cannot prove that
+invariant, implementation stops and requests a Sol-0-owned uniqueness schema
 change instead of weakening supersession.
 
 Batch order and report fields are fixed:
@@ -315,6 +327,8 @@ CP-0002 as the reviewed cross-workstream contract:
 - the bounded IDs are ordinary values in existing scope fields;
 - `IndexInputView` is an internal frozen knowledge-service view, not a public
   route or serialized wire contract;
+- `source_family="legacy_slides"` is derived from this adapter's already-frozen
+  source-document namespace rather than a new persisted column;
 - `ready`, `stale`, and `retired` already exist in `SourceRevisionState` and the
   persisted source-revision state column; and
 - evidence authority/scope and retirement metadata already exist.
@@ -325,7 +339,7 @@ Central activation of `KnowledgeRepository` remains separately HELD under the
 Task 1.3 proposal.
 
 A Sol-0-owned shared schema change becomes required only if implementation
-cannot enforce one `ready` revision per scope transactionally with existing
+cannot enforce one `ready` revision per source-family/scope transactionally with existing
 columns, or if Sol-0 requires persisted artifact/asset crosswalk fields rather
 than the knowledge-owned read view. In either case Task 1.6 remains blocked
 until that additive schema, migration, compatibility, and rollback contract is
@@ -404,6 +418,12 @@ Rejected because both revisions could become indexable concurrently and stale
 provider work could win a race. Supersession commits in Source Trust before
 the replacement is exposed as `ready`.
 
+### Supersede every source in the same lecture scope
+
+Rejected because a slide replacement must not stale an independent transcript,
+handout, objective set, or future source family. Supersession includes the
+adapter-owned `source_family` as well as authority and course/exam/lecture IDs.
+
 ## Compatibility risks
 
 - One legacy revision per knowledge source does not group replacement decks
@@ -425,7 +445,7 @@ the replacement is exposed as `ready`.
   assets and verify stored evidence. That is deterministic but not free; cache
   only after measurement, keyed by `source_revision_id` and verified hashes.
 - The existing schema has no database uniqueness constraint for one `ready`
-  revision per scope. The transaction must prove the invariant on every
+  revision per source-family/scope. The transaction must prove the invariant on every
   supported database or stop for a Sol-0-owned schema change.
 - Once Sol-0 accepts and data is backfilled, changing any identity or scope
   formula would orphan durable references. A replacement ruling must be a new
@@ -463,13 +483,19 @@ the replacement is exposed as `ready`.
    after real and dry-run adapter calls.
 11. Repeated backfill creates no duplicates and reports the second complete run
    as `already_present`.
-12. Atomic replacement activation leaves the predecessor `ready` when any
-    insert/evidence/state step fails; on success it commits the predecessor as
-    `stale` and the replacement as the only `ready` revision in that exact
-    scope. The replacement cannot resolve as indexable before that commit.
-13. Concurrent/repeated activation cannot produce two `ready` revisions for
-    one course-material scope. Stale/retired views are reconcilable but rejected
-    for new provider upload/import.
+12. With a `ready` predecessor slide, `ready` transcript, and `ready` handout in
+    the same authority/course/exam/lecture scope, atomic slide replacement
+    leaves all predecessors unchanged on failure. On success it changes only
+    the predecessor `legacy_slides` revision to `stale` before committing the
+    replacement slide as `ready`; the transcript and handout remain `ready` and
+    indexable throughout.
+13. Two separate `Database`/engine instances using independent SQLite
+    connections race two `legacy_slides` replacements for the same exact
+    family/scope behind a deterministic barrier. After both calls terminate,
+    the database contains exactly one `ready` `legacy_slides` revision for that
+    family/scope; the loser is stale/rejected, and an unrelated ready
+    transcript/handout remains ready. Stale/retired views remain reconcilable
+    but are rejected for new provider upload/import.
 14. A failure in one batch candidate preserves prior completions, continues to
     later candidates, and returns ordered counts and `failure_ids`.
 15. Batch enumeration is globally ordered by numeric legacy revision ID and
@@ -488,7 +514,8 @@ Program Sol-0 must choose one of these outcomes in writing:
 1. **APPROVE AMENDED CP-0002 AS WRITTEN** — accept sections 1-10, including the
    bounded scope-ID formulas, StoreKey round-trip gate, knowledge-owned
    `IndexInputView`, opaque consumer boundary, and atomic stale-before-ready
-   supersession; preserve the existing `sr_` identity, `course_material`
+   supersession keyed by `source_family="legacy_slides"` plus authority and
+   course/exam/lecture scope; preserve the existing `sr_` identity, `course_material`
    authority, and `source_sha256` meaning; record Sol-2's consuming approval;
    declare that these internal additions require no shared JSON/provider schema
    or central migration/wiring change; and authorize Sol-1 to implement Task
@@ -504,4 +531,4 @@ The exact evaluation in this proposal recommends outcome 1: no Sol-0-owned
 shared schema/contract file change is needed, but explicit Sol-0 approval and a
 Sol-2 re-review changing **BLOCK** to **APPROVED** are mandatory. Silence,
 partial approval, or approval omitting the StoreKey, index-view, or
-supersession clauses does not unblock Task 1.6.
+source-family supersession clauses does not unblock Task 1.6.
