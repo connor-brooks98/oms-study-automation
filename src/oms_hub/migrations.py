@@ -25,7 +25,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 24
+LATEST_SCHEMA_VERSION = 25
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -96,6 +96,16 @@ def _upgrade_provider_document_inputs_v24(database: "Database") -> None:
             )
         )
         connection.execute(text("DROP TABLE provider_documents_v23"))
+
+
+def _upgrade_index_job_lifecycle_v25(database: "Database") -> None:
+    _ensure_column(
+        database,
+        "index_jobs",
+        "operation_kind",
+        "VARCHAR(20) NOT NULL DEFAULT 'index'",
+    )
+    _ensure_column(database, "index_jobs", "lease_token", "VARCHAR(36)")
 
 
 def _upgrade_anki_v4_columns(database: "Database") -> None:
@@ -701,6 +711,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_notebook_scope_leases_v22(database)
     _upgrade_index_job_leases_v23(database)
     _upgrade_provider_document_inputs_v24(database)
+    _upgrade_index_job_lifecycle_v25(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

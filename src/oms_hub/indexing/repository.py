@@ -278,6 +278,8 @@ class IndexRepository:
                 .values(
                     store_id=job.store_id,
                     source_revision_id=job.source_revision_id,
+                    operation_kind=job.operation_kind,
+                    lease_token=job.lease_token,
                     provider_document_id=job.provider_document_id,
                     provider_operation_name=job.provider_operation_name,
                     state=job.state.value,
@@ -536,6 +538,8 @@ class IndexRepository:
             id=job.id,
             store_id=job.store_id,
             source_revision_id=job.source_revision_id,
+            operation_kind=job.operation_kind,
+            lease_token=job.lease_token,
             provider_document_id=job.provider_document_id,
             provider_operation_name=job.provider_operation_name,
             state=job.state.value,
@@ -553,6 +557,8 @@ class IndexRepository:
     def _copy_job(row: IndexJobModel, job: IndexJob) -> None:
         row.store_id = job.store_id
         row.source_revision_id = job.source_revision_id
+        row.operation_kind = job.operation_kind
+        row.lease_token = job.lease_token
         row.provider_document_id = job.provider_document_id
         row.provider_operation_name = job.provider_operation_name
         row.state = job.state.value
@@ -571,6 +577,8 @@ class IndexRepository:
             id=row.id,
             store_id=row.store_id,
             source_revision_id=row.source_revision_id,
+            operation_kind=row.operation_kind,
+            lease_token=row.lease_token,
             provider_document_id=row.provider_document_id,
             provider_operation_name=row.provider_operation_name,
             state=IndexState(row.state),

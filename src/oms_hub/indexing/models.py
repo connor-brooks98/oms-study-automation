@@ -33,6 +33,9 @@ class IndexState(StrEnum):
     DELETED = "deleted"
 
 
+INDEX_OPERATION_KINDS = frozenset({"index", "delete", "rebuild"})
+
+
 # Keep this graph explicit. A state not listed here is deliberately not a
 # transition, including a self-transition.
 ALLOWED_TRANSITIONS: dict[IndexState, frozenset[IndexState]] = {
@@ -342,6 +345,8 @@ class ProviderDocument:
 class IndexJob:
     store_id: str
     source_revision_id: str
+    operation_kind: str = "index"
+    lease_token: str | None = None
     provider_document_id: str | None = None
     provider_operation_name: str | None = None
     state: IndexState = IndexState.NOT_INDEXED
@@ -362,7 +367,10 @@ class IndexJob:
             "source_revision_id",
             _require_text(self.source_revision_id, "source revision id", 200),
         )
+        if self.operation_kind not in INDEX_OPERATION_KINDS:
+            raise ValueError("index operation kind is not supported")
         for field_name in (
+            "lease_token",
             "provider_document_id",
             "provider_operation_name",
             "last_error_category",
@@ -457,6 +465,8 @@ class IndexJobModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     store_id: Mapped[str] = mapped_column(ForeignKey("provider_stores.id"), nullable=False)
     source_revision_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    operation_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="index")
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
     provider_document_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
     provider_operation_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     state: Mapped[str] = mapped_column(String(30), nullable=False)
