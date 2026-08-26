@@ -211,13 +211,13 @@ def test_mark_stale_by_revision_preserves_dependent_artifacts(
         assert connection.execute(text("SELECT COUNT(*) FROM artifact_runs")).scalar_one() == 3
 
 
-def test_backfill_legacy_outline_and_quiz_without_fabricating_evidence(
+def test_backfill_legacy_outline_and_quiz_without_reconstructing_source_identity(
     database: Database,
     repository: ArtifactRepository,
 ) -> None:
     source_hash = "4" * 64
     _seed_legacy_generation(database, source_hash)
-    revision, _ = _source(
+    _source(
         database,
         source_document_id="legacy-study-revision:7",
         file_sha256=source_hash,
@@ -233,7 +233,7 @@ def test_backfill_legacy_outline_and_quiz_without_fabricating_evidence(
         ("legacy-lecture-quiz:12", "lecture-quiz-current"),
     ]
     assert all(run.validation_status == "legacy_unverified" for run in first)
-    assert all(run.source_revision_ids == (revision.source_revision_id,) for run in first)
+    assert all(run.source_revision_ids == () for run in first)
     assert all(run.evidence_ids == () for run in first)
     with database.engine.connect() as connection:
         assert connection.execute(text("SELECT COUNT(*) FROM artifact_evidence")).scalar_one() == 0
