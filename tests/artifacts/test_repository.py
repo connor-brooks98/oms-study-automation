@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
+from threading import Barrier, BrokenBarrierError, Event
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from oms_hub.artifacts.models import ArtifactKind
 from oms_hub.artifacts.provenance import ArtifactEvidenceLink, ArtifactRun
@@ -25,6 +30,7 @@ from oms_hub.models import (
     OutlineOutputModel,
     PublishedQuizModel,
     QuizOutputModel,
+    StudioRunModel,
     StudyRevisionModel,
     UploadBatchModel,
     UploadItemModel,
@@ -180,6 +186,199 @@ def test_record_run_rejects_unknown_source_without_partial_write(
     assert repository.get_run(run.artifact_id) is None
 
 
+@pytest.mark.parametrize(
+    "state",
+    [SourceRevisionState.STALE, SourceRevisionState.RETIRED],
+)
+def test_record_run_rejects_nonready_source_revision(
+    database: Database,
+    repository: ArtifactRepository,
+    state: SourceRevisionState,
+) -> None:
+    revision, evidence = _source(database)
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE source_revisions SET state = :state WHERE id = :id"),
+            {"state": state.value, "id": revision.source_revision_id},
+        )
+    run = _run(revision, evidence, artifact_id=f"artifact-{state.value}")
+
+    with pytest.raises(ValueError, match="ready"):
+        repository.record_run(run)
+    assert repository.get_run(run.artifact_id) is None
+
+
+def test_record_run_rejects_retired_evidence(
+    database: Database,
+    repository: ArtifactRepository,
+) -> None:
+    revision, evidence = _source(database)
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE evidence_units SET retired_at = :retired WHERE id = :id"),
+            {"retired": "2026-08-25T13:00:00+00:00", "id": evidence.evidence_id},
+        )
+    run = _run(revision, evidence, artifact_id="artifact-retired-evidence")
+
+    with pytest.raises(ValueError, match="retired evidence"):
+        repository.record_run(run)
+    assert repository.get_run(run.artifact_id) is None
+
+
+def test_source_stale_interleaving_cannot_leave_a_nonstale_run(
+    database: Database,
+    repository: ArtifactRepository,
+) -> None:
+    revision, evidence = _source(database)
+    run = _run(revision, evidence, artifact_id="artifact-interleaving")
+    insert_waiting = Event()
+    release_insert = Event()
+    stale_done = Event()
+
+    def pause_artifact_insert(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if statement.lstrip().startswith("INSERT INTO artifact_runs"):
+            insert_waiting.set()
+            assert release_insert.wait(5)
+
+    def stale_revision() -> tuple[str, ...]:
+        try:
+            with database.engine.begin() as connection:
+                connection.execute(
+                    text("UPDATE source_revisions SET state = 'stale' WHERE id = :id"),
+                    {"id": revision.source_revision_id},
+                )
+            return ArtifactRepository(database).mark_stale_by_revision(
+                revision.source_revision_id
+            )
+        finally:
+            stale_done.set()
+
+    event.listen(database.engine, "before_cursor_execute", pause_artifact_insert)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            recorded = pool.submit(repository.record_run, run)
+            assert insert_waiting.wait(5)
+            staled = pool.submit(stale_revision)
+            stale_done.wait(0.25)
+            release_insert.set()
+            assert recorded.result(timeout=5).artifact_id == run.artifact_id
+            assert staled.result(timeout=5) == (run.artifact_id,)
+    finally:
+        release_insert.set()
+        event.remove(database.engine, "before_cursor_execute", pause_artifact_insert)
+
+    stored = repository.get_run(run.artifact_id)
+    assert stored is not None
+    assert stored.stale_reason == f"source_revision_stale:{revision.source_revision_id}"
+
+
+def test_concurrent_exact_record_run_is_idempotent(
+    database: Database,
+    repository: ArtifactRepository,
+) -> None:
+    revision, evidence = _source(database)
+    run = _run(revision, evidence, artifact_id="artifact-concurrent")
+    start = Barrier(2)
+    inserts = Barrier(2)
+
+    def synchronize_inserts(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if statement.lstrip().startswith("INSERT INTO artifact_runs"):
+            try:
+                inserts.wait(timeout=0.75)
+            except BrokenBarrierError:
+                pass
+
+    def record() -> ArtifactRun:
+        start.wait()
+        return ArtifactRepository(database).record_run(run)
+
+    event.listen(database.engine, "before_cursor_execute", synchronize_inserts)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = (pool.submit(record), pool.submit(record))
+            results = tuple(future.result(timeout=5) for future in futures)
+    finally:
+        event.remove(database.engine, "before_cursor_execute", synchronize_inserts)
+
+    assert results == (run, run)
+    with database.engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM artifact_runs")).scalar_one() == 1
+
+
+def test_database_rejects_evidence_source_pair_mismatch(
+    database: Database,
+    repository: ArtifactRepository,
+) -> None:
+    first, evidence = _source(database)
+    second, _ = _source(
+        database,
+        source_document_id="opaque-source-b",
+        file_sha256="2" * 64,
+        evidence_id="ev-b",
+    )
+    run = replace(
+        _run(first, evidence, artifact_id="artifact-pair-write"),
+        source_revision_ids=(first.source_revision_id, second.source_revision_id),
+    )
+    repository.record_run(run)
+
+    with pytest.raises(IntegrityError, match="artifact evidence source mismatch"):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE artifact_evidence SET source_revision_id = :source "
+                    "WHERE artifact_id = :artifact"
+                ),
+                {"source": second.source_revision_id, "artifact": run.artifact_id},
+            )
+
+
+def test_corrupt_evidence_source_pair_fails_closed_on_read(
+    database: Database,
+    repository: ArtifactRepository,
+) -> None:
+    first, evidence = _source(database)
+    second, _ = _source(
+        database,
+        source_document_id="opaque-source-b",
+        file_sha256="2" * 64,
+        evidence_id="ev-b",
+    )
+    run = replace(
+        _run(first, evidence, artifact_id="artifact-pair-read"),
+        source_revision_ids=(first.source_revision_id, second.source_revision_id),
+    )
+    repository.record_run(run)
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP TRIGGER IF EXISTS artifact_evidence_source_update"))
+        connection.execute(
+            text(
+                "UPDATE artifact_evidence SET source_revision_id = :source "
+                "WHERE artifact_id = :artifact"
+            ),
+            {"source": second.source_revision_id, "artifact": run.artifact_id},
+        )
+
+    with pytest.raises(ValueError, match="stored evidence.*source revision"):
+        repository.evidence_links(run.artifact_id)
+    with pytest.raises(ValueError, match="stored evidence.*source revision"):
+        repository.get_run(run.artifact_id)
+
+
 def test_mark_stale_by_revision_preserves_dependent_artifacts(
     database: Database,
     repository: ArtifactRepository,
@@ -235,10 +434,18 @@ def test_backfill_legacy_outline_and_quiz_without_reconstructing_source_identity
     assert [(run.artifact_id, run.recipe_id) for run in first] == [
         ("legacy-outline:11", "lecture-outline-current"),
         ("legacy-lecture-quiz:12", "lecture-quiz-current"),
+        ("legacy-custom-quiz:custom-token", "custom-quiz-current"),
     ]
     assert all(run.validation_status == "legacy_unverified" for run in first)
     assert all(run.source_revision_ids == () for run in first)
     assert all(run.evidence_ids == () for run in first)
+    custom = first[2]
+    assert custom.artifact_kind is ArtifactKind.CUSTOM_QUIZ
+    assert custom.output_hash == hashlib.sha256(
+        b'{"questions":[],"title":"Synthetic custom quiz"}'
+    ).hexdigest()
+    assert sum(run.recipe_id == "lecture-quiz-current" for run in first) == 1
+    assert sum(run.recipe_id == "custom-quiz-current" for run in first) == 1
     with database.engine.connect() as connection:
         assert connection.execute(text("SELECT COUNT(*) FROM artifact_evidence")).scalar_one() == 0
 
@@ -348,6 +555,43 @@ def _seed_legacy_generation(database: Database, source_hash: str) -> None:
                 job_id="quiz-job",
                 title="Synthetic quiz",
                 payload_json='{"questions":[],"title":"Synthetic quiz"}',
+                created_at="2026-08-25T12:00:00+00:00",
+            )
+        )
+        session.add(
+            StudioRunModel(
+                id="studio-run",
+                subject="Synthetic Course",
+                subject_key="synthetic-course",
+                exam_number=1,
+                destination_subject="Synthetic Course",
+                destination_subject_key="synthetic-course",
+                destination_exam_number=1,
+                label="Synthetic custom quiz",
+                label_key="synthetic-custom-quiz",
+                prompt="synthetic prompt",
+                workflow_kind="notebook_generation",
+                content_kind="exam_review",
+                state="complete",
+                stage="complete",
+                created_at="2026-08-25T12:00:00+00:00",
+            )
+        )
+        session.flush()
+        session.add(
+            PublishedQuizModel(
+                token="custom-token",
+                lecture_id=None,
+                job_id=None,
+                studio_run_id="studio-run",
+                destination_subject="Synthetic Course",
+                destination_subject_key="synthetic-course",
+                destination_exam_number=1,
+                label="Synthetic custom quiz",
+                label_key="synthetic-custom-quiz",
+                title="Synthetic custom quiz",
+                payload_json='{"questions":[],"title":"Synthetic custom quiz"}',
+                content_kind="exam_review",
                 created_at="2026-08-25T12:00:00+00:00",
             )
         )

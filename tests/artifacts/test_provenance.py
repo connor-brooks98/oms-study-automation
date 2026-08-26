@@ -53,6 +53,22 @@ def test_artifact_input_hash_is_deterministic_across_dependency_order() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {1: "integer"},
+        {None: "null"},
+        {True: "boolean"},
+        {"nested": [{1: "integer"}]},
+    ],
+)
+def test_artifact_input_hash_rejects_non_string_mapping_keys(
+    payload: object,
+) -> None:
+    with pytest.raises(ValueError, match="string keys"):
+        compute_artifact_input_hash(payload)
+
+
 def test_artifact_run_is_frozen_and_canonicalizes_dependency_order() -> None:
     run = _run()
 
