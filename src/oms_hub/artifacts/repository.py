@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
 
 from oms_hub.artifacts.models import ArtifactKind
 from oms_hub.artifacts.provenance import (
@@ -15,6 +17,7 @@ from oms_hub.artifacts.provenance import (
     compute_artifact_input_hash,
 )
 from oms_hub.db import Database
+from oms_hub.knowledge.models import SourceRevisionState
 
 __all__ = ["ArtifactRepository"]
 
@@ -74,6 +77,39 @@ class ArtifactRepository:
                     """
                 )
             )
+            if connection.dialect.name == "sqlite":
+                connection.execute(
+                    text(
+                        """
+                        CREATE TRIGGER IF NOT EXISTS artifact_evidence_source_insert
+                        BEFORE INSERT ON artifact_evidence
+                        WHEN NOT EXISTS (
+                            SELECT 1 FROM evidence_units
+                            WHERE id = NEW.evidence_id
+                              AND source_revision_id = NEW.source_revision_id
+                        )
+                        BEGIN
+                            SELECT RAISE(ABORT, 'artifact evidence source mismatch');
+                        END
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        CREATE TRIGGER IF NOT EXISTS artifact_evidence_source_update
+                        BEFORE UPDATE OF evidence_id, source_revision_id ON artifact_evidence
+                        WHEN NOT EXISTS (
+                            SELECT 1 FROM evidence_units
+                            WHERE id = NEW.evidence_id
+                              AND source_revision_id = NEW.source_revision_id
+                        )
+                        BEGIN
+                            SELECT RAISE(ABORT, 'artifact evidence source mismatch');
+                        END
+                        """
+                    )
+                )
             connection.execute(
                 text(
                     """
@@ -99,65 +135,75 @@ class ArtifactRepository:
         requested_links = tuple(evidence_links)
         if len(requested_links) != len(set(requested_links)):
             raise ValueError("duplicate artifact evidence link")
-        with self.database.engine.begin() as connection:
-            resolved_links = self._validate_dependencies(connection, run)
-            if requested_links:
-                for link in requested_links:
-                    if link.artifact_id != run.artifact_id:
-                        raise ValueError("evidence link artifact_id does not match its run")
-                if _sort_links(requested_links) != resolved_links:
+        for link in requested_links:
+            if link.artifact_id != run.artifact_id:
+                raise ValueError("evidence link artifact_id does not match its run")
+        try:
+            with _write_connection(self.database) as connection:
+                existing = self._get_run(connection, run.artifact_id)
+                if existing is not None:
+                    return self._require_exact_existing(
+                        connection,
+                        existing,
+                        run,
+                        requested_links,
+                    )
+                resolved_links = self._validate_dependencies(connection, run)
+                if requested_links and _sort_links(requested_links) != resolved_links:
                     raise ValueError(
                         "evidence source revision links do not match run provenance"
                     )
-
-            existing = self._get_run(connection, run.artifact_id)
-            if existing is not None:
-                if (
-                    _immutable_run(existing) != _immutable_run(run)
-                    or existing.source_revision_ids != run.source_revision_ids
-                    or existing.evidence_ids != run.evidence_ids
-                ):
-                    raise ValueError("artifact_id already refers to different provenance")
-                return existing
-
-            connection.execute(
-                text(
-                    """
-                    INSERT INTO artifact_runs (
-                        artifact_id, artifact_kind, recipe_id, recipe_version,
-                        provider, model, prompt_version, schema_version,
-                        input_hash, output_hash, created_at, validation_status,
-                        stale_reason
-                    ) VALUES (
-                        :artifact_id, :artifact_kind, :recipe_id, :recipe_version,
-                        :provider, :model, :prompt_version, :schema_version,
-                        :input_hash, :output_hash, :created_at, :validation_status,
-                        :stale_reason
-                    )
-                    """
-                ),
-                _run_parameters(run),
-            )
-            for revision_id in run.source_revision_ids:
                 connection.execute(
                     text(
-                        "INSERT INTO artifact_run_sources "
-                        "(artifact_id, source_revision_id) VALUES (:artifact_id, :revision_id)"
+                        """
+                        INSERT INTO artifact_runs (
+                            artifact_id, artifact_kind, recipe_id, recipe_version,
+                            provider, model, prompt_version, schema_version,
+                            input_hash, output_hash, created_at, validation_status,
+                            stale_reason
+                        ) VALUES (
+                            :artifact_id, :artifact_kind, :recipe_id, :recipe_version,
+                            :provider, :model, :prompt_version, :schema_version,
+                            :input_hash, :output_hash, :created_at, :validation_status,
+                            :stale_reason
+                        )
+                        """
                     ),
-                    {"artifact_id": run.artifact_id, "revision_id": revision_id},
+                    _run_parameters(run),
                 )
-            for link in resolved_links:
-                connection.execute(
-                    text(
-                        "INSERT INTO artifact_evidence "
-                        "(artifact_id, source_revision_id, evidence_id) "
-                        "VALUES (:artifact_id, :source_revision_id, :evidence_id)"
-                    ),
-                    {
-                        "artifact_id": link.artifact_id,
-                        "source_revision_id": link.source_revision_id,
-                        "evidence_id": link.evidence_id,
-                    },
+                for revision_id in run.source_revision_ids:
+                    connection.execute(
+                        text(
+                            "INSERT INTO artifact_run_sources "
+                            "(artifact_id, source_revision_id) "
+                            "VALUES (:artifact_id, :revision_id)"
+                        ),
+                        {"artifact_id": run.artifact_id, "revision_id": revision_id},
+                    )
+                for link in resolved_links:
+                    connection.execute(
+                        text(
+                            "INSERT INTO artifact_evidence "
+                            "(artifact_id, source_revision_id, evidence_id) "
+                            "VALUES (:artifact_id, :source_revision_id, :evidence_id)"
+                        ),
+                        {
+                            "artifact_id": link.artifact_id,
+                            "source_revision_id": link.source_revision_id,
+                            "evidence_id": link.evidence_id,
+                        },
+                    )
+        except IntegrityError as error:
+            with self.database.engine.connect() as connection:
+                existing = self._get_run(connection, run.artifact_id)
+                if existing is None:
+                    raise
+                return self._require_exact_existing(
+                    connection,
+                    existing,
+                    run,
+                    requested_links,
+                    cause=error,
                 )
         return run
 
@@ -170,7 +216,7 @@ class ArtifactRepository:
             return self._links(connection, artifact_id)
 
     def mark_stale_by_revision(self, revision_id: str) -> tuple[str, ...]:
-        with self.database.engine.begin() as connection:
+        with _write_connection(self.database) as connection:
             if connection.execute(
                 text("SELECT 1 FROM source_revisions WHERE id = :id"),
                 {"id": revision_id},
@@ -236,6 +282,19 @@ class ArtifactRepository:
                     """
                 )
             ).mappings().all()
+            custom_quizzes = connection.execute(
+                text(
+                    """
+                    SELECT p.token, p.studio_run_id, p.payload_json, p.created_at,
+                           s.prompt, s.workflow_kind
+                    FROM published_quizzes p
+                    JOIN studio_runs s ON s.id = p.studio_run_id
+                    WHERE p.studio_run_id IS NOT NULL
+                      AND p.job_id IS NULL
+                    ORDER BY p.created_at, p.token
+                    """
+                )
+            ).mappings().all()
 
         recorded: list[ArtifactRun] = []
         for row in outlines:
@@ -285,6 +344,40 @@ class ArtifactRepository:
                     )
                 )
             )
+        for row in custom_quizzes:
+            prompt_hash = hashlib.sha256(row["prompt"].encode("utf-8")).hexdigest()
+            recorded.append(
+                self.record_run(
+                    ArtifactRun(
+                        artifact_id=f"legacy-custom-quiz:{row['token']}",
+                        artifact_kind=ArtifactKind.CUSTOM_QUIZ,
+                        recipe_id="custom-quiz-current",
+                        recipe_version="current-v1",
+                        provider=(
+                            "notebooklm"
+                            if row["workflow_kind"] == "notebook_generation"
+                            else None
+                        ),
+                        model=None,
+                        prompt_version=prompt_hash,
+                        schema_version=None,
+                        source_revision_ids=(),
+                        evidence_ids=(),
+                        input_hash=compute_artifact_input_hash(
+                            {
+                                "kind": "custom_quiz",
+                                "prompt_sha256": prompt_hash,
+                                "studio_run_id": row["studio_run_id"],
+                            }
+                        ),
+                        output_hash=hashlib.sha256(
+                            row["payload_json"].encode("utf-8")
+                        ).hexdigest(),
+                        created_at=row["created_at"],
+                        validation_status="legacy_unverified",
+                    )
+                )
+            )
         return tuple(recorded)
 
     def _validate_dependencies(
@@ -293,26 +386,59 @@ class ArtifactRepository:
         run: ArtifactRun,
     ) -> tuple[ArtifactEvidenceLink, ...]:
         for revision_id in run.source_revision_ids:
-            if connection.execute(
-                text("SELECT 1 FROM source_revisions WHERE id = :id"),
+            row = connection.execute(
+                text("SELECT state FROM source_revisions WHERE id = :id"),
                 {"id": revision_id},
-            ).first() is None:
+            ).first()
+            if row is None:
                 raise KeyError(revision_id)
+            if row[0] != SourceRevisionState.READY.value:
+                raise ValueError("artifact source revision must be ready")
         links: list[ArtifactEvidenceLink] = []
         for evidence_id in run.evidence_ids:
             row = connection.execute(
-                text("SELECT source_revision_id FROM evidence_units WHERE id = :id"),
+                text(
+                    "SELECT source_revision_id, retired_at "
+                    "FROM evidence_units WHERE id = :id"
+                ),
                 {"id": evidence_id},
             ).first()
             if row is None:
                 raise KeyError(evidence_id)
             source_revision_id = row[0]
+            if row[1] is not None:
+                raise ValueError("retired evidence cannot support a new artifact run")
             if source_revision_id not in run.source_revision_ids:
                 raise ValueError("evidence source revision is not linked to the artifact run")
             links.append(
                 ArtifactEvidenceLink(run.artifact_id, source_revision_id, evidence_id)
             )
         return _sort_links(links)
+
+    def _require_exact_existing(
+        self,
+        connection: Connection,
+        existing: ArtifactRun,
+        requested: ArtifactRun,
+        requested_links: tuple[ArtifactEvidenceLink, ...],
+        *,
+        cause: BaseException | None = None,
+    ) -> ArtifactRun:
+        if (
+            _immutable_run(existing) != _immutable_run(requested)
+            or existing.source_revision_ids != requested.source_revision_ids
+            or existing.evidence_ids != requested.evidence_ids
+            or (
+                requested_links
+                and self._links(connection, existing.artifact_id)
+                != _sort_links(requested_links)
+            )
+        ):
+            error = ValueError("artifact_id already refers to different provenance")
+            if cause is not None:
+                raise error from cause
+            raise error
+        return existing
 
     def _get_run(self, connection: Connection, artifact_id: str) -> ArtifactRun | None:
         row = connection.execute(
@@ -357,13 +483,55 @@ class ArtifactRepository:
     ) -> tuple[ArtifactEvidenceLink, ...]:
         rows = connection.execute(
             text(
-                "SELECT artifact_id, source_revision_id, evidence_id "
-                "FROM artifact_evidence WHERE artifact_id = :artifact_id "
-                "ORDER BY source_revision_id, evidence_id"
+                """
+                SELECT ae.artifact_id, ae.source_revision_id, ae.evidence_id,
+                       eu.source_revision_id AS evidence_source_revision_id,
+                       ars.artifact_id AS source_link_artifact_id
+                FROM artifact_evidence ae
+                LEFT JOIN evidence_units eu ON eu.id = ae.evidence_id
+                LEFT JOIN artifact_run_sources ars
+                  ON ars.artifact_id = ae.artifact_id
+                 AND ars.source_revision_id = ae.source_revision_id
+                WHERE ae.artifact_id = :artifact_id
+                ORDER BY ae.source_revision_id, ae.evidence_id
+                """
             ),
             {"artifact_id": artifact_id},
-        ).all()
-        return tuple(ArtifactEvidenceLink(*row) for row in rows)
+        ).mappings().all()
+        links: list[ArtifactEvidenceLink] = []
+        for row in rows:
+            if (
+                row["evidence_source_revision_id"] != row["source_revision_id"]
+                or row["source_link_artifact_id"] is None
+            ):
+                raise ValueError(
+                    "stored evidence does not match its authoritative source revision"
+                )
+            links.append(
+                ArtifactEvidenceLink(
+                    row["artifact_id"],
+                    row["source_revision_id"],
+                    row["evidence_id"],
+                )
+            )
+        return tuple(links)
+
+
+@contextmanager
+def _write_connection(database: Database) -> Iterator[Connection]:
+    with database.engine.connect() as connection:
+        if connection.dialect.name != "sqlite":
+            raise RuntimeError(
+                "artifact provenance writes require an approved serialized transaction"
+            )
+        # ponytail: SQLite serializes writers globally; use row locks if the DB changes.
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def _run_parameters(run: ArtifactRun) -> dict[str, object]:

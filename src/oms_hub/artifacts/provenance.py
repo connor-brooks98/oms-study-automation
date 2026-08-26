@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -29,6 +30,7 @@ def compute_artifact_input_hash(
     """Hash canonical JSON plus order-independent source/evidence identities."""
     sources = _canonical_ids(source_revision_ids, "source_revision_ids")
     evidence = _canonical_ids(evidence_ids, "evidence_ids")
+    _validate_json_value(input_payload, set())
     try:
         encoded = json.dumps(
             {
@@ -115,6 +117,33 @@ def _canonical_ids(values: Sequence[str], name: str) -> tuple[str, ...]:
     if len(items) != len(set(items)):
         raise ValueError(f"{name} contains duplicate values")
     return tuple(sorted(items))
+
+
+def _validate_json_value(value: object, ancestors: set[int]) -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("artifact input must contain finite JSON numbers")
+        return
+    if not isinstance(value, (dict, list)):
+        raise ValueError("artifact input must contain JSON-compatible data")
+    identity = id(value)
+    if identity in ancestors:
+        raise ValueError("artifact input must not contain cycles")
+    ancestors.add(identity)
+    try:
+        children: Iterable[object]
+        if isinstance(value, dict):
+            if any(not isinstance(key, str) for key in value):
+                raise ValueError("artifact input objects must use string keys")
+            children = value.values()
+        else:
+            children = value
+        for child in children:
+            _validate_json_value(child, ancestors)
+    finally:
+        ancestors.remove(identity)
 
 
 def _require_text(value: object, name: str) -> None:
