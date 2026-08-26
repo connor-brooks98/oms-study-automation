@@ -202,6 +202,12 @@ def test_recover_interrupted_terminalizes_exhausted_retry_budget(tmp_path: Path)
         provider_operation_name="operations/import-1",
         retry_count=3,
     )
+    repository.upsert_job(
+        replace(
+            job,
+            next_attempt_at=(NOW + timedelta(minutes=5)).isoformat(),
+        )
+    )
     worker = IndexWorker(
         repository,
         NoopIndexingService(),
