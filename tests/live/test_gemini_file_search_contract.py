@@ -758,6 +758,69 @@ def test_positive_validation_failure_retains_fixed_redacted_reason() -> None:
     assert smoke.SYNTHETIC_FACT not in json.dumps(record, sort_keys=True)
 
 
+def test_positive_query_does_not_disclose_the_expected_answer() -> None:
+    smoke = _load_smoke()
+
+    class PromptCapture(_FakeSession):
+        def __init__(self) -> None:
+            super().__init__(smoke)
+            self.prompts: list[str] = []
+
+        async def query(self, *args: object, **kwargs: object) -> object:
+            self.prompts.append(args[1])
+            return await super().query(*args, **kwargs)
+
+    session = PromptCapture()
+    asyncio.run(smoke.run_contract_smoke(session))
+
+    assert smoke.SYNTHETIC_FACT not in session.prompts[0]
+    assert "cobalt-otter-28" not in session.prompts[0]
+
+
+def test_positive_validation_accepts_the_retrieved_marker_value() -> None:
+    smoke = _load_smoke()
+
+    class MarkerOnlyAnswer(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id == smoke.SYNTHETIC_LECTURE_ID:
+                return smoke.SmokeQueryResult(
+                    answer={"answer": "cobalt-otter-28", "supported": True},
+                    citations=result.citations,
+                )
+            return result
+
+    record = asyncio.run(smoke.run_contract_smoke(MarkerOnlyAnswer(smoke)))
+
+    assert record["status"] == "passed"
+
+
+def test_positive_answer_without_marker_retains_fixed_redacted_reason() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class WrongAnswer(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id == smoke.SYNTHETIC_LECTURE_ID:
+                return smoke.SmokeQueryResult(
+                    answer={"answer": "wrong-marker", "supported": True},
+                    citations=result.citations,
+                )
+            return result
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        asyncio.run(
+            smoke.run_contract_smoke(WrongAnswer(smoke), failure_evidence=evidence)
+        )
+
+    record = smoke._failure_record(raised.value, evidence)
+    assert record["contract_reason"] == "positive_answer_missing_marker"
+    assert smoke.SYNTHETIC_FACT not in json.dumps(record, sort_keys=True)
+
+
 def test_offline_fake_proves_full_smoke_sequence_and_redacted_record() -> None:
     smoke = _load_smoke()
     session = _FakeSession(smoke)
