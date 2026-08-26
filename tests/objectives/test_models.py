@@ -49,6 +49,11 @@ def test_approved_objective_requires_allowed_evidence_identifiers() -> None:
         _objective(source_revision_ids=(), evidence_ids=())
 
 
+def test_nonretired_objective_rejects_retirement_timestamp() -> None:
+    with pytest.raises(ValueError, match="retired_at"):
+        _objective(retired_at="2026-08-25T13:00:00+00:00")
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -83,4 +88,3 @@ def test_evidence_links_are_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         link.evidence_id = "ev-other"  # type: ignore[misc]
-
