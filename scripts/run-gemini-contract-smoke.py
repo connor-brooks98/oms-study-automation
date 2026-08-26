@@ -217,39 +217,50 @@ class GoogleGenaiSmokeSession:
     ) -> SmokeQueryResult:
         if not omit_thinking:
             raise SmokeContractError("Task 2.8 smoke requires omitted thinking configuration")
-        config: dict[str, object] = {
+        body: dict[str, object] = {
+            "model": self._config.file_search_model,
+            "input": prompt,
+            "store": False,
             "tools": [
                 {
-                    "file_search": {
-                        "file_search_store_names": [store_name],
-                        "metadata_filter": _scope_filter(scope),
-                    }
+                    "type": "file_search",
+                    "file_search_store_names": [store_name],
+                    "metadata_filter": _scope_filter(scope),
                 }
             ],
-            "response_mime_type": "application/json",
-            "response_schema": response_schema,
+            "response_format": {
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": response_schema.model_json_schema(),
+            },
         }
         async with self._clients.client() as client:
             response = await _provider_call(
-                lambda: client.models.generate_content(
-                    model=self._config.file_search_model,
-                    contents=prompt,
-                    config=config,
-                )
+                lambda: client.interactions.create(**body)
             )
-        parsed = _field(response, "parsed")
-        if isinstance(parsed, BaseModel):
-            answer = parsed.model_dump(mode="json")
-        elif isinstance(parsed, Mapping):
-            answer = dict(parsed)
-        else:
+        output_text = _field(response, "output_text")
+        if not isinstance(output_text, str) or not output_text:
             raise SmokeContractError("Gemini structured output was unavailable")
+        try:
+            answer = response_schema.model_validate_json(output_text).model_dump(mode="json")
+        except ValidationError:
+            raise SmokeContractError(
+                "Gemini structured output did not match the required schema"
+            ) from None
         usage = _field(response, "usage_metadata")
+        if usage is None:
+            usage = _field(response, "usage")
         return SmokeQueryResult(
             answer=answer,
             citations=_citations(response, store_name, scope, self._document_name),
-            input_tokens=_optional_count(_field(usage, "prompt_token_count")),
-            output_tokens=_optional_count(_field(usage, "candidates_token_count")),
+            input_tokens=_optional_count(
+                _field(usage, "total_input_tokens")
+                or _field(usage, "prompt_token_count")
+            ),
+            output_tokens=_optional_count(
+                _field(usage, "total_output_tokens")
+                or _field(usage, "candidates_token_count")
+            ),
         )
 
     async def list_documents(self, store_name: str) -> tuple[str, ...]:
@@ -333,8 +344,9 @@ def _citations(
     scope: SmokeScope,
     document_name: str | None,
 ) -> tuple[SmokeCitation, ...]:
-    candidates = _field(response, "candidates")
-    if not isinstance(candidates, Iterable) or isinstance(candidates, (str, bytes, Mapping)):
+    del store_name
+    steps = _field(response, "steps")
+    if not isinstance(steps, Iterable) or isinstance(steps, (str, bytes, Mapping)):
         return ()
     found: list[SmokeCitation] = []
     expected = {
@@ -343,39 +355,61 @@ def _citations(
         "lecture_id": scope.lecture_id,
         "source_revision_id": SYNTHETIC_REVISION_ID,
     }
-    for candidate in candidates:
-        grounding = _field(candidate, "grounding_metadata")
-        chunks = _field(grounding, "grounding_chunks")
-        if not isinstance(chunks, Iterable) or isinstance(chunks, (str, bytes, Mapping)):
+    for step in steps:
+        if _field(step, "type") != "model_output":
             continue
-        for chunk in chunks:
-            context = _field(chunk, "retrieved_context")
-            if context is None:
+        contents = _field(step, "content")
+        if not isinstance(contents, Iterable) or isinstance(
+            contents, (str, bytes, Mapping)
+        ):
+            continue
+        for content in contents:
+            if _field(content, "type") != "text":
                 continue
-            if _field(context, "file_search_store") != store_name:
-                raise SmokeContractError("Gemini citation referenced the wrong store")
-            actual = _string_metadata(_field(context, "custom_metadata"))
-            if any(actual.get(key) != value for key, value in expected.items()):
-                raise SmokeContractError(
-                    "Gemini citation metadata did not match the requested scope"
+            annotations = _field(content, "annotations")
+            if not isinstance(annotations, Iterable) or isinstance(
+                annotations, (str, bytes, Mapping)
+            ):
+                continue
+            for annotation in annotations:
+                if _field(annotation, "type") != "file_citation":
+                    continue
+                actual = _string_metadata(_field(annotation, "custom_metadata"))
+                if any(actual.get(key) != value for key, value in expected.items()):
+                    raise SmokeContractError(
+                        "Gemini citation metadata did not match the requested scope"
+                    )
+                if document_name is None:
+                    raise SmokeContractError(
+                        "Gemini citation arrived before import identity was known"
+                    )
+                locator = _field(annotation, "document_uri") or _field(
+                    annotation, "file_name"
                 )
-            if document_name is None:
-                raise SmokeContractError("Gemini citation arrived before import identity was known")
-            excerpt = _field(context, "text")
-            if not isinstance(excerpt, str) or not excerpt:
-                raise SmokeContractError("Gemini citation excerpt was unavailable")
-            found.append(
-                SmokeCitation(
-                    document_name=document_name,
-                    page_number=_optional_page(_field(context, "page_number")),
-                    excerpt=excerpt,
+                if (
+                    not isinstance(locator, str)
+                    or not locator
+                    or len(locator) > 500
+                    or not locator.isprintable()
+                ):
+                    raise SmokeContractError("Gemini citation locator was unavailable")
+                excerpt = _citation_excerpt(annotation, _field(content, "text"))
+                found.append(
+                    SmokeCitation(
+                        document_name=document_name,
+                        page_number=_optional_page(_field(annotation, "page_number")),
+                        excerpt=excerpt,
+                    )
                 )
-            )
     return tuple(found)
 
 
 def _string_metadata(value: object) -> dict[str, str]:
-    if not isinstance(value, Iterable) or isinstance(value, (str, bytes, Mapping)):
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) and isinstance(text, str) for key, text in value.items()):
+            raise SmokeContractError("Gemini citation metadata was invalid")
+        return dict(value)
+    if not isinstance(value, Iterable) or isinstance(value, (str, bytes)):
         return {}
     metadata: dict[str, str] = {}
     for item in value:
@@ -385,6 +419,29 @@ def _string_metadata(value: object) -> dict[str, str]:
             raise SmokeContractError("Gemini citation metadata was invalid")
         metadata[key] = text
     return metadata
+
+
+def _citation_excerpt(annotation: object, content_text: object) -> str:
+    source = _field(annotation, "source")
+    if isinstance(source, str) and source:
+        return source
+    if not isinstance(content_text, str):
+        raise SmokeContractError("Gemini citation excerpt was unavailable")
+    start = _field(annotation, "start_index")
+    end = _field(annotation, "end_index")
+    encoded = content_text.encode("utf-8")
+    if (
+        isinstance(start, bool)
+        or isinstance(end, bool)
+        or not isinstance(start, int)
+        or not isinstance(end, int)
+        or not 0 <= start < end <= len(encoded)
+    ):
+        raise SmokeContractError("Gemini citation excerpt was unavailable")
+    try:
+        return encoded[start:end].decode("utf-8")
+    except UnicodeDecodeError:
+        raise SmokeContractError("Gemini citation excerpt was invalid") from None
 
 
 def _optional_page(value: object) -> int | None:
