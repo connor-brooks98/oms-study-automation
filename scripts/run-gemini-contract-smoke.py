@@ -16,7 +16,7 @@ from io import BytesIO
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
@@ -457,24 +457,35 @@ async def run_contract_smoke(
     store_name: str | None = None
     file_name: str | None = None
     document_name: str | None = None
+    resource_states = {
+        "document": "not_started",
+        "file": "not_started",
+        "store": "not_started",
+    }
     started = clock()
     if failure_evidence is not None:
         failure_evidence.clear()
         failure_evidence["failure_stage"] = "create_store"
     try:
+        resource_states["store"] = "unknown"
         store_name = await session.create_store(
             "Study Hub Task 2.8 synthetic contract",
             "models/gemini-embedding-2",
         )
+        resource_states["store"] = "confirmed"
         if failure_evidence is not None:
             failure_evidence["failure_stage"] = "upload_pdf"
+        resource_states["file"] = "unknown"
         file_name = await session.upload_pdf("task-2-8-synthetic.pdf", pdf)
+        resource_states["file"] = "confirmed"
         if failure_evidence is not None:
             failure_evidence["failure_stage"] = "import_file"
+        resource_states["document"] = "unknown"
         operation_name = await session.import_file(store_name, file_name, metadata)
         if failure_evidence is not None:
             failure_evidence["failure_stage"] = "wait_for_import"
         document_name = await session.wait_for_import(operation_name)
+        resource_states["document"] = "confirmed"
         if failure_evidence is not None:
             failure_evidence["failure_stage"] = "positive_query"
         positive = await session.query(
@@ -486,7 +497,12 @@ async def run_contract_smoke(
         )
         if failure_evidence is not None:
             failure_evidence["failure_stage"] = "positive_validation"
-        answer = SmokeAnswer.model_validate(positive.answer)
+        try:
+            answer = SmokeAnswer.model_validate(positive.answer)
+        except ValidationError:
+            raise SmokeContractError(
+                "Gemini structured output did not match the required schema"
+            ) from None
         if answer.answer != SYNTHETIC_FACT or not answer.supported:
             raise SmokeContractError("structured output did not preserve the synthetic fact")
         if len(positive.citations) != 1:
@@ -560,12 +576,11 @@ async def run_contract_smoke(
             await _cleanup(session, document_name, file_name, store_name)
         except SmokeContractError:
             cleanup_status = "failed"
+        else:
+            if "unknown" in resource_states.values():
+                cleanup_status = "unknown"
         if failure_evidence is not None:
-            failure_evidence["resources_created"] = {
-                "document": document_name is not None,
-                "file": file_name is not None,
-                "store": store_name is not None,
-            }
+            failure_evidence["resources_created"] = dict(resource_states)
             failure_evidence["cleanup"] = {
                 "attempted": sum(
                     value is not None for value in (document_name, file_name, store_name)
@@ -579,11 +594,7 @@ async def run_contract_smoke(
         await _cleanup(session, document_name, file_name, store_name)
     except SmokeContractError:
         if failure_evidence is not None:
-            failure_evidence["resources_created"] = {
-                "document": True,
-                "file": True,
-                "store": True,
-            }
+            failure_evidence["resources_created"] = dict(resource_states)
             failure_evidence["cleanup"] = {"attempted": 3, "status": "failed"}
         raise
     record["cleanup"] = {"attempted": 3, "status": "completed"}
