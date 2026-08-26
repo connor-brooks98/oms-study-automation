@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 
 from oms_hub.db import Database
 from oms_hub.indexing.models import (
+    ALLOWED_TRANSITIONS,
     IndexJob,
     IndexState,
     ProviderDocument,
@@ -19,8 +21,15 @@ from oms_hub.indexing.service import IndexResult
 from oms_hub.indexing.worker import IndexWorker
 from oms_hub.workers import RecoveryReport
 
-
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
+_OPEN_DATABASES: list[Database] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_databases() -> Iterator[None]:
+    yield
+    while _OPEN_DATABASES:
+        _OPEN_DATABASES.pop().close()
 
 
 def _store() -> ProviderStore:
@@ -38,6 +47,7 @@ def _store() -> ProviderStore:
 
 def _database(tmp_path: Path) -> Database:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    _OPEN_DATABASES.append(database)
     database.migrate()
     return database
 
@@ -319,6 +329,43 @@ def test_recovery_reclaims_completed_job_without_counting_it_resumed(tmp_path: P
     assert recovered is not None
     assert recovered.state is IndexState.READY
     assert recovered.lease_owner is None
+
+
+def test_recovery_restores_deleting_identity_from_document(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    repository = IndexRepository(database)
+    provider_document_id = "fileSearchStores/store-1/documents/document-1"
+    job = _persist_interrupted_job(
+        repository,
+        state=IndexState.DELETING,
+        provider_file_name="files/file-1",
+        provider_operation_name=None,
+        provider_document_id=provider_document_id,
+    )
+    repository.upsert_job(replace(job, provider_document_id=None))
+    admin = FakeAdmin()
+    worker = IndexWorker(
+        repository,
+        NoopIndexingService(),
+        admin=admin,
+        worker_id="worker-1",
+        lease_seconds=60,
+        now=lambda: NOW,
+    )
+
+    report = worker.recover_interrupted()
+    recovered = repository.get_job(job.id)
+    result = worker.run_once()
+
+    assert report == RecoveryReport(reclaimed_leases=1, resumed_jobs=1)
+    assert recovered is not None
+    assert recovered.provider_document_id == provider_document_id
+    assert result.job_id == job.id
+    assert admin.delete_document_calls == [provider_document_id]
+
+
+def test_import_recovery_transition_is_explicitly_allowed() -> None:
+    assert IndexState.FILE_UPLOADED in ALLOWED_TRANSITIONS[IndexState.IMPORTING]
 
 
 def test_recover_interrupted_leaves_live_lease_owned(tmp_path: Path) -> None:

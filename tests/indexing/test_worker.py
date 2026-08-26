@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,8 +30,21 @@ from oms_hub.providers.gemini.errors import (
 )
 from oms_hub.workers import WorkResult
 
-
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
+_OPEN_DATABASES: list[Database] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_databases() -> Iterator[None]:
+    yield
+    while _OPEN_DATABASES:
+        _OPEN_DATABASES.pop().close()
+
+
+def _open_database(url: str) -> Database:
+    database = Database(url)
+    _OPEN_DATABASES.append(database)
+    return database
 
 
 def _store() -> ProviderStore:
@@ -46,7 +61,7 @@ def _store() -> ProviderStore:
 
 
 def _database(tmp_path: Path) -> Database:
-    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database = _open_database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
     return database
 
@@ -149,13 +164,13 @@ def test_default_lease_covers_provider_request_and_operation_deadlines(
 
 def test_two_workers_claim_one_source_revision_exclusively(tmp_path: Path) -> None:
     url = f"sqlite:///{tmp_path / 'hub.db'}"
-    database = Database(url)
+    database = _open_database(url)
     database.migrate()
     job = _queued_job(IndexRepository(database))
     first_service = FakeIndexingService(block=True)
     second_service = FakeIndexingService()
-    first = _worker(IndexRepository(Database(url)), first_service, "worker-1")
-    second = _worker(IndexRepository(Database(url)), second_service, "worker-2")
+    first = _worker(IndexRepository(_open_database(url)), first_service, "worker-1")
+    second = _worker(IndexRepository(_open_database(url)), second_service, "worker-2")
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         first_future = pool.submit(first.run_once)
@@ -229,7 +244,9 @@ def test_retry_policy_separates_terminal_and_retryable_categories(
     assert stored.lease_owner is None
 
 
-@pytest.mark.parametrize("returned_state", (IndexState.RETRYABLE_FAILURE, IndexState.TERMINAL_FAILURE))
+@pytest.mark.parametrize(
+    "returned_state", (IndexState.RETRYABLE_FAILURE, IndexState.TERMINAL_FAILURE)
+)
 def test_worker_handles_failure_state_returned_by_indexing_service(
     tmp_path: Path,
     returned_state: IndexState,
@@ -344,3 +361,50 @@ def test_retry_budget_exhaustion_terminalizes_retryable_failure(tmp_path: Path) 
     assert stored is not None
     assert stored.state is IndexState.TERMINAL_FAILURE
     assert stored.retry_count == 1
+
+
+def test_unexpected_error_persists_only_its_type(tmp_path: Path) -> None:
+    class FailingService:
+        async def index_revision(self, _source_revision_id: str) -> IndexResult:
+            raise RuntimeError("private-provider-payload-token")
+
+    database = _database(tmp_path)
+    repository = IndexRepository(database)
+    job = _queued_job(repository)
+
+    IndexWorker(
+        repository,
+        FailingService(),  # type: ignore[arg-type]
+        worker_id="worker-1",
+        lease_seconds=60,
+        now=lambda: NOW,
+    ).run_once()
+    stored = repository.get_job(job.id)
+
+    assert stored is not None
+    assert stored.state is IndexState.TERMINAL_FAILURE
+    assert stored.last_error_message == "RuntimeError"
+
+
+def test_stale_lease_cannot_overwrite_or_release_new_claim(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    repository = IndexRepository(database)
+    job = _queued_job(repository)
+    first = repository.claim_next_job("worker:claim-1", NOW, lease_seconds=1)
+    second = repository.claim_next_job(
+        "worker:claim-2",
+        NOW.replace(second=2),
+        lease_seconds=60,
+    )
+
+    assert first is not None
+    assert second is not None
+    assert repository.save_claimed_job(
+        replace(first, state=IndexState.READY),
+        "worker:claim-1",
+    ) is None
+    assert repository.release_job_lease(job.id, "worker:claim-1") is False
+    stored = repository.get_job(job.id)
+    assert stored is not None
+    assert stored.state is IndexState.NOT_INDEXED
+    assert stored.lease_owner == "worker:claim-2"
