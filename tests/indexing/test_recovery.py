@@ -221,6 +221,38 @@ def test_recover_interrupted_terminalizes_exhausted_retry_budget(tmp_path: Path)
     assert recovered.lease_expires_at is None
 
 
+def test_recovery_terminalizes_exhausted_delete_retry(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    repository = IndexRepository(database)
+    job = _persist_interrupted_job(
+        repository,
+        state=IndexState.DELETING,
+        provider_file_name="files/file-1",
+        provider_operation_name=None,
+        provider_document_id="fileSearchStores/store-1/documents/document-1",
+        retry_count=3,
+    )
+    admin = FakeAdmin()
+    worker = IndexWorker(
+        repository,
+        NoopIndexingService(),
+        admin=admin,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_attempts=3,
+        now=lambda: NOW,
+    )
+
+    report = worker.recover_interrupted()
+    recovered = repository.get_job(job.id)
+
+    assert report == RecoveryReport(reclaimed_leases=1, terminal_failures=1)
+    assert recovered is not None
+    assert recovered.state is IndexState.TERMINAL_FAILURE
+    assert recovered.lease_owner is None
+    assert admin.delete_document_calls == []
+
+
 def test_recovery_uses_document_operation_persisted_before_worker_checkpoint(
     tmp_path: Path,
 ) -> None:

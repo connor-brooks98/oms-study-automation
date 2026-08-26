@@ -251,7 +251,18 @@ def test_worker_handles_failure_state_returned_by_indexing_service(
     assert stored.lease_owner is None
 
 
-def test_returned_retry_uses_persisted_provider_category(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("returned_state", "category"),
+    (
+        (IndexState.RETRYABLE_FAILURE, "quota"),
+        (IndexState.TERMINAL_FAILURE, "contract"),
+    ),
+)
+def test_returned_failure_uses_persisted_provider_category(
+    tmp_path: Path,
+    returned_state: IndexState,
+    category: str,
+) -> None:
     database = _database(tmp_path)
     repository = IndexRepository(database)
     job = _queued_job(repository)
@@ -264,11 +275,11 @@ def test_returned_retry_uses_persisted_provider_category(tmp_path: Path) -> None
                     provider="gemini",
                     provider_document_id=None,
                     source_revision_id=source_revision_id,
-                    state=IndexState.RETRYABLE_FAILURE,
-                    last_error_category="quota",
+                    state=returned_state,
+                    last_error_category=category,
                 )
             )
-            return IndexResult(source_revision_id, IndexState.RETRYABLE_FAILURE)
+            return IndexResult(source_revision_id, returned_state)
 
     result = IndexWorker(
         repository,
@@ -281,8 +292,14 @@ def test_returned_retry_uses_persisted_provider_category(tmp_path: Path) -> None
 
     assert result == WorkResult(worked=True, job_id=job.id)
     assert stored is not None
-    assert stored.state is IndexState.RETRYABLE_FAILURE
-    assert stored.last_error_category == "quota"
+    assert stored.state is returned_state
+    assert stored.last_error_category == category
+    document = repository.get_document_by_source_revision(
+        job.store_id,
+        job.source_revision_id,
+    )
+    assert document is not None
+    assert document.last_error_category == category
 
 
 def test_file_size_input_failure_is_terminal_with_stable_category(tmp_path: Path) -> None:
