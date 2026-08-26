@@ -434,7 +434,7 @@ def test_backfill_legacy_outline_and_quiz_without_reconstructing_source_identity
     assert [(run.artifact_id, run.recipe_id) for run in first] == [
         ("legacy-outline:11", "lecture-outline-current"),
         ("legacy-lecture-quiz:12", "lecture-quiz-current"),
-        ("legacy-custom-quiz:custom-token", "custom-quiz-current"),
+        ("legacy-custom-quiz:custom-token:v1", "custom-quiz-current"),
     ]
     assert all(run.validation_status == "legacy_unverified" for run in first)
     assert all(run.source_revision_ids == () for run in first)
@@ -448,6 +448,71 @@ def test_backfill_legacy_outline_and_quiz_without_reconstructing_source_identity
     assert sum(run.recipe_id == "custom-quiz-current" for run in first) == 1
     with database.engine.connect() as connection:
         assert connection.execute(text("SELECT COUNT(*) FROM artifact_evidence")).scalar_one() == 0
+
+
+def test_custom_backfill_preserves_superseded_publication_versions(
+    database: Database,
+    repository: ArtifactRepository,
+) -> None:
+    _seed_legacy_generation(database, "5" * 64)
+    first = repository.backfill_legacy_artifacts()[2]
+
+    with database.session() as session:
+        session.add(
+            _studio_run(
+                "studio-run-v2",
+                prompt="synthetic prompt v2",
+                timestamp="2026-08-25T14:00:00+00:00",
+            )
+        )
+        publication = session.get(PublishedQuizModel, "custom-token")
+        assert publication is not None
+        publication.studio_run_id = "studio-run-v2"
+        publication.payload_json = (
+            '{"questions":[],"title":"Synthetic custom quiz v2"}'
+        )
+        publication.version = 2
+        publication.updated_at = "2026-08-25T14:00:00+00:00"
+
+    second = repository.backfill_legacy_artifacts()[2]
+
+    assert first.artifact_id == "legacy-custom-quiz:custom-token:v1"
+    assert first.created_at == "2026-08-25T12:00:00+00:00"
+    assert second.artifact_id == "legacy-custom-quiz:custom-token:v2"
+    assert second.created_at == "2026-08-25T14:00:00+00:00"
+    assert first.input_hash != second.input_hash
+    assert first.output_hash != second.output_hash
+    assert repository.get_run(first.artifact_id) == first
+    assert repository.get_run(second.artifact_id) == second
+
+
+def test_custom_backfill_excludes_direct_import_publications(
+    database: Database,
+    repository: ArtifactRepository,
+) -> None:
+    _seed_legacy_generation(database, "5" * 64)
+    with database.session() as session:
+        session.add(
+            _studio_run(
+                "direct-import-run",
+                workflow_kind="direct_import",
+                prompt="synthetic imported payload",
+                timestamp="2026-08-25T15:00:00+00:00",
+            )
+        )
+        session.flush()
+        session.add(
+            _custom_publication(
+                "direct-token",
+                "direct-import-run",
+                '{"questions":[],"title":"Synthetic import"}',
+                timestamp="2026-08-25T15:00:00+00:00",
+            )
+        )
+
+    runs = repository.backfill_legacy_artifacts()
+
+    assert all("direct-token" not in run.artifact_id for run in runs)
 
 
 def test_backfill_requires_the_exact_cp0002_source_revision_mapping(
@@ -558,40 +623,65 @@ def _seed_legacy_generation(database: Database, source_hash: str) -> None:
                 created_at="2026-08-25T12:00:00+00:00",
             )
         )
-        session.add(
-            StudioRunModel(
-                id="studio-run",
-                subject="Synthetic Course",
-                subject_key="synthetic-course",
-                exam_number=1,
-                destination_subject="Synthetic Course",
-                destination_subject_key="synthetic-course",
-                destination_exam_number=1,
-                label="Synthetic custom quiz",
-                label_key="synthetic-custom-quiz",
-                prompt="synthetic prompt",
-                workflow_kind="notebook_generation",
-                content_kind="exam_review",
-                state="complete",
-                stage="complete",
-                created_at="2026-08-25T12:00:00+00:00",
-            )
-        )
+        session.add(_studio_run("studio-run"))
         session.flush()
         session.add(
-            PublishedQuizModel(
-                token="custom-token",
-                lecture_id=None,
-                job_id=None,
-                studio_run_id="studio-run",
-                destination_subject="Synthetic Course",
-                destination_subject_key="synthetic-course",
-                destination_exam_number=1,
-                label="Synthetic custom quiz",
-                label_key="synthetic-custom-quiz",
-                title="Synthetic custom quiz",
-                payload_json='{"questions":[],"title":"Synthetic custom quiz"}',
-                content_kind="exam_review",
-                created_at="2026-08-25T12:00:00+00:00",
+            _custom_publication(
+                "custom-token",
+                "studio-run",
+                '{"questions":[],"title":"Synthetic custom quiz"}',
             )
         )
+
+
+def _studio_run(
+    run_id: str,
+    *,
+    workflow_kind: str = "notebook_generation",
+    prompt: str = "synthetic prompt",
+    timestamp: str = "2026-08-25T12:00:00+00:00",
+) -> StudioRunModel:
+    return StudioRunModel(
+        id=run_id,
+        subject="Synthetic Course",
+        subject_key="synthetic-course",
+        exam_number=1,
+        destination_subject="Synthetic Course",
+        destination_subject_key="synthetic-course",
+        destination_exam_number=1,
+        label="Synthetic custom quiz",
+        label_key="synthetic-custom-quiz",
+        prompt=prompt,
+        workflow_kind=workflow_kind,
+        content_kind="exam_review",
+        state="complete",
+        stage="complete",
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+
+
+def _custom_publication(
+    token: str,
+    run_id: str,
+    payload_json: str,
+    *,
+    timestamp: str = "2026-08-25T12:00:00+00:00",
+) -> PublishedQuizModel:
+    return PublishedQuizModel(
+        token=token,
+        lecture_id=None,
+        job_id=None,
+        studio_run_id=run_id,
+        destination_subject="Synthetic Course",
+        destination_subject_key="synthetic-course",
+        destination_exam_number=1,
+        label="Synthetic custom quiz",
+        label_key="synthetic-custom-quiz",
+        title="Synthetic custom quiz",
+        payload_json=payload_json,
+        content_kind="exam_review",
+        version=1,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
