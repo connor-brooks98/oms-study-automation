@@ -54,6 +54,10 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
         for index in inspect(database.engine).get_indexes("studio_source_operations")
     }
     assert "ix_studio_source_operations_scope_active" in operation_indexes
+    index_job_columns = {
+        column["name"] for column in inspect(database.engine).get_columns("index_jobs")
+    }
+    assert {"operation_kind", "lease_token"} <= index_job_columns
     revision_indexes = {
         index["name"]
         for index in inspect(database.engine).get_indexes("study_revisions")

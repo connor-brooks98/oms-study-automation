@@ -199,6 +199,8 @@ def test_repository_round_trips_store_document_and_job(database: Database) -> No
         IndexJob(
             store_id=saved_store.id,
             source_revision_id="sr_lecture_1",
+            operation_kind="rebuild",
+            lease_token="11111111-1111-1111-1111-111111111111",
             provider_document_id=saved_document.provider_document_id,
             provider_operation_name="operations/import-1",
             state=IndexState.IMPORTING,
@@ -218,6 +220,15 @@ def test_repository_round_trips_store_document_and_job(database: Database) -> No
         "lecture_id": "lecture-1",
     }
     assert round_trip_job == saved_job
+
+
+def test_index_job_rejects_unknown_operation_kind() -> None:
+    with pytest.raises(ValueError, match="operation kind"):
+        IndexJob(
+            store_id="store-1",
+            source_revision_id="sr_lecture_1",
+            operation_kind="repair",
+        )
 
 
 def test_store_history_keeps_stale_orphan_and_replacement(database: Database) -> None:
