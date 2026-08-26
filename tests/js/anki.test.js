@@ -104,6 +104,12 @@ test("ordered deck helpers preserve selection priority", () => {
   );
 });
 
+test("deck add availability requires a nonblank selection", () => {
+  assert.equal(anki.deckChoiceAvailable({ value: "" }), false);
+  assert.equal(anki.deckChoiceAvailable({ value: "   " }), false);
+  assert.equal(anki.deckChoiceAvailable({ value: "AnKing Step Deck" }), true);
+});
+
 test("review defaults to only selected final changes and combines candidates", () => {
   const review = {
     groups: {

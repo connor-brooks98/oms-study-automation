@@ -977,6 +977,33 @@ def test_anki_page_renders_dependent_course_exam_lecture_selects(
     assert document.css_first(".anki-exam-group") is None
 
 
+def test_anki_page_explains_an_unavailable_companion_index(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, _, _, _ = prepared_app
+
+    class EmptyCompanionIndex(FakeCompanionIndex):
+        def snapshot_id(self) -> None:
+            return None
+
+        def list_deck_names(self) -> tuple[str, ...]:
+            return ()
+
+    app.state.anki_companion_index = EmptyCompanionIndex()
+
+    response = client.get("/anki")
+
+    assert response.status_code == 200
+    document = HTMLParser(response.text)
+    deck_select = document.css_first("[data-deck-choice]")
+    add_button = document.css_first("[data-add-deck]")
+    assert deck_select is not None
+    assert add_button is not None
+    assert "disabled" in deck_select.attributes
+    assert "disabled" in add_button.attributes
+    assert "No indexed decks are attached" in response.text
+
+
 def test_anki_page_renders_openrouter_provider_option(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:

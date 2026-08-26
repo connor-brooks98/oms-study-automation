@@ -366,6 +366,8 @@
     return [...decks, value];
   };
 
+  const deckChoiceAvailable = (choice) => Boolean(String(choice?.value || "").trim());
+
   const moveDeckPriority = (decks, index, offset) => {
     const destination = index + offset;
     if (index < 0 || index >= decks.length || destination < 0 || destination >= decks.length) {
@@ -697,6 +699,7 @@
     const provider = form.elements.provider;
     const model = form.elements.model;
     const deckChoice = form.querySelector("[data-deck-choice]");
+    const addDeckButton = form.querySelector("[data-add-deck]");
     const deckList = form.querySelector("[data-deck-priority]");
     const deckInputs = form.querySelector("[data-deck-inputs]");
     const selectedLabel = documentRef.querySelector(
@@ -838,11 +841,17 @@
       });
       updateStartAvailability(form);
     };
-    form.querySelector("[data-add-deck]")?.addEventListener("click", () => {
+    const updateDeckAddAvailability = () => {
+      if (addDeckButton) addDeckButton.disabled = !deckChoiceAvailable(deckChoice);
+    };
+    addDeckButton?.addEventListener("click", () => {
       deckPriorities = addDeckPriority(deckPriorities, deckChoice?.value);
       if (deckChoice) deckChoice.value = "";
+      updateDeckAddAvailability();
       renderDeckPriorities();
     });
+    deckChoice?.addEventListener("change", updateDeckAddAvailability);
+    updateDeckAddAvailability();
     if (deckChoice) {
       const anking = [...deckChoice.options].find((option) => option.value === "AnKing Step Deck");
       if (anking) deckPriorities = addDeckPriority(deckPriorities, anking.value);
@@ -2246,6 +2255,7 @@
 
   const api = {
     addDeckPriority,
+    deckChoiceAvailable,
     canRetryCuration,
     candidateAudit,
     convergenceDisplay,

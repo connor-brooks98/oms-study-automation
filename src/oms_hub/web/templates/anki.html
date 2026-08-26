@@ -85,11 +85,13 @@
               <option value="">Choose an indexed deck…</option>
               {% for deck in indexed_decks %}<option value="{{ deck }}">{{ deck }}</option>{% endfor %}
             </select>
-            <button class="button secondary sh-btn sh-btn--secondary" type="button" data-add-deck>Add deck</button>
+            <button class="button secondary sh-btn sh-btn--secondary" type="button" data-add-deck disabled>Add deck</button>
           </div>
           <ol class="anki-deck-priority" data-deck-priority></ol>
           <div data-deck-inputs></div>
-          <span class="field-help">Cards are searched in this order. Move higher-priority decks to the top.</span>
+          <span class="field-help">
+            {% if indexed_decks %}Cards are searched in this order. Move higher-priority decks to the top.{% else %}No indexed decks are attached. Refresh or restore the companion Anki index before starting a search.{% endif %}
+          </span>
         </section>
         <label>
           Existing-card tag scope
