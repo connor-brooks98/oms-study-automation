@@ -1,12 +1,13 @@
 import hashlib
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import inspect, select, text
+from sqlalchemy import Table, inspect, select, text
 
 import oms_hub.anki.models  # noqa: F401
 import oms_hub.indexing.models  # noqa: F401
 from oms_hub.domain import StepStatus, V2StepName
+from oms_hub.indexing.models import ProviderDocumentModel
 from oms_hub.llm.catalog import FALLBACK_MODELS
 from oms_hub.llm.domain import LLMTask, ProviderName
 from oms_hub.llm.repository import DEFAULT_MODELS
@@ -24,7 +25,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 23
+LATEST_SCHEMA_VERSION = 24
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -50,6 +51,51 @@ def _ensure_column(
 def _upgrade_index_job_leases_v23(database: "Database") -> None:
     _ensure_column(database, "index_jobs", "lease_owner", "VARCHAR(100)")
     _ensure_column(database, "index_jobs", "lease_expires_at", "VARCHAR(40)")
+
+
+def _upgrade_provider_document_inputs_v24(database: "Database") -> None:
+    inspector = inspect(database.engine)
+    if not inspector.has_table("provider_documents"):
+        return
+    _ensure_column(
+        database,
+        "provider_documents",
+        "input_key",
+        "VARCHAR(128) NOT NULL DEFAULT 'pptx'",
+    )
+    _ensure_column(
+        database,
+        "provider_documents",
+        "input_kind",
+        "VARCHAR(30) NOT NULL DEFAULT 'pptx'",
+    )
+    _ensure_column(database, "provider_documents", "input_sha256", "VARCHAR(64)")
+    constraints = {
+        item.get("name")
+        for item in inspect(database.engine).get_unique_constraints("provider_documents")
+    }
+    if "uq_provider_documents_store_revision" not in constraints:
+        return
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE provider_documents RENAME TO provider_documents_v23")
+        )
+        cast(Table, ProviderDocumentModel.__table__).create(connection)
+        connection.execute(
+            text(
+                "INSERT INTO provider_documents ("
+                "id, store_id, provider, provider_document_id, source_revision_id, "
+                "input_key, input_kind, input_sha256, provider_file_name, "
+                "provider_document_name, provider_operation_name, input_byte_count, "
+                "metadata_json, state, retry_count, last_error_category, created_at, updated_at"
+                ") SELECT id, store_id, provider, provider_document_id, source_revision_id, "
+                "COALESCE(input_key, 'pptx'), COALESCE(input_kind, 'pptx'), input_sha256, "
+                "provider_file_name, provider_document_name, provider_operation_name, "
+                "input_byte_count, metadata_json, state, retry_count, last_error_category, "
+                "created_at, updated_at FROM provider_documents_v23"
+            )
+        )
+        connection.execute(text("DROP TABLE provider_documents_v23"))
 
 
 def _upgrade_anki_v4_columns(database: "Database") -> None:
@@ -654,6 +700,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_studio_source_scope_fence_v21(database)
     _upgrade_notebook_scope_leases_v22(database)
     _upgrade_index_job_leases_v23(database)
+    _upgrade_provider_document_inputs_v24(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

@@ -6,8 +6,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import inspect, text
 
 from oms_hub.db import Database
-from oms_hub.indexing.models import IndexJob, IndexState, ProviderStore, StoreKey
-from oms_hub.indexing.models import ProviderDocument
+from oms_hub.indexing.models import IndexJob, IndexState, ProviderDocument, ProviderStore, StoreKey
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.runtime import WorkerSupervisor
 from oms_hub.workers import (
@@ -66,7 +65,8 @@ def test_migration_replaces_single_document_uniqueness_without_losing_rows(
                 "id VARCHAR(36) PRIMARY KEY, store_key VARCHAR(255) NOT NULL, "
                 "provider VARCHAR(50) NOT NULL, provider_store_name VARCHAR(500) NOT NULL, "
                 "embedding_model VARCHAR(200) NOT NULL, authority_namespace VARCHAR(100) NOT NULL, "
-                "course_id VARCHAR(100) NOT NULL, exam_id VARCHAR(100), state VARCHAR(30) NOT NULL, "
+                "course_id VARCHAR(100) NOT NULL, exam_id VARCHAR(100), "
+                "state VARCHAR(30) NOT NULL, "
                 "generation INTEGER NOT NULL, is_current BOOLEAN NOT NULL, "
                 "created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)"
             )
@@ -78,7 +78,8 @@ def test_migration_replaces_single_document_uniqueness_without_losing_rows(
                 "provider VARCHAR(50) NOT NULL, provider_document_id VARCHAR(500), "
                 "source_revision_id VARCHAR(200) NOT NULL, provider_file_name VARCHAR(500), "
                 "provider_document_name VARCHAR(500), provider_operation_name VARCHAR(500), "
-                "input_byte_count INTEGER, metadata_json TEXT NOT NULL, state VARCHAR(30) NOT NULL, "
+                "input_byte_count INTEGER, metadata_json TEXT NOT NULL, "
+                "state VARCHAR(30) NOT NULL, "
                 "retry_count INTEGER NOT NULL, last_error_category VARCHAR(100), "
                 "created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL, "
                 "CONSTRAINT uq_provider_documents_store_revision "

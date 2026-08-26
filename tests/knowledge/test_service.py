@@ -26,8 +26,11 @@ from oms_hub.knowledge.models import (
     SourceRevision,
     SourceRevisionState,
 )
-from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_course_revision
-from oms_hub.knowledge.normalization import render_index_markdown
+from oms_hub.knowledge.normalization import (
+    CourseRevisionInput,
+    normalize_course_revision,
+    render_index_markdown,
+)
 from oms_hub.knowledge.repository import KnowledgeRepository
 from oms_hub.knowledge.service import (
     KnowledgeIntegrityError,
@@ -236,7 +239,12 @@ def test_index_asset_contract_keeps_explicit_semantics_dimensions_and_evidence(
     )
     service = KnowledgeService(
         _Knowledge(
-            SourceRevision(source_id, revision_id, sha256_file(pptx)),
+            SourceRevision(
+                source_id,
+                revision_id,
+                sha256_file(pptx),
+                SourceRevisionState.READY,
+            ),
             evidence,
         ),
         _Artifacts(pptx, pdf),

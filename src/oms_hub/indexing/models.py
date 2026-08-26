@@ -196,6 +196,11 @@ def _require_text(value: str, field_name: str, maximum: int) -> str:
     return normalized
 
 
+_INPUT_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_INPUT_KINDS = frozenset({"pptx", "pdf", "markdown", "image"})
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
 def _validated_json(value: Any) -> Any:
     try:
         encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
@@ -271,6 +276,9 @@ class ProviderDocument:
     provider: str
     provider_document_id: str | None
     source_revision_id: str
+    input_key: str = "pptx"
+    input_kind: str = "pptx"
+    input_sha256: str | None = None
     provider_file_name: str | None = None
     provider_document_name: str | None = None
     provider_operation_name: str | None = None
@@ -297,6 +305,12 @@ class ProviderDocument:
             "source_revision_id",
             _require_text(self.source_revision_id, "source revision id", 200),
         )
+        if not _INPUT_KEY.fullmatch(self.input_key):
+            raise ValueError("input key is blank, unbounded, or ambiguous")
+        if self.input_kind not in _INPUT_KINDS:
+            raise ValueError("input kind is not supported")
+        if self.input_sha256 is not None and not _SHA256.fullmatch(self.input_sha256):
+            raise ValueError("input SHA-256 is invalid")
         for field_name in (
             "provider_file_name",
             "provider_document_name",
@@ -408,7 +422,8 @@ class ProviderDocumentModel(Base):
         UniqueConstraint(
             "store_id",
             "source_revision_id",
-            name="uq_provider_documents_store_revision",
+            "input_key",
+            name="uq_provider_documents_store_revision_input",
         ),
     )
 
@@ -417,6 +432,9 @@ class ProviderDocumentModel(Base):
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     provider_document_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_revision_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    input_key: Mapped[str] = mapped_column(String(128), nullable=False, default="pptx")
+    input_kind: Mapped[str] = mapped_column(String(30), nullable=False, default="pptx")
+    input_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     provider_file_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     provider_document_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     provider_operation_name: Mapped[str | None] = mapped_column(String(500), nullable=True)

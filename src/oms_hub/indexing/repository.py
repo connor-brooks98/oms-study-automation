@@ -126,6 +126,7 @@ class IndexRepository:
                     select(ProviderDocumentModel).where(
                         ProviderDocumentModel.store_id == document.store_id,
                         ProviderDocumentModel.source_revision_id == document.source_revision_id,
+                        ProviderDocumentModel.input_key == document.input_key,
                     )
                 )
             if row is None:
@@ -161,12 +162,15 @@ class IndexRepository:
         self,
         store_id: str,
         source_revision_id: str,
+        *,
+        input_key: str = "pptx",
     ) -> ProviderDocument | None:
         with self.database.session() as session:
             row = session.scalar(
                 select(ProviderDocumentModel).where(
                     ProviderDocumentModel.store_id == store_id,
                     ProviderDocumentModel.source_revision_id == source_revision_id,
+                    ProviderDocumentModel.input_key == input_key,
                 )
             )
             return self._document_from_row(row) if row is not None else None
@@ -178,7 +182,7 @@ class IndexRepository:
                 select(ProviderDocumentModel)
                 .where(ProviderDocumentModel.store_id == store_id)
                 .order_by(
-                    ProviderDocumentModel.provider_document_id.asc(),
+                    ProviderDocumentModel.input_key.asc(),
                     ProviderDocumentModel.id.asc(),
                 )
             ).all()
@@ -464,6 +468,9 @@ class IndexRepository:
             provider=document.provider,
             provider_document_id=document.provider_document_id,
             source_revision_id=document.source_revision_id,
+            input_key=document.input_key,
+            input_kind=document.input_kind,
+            input_sha256=document.input_sha256,
             provider_file_name=document.provider_file_name,
             provider_document_name=document.provider_document_name,
             provider_operation_name=document.provider_operation_name,
@@ -482,6 +489,9 @@ class IndexRepository:
         row.provider = document.provider
         row.provider_document_id = document.provider_document_id
         row.source_revision_id = document.source_revision_id
+        row.input_key = document.input_key
+        row.input_kind = document.input_kind
+        row.input_sha256 = document.input_sha256
         row.provider_file_name = document.provider_file_name
         row.provider_document_name = document.provider_document_name
         row.provider_operation_name = document.provider_operation_name
@@ -505,6 +515,9 @@ class IndexRepository:
             provider=row.provider,
             provider_document_id=row.provider_document_id,
             source_revision_id=row.source_revision_id,
+            input_key=row.input_key,
+            input_kind=row.input_kind,
+            input_sha256=row.input_sha256,
             provider_file_name=row.provider_file_name,
             provider_document_name=row.provider_document_name,
             provider_operation_name=row.provider_operation_name,

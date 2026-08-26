@@ -57,6 +57,7 @@ class ParsedAsset:
     width: int | None = None
     height: int | None = None
     origin: str | None = None
+    visual_semantic: bool = False
 
     def __post_init__(self) -> None:
         _validate_sha256(self.sha256, "asset SHA-256")

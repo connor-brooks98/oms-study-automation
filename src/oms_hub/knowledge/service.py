@@ -12,7 +12,7 @@ from sqlalchemy import text
 from oms_hub.artifacts import ArtifactRole
 from oms_hub.document_processing.domain import DocumentLocator, SourceSnapshot
 from oms_hub.document_processing.shadow import LegacyPptxProcessor
-from oms_hub.files.atomic import sha256_file
+from oms_hub.files.atomic import sha256_file, verified_atomic_write
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.knowledge.backfill import scope_ids
 from oms_hub.knowledge.ids import source_revision_id as make_revision_id
@@ -22,7 +22,11 @@ from oms_hub.knowledge.models import (
     EvidenceUnit,
     SourceRevisionState,
 )
-from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_course_revision
+from oms_hub.knowledge.normalization import (
+    CourseRevisionInput,
+    normalize_course_revision,
+    render_index_markdown,
+)
 from oms_hub.knowledge.policy import filter_allowed_evidence, validate_scope
 from oms_hub.providers.contracts import AuthorityClass, RetrievalScope
 
@@ -94,6 +98,10 @@ class IndexAssetView:
     media_type: str
     sha256: str
     locator: DocumentLocator
+    width: int | None
+    height: int | None
+    visual_semantic: bool
+    evidence_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +116,7 @@ class IndexInputView:
     lecture_id: str
     pptx: CanonicalInputArtifact
     pdf: CanonicalInputArtifact
+    markdown: CanonicalInputArtifact
     evidence_units: tuple[EvidenceUnit, ...]
     assets: tuple[IndexAssetView, ...]
 
@@ -240,8 +249,10 @@ class KnowledgeService:
         if _evidence_identities(stored) != _evidence_identities(expected):
             raise KnowledgeIntegrityError("stored evidence does not match canonical source")
         _validate_asset_references(stored, parsed.assets)
+        ordered_evidence = tuple(sorted(stored, key=_evidence_sort_key))
+        markdown = self._markdown_artifact(source_revision_id, ordered_evidence, pptx.path)
         assets = tuple(sorted(
-            (self._asset(source_revision_id, asset) for asset in parsed.assets),
+            (self._asset(source_revision_id, asset, ordered_evidence) for asset in parsed.assets),
             key=lambda asset: asset.asset_id,
         ))
         return IndexInputView(
@@ -255,7 +266,8 @@ class KnowledgeService:
             lecture_id=lecture_id,
             pptx=pptx,
             pdf=pdf,
-            evidence_units=tuple(sorted(stored, key=_evidence_sort_key)),
+            markdown=markdown,
+            evidence_units=ordered_evidence,
             assets=assets,
         )
 
@@ -551,8 +563,38 @@ class KnowledgeService:
             raise KnowledgeIntegrityError("source document is not a legacy slide source")
         return int(match.group(1))
 
+    def _markdown_artifact(
+        self,
+        source_revision_id: str,
+        evidence: tuple[EvidenceUnit, ...],
+        source_path: Path,
+    ) -> CanonicalInputArtifact:
+        settings = getattr(self.artifacts, "settings", None)
+        data_dir = getattr(settings, "data_dir", None)
+        root = (
+            Path(data_dir) / "index-inputs"
+            if data_dir is not None
+            else source_path.parent / ".oms-index-inputs"
+        )
+        path = root / source_revision_id / "normalized.md"
+        digest = verified_atomic_write(
+            render_index_markdown(evidence).encode("utf-8"),
+            path,
+        )
+        return CanonicalInputArtifact(
+            artifact_id=f"{source_revision_id}:normalized_markdown",
+            role=ArtifactRole.CLEANED,
+            path=path,
+            sha256=digest,
+            media_type="text/markdown",
+        )
+
     @staticmethod
-    def _asset(source_revision_id: str, asset: Any) -> IndexAssetView:
+    def _asset(
+        source_revision_id: str,
+        asset: Any,
+        evidence: tuple[EvidenceUnit, ...],
+    ) -> IndexAssetView:
         if asset.path is not None:
             try:
                 if sha256_file(asset.path) != asset.sha256:
@@ -567,6 +609,14 @@ class KnowledgeService:
             media_type=asset.media_type,
             sha256=asset.sha256,
             locator=asset.locator,
+            width=asset.width,
+            height=asset.height,
+            visual_semantic=asset.visual_semantic,
+            evidence_ids=tuple(
+                unit.evidence_id
+                for unit in evidence
+                if unit.image_asset_id == asset.key
+            ),
         )
 
 

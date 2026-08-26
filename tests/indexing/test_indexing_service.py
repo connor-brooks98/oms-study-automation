@@ -95,8 +95,10 @@ def source_view(tmp_path: Path) -> IndexInputView:
     revision_id = "sr_aaaaaaaaaaaaaaaaaaaaaaaaaa"
     pptx = tmp_path / "lecture.pptx"
     pdf = tmp_path / "lecture.pdf"
+    markdown = tmp_path / "lecture.md"
     pptx.write_bytes(b"pptx bytes")
     pdf.write_bytes(b"pdf bytes")
+    markdown.write_text("normalized evidence\n", encoding="utf-8")
     return IndexInputView(
         source_document_id="opaque-source-document",
         source_revision_id=revision_id,
@@ -122,6 +124,13 @@ def source_view(tmp_path: Path) -> IndexInputView:
             path=pdf,
             sha256=hashlib.sha256(pdf.read_bytes()).hexdigest(),
             media_type="application/pdf",
+        ),
+        markdown=CanonicalInputArtifact(
+            artifact_id=f"{revision_id}:normalized_markdown",
+            role=ArtifactRole.CLEANED,
+            path=markdown,
+            sha256=hashlib.sha256(markdown.read_bytes()).hexdigest(),
+            media_type="text/markdown",
         ),
         evidence_units=(),
         assets=(),
