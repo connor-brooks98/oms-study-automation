@@ -1,8 +1,9 @@
 # CP-0002: Legacy slide revision adapter contract
 
-Status: version 1 was approved and implemented for Tasks 1.6-1.8. The version 2
-index-input amendment below is proposed for Sol-1 owner and Sol-2 consumer
-approval before Task 2.6 continues.
+Status: version 1 was approved and implemented for Tasks 1.6-1.8. Version 2 was
+approved at exact implementation commit `07a21cd` by the Sol-1 owner and Sol-2
+consumer on 2026-08-26; Task 2.6 may consume it subject to its own tests and
+independent review.
 
 ## Request
 
@@ -11,8 +12,9 @@ approval before Task 2.6 continues.
 - Required consuming review: Sol-2 under the contract-change protocol because
   this adapter produces the scope and source inputs used by provider indexing.
 - Version 1 consuming review status: **APPROVED** and verified by Gate 2A.
-- Version 2 consuming review status: **PENDING**.
-- Blocked task: 2.6 pending exact-commit owner and consumer review of version 2.
+- Version 2 owner review status: **APPROVED** by Sol-1 at `07a21cd`.
+- Version 2 consuming review status: **APPROVED** by Sol-2 at `07a21cd`.
+- Task 2.6 contract dependency: **READY**; candidate completion remains separate.
 
 Task 1.6 must adapt existing immutable slide revisions without changing or
 copying their canonical files. The current types expose enough data for a
