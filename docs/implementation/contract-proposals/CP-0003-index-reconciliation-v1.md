@@ -4,9 +4,11 @@ Status: amended by Program Sol-0 for exact-commit Sol-2 owner/consumer review.
 
 ## Scope
 
-This contract unblocks Task 2.7 without adding a public schema or central
-database migration. It consumes the approved CP-0002 v2 indexing view and the
-Task 2.6 one-to-many `ProviderDocument` identity. It does not authorize live
+This contract unblocks Task 2.7 without adding a public schema. It consumes the
+approved CP-0002 v2 indexing view, the Task 2.6 one-to-many
+`ProviderDocument` identity, and Program Sol-0's schema-25 lifecycle migration
+at `b910800`. Sol-2 must consume that exact migration by composition and must
+not copy or independently own it. This contract does not authorize live
 provider calls, Task 2.8, feature activation, or dollar estimates.
 
 ## Remote identity and read-only observation
@@ -78,9 +80,19 @@ must use atomic create-or-claim and token-checked save/renew operations.
 
 `apply=true` has this exact repair matrix:
 
-- local input missing remotely: under the revision lease, clear its stale
-  provider identities and return it to `not_indexed` only when the accepted
-  source revision is still ready;
+- local input missing remotely: only when the accepted source revision remains
+  ready, atomically perform a token-fenced repair reset. On the
+  `ProviderDocument`, clear `provider_document_id`, `provider_document_name`,
+  `provider_file_name`, `provider_operation_name`, `retry_count`, and
+  `last_error_category`; preserve `input_key`, `input_kind`, `input_sha256`,
+  `input_byte_count`, and the already-validated scope/input metadata; set state
+  to `not_indexed`. On the revision `IndexJob`, clear provider document and
+  operation names, retry/error/message/next-attempt fields, lease owner/token/
+  expiry, set `operation_kind=index`, and set state to `not_indexed`. Version 1
+  explicitly authorizes this atomic `ready -> not_indexed` repair reset without
+  adding a general graph transition; ordinary callers must still use
+  `ALLOWED_TRANSITIONS`. A crash before commit changes nothing, while a crash
+  after commit is resumed by normal Task 2.6 indexing;
 - local ready input for a stale/retired revision: run permanent all-input
   deletion;
 - remote-only input, duplicate remote tuple, invalid/unmatchable metadata, or
@@ -128,9 +140,12 @@ Acceptance requires committed RED/GREEN evidence proving:
 3. dry-run reports deterministic findings and mutates nothing;
 4. delete/rebuild lease-fences the whole revision, deletes every input,
    resumes after partial failure, and selects no ambiguous store generation;
-5. health is offline by default and usage reports durable bytes without token
+5. local-missing-remote apply repair atomically clears the exact stale
+   identities above and normal Task 2.6 indexing resumes after either crash
+   boundary;
+6. health is offline by default and usage reports durable bytes without token
    or dollar invention; and
-6. Task 2.5/2.6 worker recovery and compatibility tests remain green.
+7. Task 2.5/2.6 worker recovery and compatibility tests remain green.
 
 Independent Terra specification and quality reviews must approve the exact
 Task 2.7 candidate before its handoff is complete.
