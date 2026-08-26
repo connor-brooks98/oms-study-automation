@@ -276,7 +276,8 @@ class ObjectiveRepository:
                 previous = (
                     connection.execute(
                         text(
-                            "SELECT evidence_ids_json FROM objective_evidence_remaps "
+                            "SELECT evidence_ids_json, created_at "
+                            "FROM objective_evidence_remaps "
                             "WHERE objective_id = :objective_id "
                             "ORDER BY created_at DESC, id DESC LIMIT 1"
                         ),
@@ -298,6 +299,8 @@ class ObjectiveRepository:
                     reason=reason,
                     created_at=created_at,
                 )
+                if previous is not None and remap.created_at <= previous["created_at"]:
+                    raise ValueError("created_at must be newer than the previous remap")
 
                 candidate = replace(
                     objective,
