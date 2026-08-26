@@ -11,11 +11,12 @@ from oms_hub.db import Database
 from oms_hub.indexing.models import (
     IndexJob,
     IndexState,
+    ProviderDocument,
     ProviderStore,
     StoreKey,
 )
 from oms_hub.indexing.repository import IndexRepository
-from oms_hub.indexing.service import IndexResult
+from oms_hub.indexing.service import IndexingInputError, IndexResult
 from oms_hub.indexing.worker import IndexWorker
 from oms_hub.providers.gemini.errors import (
     GeminiAuthenticationError,
@@ -66,19 +67,25 @@ class FakeIndexingService:
         *,
         block: bool = False,
         result_state: IndexState = IndexState.READY,
+        provider_document_name: str | None = None,
     ) -> None:
         self.calls: list[str] = []
         self.started = threading.Event()
         self.release = threading.Event()
         self.block = block
         self.result_state = result_state
+        self.provider_document_name = provider_document_name
 
     async def index_revision(self, source_revision_id: str) -> IndexResult:
         self.calls.append(source_revision_id)
         self.started.set()
         if self.block:
             assert self.release.wait(timeout=5)
-        return IndexResult(source_revision_id, self.result_state)
+        return IndexResult(
+            source_revision_id,
+            self.result_state,
+            self.provider_document_name,
+        )
 
 
 class FakeAdmin:
@@ -146,7 +153,9 @@ def test_success_persists_ready_state_and_releases_lease(tmp_path: Path) -> None
     database = _database(tmp_path)
     repository = IndexRepository(database)
     job = _queued_job(repository)
-    service = FakeIndexingService()
+    service = FakeIndexingService(
+        provider_document_name="fileSearchStores/store-1/documents/document-1"
+    )
 
     result = _worker(repository, service, "worker-1").run_once()
     stored = repository.get_job(job.id)
@@ -154,6 +163,7 @@ def test_success_persists_ready_state_and_releases_lease(tmp_path: Path) -> None
     assert result == WorkResult(worked=True, job_id=job.id)
     assert stored is not None
     assert stored.state is IndexState.READY
+    assert stored.provider_document_id == service.provider_document_name
     assert stored.lease_owner is None
     assert stored.lease_expires_at is None
 
@@ -218,6 +228,64 @@ def test_worker_handles_failure_state_returned_by_indexing_service(
     assert stored is not None
     assert stored.state is returned_state
     assert stored.lease_owner is None
+
+
+def test_returned_retry_uses_persisted_provider_category(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    repository = IndexRepository(database)
+    job = _queued_job(repository)
+
+    class PersistingFailureService:
+        async def index_revision(self, source_revision_id: str) -> IndexResult:
+            repository.save_document(
+                ProviderDocument(
+                    store_id=job.store_id,
+                    provider="gemini",
+                    provider_document_id=None,
+                    source_revision_id=source_revision_id,
+                    state=IndexState.RETRYABLE_FAILURE,
+                    last_error_category="quota",
+                )
+            )
+            return IndexResult(source_revision_id, IndexState.RETRYABLE_FAILURE)
+
+    result = IndexWorker(
+        repository,
+        PersistingFailureService(),
+        worker_id="worker-1",
+        lease_seconds=60,
+        now=lambda: NOW,
+    ).run_once()
+    stored = repository.get_job(job.id)
+
+    assert result == WorkResult(worked=True, job_id=job.id)
+    assert stored is not None
+    assert stored.state is IndexState.RETRYABLE_FAILURE
+    assert stored.last_error_category == "quota"
+
+
+def test_file_size_input_failure_is_terminal_with_stable_category(tmp_path: Path) -> None:
+    class OversizedService:
+        async def index_revision(self, _source_revision_id: str) -> IndexResult:
+            raise IndexingInputError("canonical source exceeds the provider size limit")
+
+    database = _database(tmp_path)
+    repository = IndexRepository(database)
+    job = _queued_job(repository)
+
+    result = IndexWorker(
+        repository,
+        OversizedService(),
+        worker_id="worker-1",
+        lease_seconds=60,
+        now=lambda: NOW,
+    ).run_once()
+    stored = repository.get_job(job.id)
+
+    assert result == WorkResult(worked=True, job_id=job.id)
+    assert stored is not None
+    assert stored.state is IndexState.TERMINAL_FAILURE
+    assert stored.last_error_category == "file-too-large"
 
 
 def test_retry_budget_exhaustion_terminalizes_retryable_failure(tmp_path: Path) -> None:

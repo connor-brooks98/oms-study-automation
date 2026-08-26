@@ -221,6 +221,68 @@ def test_recover_interrupted_terminalizes_exhausted_retry_budget(tmp_path: Path)
     assert recovered.lease_expires_at is None
 
 
+def test_recovery_uses_document_operation_persisted_before_worker_checkpoint(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    repository = IndexRepository(database)
+    job = _persist_interrupted_job(
+        repository,
+        state=IndexState.IMPORTING,
+        provider_file_name="files/file-1",
+        provider_operation_name="operations/import-1",
+    )
+    repository.upsert_job(replace(job, provider_operation_name=None))
+    worker = IndexWorker(
+        repository,
+        NoopIndexingService(),
+        worker_id="worker-1",
+        lease_seconds=60,
+        now=lambda: NOW,
+    )
+
+    report = worker.recover_interrupted()
+    recovered = repository.get_job(job.id)
+    document = repository.get_document_by_source_revision(
+        job.store_id,
+        job.source_revision_id,
+    )
+
+    assert report == RecoveryReport(reclaimed_leases=1, resumed_jobs=1)
+    assert recovered is not None
+    assert recovered.state is IndexState.IMPORTING
+    assert recovered.provider_operation_name == "operations/import-1"
+    assert document is not None
+    assert document.state is IndexState.IMPORTING
+
+
+def test_recovery_reclaims_completed_job_without_counting_it_resumed(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    repository = IndexRepository(database)
+    job = _persist_interrupted_job(
+        repository,
+        state=IndexState.READY,
+        provider_file_name="files/file-1",
+        provider_operation_name="operations/import-1",
+        provider_document_id="fileSearchStores/store-1/documents/document-1",
+    )
+    worker = IndexWorker(
+        repository,
+        NoopIndexingService(),
+        worker_id="worker-1",
+        lease_seconds=60,
+        now=lambda: NOW,
+    )
+
+    report = worker.recover_interrupted()
+    recovered = repository.get_job(job.id)
+
+    assert report == RecoveryReport(reclaimed_leases=1)
+    assert recovered is not None
+    assert recovered.state is IndexState.READY
+    assert recovered.lease_owner is None
+
+
 def test_recover_interrupted_leaves_live_lease_owned(tmp_path: Path) -> None:
     database = _database(tmp_path)
     repository = IndexRepository(database)
