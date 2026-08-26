@@ -23,7 +23,7 @@ def test_shared_stylesheet_is_the_approved_blue_workbench_source() -> None:
 
     assert installed.exists()
     assert (
-        "0bf617b203d2d91bedfec046b23be45e89cad9bdf67a47aa9c65d80749cfbd80"
+        "986020106664a798a5514c1a2c290c47a01ad3c522f91bdf7b278bc423a7e29d"
         == sha256(installed.read_bytes()).hexdigest()
     )
 
@@ -51,7 +51,7 @@ def test_stylesheet_order_and_system_font_contract() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260825.9" %}' in base
+    assert '{% set shell_asset_version = "20260825.12" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
@@ -79,13 +79,24 @@ def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
     ):
         assert destination in base
 
-    assert '<dialog class="sh-dialog sh-command" id="command-palette"' in base
-    assert '<dialog class="sh-dialog sh-mobile-nav" id="mobile-navigation"' in base
+    assert '<dialog class="sh-dialog sh-command t-modal" id="command-palette"' in base
+    assert '<dialog class="sh-dialog sh-mobile-nav t-modal" id="mobile-navigation"' in base
     assert 'href="/" data-dialog-initial-focus>Home</a>' in base
     assert 'aria-keyshortcuts="Meta+K Control+K"' in base
     assert "event.metaKey || event.ctrlKey" in shell_js
     assert 'event.key === "ArrowDown" || event.key === "ArrowUp"' in shell_js
-    assert 'dialog.addEventListener("close", () => restoreFocus(dialog))' in shell_js
+    assert 'dialog.addEventListener("close"' in shell_js
+    assert "restoreFocus(dialog)" in shell_js
+    assert 'dialog.addEventListener("cancel"' in shell_js
+    assert 'details.sh-more[open]' in shell_js
+
+
+def test_anki_apply_confirmation_has_an_accessible_dialog_name() -> None:
+    review = source("anki_review.html")
+
+    assert 'class="anki-apply-dialog sh-dialog t-modal"' in review
+    assert 'aria-labelledby="anki-apply-title"' in review
+    assert '<h2 id="anki-apply-title">' in review
 
 
 def test_template_layout_matrix_uses_locked_containers_and_headers() -> None:
@@ -239,8 +250,8 @@ def test_locked_components_are_not_repainted_by_late_legacy_css() -> None:
     ):
         assert selector in app_css
     assert ".file-card.missing { border-style: dashed; }" not in app_css
-    assert "content: \"+\"" not in app_css
-    assert "content: \"−\"" not in app_css
+    assert ".anki-concept-panel > summary::after" in app_css
+    assert '.anki-review-diagnostics[open] > summary::after { content: "−"; }' in app_css
     assert "details[open] > summary > .sh-disclose" in app_css
 
     for selector in (
@@ -283,8 +294,7 @@ def test_status_and_focus_player_paths_use_locked_semantic_components() -> None:
     ):
         assert token in player_js
 
-    for name in ("base.html", "public_quiz_library.html"):
-        assert 'class="nuc-state__dot" aria-hidden="true"></span>NUC online' in source(name)
+    assert 'class="nuc-state__dot" aria-hidden="true"></span>NUC online' in source("base.html")
 
 
 def test_visual_followups_keep_layout_and_restart_controls_in_their_owners() -> None:
@@ -298,7 +308,7 @@ def test_visual_followups_keep_layout_and_restart_controls_in_their_owners() -> 
     assert ".provider-card-heading > :first-child" in app_css
     assert ".exam-card { margin-top: var(--sp-2); padding: 0;" in library_css
     assert ".library-heading .sh-seg__btn { white-space: nowrap; }" in library_css
-    assert 'title="Restart quiz"' in library
+    assert 'title="Restart {{ row.title }}"' in library
     assert "Reset quiz" not in player_js
     assert "Start Over" not in player_js
 
@@ -394,7 +404,7 @@ def test_player_and_dynamic_foundations_preserve_shared_components() -> None:
         assert selector in player_css
     assert ".quiz-app {" not in player_css
     assert ".quiz-flag-select { max-width: 16rem; }" in player_css
-    assert 'class="chevron sh-disclose {% if loop.first %}is-open{% endif %}"' in library
+    assert 'class="chevron sh-disclose"' in library
     assert '"sh-empty anki-empty-compact"' in anki_js
     assert '"sh-empty__title"' in anki_js
     assert '"1 Study Hub quiz is ready."' in lecture_js

@@ -22,7 +22,7 @@
       <span>{{ 'Study Hub' if owner_navigation else 'Study Hub Quizzes' }}</span>
     </a>
     {% if owner_navigation %}
-    <nav class="utility-nav sh-nav" aria-label="Primary navigation">
+    <nav class="utility-nav sh-nav sh-topbar__nav" aria-label="Primary navigation">
       <a class="sh-nav__link" href="/">Home</a>
       <a class="sh-nav__link" href="/lectures">Lectures</a>
       <a class="sh-nav__link" href="/anki">Anki</a>
@@ -30,8 +30,8 @@
       <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
       <a class="sh-nav__link {% if library_path == practice_library_path %}sh-nav__link--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Practice Questions</a>
       <details class="sh-more">
-        <summary class="sh-nav__link sh-more__trigger">More <span class="sh-more__chevron" aria-hidden="true">▾</span></summary>
-        <div class="sh-more__menu">
+        <summary class="sh-nav__link sh-more__trigger" aria-expanded="false">More <span class="sh-more__chevron" aria-hidden="true">▾</span></summary>
+        <div class="sh-more__menu t-dropdown" data-origin="top-right">
           <a href="/uploads/slides">Upload slides</a>
           <a href="/uploads/transcripts">Upload transcript</a>
           <a href="/quarantine">Quarantine</a>
@@ -40,6 +40,11 @@
         </div>
       </details>
     </nav>
+    <div class="sh-topbar__actions">
+      <button class="sh-mobile-trigger sh-iconbtn" type="button" data-open-dialog="mobile-navigation" aria-label="Open navigation">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
+      </button>
+    </div>
     {% else %}
     <nav class="utility-nav sh-nav" aria-label="Quiz library navigation">
       <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
@@ -48,6 +53,20 @@
     {% endif %}
     </div>
   </header>
+  {% if owner_navigation %}
+  <dialog class="sh-dialog sh-mobile-nav t-modal" id="mobile-navigation" aria-labelledby="mobile-navigation-title">
+    <div class="sh-dialog__header">
+      <div><p class="sh-dialog__kicker">Workspace</p><h2 id="mobile-navigation-title">Study Hub navigation</h2></div>
+      <button class="sh-iconbtn" type="button" data-close-dialog aria-label="Close navigation">×</button>
+    </div>
+    <nav aria-label="Mobile navigation">
+      <a href="/" data-dialog-initial-focus>Home</a><a href="/lectures">Lectures</a><a href="/anki">Anki</a><a href="/studio">Quiz Builder</a>
+      <a href="{{ quiz_library_path }}">Quizzes</a><a href="{{ practice_library_path }}">Practice Questions</a>
+      <a href="/uploads/slides">Upload slides</a><a href="/uploads/transcripts">Upload transcript</a>
+      <a href="/quarantine">Quarantine</a><a href="/review">Review</a><a href="/settings">Settings</a>
+    </nav>
+  </dialog>
+  {% endif %}
   <main id="main-content" class="public-library sh-container" tabindex="-1" data-quiz-library>
     <header class="library-heading sh-header">
       <div>
@@ -164,6 +183,7 @@
     {% endif %}
     <p class="reset-message" data-reset-message aria-live="polite"></p>
   </main>
+  {% if owner_navigation %}<script src="/static/study_hub_shell.js?v=20260825.12" defer></script>{% endif %}
   <script src="/public/quizzes/assets/library.js?v={{ library_asset_version }}" defer></script>
 </body>
 </html>

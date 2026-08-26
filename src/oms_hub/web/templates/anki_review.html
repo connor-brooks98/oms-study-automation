@@ -167,10 +167,10 @@
     </section>
   </div>
 
-  <dialog id="anki-apply-dialog" class="anki-apply-dialog">
+  <dialog id="anki-apply-dialog" class="anki-apply-dialog sh-dialog t-modal" aria-labelledby="anki-apply-title">
     <form method="dialog">
       <p class="eyebrow">Final confirmation</p>
-      <h2>Apply these reviewed changes to Anki?</h2>
+      <h2 id="anki-apply-title">Apply these reviewed changes to Anki?</h2>
       <p>Study Hub will sync first, apply only this frozen plan, sync again, and verify the result.</p>
       <dl class="anki-apply-counts">
         <div><dt>New notes</dt><dd data-plan-created>0</dd></div>
@@ -182,7 +182,7 @@
       <p class="anki-dialog-status" data-dialog-status role="status" aria-live="polite"></p>
       <p class="anki-dialog-error" data-dialog-error role="alert"></p>
       <div class="anki-dialog-actions">
-        <button class="button secondary sh-btn sh-btn--secondary" value="cancel">Go back</button>
+        <button class="button secondary sh-btn sh-btn--secondary" type="button" data-close-dialog>Go back</button>
         <button class="button primary sh-btn sh-btn--primary" type="button" data-confirm-apply>Apply to Anki</button>
       </div>
     </form>

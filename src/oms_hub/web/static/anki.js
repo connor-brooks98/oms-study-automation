@@ -1868,6 +1868,10 @@
     let revision = 0;
     let pollTimer;
     let dialogConfirmed = false;
+    const openApplyDialog = () => {
+      dialog.showModal();
+      (root.requestAnimationFrame || ((callback) => callback()))(() => dialog.classList.add("is-open"));
+    };
 
     const uploadCardMedia = async (article, files) => {
       const accepted = [...files];
@@ -2022,7 +2026,7 @@
         renderReview(documentRef, review);
         if (job.envelope?.plan_summary && job.state === "envelope_pending") {
           fillApplyPlan(documentRef, job.envelope.plan_summary);
-          dialog.showModal();
+          openApplyDialog();
         }
         return;
       }
@@ -2119,7 +2123,7 @@
           fillApplyPlan(documentRef, plan.summary);
           message.textContent =
             "Apply plan is frozen. Inspect the final counts before confirming.";
-          dialog.showModal();
+          openApplyDialog();
           button.disabled = true;
           documentRef.querySelector("[data-save-review]").disabled = true;
         } catch (error) {

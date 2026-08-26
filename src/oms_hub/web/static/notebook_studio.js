@@ -56,13 +56,21 @@
     });
     page.querySelectorAll("[data-workflow-tab]").forEach((tab) => {
       const active = tab.dataset.workflowTab === workflow;
-      tab.setAttribute("aria-pressed", String(active));
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
       toggleClass(tab, "primary", active);
       toggleClass(tab, "secondary", !active);
       toggleClass(tab, "sh-seg__btn--active", active);
       toggleClass(tab, "sh-btn--primary", active);
       toggleClass(tab, "sh-btn--secondary", !active);
     });
+    const activeTab = Array.from(page.querySelectorAll("[data-workflow-tab]"))
+      .find((tab) => tab.dataset.workflowTab === workflow);
+    const pill = page.querySelector?.("[data-workflow-pill]");
+    if (activeTab && pill) {
+      pill.style.width = `${activeTab.offsetWidth}px`;
+      pill.style.transform = `translateX(${activeTab.offsetLeft - pill.offsetLeft}px)`;
+    }
   };
 
   const renderSources = (documentRef, list, sources) => {
@@ -368,10 +376,23 @@
     const maxPollDelayMs = 30000;
     let pollDelayMs = basePollDelayMs;
 
-    page.querySelectorAll("[data-workflow-tab]").forEach((tab) => {
+    const workflowTabs = Array.from(page.querySelectorAll("[data-workflow-tab]"));
+    workflowTabs.forEach((tab, index) => {
       tab.addEventListener("click", () => setWorkflowState(page, tab.dataset.workflowTab));
+      tab.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const next = event.key === "Home" ? 0 : event.key === "End" ? workflowTabs.length - 1
+          : (index + (event.key === "ArrowRight" ? 1 : -1) + workflowTabs.length) % workflowTabs.length;
+        setWorkflowState(page, workflowTabs[next].dataset.workflowTab);
+        workflowTabs[next].focus();
+      });
     });
     setWorkflowState(page, "generate");
+    root.addEventListener?.("resize", () => {
+      const active = workflowTabs.find((tab) => tab.getAttribute("aria-selected") === "true");
+      if (active) setWorkflowState(page, active.dataset.workflowTab);
+    });
 
     const scheduleRefresh = (delay = basePollDelayMs) => {
       if (pollHandle !== null) root.clearTimeout(pollHandle);

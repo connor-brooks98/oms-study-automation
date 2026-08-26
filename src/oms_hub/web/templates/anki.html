@@ -81,7 +81,7 @@
         <section class="anki-field-wide anki-deck-field anki-workbench-panel">
           <p class="sh-section-label">Existing-card deck priority</p>
           <div class="anki-deck-adder">
-            <select class="sh-select" data-deck-choice {% if not indexed_decks %}disabled{% endif %}>
+            <select class="sh-select" data-deck-choice aria-label="Existing-card deck to add" {% if not indexed_decks %}disabled{% endif %}>
               <option value="">Choose an indexed deck…</option>
               {% for deck in indexed_decks %}<option value="{{ deck }}">{{ deck }}</option>{% endfor %}
             </select>

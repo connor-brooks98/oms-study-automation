@@ -149,7 +149,7 @@ def test_local_owner_library_keeps_private_navigation_without_management_control
     assert 'href="/lectures">Lectures</a>' in managed.text
     assert "Study Hub Quizzes" not in managed.text
     assert 'data-reset-quiz' in public.text
-    assert 'title="Restart quiz"' in public.text
+    assert f'title="Restart {published.title}"' in public.text
     for private_hook in (
         "data-quiz-drag-handle",
         "data-title-form",

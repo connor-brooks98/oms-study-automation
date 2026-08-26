@@ -27,12 +27,13 @@
       </label>
     </div>
   </section>
-  <div class="studio-workflow-switch sh-seg" role="group" aria-label="Quiz workflow">
-    <button class="button primary sh-btn sh-btn--primary sh-seg__btn sh-seg__btn--active" type="button" data-workflow-tab="generate" aria-pressed="true">Generate Quiz</button>
-    <button class="button secondary sh-btn sh-btn--secondary sh-seg__btn" type="button" data-workflow-tab="import" aria-pressed="false">Import Practice Questions</button>
+  <div class="studio-workflow-switch sh-seg t-tabs" role="tablist" aria-label="Quiz workflow">
+    <span class="t-tabs-pill" data-workflow-pill aria-hidden="true"></span>
+    <button class="button primary sh-btn sh-btn--primary sh-seg__btn sh-seg__btn--active t-tab" id="workflow-tab-generate" type="button" role="tab" data-workflow-tab="generate" aria-controls="workflow-panel-generate" aria-selected="true">Generate Quiz</button>
+    <button class="button secondary sh-btn sh-btn--secondary sh-seg__btn t-tab" id="workflow-tab-import" type="button" role="tab" data-workflow-tab="import" aria-controls="workflow-panel-import" aria-selected="false" tabindex="-1">Import Practice Questions</button>
   </div>
 
-  <section data-workflow-panel="generate">
+  <section id="workflow-panel-generate" role="tabpanel" aria-labelledby="workflow-tab-generate" data-workflow-panel="generate">
     <div class="studio-source-grid">
       <form class="card sh-card" data-source-form data-source-type="file">
         <h2>NotebookLM file source</h2>
@@ -62,7 +63,7 @@
     <section class="card sh-dropzone studio-image-drop" data-image-dropzone tabindex="0" role="button" aria-label="Drop an image source here"><h2>Drop an image from Google Images</h2><p>Drag an image onto this area to upload it directly as a NotebookLM source.</p><p data-image-drop-message aria-live="polite">Select a course and exam before dropping an image.</p></section>
   </section>
 
-  <section data-workflow-panel="import" hidden>
+  <section id="workflow-panel-import" role="tabpanel" aria-labelledby="workflow-tab-import" data-workflow-panel="import" hidden>
     <section class="card sh-card studio-import-intake">
       <p class="eyebrow">Local immutable snapshots</p><h2>Import Practice Questions</h2><p>Add one source at a time. Repeat for a question file, answer key, combined set, or supporting reference; previously added sources remain listed below.</p>
       <div class="studio-source-grid">

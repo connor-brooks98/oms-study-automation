@@ -15,3 +15,14 @@ test("command selection wraps in both directions", () => {
   assert.equal(shell.nextIndex(0, -1, 4), 3);
   assert.equal(shell.nextIndex(0, 1, 0), -1);
 });
+
+test("transition timing honors CSS units and reduced-motion preferences", () => {
+  const windowRef = {
+    document: { documentElement: {} },
+    matchMedia: () => ({ matches: false }),
+    getComputedStyle: () => ({ getPropertyValue: () => "0.15s" }),
+  };
+  assert.equal(shell.transitionDelay(windowRef, "--modal-duration"), 150);
+  windowRef.matchMedia = () => ({ matches: true });
+  assert.equal(shell.transitionDelay(windowRef, "--modal-duration"), 0);
+});

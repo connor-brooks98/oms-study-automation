@@ -448,7 +448,7 @@ button.exam-toggle {
 
 form { display: grid; gap: .8rem; margin-top: 1rem; }
 label { display: grid; gap: .3rem; color: var(--text-2); font-size: .8rem; font-weight: 500; }
-input:not(.sh-input):not(.sh-control),
+input:not(.sh-input):not(.sh-control):not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]),
 select:not(.sh-select):not(.sh-control) {
   width: 100%;
   max-width: 42rem;
@@ -459,6 +459,15 @@ select:not(.sh-select):not(.sh-control) {
   color: var(--text);
   background: white;
 }
+.checklist-disclosure > summary {
+  display: flex;
+  min-height: var(--control-h);
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+  list-style: none;
+}
+.checklist-disclosure > summary::-webkit-details-marker { display: none; }
 
 .upload-page:not(.sh-container):not(.sh-container--narrow) { max-width: 780px; }
 .upload-form {
@@ -1502,7 +1511,7 @@ textarea:not(.sh-textarea):not(.sh-control) {
 }
 .anki-confirm-note {
   padding: .65rem .75rem;
-  border-left: 3px solid var(--review);
+  border: 1px solid var(--review);
   border-radius: .3rem;
   background: oklch(.98 .02 70);
 }
@@ -1523,9 +1532,9 @@ textarea:not(.sh-textarea):not(.sh-control) {
 .issues { padding: 0; list-style: none; }
 .issues > li { margin: 1rem 0; padding: 1rem; border: 1px solid var(--border); border-radius: .7rem; background: white; }
 .checklist { padding: 0; list-style: none; }
-.step { margin: .6rem 0; padding: 1rem; border-left: 5px solid var(--not-started); background: white; }
-.step-complete { border-left-color: var(--complete); }
-.step-needs_review { border-left-color: var(--review); }
+.step { margin: .6rem 0; padding: 1rem; border: 1px solid var(--not-started); border-radius: .45rem; background: white; }
+.step-complete { border-color: var(--complete); }
+.step-needs_review { border-color: var(--review); }
 .error, .danger { color: var(--failed); }
 .artifact-text pre {
   overflow: auto;
@@ -1904,7 +1913,7 @@ code { overflow-wrap: anywhere; }
   display: grid;
   gap: .25rem;
   padding: .75rem;
-  border-left: 3px solid oklch(.60 .15 25);
+  border: 1px solid oklch(.78 .08 25);
   border-radius: .35rem;
   background: oklch(.975 .025 25);
 }
@@ -2015,6 +2024,7 @@ code { overflow-wrap: anywhere; }
 
 .checkbox-inline {
   display: flex;
+  min-height: var(--control-h);
   align-items: center;
   gap: .5rem;
   color: var(--text-2);

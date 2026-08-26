@@ -16,6 +16,10 @@ class Element {
     this.href = "";
     this.id = "";
     this.htmlFor = "";
+    this.style = {};
+    this.offsetLeft = 0;
+    this.offsetWidth = 120;
+    this.tabIndex = 0;
   }
 
   append(...items) { this.children.push(...items); }
@@ -105,6 +109,7 @@ test("workflow tabs receive the locked segmented active state", () => {
     querySelectorAll: (selector) => selector === "[data-workflow-tab]"
       ? [generate, imported]
       : [generatePanel, importPanel],
+    querySelector: () => null,
   };
 
   studio.setWorkflowState(page, "import");
@@ -113,7 +118,9 @@ test("workflow tabs receive the locked segmented active state", () => {
   assert.match(imported.className, /sh-btn--primary/);
   assert.doesNotMatch(imported.className, /sh-btn--secondary/);
   assert.match(generate.className, /sh-btn--secondary/);
-  assert.equal(imported["aria-pressed"], "true");
+  assert.equal(imported["aria-selected"], "true");
+  assert.equal(imported.tabIndex, 0);
+  assert.equal(generate.tabIndex, -1);
   assert.equal(generatePanel.hidden, true);
   assert.equal(importPanel.hidden, false);
 });
