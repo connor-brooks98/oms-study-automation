@@ -186,6 +186,54 @@ def test_two_workers_claim_one_source_revision_exclusively(tmp_path: Path) -> No
     assert second_service.calls == []
 
 
+def test_stale_success_cannot_overwrite_newer_reclaimed_lease(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'hub.db'}"
+    database = _open_database(url)
+    database.migrate()
+    repository = IndexRepository(database)
+    job = _queued_job(repository)
+    first_service = FakeIndexingService(block=True)
+    second_service = FakeIndexingService(block=True)
+    first = IndexWorker(
+        IndexRepository(_open_database(url)),
+        first_service,
+        worker_id="shared-worker-id",
+        lease_seconds=1,
+        now=lambda: NOW,
+    )
+    second = IndexWorker(
+        IndexRepository(_open_database(url)),
+        second_service,
+        worker_id="shared-worker-id",
+        lease_seconds=60,
+        now=lambda: NOW.replace(second=2),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(first.run_once)
+        assert first_service.started.wait(timeout=5)
+        second_future = pool.submit(second.run_once)
+        assert second_service.started.wait(timeout=5)
+        newer_claim = repository.get_job(job.id)
+        assert newer_claim is not None and newer_claim.lease_owner is not None
+
+        first_service.release.set()
+        assert first_future.result(timeout=5).job_id == job.id
+        after_stale_success = repository.get_job(job.id)
+
+        assert after_stale_success is not None
+        assert after_stale_success.state is IndexState.NOT_INDEXED
+        assert after_stale_success.lease_owner == newer_claim.lease_owner
+
+        second_service.release.set()
+        assert second_future.result(timeout=5).job_id == job.id
+
+    final = repository.get_job(job.id)
+    assert final is not None
+    assert final.state is IndexState.READY
+    assert final.lease_owner is None
+
+
 def test_success_persists_ready_state_and_releases_lease(tmp_path: Path) -> None:
     database = _database(tmp_path)
     repository = IndexRepository(database)

@@ -400,3 +400,53 @@ def test_recover_interrupted_leaves_live_lease_owned(tmp_path: Path) -> None:
     assert recovered.state is IndexState.IMPORTING
     assert recovered.lease_owner == "live-worker"
     assert recovered.lease_expires_at == (NOW + timedelta(seconds=60)).isoformat()
+
+
+def test_recovery_does_not_mutate_job_claimed_after_global_reclaim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'hub.db'}"
+    database = Database(url)
+    _OPEN_DATABASES.append(database)
+    database.migrate()
+    repository = IndexRepository(database)
+    job = _persist_interrupted_job(
+        repository,
+        state=IndexState.IMPORTING,
+        provider_file_name="files/file-1",
+        provider_operation_name=None,
+    )
+    competitor_database = Database(url)
+    _OPEN_DATABASES.append(competitor_database)
+    competitor = IndexRepository(competitor_database)
+    reclaim_expired = repository.reclaim_expired_jobs
+
+    def reclaim_then_compete(now: datetime) -> int:
+        reclaimed = reclaim_expired(now)
+        claimed = competitor.claim_next_job("competitor", now, lease_seconds=60)
+        assert claimed is not None and claimed.id == job.id
+        return reclaimed
+
+    monkeypatch.setattr(repository, "reclaim_expired_jobs", reclaim_then_compete)
+    worker = IndexWorker(
+        repository,
+        NoopIndexingService(),
+        worker_id="recovery-worker",
+        lease_seconds=60,
+        now=lambda: NOW,
+    )
+
+    report = worker.recover_interrupted()
+    recovered = repository.get_job(job.id)
+    document = repository.get_document_by_source_revision(
+        job.store_id,
+        job.source_revision_id,
+    )
+
+    assert report == RecoveryReport(reclaimed_leases=1)
+    assert recovered is not None
+    assert recovered.state is IndexState.IMPORTING
+    assert recovered.lease_owner == "competitor"
+    assert document is not None
+    assert document.state is IndexState.IMPORTING
