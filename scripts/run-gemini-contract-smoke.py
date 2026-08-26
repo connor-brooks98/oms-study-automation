@@ -312,8 +312,9 @@ async def run_authorized_live_smoke() -> dict[str, object]:
     if os.getenv("RUN_LIVE_GEMINI_TESTS") != "1":
         raise LiveSmokeBlocked("RUN_LIVE_GEMINI_TESTS=1 is required for a live smoke")
     raise LiveSmokeBlocked(
-        "live provider execution remains blocked until Connor authorizes it and Program Sol-0 "
-        "integrates the pinned google-genai 2.14.0 dependency plus reviewed live session adapter"
+        "live provider execution remains blocked until Connor authorizes it, Program Sol-0 "
+        "integrates google-genai 2.14.0, and a separate later explicitly authorized Sol-2 change "
+        "implements a reviewed live SmokeSession and wires it into run_authorized_live_smoke"
     )
 
 
