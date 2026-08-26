@@ -168,6 +168,15 @@ class _GroupOption:
     priority: int
 
 
+@dataclass(slots=True)
+class _RequiredFrontier:
+    states: list[_CoverState]
+    characters: list[int]
+
+    def clone(self) -> _RequiredFrontier:
+        return _RequiredFrontier(self.states.copy(), self.characters.copy())
+
+
 class QuestionEvidencePacketBuilder:
     def __init__(
         self,
@@ -438,14 +447,15 @@ def _select_bounded(
     groups: dict[str, list[_ResolvedEvidence]] = {}
     for item in ordered:
         groups.setdefault(_claim_signature(item.unit.normalized_text), []).append(item)
-    states: dict[tuple[int, int], tuple[_CoverState, ...]] = {
-        (0, 0): (_CoverState((), 0, 0),)
+    states: dict[tuple[int, int], _RequiredFrontier] = {
+        (0, 0): _RequiredFrontier([_CoverState((), 0, 0)], [0])
     }
     for signature in sorted(groups):
         options = _group_options(tuple(groups[signature]), objectives)
         next_states = dict(states)
+        owned_frontiers: set[tuple[int, int]] = set()
         for (mask, count), frontier in states.items():
-            for state in frontier:
+            for state in frontier.states:
                 for option in options:
                     new_mask = mask | option.roles
                     new_count = count + len(option.selected)
@@ -462,17 +472,23 @@ def _select_bounded(
                         priority=state.priority + option.priority,
                     )
                     key = (new_mask, new_count)
-                    next_states[key] = _insert_required_state(
-                        next_states.get(key, ()),
-                        candidate,
-                    )
+                    if key not in owned_frontiers:
+                        existing = next_states.get(key)
+                        destination = (
+                            _RequiredFrontier([], [])
+                            if existing is None
+                            else existing.clone()
+                        )
+                        next_states[key] = destination
+                        owned_frontiers.add(key)
+                    _insert_required_state(next_states[key], candidate)
         states = next_states
 
     complete = tuple(
         state
         for (mask, _), frontier in states.items()
         if mask == full_role_mask
-        for state in frontier
+        for state in frontier.states
     )
     if not complete:
         raise QuestionEvidenceError("bounded packet cannot retain required evidence coverage")
@@ -522,22 +538,31 @@ def _role_mask(
 
 
 def _insert_required_state(
-    frontier: tuple[_CoverState, ...],
+    frontier: _RequiredFrontier,
     candidate: _CoverState,
-) -> tuple[_CoverState, ...]:
-    characters = [state.characters for state in frontier]
-    index = bisect_left(characters, candidate.characters)
-    if index and _required_dominates(frontier[index - 1], candidate):
-        return frontier
-    retained = list(frontier)
-    if index < len(retained) and retained[index].characters == candidate.characters:
-        if _required_dominates(retained[index], candidate):
-            return frontier
-        retained.pop(index)
-    while index < len(retained) and _required_dominates(candidate, retained[index]):
-        retained.pop(index)
-    retained.insert(index, candidate)
-    return tuple(retained)
+) -> None:
+    index = bisect_left(frontier.characters, candidate.characters)
+    if index and _required_dominates(frontier.states[index - 1], candidate):
+        return
+    if (
+        index < len(frontier.states)
+        and frontier.characters[index] == candidate.characters
+    ):
+        if _required_dominates(frontier.states[index], candidate):
+            return
+        frontier.states.pop(index)
+        frontier.characters.pop(index)
+    end = index
+    while end < len(frontier.states) and _required_dominates(
+        candidate,
+        frontier.states[end],
+    ):
+        end += 1
+    if end > index:
+        del frontier.states[index:end]
+        del frontier.characters[index:end]
+    frontier.states.insert(index, candidate)
+    frontier.characters.insert(index, candidate.characters)
 
 
 def _required_dominates(first: _CoverState, second: _CoverState) -> bool:
