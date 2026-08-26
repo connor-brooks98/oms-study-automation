@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from oms_hub.artifacts import ArtifactRole
 from oms_hub.db import Database
@@ -69,8 +70,11 @@ def _view(tmp_path: Path) -> IndexInputView:
         "oversized": tmp_path / "oversized.jpg",
         "unknown_size": tmp_path / "unknown-size.png",
     }
-    for name, path in paths.items():
-        path.write_bytes(name.encode())
+    for name in ("pptx", "markdown", "decorative", "animated", "oversized", "unknown_size"):
+        paths[name].write_bytes(name.encode())
+    paths["pdf"].write_bytes(b"%PDF-1.7\n%%EOF\n")
+    Image.new("RGB", (64, 32), "white").save(paths["diagram"], format="PNG")
+    Image.new("RGB", (48, 48), "white").save(paths["micrograph"], format="JPEG")
 
     evidence = (
         _evidence(revision_id, "ev_slide_1", 1),
@@ -83,8 +87,8 @@ def _view(tmp_path: Path) -> IndexInputView:
             media_type="image/png",
             sha256=_sha(paths["diagram"]),
             locator=DocumentLocator("slide 1", slide_number=1),
-            width=1600,
-            height=900,
+            width=64,
+            height=32,
             visual_semantic=True,
             evidence_ids=("ev_slide_1",),
         ),
@@ -94,8 +98,8 @@ def _view(tmp_path: Path) -> IndexInputView:
             media_type="image/jpeg",
             sha256=_sha(paths["micrograph"]),
             locator=DocumentLocator("slide 2", slide_number=2),
-            width=2048,
-            height=2048,
+            width=48,
+            height=48,
             visual_semantic=True,
             evidence_ids=("ev_slide_2",),
         ),
@@ -265,7 +269,17 @@ class _Admin:
     ) -> OperationRef:
         assert store_name == self.store.provider_store_name
         assert metadata
-        assert chunking is None
+        expected_chunking = (
+            {
+                "white_space_config": {
+                    "max_tokens_per_chunk": 700,
+                    "max_overlap_tokens": 100,
+                }
+            }
+            if file_name.endswith("lecture-13-normalized.md")
+            else None
+        )
+        assert chunking == expected_chunking
         return OperationRef(f"operations/{Path(file_name).name}")
 
     async def wait_for_operation(self, operation_name: str) -> CompletedOperation:
@@ -351,3 +365,56 @@ def test_duplicate_selected_image_hashes_share_one_provider_input(tmp_path: Path
     image = next(item for item in manifest.inputs if item.input_key.endswith(first.sha256))
 
     assert image.evidence_ids == ("ev_slide_1", "ev_slide_2")
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "pdf_role",
+        "pdf_media_type",
+        "pdf_content",
+        "markdown_role",
+        "markdown_media_type",
+        "markdown_encoding",
+    ),
+)
+def test_manifest_rejects_false_required_media_contract(tmp_path: Path, case: str) -> None:
+    view = _view(tmp_path)
+    if case == "pdf_role":
+        view = replace(view, pdf=replace(view.pdf, role=ArtifactRole.CLEANED))
+    elif case == "pdf_media_type":
+        view = replace(view, pdf=replace(view.pdf, media_type="text/plain"))
+    elif case == "pdf_content":
+        view.pdf.path.write_bytes(b"not a PDF")
+        view = replace(view, pdf=replace(view.pdf, sha256=_sha(view.pdf.path)))
+    elif case == "markdown_role":
+        view = replace(view, markdown=replace(view.markdown, role=ArtifactRole.PDF))
+    elif case == "markdown_media_type":
+        view = replace(view, markdown=replace(view.markdown, media_type="text/plain"))
+    else:
+        view.markdown.path.write_bytes(b"\xff\xfe")
+        view = replace(view, markdown=replace(view.markdown, sha256=_sha(view.markdown.path)))
+
+    with pytest.raises(IndexingInputError):
+        build_index_manifest(view)
+
+
+@pytest.mark.parametrize("case", ("format", "dimensions", "content"))
+def test_manifest_verifies_selected_image_bytes_and_dimensions(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    view = _view(tmp_path)
+    selected = view.assets[0]
+    assert selected.path is not None
+    if case == "format":
+        selected = replace(selected, media_type="image/jpeg")
+    elif case == "dimensions":
+        selected = replace(selected, width=selected.width + 1 if selected.width else 1)
+    else:
+        selected.path.write_bytes(b"not an image")
+        selected = replace(selected, sha256=_sha(selected.path))
+    view = replace(view, assets=(selected, *view.assets[1:]))
+
+    with pytest.raises(IndexingInputError):
+        build_index_manifest(view)

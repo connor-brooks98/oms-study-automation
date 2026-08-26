@@ -98,7 +98,7 @@ def source_view(tmp_path: Path) -> IndexInputView:
     pdf = tmp_path / "lecture.pdf"
     markdown = tmp_path / "lecture.md"
     pptx.write_bytes(b"pptx bytes")
-    pdf.write_bytes(b"pdf bytes")
+    pdf.write_bytes(b"%PDF-1.7\n%%EOF\n")
     markdown.write_text("normalized evidence\n", encoding="utf-8")
     return IndexInputView(
         source_document_id="opaque-source-document",
@@ -184,12 +184,18 @@ def test_course_revision_uploads_imports_and_persists_ready_document(tmp_path: P
         {"key": "lecture_id", "string_value": view.lecture_id},
         {"key": "source_revision_id", "string_value": view.source_revision_id},
     ]
+    expected_chunking = {
+        "white_space_config": {
+            "max_tokens_per_chunk": 700,
+            "max_overlap_tokens": 100,
+        }
+    }
     assert admin.import_calls == [
         (
             admin.store.provider_store_name,
             f"files/{path.name}",
             expected_metadata,
-            None,
+            expected_chunking if path == view.markdown.path else None,
         )
         for path in (view.pptx.path, view.pdf.path, view.markdown.path)
     ]
@@ -282,6 +288,22 @@ def test_multimodal_retry_surfaces_category_through_worker_compatibility_anchor(
         "files/lecture.pdf",
         "files/lecture.md",
     ]
+
+
+def test_resolver_revision_mismatch_is_rejected_without_provider_or_document_mutation(
+    tmp_path: Path,
+) -> None:
+    service, repository, admin, view = service_bundle(tmp_path)
+    other_revision = "sr_bbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    with pytest.raises(IndexingInputError, match="revision"):
+        run(service.index_revision(other_revision))
+
+    assert view.source_revision_id != other_revision
+    assert admin.ensure_calls == []
+    assert admin.upload_calls == []
+    assert admin.import_calls == []
+    assert repository.list_documents(admin.store) == []
 
 
 @pytest.mark.parametrize(
