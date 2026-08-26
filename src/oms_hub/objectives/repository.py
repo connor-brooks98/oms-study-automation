@@ -83,6 +83,11 @@ class ObjectiveRepository:
             )
 
     def create_objective(self, objective: LearningObjective) -> LearningObjective:
+        stored = self.get_objective(objective.objective_id)
+        if stored is not None:
+            if stored != objective:
+                raise ValueError("objective_id already refers to a different objective")
+            return stored
         links = self._validated_links(objective)
         with self.database.engine.begin() as connection:
             existing = connection.execute(
