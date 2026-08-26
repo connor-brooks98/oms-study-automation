@@ -57,7 +57,6 @@ from oms_hub.anki.gaps import (
     GapValidationError,
     validate_gap_card_fields,
 )
-from oms_hub.anki.maintenance import LocalIndexRefreshError
 from oms_hub.anki.paths import LectureIdentity, target_deck, target_tag
 from oms_hub.anki.reconciliation import (
     CardCentricReconciliationInput,
@@ -386,24 +385,13 @@ async def create_anki_job(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Build the local Anki index before starting curation",
         )
-    refreshed = False
-    maintainer = getattr(request.app.state, "anki_index_maintainer", None)
-    if maintainer is not None:
-        try:
-            await maintainer.refresh()
-        except (LocalIndexRefreshError, RuntimeError, OSError, ValueError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Anki sync and local index refresh did not complete",
-            ) from exc
-        refreshed = True
     snapshot_id = companion.snapshot_id()
     if snapshot_id is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="The companion index has no active snapshot",
         )
-    if not refreshed and payload.index_snapshot_id != snapshot_id:
+    if payload.index_snapshot_id != snapshot_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="The selected Anki snapshot is stale; refresh and try again",

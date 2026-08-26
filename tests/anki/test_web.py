@@ -1102,42 +1102,42 @@ def test_create_and_list_job_pins_server_generations_and_rejects_amboss(
     assert listed.json()["jobs"][0]["lecture_label"] == "Heme Lymph Lecture 04"
 
 
-def test_create_job_refreshes_and_pins_the_current_server_snapshot(
+def test_create_job_does_not_refresh_the_index_inside_the_request(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:
     client, app, lecture_id, revision_id, _ = prepared_app
-
-    class RefreshedCompanion(FakeCompanionIndex):
-        current_snapshot = "snapshot-test"
-
-        def snapshot_id(self) -> str:
-            return self.current_snapshot
-
-    companion = RefreshedCompanion()
+    companion = FakeCompanionIndex()
 
     class Maintainer:
+        called = False
+
         async def refresh(self) -> None:
-            companion.current_snapshot = "snapshot-fresh"
+            self.called = True
 
-    class RefreshedSemanticStore(FakeSemanticStore):
-        def load(self) -> object:
-            value = super().load()
-            value.manifest.generation = UUID("43a3b975-0e93-41e6-8a44-ec255c7e1269")
-            return value
-
+    maintainer = Maintainer()
     app.state.anki_companion_index = companion
-    app.state.anki_semantic_store = RefreshedSemanticStore()
-    app.state.anki_index_maintainer = Maintainer()
+    app.state.anki_index_maintainer = maintainer
 
+    stale = client.post(
+        "/api/anki/jobs",
+        json={
+            **_create_payload(lecture_id, revision_id),
+            "index_snapshot_id": "snapshot-stale",
+        },
+    )
     created = client.post(
         "/api/anki/jobs",
         json=_create_payload(lecture_id, revision_id),
     )
 
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == (
+        "The selected Anki snapshot is stale; refresh and try again"
+    )
     assert created.status_code == 201
-    assert created.json()["index_snapshot_id"] == "snapshot-fresh"
-    assert created.json()["companion_generation"] == "snapshot-fresh"
-    assert created.json()["semantic_generation"] == "43a3b975-0e93-41e6-8a44-ec255c7e1269"
+    assert maintainer.called is False
+    assert created.json()["index_snapshot_id"] == "snapshot-test"
+    assert created.json()["companion_generation"] == "snapshot-test"
 
 
 def test_create_job_pins_explicit_model(
