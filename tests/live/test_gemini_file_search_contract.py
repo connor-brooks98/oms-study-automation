@@ -413,6 +413,7 @@ def test_operation_poll_is_bounded_by_remaining_deadline(
 
 def test_primary_provider_failure_wins_when_cleanup_also_fails() -> None:
     smoke = _load_smoke()
+    evidence: dict[str, object] = {}
 
     class BodyAndCleanupFailure(_FakeSession):
         async def delete_file(self, file_name: str) -> None:
@@ -422,9 +423,45 @@ def test_primary_provider_failure_wins_when_cleanup_also_fails() -> None:
     session = BodyAndCleanupFailure(smoke, fail_import=True)
 
     with pytest.raises(smoke.SmokeTemporaryFailure, match="temporary"):
-        asyncio.run(smoke.run_contract_smoke(session))
+        asyncio.run(smoke.run_contract_smoke(session, failure_evidence=evidence))
 
     assert [name for name, _ in session.calls][-2:] == ["delete_file", "delete_store"]
+    assert evidence["cleanup"] == {"attempted": 2, "status": "failed"}
+
+
+def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class QueryFailure(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            self.calls.append(("query", "private-query-payload"))
+            raise smoke.GeminiProviderError(
+                "Gemini provider request failed.",
+                provider_status_code=400,
+            )
+
+    session = QueryFailure(smoke)
+    with pytest.raises(smoke.GeminiProviderError) as raised:
+        asyncio.run(smoke.run_contract_smoke(session, failure_evidence=evidence))
+
+    record = smoke._failure_record(raised.value, evidence)
+    assert record == {
+        "schema_version": 1,
+        "status": "failed",
+        "failure_stage": "positive_query",
+        "error_category": "provider",
+        "provider_status_code": 400,
+        "retryable": False,
+        "resources_created": {"document": True, "file": True, "store": True},
+        "cleanup": {"attempted": 3, "status": "completed"},
+    }
+    encoded = json.dumps(record, sort_keys=True)
+    assert "private-query-payload" not in encoded
+    assert smoke.SYNTHETIC_FACT not in encoded
+    for raw_identity in (session.store_name, session.file_name, session.document_name):
+        assert raw_identity not in encoded
 
 
 def _clock() -> Iterator[float]:
