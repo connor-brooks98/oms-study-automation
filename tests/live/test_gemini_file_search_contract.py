@@ -175,20 +175,22 @@ class _SdkOperations:
         )
 
 
-class _SdkModels:
+class _SdkInteractions:
     def __init__(self, smoke: ModuleType) -> None:
         self.smoke = smoke
-        self.calls: list[tuple[str, object, object]] = []
+        self.calls: list[dict[str, object]] = []
 
-    async def generate_content(self, *, model: str, contents: object, config: object) -> object:
-        self.calls.append((model, contents, config))
-        file_search = config["tools"][0]["file_search"]
+    async def create(self, **body: object) -> object:
+        self.calls.append(body)
+        tools = body["tools"]
+        assert isinstance(tools, list)
+        file_search = tools[0]
         if self.smoke.WRONG_LECTURE_ID in file_search["metadata_filter"]:
-            chunks: list[object] = []
-            parsed = self.smoke.SmokeAnswer(answer="", supported=False)
+            annotations: list[object] = []
+            answer = self.smoke.SmokeAnswer(answer="", supported=False)
         else:
-            metadata = [
-                SimpleNamespace(key=key, string_value=value)
+            metadata = {
+                key: value
                 for key, value in (
                     ("course_id", self.smoke.SYNTHETIC_COURSE_ID),
                     ("exam_id", self.smoke.SYNTHETIC_EXAM_ID),
@@ -202,26 +204,37 @@ class _SdkModels:
                         hashlib.sha256(self.smoke.synthetic_pdf_bytes()).hexdigest(),
                     ),
                 )
-            ]
-            chunks = [
+            }
+            annotations = [
                 SimpleNamespace(
-                    retrieved_context=SimpleNamespace(
-                        text=self.smoke.SYNTHETIC_FACT,
-                        custom_metadata=metadata,
-                        file_search_store="fileSearchStores/sdk-store",
-                        page_number=1,
-                    )
+                    type="file_citation",
+                    custom_metadata=metadata,
+                    document_uri="fileSearchStores/sdk-store/documents/sdk-document",
+                    file_name="files/sdk-file",
+                    page_number=1,
+                    source=self.smoke.SYNTHETIC_FACT,
                 )
             ]
-            parsed = self.smoke.SmokeAnswer(answer=self.smoke.SYNTHETIC_FACT, supported=True)
+            answer = self.smoke.SmokeAnswer(
+                answer=self.smoke.SYNTHETIC_FACT,
+                supported=True,
+            )
+        output_text = answer.model_dump_json()
         return SimpleNamespace(
-            parsed=parsed,
-            candidates=[
+            output_text=output_text,
+            steps=[
                 SimpleNamespace(
-                    grounding_metadata=SimpleNamespace(grounding_chunks=chunks)
+                    type="model_output",
+                    content=[
+                        SimpleNamespace(
+                            type="text",
+                            text=output_text,
+                            annotations=annotations,
+                        )
+                    ],
                 )
             ],
-            usage_metadata=SimpleNamespace(prompt_token_count=13, candidates_token_count=8),
+            usage=SimpleNamespace(total_input_tokens=13, total_output_tokens=8),
         )
 
 
@@ -239,7 +252,7 @@ class _SdkAio:
             error_status=operation_error_status,
             delay=operation_delay,
         )
-        self.models = _SdkModels(smoke)
+        self.interactions = _SdkInteractions(smoke)
         self.closed = 0
 
     async def aclose(self) -> None:
@@ -311,20 +324,27 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     }
     metadata = all_aio[2].file_search_stores.calls[0][1][2]["custom_metadata"]
     assert metadata[0] == {"key": "authority_class", "string_value": "course_material"}
-    query_configs = [aio.models.calls[0][2] for aio in all_aio if aio.models.calls]
-    assert len(query_configs) == 2
-    assert all("thinking_config" not in config for config in query_configs)
-    assert query_configs[0]["response_schema"] is smoke.SmokeAnswer
-    assert query_configs[0]["tools"] == [
+    query_bodies = [
+        aio.interactions.calls[0] for aio in all_aio if aio.interactions.calls
+    ]
+    assert len(query_bodies) == 2
+    assert all("generation_config" not in body for body in query_bodies)
+    assert query_bodies[0]["model"] == "gemini-3.7-flash"
+    assert query_bodies[0]["store"] is False
+    assert query_bodies[0]["response_format"] == {
+        "type": "text",
+        "mime_type": "application/json",
+        "schema": smoke.SmokeAnswer.model_json_schema(),
+    }
+    assert query_bodies[0]["tools"] == [
         {
-            "file_search": {
-                "file_search_store_names": ["fileSearchStores/sdk-store"],
-                "metadata_filter": (
-                    'course_id="task-2-8-synthetic-course" AND '
-                    'exam_id="task-2-8-synthetic-exam" AND '
-                    'lecture_id="task-2-8-synthetic-lecture"'
-                ),
-            }
+            "type": "file_search",
+            "file_search_store_names": ["fileSearchStores/sdk-store"],
+            "metadata_filter": (
+                'course_id="task-2-8-synthetic-course" AND '
+                'exam_id="task-2-8-synthetic-exam" AND '
+                'lecture_id="task-2-8-synthetic-lecture"'
+            ),
         }
     ]
     assert all_aio[-3].file_search_stores.documents.calls == [
