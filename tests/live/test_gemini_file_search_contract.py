@@ -168,6 +168,31 @@ def test_temporary_failure_fake_cleans_up_without_a_live_outage() -> None:
     ]
 
 
+def test_temporary_failure_fixture_persists_retry_state_then_resumes() -> None:
+    smoke = _load_smoke()
+
+    record = smoke.run_temporary_failure_fixture()
+
+    assert record == {
+        "first_state": "retryable_failure",
+        "retry_count": 1,
+        "error_category": "transient",
+        "backoff_seconds": 5,
+        "resumed_state": "ready",
+        "service_calls": 2,
+    }
+
+
+def test_plan_names_the_required_later_live_wiring_change() -> None:
+    smoke = _load_smoke()
+
+    plan = smoke._plan()
+
+    assert "run_authorized_live_smoke" in plan["required_owner_action"]
+    assert plan["calls_provider"] is False
+    assert plan["reads_secrets"] is False
+
+
 def test_synthetic_pdf_is_deterministic_and_contains_no_private_source() -> None:
     smoke = _load_smoke()
 
