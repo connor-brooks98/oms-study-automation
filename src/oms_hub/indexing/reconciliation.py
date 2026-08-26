@@ -13,6 +13,7 @@ from uuid import uuid4
 from oms_hub.indexing.models import IndexJob, IndexState, ProviderDocument, ProviderStore
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.knowledge.models import SourceRevisionState
+from oms_hub.providers.contracts import RetrievalScope, TruthMode
 from oms_hub.providers.gemini.errors import GeminiProviderError
 from oms_hub.providers.gemini.file_search import RemoteDocumentObservation
 
@@ -306,12 +307,33 @@ class IndexReconciler:
             revision_id,
             current_stores_only=True,
         )
-        store_ids = {item.store_id for item in documents}
-        if len(store_ids) != 1:
-            raise ReconciliationConflict("revision does not resolve to exactly one current store")
-        store = self.repository.get_store_by_id(store_ids.pop())
-        assert store is not None
-        return store
+        stores = [
+            store
+            for store_id in sorted({item.store_id for item in documents})
+            if (store := self.repository.get_store_by_id(store_id)) is not None
+        ]
+        accepted: list[ProviderStore] = []
+        for store in stores:
+            scope = RetrievalScope(
+                store.course_id,
+                store.exam_id,
+                (),
+                TruthMode.COURSE_ONLY,
+                (revision_id,),
+            )
+            view = self.knowledge_service.get_scope_sources(scope)
+            matches = [
+                item
+                for item in view.revisions
+                if item.source_revision_id == revision_id
+            ]
+            if len(matches) == 1:
+                accepted.append(store)
+        if len(accepted) != 1:
+            raise ReconciliationConflict(
+                "revision does not resolve to exactly one current store for its accepted scope"
+            )
+        return accepted[0]
 
     def _schedule_operation(
         self,

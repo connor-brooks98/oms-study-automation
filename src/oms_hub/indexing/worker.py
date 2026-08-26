@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import uuid4
 
-from oms_hub.indexing.models import IndexJob, IndexState, validate_transition
+from oms_hub.indexing.models import IndexJob, IndexState, ProviderDocument, validate_transition
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.indexing.service import IndexingInputError, IndexLease, IndexLeaseLost, IndexResult
 from oms_hub.ingestion.worker import IngestionWorker
@@ -28,8 +28,6 @@ class _ProviderConfig(Protocol):
 
 class _DocumentAdmin(Protocol):
     async def delete_document(self, provider_document_id: str) -> None: ...
-
-    async def delete_remote_document(self, provider_document_id: str) -> None: ...
 
 
 class _ClaimLost(RuntimeError):
@@ -104,7 +102,7 @@ class IndexWorker:
                     )
                     else "contract"
                 )
-                self._save_job(
+                saved = self._save_job(
                     job,
                     state=IndexState.TERMINAL_FAILURE,
                     last_error_category=category,
@@ -112,7 +110,7 @@ class IndexWorker:
                     lease_owner=claim_token,
                 )
                 self._terminalize_document(
-                    job,
+                    saved,
                     last_error_category=category,
                 )
             except GeminiProviderError as error:
@@ -203,15 +201,16 @@ class IndexWorker:
                     )
                 if job.state is IndexState.IMPORTING and operation_name is None:
                     validate_transition(job.state, IndexState.FILE_UPLOADED)
-                    self._save_job(
+                    job = self._save_job(
                         job,
                         state=IndexState.FILE_UPLOADED,
                         lease_owner=claim_token,
                     )
                     if document is not None and document.state is not IndexState.FILE_UPLOADED:
                         validate_transition(document.state, IndexState.FILE_UPLOADED)
-                        self.repository.upsert_document(
-                            replace(document, state=IndexState.FILE_UPLOADED)
+                        self._save_document(
+                            job,
+                            replace(document, state=IndexState.FILE_UPLOADED),
                         )
                 resumed += 1
             except _ClaimLost:
@@ -336,14 +335,14 @@ class IndexWorker:
                 if document is not None and document.last_error_category
                 else "provider"
             )
-            self._save_job(
+            saved = self._save_job(
                 job,
                 state=IndexState.TERMINAL_FAILURE,
                 last_error_category=category,
                 lease_owner=lease_owner,
                 **identity_changes,
             )
-            self._terminalize_document(job, last_error_category=category)
+            self._terminalize_document(saved, last_error_category=category)
         else:
             self._save_job(
                 job,
@@ -373,14 +372,14 @@ class IndexWorker:
                 lease_owner=lease_owner,
             )
             return
-        self._save_job(
+        saved = self._save_job(
             job,
             state=IndexState.TERMINAL_FAILURE,
             last_error_category=error.category,
             last_error_message=error.category,
             lease_owner=lease_owner,
         )
-        self._terminalize_document(job, last_error_category=error.category)
+        self._terminalize_document(saved, last_error_category=error.category)
 
     def _save_retry_or_terminal(
         self,
@@ -453,14 +452,32 @@ class IndexWorker:
             IndexState.DELETED,
         }:
             category = document.last_error_category or last_error_category or "provider"
-            self.repository.upsert_document(
+            self._save_document(
+                job,
                 replace(
                     document,
                     state=IndexState.TERMINAL_FAILURE,
                     retry_count=max(document.retry_count, job.retry_count),
                     last_error_category=category,
-                )
+                ),
             )
+
+    def _save_document(
+        self,
+        job: IndexJob,
+        document: ProviderDocument,
+    ) -> ProviderDocument:
+        if job.lease_token is None:
+            raise _ClaimLost("index job lease token is missing")
+        saved = self.repository.upsert_document_with_token(
+            document,
+            job.id,
+            job.lease_token,
+            self.now(),
+        )
+        if saved is None:
+            raise _ClaimLost("index job lease was replaced")
+        return saved
 
     def _claim_token(self) -> str:
         return f"{self.worker_id[:67]}:{uuid4().hex}"
