@@ -137,4 +137,3 @@ def _require_utc(value: object, name: str) -> None:
         raise ValueError(f"{name} must be a timezone-aware UTC timestamp") from error
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
         raise ValueError(f"{name} must be a timezone-aware UTC timestamp")
-
