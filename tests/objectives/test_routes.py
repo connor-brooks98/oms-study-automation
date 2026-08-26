@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from oms_hub.objectives.extraction import ProposedObjective
 from oms_hub.objectives.routes import build_objective_router
 from oms_hub.objectives.service import (
@@ -122,6 +123,52 @@ def test_unexpected_route_failure_does_not_leak_internal_details() -> None:
 
     assert response.status_code == 500
     assert "private database detail" not in response.text
+
+
+def test_objective_router_inherits_application_auth_and_csrf(tmp_path: Path) -> None:
+    from oms_hub.app import create_app
+    from oms_hub.config import Settings
+
+    class AccessVerifier:
+        def verify(self, assertion: str) -> object:
+            del assertion
+            return object()
+
+    service = Service()
+    app = create_app(
+        Settings(
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+            public_hostname="study.example.com",
+        )
+    )
+    app.state.access_verifier = AccessVerifier()
+    app.state.objective_service = service
+    app.include_router(build_objective_router(service))
+    with TestClient(app, base_url="https://study.example.com") as client:
+        assert client.get("/api/v1/objectives").status_code == 401
+        authorized = client.get(
+            "/api/v1/objectives",
+            headers={"Cf-Access-Jwt-Assertion": "valid"},
+        )
+        assert authorized.status_code == 200
+        objective_id = service.record.proposal.proposal_id
+        no_csrf = client.post(
+            f"/api/v1/objectives/{objective_id}/approve",
+            headers={"Cf-Access-Jwt-Assertion": "valid", "content-length": "0"},
+        )
+        assert no_csrf.status_code == 403
+        token = client.cookies.get("study_hub_csrf")
+        approved = client.post(
+            f"/api/v1/objectives/{objective_id}/approve",
+            headers={
+                "Cf-Access-Jwt-Assertion": "valid",
+                "content-length": "0",
+                "X-CSRF-Token": token or "",
+                "Origin": "https://study.example.com",
+            },
+        )
+        assert approved.status_code == 200
 
 
 def test_objective_router_is_not_registered_on_production_app(tmp_path: Path) -> None:

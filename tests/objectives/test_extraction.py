@@ -1,13 +1,6 @@
 from dataclasses import asdict
 
 import pytest
-from oms_hub.objectives.extraction import (
-    OBJECTIVE_EXTRACTION_PROMPT_VERSION,
-    ConsolidationCandidate,
-    ObjectiveExtractor,
-    ProposedObjective,
-    SuggestedObjectiveLink,
-)
 
 from oms_hub.knowledge.models import (
     EvidenceLocator,
@@ -15,6 +8,14 @@ from oms_hub.knowledge.models import (
     EvidenceUnit,
     SourceRevision,
     SourceRevisionState,
+)
+from oms_hub.objectives.extraction import (
+    OBJECTIVE_EXTRACTION_PROMPT_VERSION,
+    ConsolidationCandidate,
+    ObjectiveEvidenceInput,
+    ObjectiveExtractor,
+    ProposedObjective,
+    SuggestedObjectiveLink,
 )
 from oms_hub.objectives.models import ObjectiveEdgeType
 from oms_hub.providers.contracts import AuthorityClass
@@ -27,6 +28,7 @@ def _revision(state: SourceRevisionState = SourceRevisionState.READY) -> SourceR
 def _evidence(
     evidence_id: str = "evidence-1",
     *,
+    authority: AuthorityClass = AuthorityClass.COURSE_MATERIAL,
     course_id: str = "heme",
     exam_id: str | None = "exam-2",
     lecture_id: str | None = "lecture-13",
@@ -34,7 +36,7 @@ def _evidence(
     return EvidenceUnit(
         evidence_id=evidence_id,
         source_revision_id="revision-1",
-        authority_class=AuthorityClass.COURSE_MATERIAL,
+        authority_class=authority,
         course_id=course_id,
         exam_id=exam_id,
         lecture_id=lecture_id,
@@ -85,12 +87,12 @@ def _proposal(**overrides: object) -> ProposedObjective:
 class Generator:
     def __init__(self, proposals: tuple[ProposedObjective, ...]) -> None:
         self.proposals = proposals
-        self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.calls: list[tuple[str, tuple[ObjectiveEvidenceInput, ...]]] = []
 
     def propose(
         self,
         prompt_version: str,
-        evidence: tuple[object, ...],
+        evidence: tuple[ObjectiveEvidenceInput, ...],
     ) -> tuple[ProposedObjective, ...]:
         self.calls.append((prompt_version, evidence))
         return self.proposals
@@ -143,6 +145,9 @@ def test_exact_duplicates_collapse_before_model_consolidation() -> None:
             "evidence_id": "evidence-1",
             "source_revision_id": "revision-1",
             "text": "Heparin exposure can precede thrombocytopenia.",
+            "course_id": "heme",
+            "exam_id": "exam-2",
+            "lecture_id": "lecture-13",
         },
     )
 
@@ -178,6 +183,18 @@ def test_extractor_fails_closed_for_unready_or_invented_source_evidence() -> Non
             unready_generator,
         ).extract(("revision-1",))
     assert unready_generator.calls == []
+
+    unsupported_generator = Generator((_proposal(),))
+    with pytest.raises(ValueError, match="requires evidence"):
+        ObjectiveExtractor(
+            Knowledge(
+                evidence=(
+                    _evidence(authority=AuthorityClass.GENERATED_ARTIFACT),
+                )
+            ),
+            unsupported_generator,
+        ).extract(("revision-1",))
+    assert unsupported_generator.calls == []
 
     with pytest.raises(KeyError, match="invented"):
         ObjectiveExtractor(

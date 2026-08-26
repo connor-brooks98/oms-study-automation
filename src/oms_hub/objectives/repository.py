@@ -113,13 +113,20 @@ class ObjectiveRepository:
         with self.database.engine.connect() as connection:
             connection.exec_driver_sql("BEGIN IMMEDIATE")
             try:
-                links = self._validated_links(objective)
-                result = self._insert_objective(connection, objective, links)
+                result = self._create_objective_in_transaction(connection, objective)
                 connection.commit()
             except Exception:
                 connection.rollback()
                 raise
         return result
+
+    def _create_objective_in_transaction(
+        self,
+        connection: Connection,
+        objective: LearningObjective,
+    ) -> LearningObjective:
+        links = self._validated_links(objective)
+        return self._insert_objective(connection, objective, links)
 
     def _insert_objective(
         self,
@@ -223,6 +230,55 @@ class ObjectiveRepository:
             )
             for row in rows
         )
+
+    def retire_objective(
+        self,
+        objective_id: str,
+        *,
+        retired_at: str,
+    ) -> LearningObjective:
+        if self.database.engine.dialect.name != "sqlite":
+            raise RuntimeError("atomic objective retirement requires SQLite serialization")
+        with self.database.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                row = (
+                    connection.execute(
+                        text("SELECT * FROM learning_objectives WHERE id = :id"),
+                        {"id": objective_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if row is None:
+                    raise KeyError(objective_id)
+                stored = _objective_from_row(row)
+                if stored.status is ObjectiveStatus.RETIRED:
+                    connection.commit()
+                    return stored
+                if stored.status is not ObjectiveStatus.APPROVED:
+                    raise ValueError("only approved objectives can be retired")
+                retired = replace(
+                    stored,
+                    status=ObjectiveStatus.RETIRED,
+                    retired_at=retired_at,
+                )
+                connection.execute(
+                    text(
+                        "UPDATE learning_objectives SET status = :status, "
+                        "retired_at = :retired_at WHERE id = :id"
+                    ),
+                    {
+                        "id": objective_id,
+                        "status": ObjectiveStatus.RETIRED.value,
+                        "retired_at": retired.retired_at,
+                    },
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return retired
 
     def record_evidence_remap(
         self,
