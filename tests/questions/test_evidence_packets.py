@@ -985,3 +985,97 @@ def test_cover_selection_keeps_signature_needed_by_later_role(
     }
     assert {"ev-concept-08", "ev-later-role"}.issubset(retained_ids)
     assert sum(len(unit.normalized_text) for unit in packet.evidence) <= 18_000
+
+
+def test_required_cover_prefers_highest_priority_feasible_combination(
+    repository: KnowledgeRepository,
+) -> None:
+    high_concept = _add_evidence(
+        repository,
+        evidence_id="ev-high-concept",
+        text="H" * 100,
+        source_priority=100,
+    )
+    low_concept = _add_evidence(
+        repository,
+        evidence_id="ev-low-concept",
+        text="L",
+        source_priority=1,
+    )
+    objective = _add_evidence(
+        repository,
+        evidence_id="ev-objective",
+        text="O" * 17_900,
+        source_priority=50,
+    )
+    provider = FakeRetrievalProvider(
+        _result(),
+        by_query={
+            "Factor VIII deficiency": _result(high_concept, low_concept),
+            "Objective A": _result(objective),
+        },
+    )
+
+    packet = _build(QuestionEvidencePacketBuilder(provider, repository), _request())
+
+    assert {
+        evidence_id for unit in packet.evidence for evidence_id in unit.evidence_ids
+    } == {"ev-high-concept", "ev-objective"}
+    assert packet.omitted_evidence_ids == ("ev-low-concept",)
+    assert sum(len(unit.normalized_text) for unit in packet.evidence) == 18_000
+
+
+def test_optional_fill_swaps_redundant_required_low_for_higher_priority_candidate(
+    repository: KnowledgeRepository,
+) -> None:
+    low_required = _add_evidence(
+        repository,
+        evidence_id="ev-low-required",
+        text="x",
+        source_priority=-100,
+    )
+    high_equivalent = _add_evidence(
+        repository,
+        evidence_id="ev-high-equivalent",
+        text=f"x{'!' * 99}",
+        source_priority=1_000,
+    )
+    fillers = tuple(
+        _add_evidence(
+            repository,
+            evidence_id=f"ev-filler-{index:02d}",
+            text=f"Filler claim {index:02d}.",
+            source_priority=999 - index,
+        )
+        for index in range(14)
+    )
+    distinct = _add_evidence(
+        repository,
+        evidence_id="ev-distinct",
+        text="Distinct replacement claim.",
+        source_priority=887,
+    )
+    provider = FakeRetrievalProvider(
+        _result(),
+        by_query={
+            "Factor VIII deficiency": _result(
+                low_required,
+                high_equivalent,
+                *fillers,
+            ),
+            "Objective A": _result(low_required, high_equivalent, distinct),
+        },
+    )
+
+    packet = _build(QuestionEvidencePacketBuilder(provider, repository), _request())
+
+    retained_ids = {
+        evidence_id for unit in packet.evidence for evidence_id in unit.evidence_ids
+    }
+    assert retained_ids == {
+        "ev-high-equivalent",
+        "ev-distinct",
+        *(f"ev-filler-{index:02d}" for index in range(14)),
+    }
+    assert packet.omitted_evidence_ids == ("ev-low-required",)
+    assert sum(len(unit.evidence_ids) for unit in packet.evidence) == 16
