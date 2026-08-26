@@ -64,7 +64,10 @@ class GeminiClientFactory:
         try:
             return self.sdk_factory(
                 api_key=self.config.api_key.get_secret_value(),
-                http_options={"api_version": self.config.api_version},
+                http_options={
+                    "api_version": self.config.api_version,
+                    "timeout": self.config.request_timeout_seconds * 1_000,
+                },
             )
         except GeminiProviderError as error:
             raise error from None

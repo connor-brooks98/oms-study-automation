@@ -41,7 +41,17 @@ WRONG_LECTURE_ID = "task-2-8-wrong-lecture"
 
 
 class SmokeContractError(RuntimeError):
-    pass
+    _SAFE_REASONS = frozenset(
+        {
+            "citation_wrong_file",
+            "structured_output_invalid",
+            "structured_output_unavailable",
+        }
+    )
+
+    def __init__(self, message: str, *, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason if reason in self._SAFE_REASONS else None
 
 
 class SmokeTemporaryFailure(RuntimeError):
@@ -127,6 +137,7 @@ class GoogleGenaiSmokeSession:
         self._config = GeminiConfig(api_key=SecretStr(api_key))
         self._clients = GeminiClientFactory(self._config, sdk_factory=sdk_factory)
         self._document_name: str | None = None
+        self._file_display_name: str | None = None
 
     async def create_store(self, display_name: str, embedding_model: str) -> str:
         async with self._clients.client() as client:
@@ -151,7 +162,9 @@ class GoogleGenaiSmokeSession:
                     },
                 )
             )
-        return _provider_identity(uploaded, "file")
+        file_name = _provider_identity(uploaded, "file")
+        self._file_display_name = display_name
+        return file_name
 
     async def import_file(
         self,
@@ -240,19 +253,29 @@ class GoogleGenaiSmokeSession:
             )
         output_text = _field(response, "output_text")
         if not isinstance(output_text, str) or not output_text:
-            raise SmokeContractError("Gemini structured output was unavailable")
+            raise SmokeContractError(
+                "Gemini structured output was unavailable",
+                reason="structured_output_unavailable",
+            )
         try:
             answer = response_schema.model_validate_json(output_text).model_dump(mode="json")
         except ValidationError:
             raise SmokeContractError(
-                "Gemini structured output did not match the required schema"
+                "Gemini structured output did not match the required schema",
+                reason="structured_output_invalid",
             ) from None
         usage = _field(response, "usage_metadata")
         if usage is None:
             usage = _field(response, "usage")
         return SmokeQueryResult(
             answer=answer,
-            citations=_citations(response, store_name, scope, self._document_name),
+            citations=_citations(
+                response,
+                store_name,
+                scope,
+                self._document_name,
+                self._file_display_name,
+            ),
             input_tokens=_optional_count(
                 _field(usage, "total_input_tokens")
                 or _field(usage, "prompt_token_count")
@@ -343,6 +366,7 @@ def _citations(
     store_name: str,
     scope: SmokeScope,
     document_name: str | None,
+    file_display_name: str | None,
 ) -> tuple[SmokeCitation, ...]:
     del store_name
     steps = _field(response, "steps")
@@ -384,15 +408,28 @@ def _citations(
                         "Gemini citation arrived before import identity was known"
                     )
                 locator = _field(annotation, "document_uri")
-                if (
+                if locator is not None and (
                     not isinstance(locator, str)
                     or not locator
                     or len(locator) > 500
                     or not locator.isprintable()
+                    or locator != document_name
                 ):
-                    raise SmokeContractError("Gemini citation locator was unavailable")
-                if locator != document_name:
-                    raise SmokeContractError("Gemini citation referenced the wrong document")
+                    raise SmokeContractError(
+                        "Gemini citation referenced the wrong document"
+                    )
+                cited_file = _field(annotation, "file_name")
+                if (
+                    not isinstance(cited_file, str)
+                    or not cited_file
+                    or len(cited_file) > 500
+                    or not cited_file.isprintable()
+                    or cited_file != file_display_name
+                ):
+                    raise SmokeContractError(
+                        "Gemini citation referenced the wrong file",
+                        reason="citation_wrong_file",
+                    )
                 excerpt = _citation_excerpt(annotation, _field(content, "text"))
                 found.append(
                     SmokeCitation(
@@ -734,7 +771,7 @@ def _failure_record(
         or not 100 <= status_code <= 599
     ):
         status_code = None
-    return {
+    record: dict[str, object] = {
         "schema_version": 1,
         "status": "failed",
         "failure_stage": evidence.get("failure_stage", "unknown"),
@@ -744,6 +781,9 @@ def _failure_record(
         "resources_created": evidence.get("resources_created", {}),
         "cleanup": evidence.get("cleanup", {"attempted": 0, "status": "not_started"}),
     }
+    if isinstance(error, SmokeContractError) and error.reason is not None:
+        record["contract_reason"] = error.reason
+    return record
 
 
 def run_temporary_failure_fixture() -> dict[str, object]:
