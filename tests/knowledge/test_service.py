@@ -519,6 +519,7 @@ def test_asset_file_checksum_mismatch_fails_closed(tmp_path: Path) -> None:
     service.parser = _Parser(_document(tmp_path / "deck.pptx", revision_id, assets=(asset,)))
     with pytest.raises(KnowledgeIntegrityError, match="checksum"):
         service.resolve_index_input(revision_id)
+    assert not (tmp_path / ".oms-index-inputs" / revision_id / "normalized.md").exists()
 
 
 def test_duplicate_asset_identity_is_rejected_by_document_contract(tmp_path: Path) -> None:
