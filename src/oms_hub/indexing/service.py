@@ -213,6 +213,12 @@ class IndexingService:
         item: IndexManifestInput,
         metadata: list[dict[str, str]],
     ) -> ProviderDocument:
+        provider_metadata = [
+            *metadata,
+            {"key": "input_key", "string_value": item.input_key},
+            {"key": "input_kind", "string_value": item.input_kind},
+            {"key": "input_sha256", "string_value": item.sha256},
+        ]
         document = self.repository.get_document_by_source_revision(
             store_id,
             source_revision_id,
@@ -229,8 +235,18 @@ class IndexingService:
                     input_kind=item.input_kind,
                     input_sha256=item.sha256,
                     input_byte_count=item.path.stat().st_size,
-                    metadata=metadata,
+                    metadata=provider_metadata,
                     state=IndexState.UPLOADING_FILE,
+                )
+            )
+        elif document.state is IndexState.NOT_INDEXED:
+            document = self.repository.upsert_document(
+                replace(
+                    document,
+                    input_kind=item.input_kind,
+                    input_sha256=item.sha256,
+                    input_byte_count=item.path.stat().st_size,
+                    metadata=provider_metadata,
                 )
             )
         if document.state is IndexState.READY:
@@ -263,7 +279,7 @@ class IndexingService:
                 operation = await self.admin.import_file(
                     provider_store_name,
                     file_name,
-                    metadata,
+                    provider_metadata,
                     chunking,
                 )
                 document = self._save(

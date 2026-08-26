@@ -44,6 +44,21 @@ class CompletedOperation:
     document_name: str
 
 
+@dataclass(frozen=True, slots=True)
+class RemoteDocumentObservation:
+    provider_document_id: str
+    source_revision_id: str | None = None
+    input_key: str | None = None
+    input_kind: str | None = None
+    input_sha256: str | None = None
+    input_byte_count: int | None = None
+    provider_file_name: str | None = None
+    provider_document_name: str | None = None
+    provider_operation_name: str | None = None
+    metadata_json: str = "{}"
+    validation_error: str | None = None
+
+
 class GeminiFileSearchAdmin:
     """Administer provider identities while keeping lifecycle state local."""
 
@@ -117,6 +132,21 @@ class GeminiFileSearchAdmin:
         if not isinstance(store, ProviderStore):
             raise TypeError("store must be a persisted ProviderStore")
         async with self.client_factory.client() as client:
+            raw_documents = await _call_provider(
+                _documents_api(client).list,
+                parent=store.provider_store_name,
+            )
+            entries = await _collect_documents(raw_documents)
+        mapped = [_document_from_provider(entry, store) for entry in entries]
+        mapped.sort(key=lambda item: (item.provider_document_id, item.id))
+        return tuple(self.repository.upsert_document(item) for item in mapped)
+
+    async def snapshot_documents(
+        self, store: ProviderStore
+    ) -> tuple[RemoteDocumentObservation, ...]:
+        if not isinstance(store, ProviderStore):
+            raise TypeError("store must be a persisted ProviderStore")
+        async with self.client_factory.client() as client:
             documents_api = _documents_api(client)
             raw_documents = await _call_provider(
                 documents_api.list,
@@ -124,11 +154,15 @@ class GeminiFileSearchAdmin:
             )
             entries = await _collect_documents(raw_documents)
 
-        mapped: list[ProviderDocument] = []
-        for entry in entries:
-            mapped.append(_document_from_provider(entry, store))
-        mapped.sort(key=lambda item: (item.provider_document_id, item.id))
-        return tuple(self.repository.upsert_document(item) for item in mapped)
+        mapped = [_observation_from_provider(entry, store) for entry in entries]
+        mapped.sort(
+            key=lambda item: (
+                item.validation_error is not None,
+                item.input_key or "",
+                item.provider_document_id,
+            )
+        )
+        return tuple(mapped)
 
     async def upload_file(self, path: Path, display_name: str) -> UploadedFileRef:
         path = Path(path)
@@ -235,6 +269,15 @@ class GeminiFileSearchAdmin:
                     return
                 raise translated from None
         self.repository.mark_document_deleted(provider_document_id)
+
+    async def delete_remote_document(self, provider_document_id: str) -> None:
+        provider_document_id = _required_text(provider_document_id, "document name")
+        async with self.client_factory.client() as client:
+            try:
+                await _call_provider(_documents_api(client).delete, name=provider_document_id)
+            except GeminiProviderError as error:
+                if error.provider_status_code != 404:
+                    raise
 
     def _ensure_lock(self) -> asyncio.Lock:
         loop = asyncio.get_running_loop()
@@ -393,6 +436,62 @@ def _document_from_provider(value: object, store: ProviderStore) -> ProviderDocu
     )
 
 
+def _observation_from_provider(
+    value: object,
+    store: ProviderStore,
+) -> RemoteDocumentObservation:
+    provider_document_id = _provider_identity(value, "document")
+    metadata = _json_metadata(_value(value, "custom_metadata", "customMetadata", "metadata"))
+    try:
+        source_revision_id = _require_source_revision_id(metadata)
+        input_key = _metadata_value(metadata, "input_key")
+        input_kind = _metadata_value(metadata, "input_kind")
+        input_sha256 = _metadata_value(metadata, "input_sha256")
+        if input_key is None or input_kind is None or input_sha256 is None:
+            raise ValueError("missing per-input metadata")
+        document = ProviderDocument(
+            store_id=store.id,
+            provider="gemini",
+            provider_document_id=provider_document_id,
+            source_revision_id=source_revision_id,
+            input_key=input_key,
+            input_kind=input_kind,
+            input_sha256=input_sha256,
+            provider_file_name=_optional_text(_value(value, "file_name", "fileName", "file")),
+            provider_document_name=_optional_text(
+                _value(value, "display_name", "displayName", "document_name", "documentName")
+            ),
+            provider_operation_name=_optional_text(
+                _value(value, "operation_name", "operationName", "operation")
+            ),
+            input_byte_count=_byte_count(value),
+            metadata=metadata,
+            state=IndexState.READY,
+        )
+    except (GeminiContractError, ValueError):
+        return RemoteDocumentObservation(
+            provider_document_id=provider_document_id,
+            validation_error="invalid_metadata",
+        )
+    return RemoteDocumentObservation(
+        provider_document_id=provider_document_id,
+        source_revision_id=document.source_revision_id,
+        input_key=document.input_key,
+        input_kind=document.input_kind,
+        input_sha256=document.input_sha256,
+        input_byte_count=document.input_byte_count,
+        provider_file_name=document.provider_file_name,
+        provider_document_name=document.provider_document_name,
+        provider_operation_name=document.provider_operation_name,
+        metadata_json=document.metadata_json,
+    )
+
+
+def _byte_count(value: object) -> int | None:
+    size_value = _value(value, "size_bytes", "sizeBytes", "input_byte_count", "bytes")
+    return size_value if isinstance(size_value, int) and size_value >= 0 else None
+
+
 def _require_source_revision_id(metadata: object) -> str:
     source_revision_id = _metadata_value(metadata, "source_revision_id")
     if (
@@ -478,5 +577,6 @@ __all__ = [
     "CompletedOperation",
     "GeminiFileSearchAdmin",
     "OperationRef",
+    "RemoteDocumentObservation",
     "UploadedFileRef",
 ]

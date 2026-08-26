@@ -194,10 +194,24 @@ def test_course_revision_uploads_imports_and_persists_ready_document(tmp_path: P
         (
             admin.store.provider_store_name,
             f"files/{path.name}",
-            expected_metadata,
+            [
+                *expected_metadata,
+                {"key": "input_key", "string_value": input_key},
+                {"key": "input_kind", "string_value": input_kind},
+                {"key": "input_sha256", "string_value": sha256},
+            ],
             expected_chunking if path == view.markdown.path else None,
         )
-        for path in (view.pptx.path, view.pdf.path, view.markdown.path)
+        for path, input_key, input_kind, sha256 in (
+            (view.pptx.path, "pptx", "pptx", view.pptx.sha256),
+            (view.pdf.path, "pdf", "pdf", view.pdf.sha256),
+            (
+                view.markdown.path,
+                "normalized_markdown",
+                "markdown",
+                view.markdown.sha256,
+            ),
+        )
     ]
     assert admin.wait_calls == [
         "operations/lecture.pptx",

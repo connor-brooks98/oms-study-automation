@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, AsyncIterator
+from typing import Any
 
 import pytest
 from pydantic import SecretStr
@@ -134,15 +134,15 @@ class _SnapshotAdmin:
 
 
 class _RawDocuments:
-    def __init__(self, items: list[object]) -> None:
-        self.items = items
+    def __init__(self, items: Sequence[object]) -> None:
+        self.items = list(items)
 
     async def list(self, **_kwargs: object) -> list[object]:
         return list(self.items)
 
 
 class _RawAio:
-    def __init__(self, items: list[object]) -> None:
+    def __init__(self, items: Sequence[object]) -> None:
         self.file_search_stores = SimpleNamespace(documents=_RawDocuments(items))
 
     async def aclose(self) -> None:
@@ -150,11 +150,11 @@ class _RawAio:
 
 
 class _RawSdk:
-    def __init__(self, items: list[object]) -> None:
+    def __init__(self, items: Sequence[object]) -> None:
         self.aio = _RawAio(items)
 
 
-def _sdk_factory(items: list[object]) -> Any:
+def _sdk_factory(items: Sequence[object]) -> Any:
     def factory(**_kwargs: object) -> _RawSdk:
         return _RawSdk(items)
 
@@ -352,6 +352,9 @@ class _DeleteAdmin:
             self.fail_once = None
             raise GeminiTransientError("temporary")
 
+    async def delete_document(self, provider_document_id: str) -> None:
+        await self.delete_remote_document(provider_document_id)
+
 
 class _IndexService:
     def __init__(self) -> None:
@@ -397,7 +400,9 @@ def test_rebuild_deletes_every_input_then_resets_for_normal_worker_indexing() ->
 
     reset_job = repository.get_job(job.id)
     reset_documents = repository.list_documents(store)
-    assert admin.calls == [item.provider_document_id for item in documents]
+    assert admin.calls == [
+        item.provider_document_id for item in sorted(documents, key=lambda item: item.input_key)
+    ]
     assert reset_job is not None and reset_job.state is IndexState.NOT_INDEXED
     assert reset_job.operation_kind == "index" and reset_job.lease_token is None
     assert all(item.state is IndexState.NOT_INDEXED for item in reset_documents)
@@ -420,8 +425,9 @@ def test_rebuild_resumes_remaining_inputs_after_transient_delete_failure() -> No
     second = repository.save_document(
         _document(store, "normalized_markdown", "markdown", "b" * 64)
     )
+    assert first.provider_document_id is not None
     assert second.provider_document_id is not None
-    admin = _DeleteAdmin(fail_once=second.provider_document_id)
+    admin = _DeleteAdmin(fail_once=first.provider_document_id)
     service = _IndexService()
     clock = _Clock()
     reconciler = IndexReconciler(repository, _Knowledge(), admin, now=clock)
@@ -438,8 +444,8 @@ def test_rebuild_resumes_remaining_inputs_after_transient_delete_failure() -> No
     worker.run_once()
 
     after_failure = repository.get_job(job.id)
-    assert repository.get_document(first.id).state is IndexState.DELETED  # type: ignore[union-attr]
-    assert repository.get_document(second.id).state is IndexState.DELETING  # type: ignore[union-attr]
+    assert repository.get_document(first.id).state is IndexState.DELETING  # type: ignore[union-attr]
+    assert repository.get_document(second.id).state is IndexState.DELETED  # type: ignore[union-attr]
     assert after_failure is not None and after_failure.operation_kind == "rebuild"
     assert after_failure.state is IndexState.DELETING
 
@@ -447,8 +453,8 @@ def test_rebuild_resumes_remaining_inputs_after_transient_delete_failure() -> No
     worker.run_once()
 
     assert repository.get_job(job.id).state is IndexState.NOT_INDEXED  # type: ignore[union-attr]
-    assert admin.calls.count(first.provider_document_id) == 1
-    assert admin.calls.count(second.provider_document_id) == 2
+    assert admin.calls.count(first.provider_document_id) == 2
+    assert admin.calls.count(second.provider_document_id) == 1
 
 
 def test_expired_lease_token_cannot_mutate_after_successor_claims(tmp_path: Path) -> None:
@@ -543,4 +549,3 @@ def test_health_is_offline_redacted_and_reports_byte_only_usage() -> None:
     assert health.query_token_count is None
     assert health.estimated_cost is None
     assert "must-not-serialize" not in repr(health)
-
