@@ -299,8 +299,13 @@ class ObjectiveRepository:
                     reason=reason,
                     created_at=created_at,
                 )
-                if previous is not None and remap.created_at <= previous["created_at"]:
-                    raise ValueError("created_at must be newer than the previous remap")
+                predecessor_created_at = (
+                    previous["created_at"] if previous is not None else objective.created_at
+                )
+                if remap.created_at <= predecessor_created_at:
+                    raise ValueError(
+                        "created_at must be newer than the objective or previous remap"
+                    )
 
                 candidate = replace(
                     objective,
