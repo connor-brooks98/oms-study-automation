@@ -154,6 +154,22 @@ def test_exact_duplicates_collapse_before_model_consolidation() -> None:
     )
 
 
+def test_lecture_scope_order_is_canonical_for_identity_and_deduplication() -> None:
+    first = _proposal(lecture_ids=("lecture-13", "lecture-14"))
+    reordered = _proposal(lecture_ids=("lecture-14", "lecture-13"))
+    consolidator = Consolidator()
+
+    result = ObjectiveExtractor(
+        Knowledge(),
+        Generator((first, reordered)),
+        consolidator,
+    ).extract(("revision-1",))
+
+    assert first.proposal_id == reordered.proposal_id
+    assert result == (first,)
+    assert consolidator.calls == []
+
+
 def test_only_ambiguous_near_duplicates_reach_bounded_consolidation() -> None:
     generator = Generator(
         (
