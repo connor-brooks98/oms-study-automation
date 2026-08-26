@@ -37,7 +37,7 @@ gates:
     state: open
   gate_2a_source_trust:
     task: '1.8'
-    state: open
+    state: blocked
   gate_2b_gemini_provider:
     task: '2.8'
     state: blocked
