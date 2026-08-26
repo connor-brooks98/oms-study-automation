@@ -97,7 +97,7 @@ def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260826.1" %}' in base
+    assert '{% set shell_asset_version = "20260826.2" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
@@ -252,6 +252,9 @@ def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
     lecture = source("lecture.html")
 
     assert ".upload-results, .upload-status, .upload-items, .upload-items li" in app_css
+    assert "grid-template-columns: minmax(0, 1fr) minmax(6.5rem, 40%)" in app_css
+    assert ".upload-items li > span:nth-child(2)" in app_css
+    assert ".upload-item-error { grid-column: 1 / -1; }" in app_css
     assert "overflow-wrap: anywhere" in app_css
     assert ".selected-file-name" in app_css
     assert ".selected-file-size" in app_css

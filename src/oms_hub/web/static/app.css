@@ -531,8 +531,10 @@ select:not(.sh-select):not(.sh-control) {
 .upload-progress span { display: block; width: 0; height: 100%; background: var(--processing); transition: width 150ms linear; }
 .upload-items { display: grid; gap: .4rem; margin: .8rem 0 0; padding: 0; list-style: none; }
 .upload-results, .upload-status, .upload-items, .upload-items li { min-width: 0; max-width: 100%; box-sizing: border-box; }
-.upload-items li { display: flex; justify-content: space-between; gap: 1rem; padding: .55rem .65rem; border-radius: .4rem; background: var(--surface); font-size: .78rem; }
+.upload-items li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(6.5rem, 40%); align-items: start; gap: 1rem; padding: .55rem .65rem; border-radius: .4rem; background: var(--surface); font-size: .78rem; }
 .upload-items li > span { min-width: 0; overflow-wrap: anywhere; }
+.upload-items li > span:nth-child(2) { overflow-wrap: normal; word-break: normal; text-align: right; }
+.upload-item-error { grid-column: 1 / -1; }
 .duplicate-dialog {
   width: min(32rem, calc(100% - 2rem));
   padding: 1.5rem;
