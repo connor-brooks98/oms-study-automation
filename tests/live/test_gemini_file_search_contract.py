@@ -412,6 +412,51 @@ def test_interaction_citation_must_bind_to_uploaded_file() -> None:
     assert raised.value.reason == "citation_wrong_file"
 
 
+def test_interaction_citation_rejects_conflicting_document_uri() -> None:
+    smoke = _load_smoke()
+    response = SimpleNamespace(
+        steps=[
+            SimpleNamespace(
+                type="model_output",
+                content=[
+                    SimpleNamespace(
+                        type="text",
+                        text=smoke.SYNTHETIC_FACT,
+                        annotations=[
+                            SimpleNamespace(
+                                type="file_citation",
+                                custom_metadata={
+                                    "course_id": smoke.SYNTHETIC_COURSE_ID,
+                                    "exam_id": smoke.SYNTHETIC_EXAM_ID,
+                                    "lecture_id": smoke.SYNTHETIC_LECTURE_ID,
+                                    "source_revision_id": smoke.SYNTHETIC_REVISION_ID,
+                                },
+                                document_uri="fileSearchStores/other/documents/other",
+                                file_name="task-2-8-synthetic.pdf",
+                                page_number=1,
+                                source=smoke.SYNTHETIC_FACT,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+    )
+
+    with pytest.raises(smoke.SmokeContractError, match="wrong document"):
+        smoke._citations(
+            response,
+            "fileSearchStores/sdk-store",
+            smoke.SmokeScope(
+                smoke.SYNTHETIC_COURSE_ID,
+                smoke.SYNTHETIC_EXAM_ID,
+                smoke.SYNTHETIC_LECTURE_ID,
+            ),
+            "fileSearchStores/sdk-store/documents/sdk-document",
+            "task-2-8-synthetic.pdf",
+        )
+
+
 def test_contract_failure_record_retains_only_allowlisted_reason() -> None:
     smoke = _load_smoke()
 
