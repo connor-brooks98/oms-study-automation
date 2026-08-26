@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import unicodedata
 from dataclasses import dataclass
-from itertools import product
 
 from oms_hub.knowledge.ids import sha256_text
 from oms_hub.knowledge.models import EvidenceUnit, SourceRevisionState
@@ -26,6 +24,7 @@ from oms_hub.questions.models import QuestionMode
 MAX_EVIDENCE_UNITS = 16
 MAX_EVIDENCE_CHARACTERS = 18_000
 MAX_INTEGRATED_OBJECTIVES = 4
+_MAX_COVER_STATES_PER_MASK = 128
 
 __all__ = (
     "MAX_EVIDENCE_CHARACTERS",
@@ -154,6 +153,14 @@ class _ResolvedEvidence:
     objective_ids: frozenset[str]
 
 
+@dataclass(frozen=True, slots=True)
+class _CoverState:
+    selected: tuple[_ResolvedEvidence, ...]
+    signatures: frozenset[str]
+    characters: int
+    priority: int
+
+
 class QuestionEvidencePacketBuilder:
     def __init__(
         self,
@@ -166,11 +173,8 @@ class QuestionEvidencePacketBuilder:
     async def build(self, request: QuestionGenerationRequest) -> QuestionEvidencePacket:
         if not isinstance(request, QuestionGenerationRequest):
             raise QuestionEvidenceError("request must be a QuestionGenerationRequest")
-        if (
-            request.mode is QuestionMode.INTEGRATED_BOARD_STYLE
-            and len(request.objectives) > MAX_INTEGRATED_OBJECTIVES
-        ):
-            raise QuestionEvidenceError("integrated items support at most 4 objectives")
+        if len(request.objectives) > MAX_INTEGRATED_OBJECTIVES:
+            raise QuestionEvidenceError("question packets support at most 4 objectives")
         if (
             request.correct_answer_concept_signature
             in request.forbidden_repeat_signatures
@@ -416,55 +420,68 @@ def _select_bounded(
     objectives: tuple[QuestionObjective, ...],
 ) -> tuple[tuple[_ResolvedEvidence, ...], tuple[str, ...]]:
     ordered = tuple(sorted(candidates, key=_resolved_sort_key))
-    role_options = (
-        tuple(item for item in ordered if item.supports_correct_answer_concept),
-        *(tuple(item for item in ordered if objective.objective_id in item.objective_ids)
-          for objective in objectives),
-    )
-    if any(not options for options in role_options):
+    role_count = 1 + len(objectives)
+    full_role_mask = (1 << role_count) - 1
+    candidate_roles = {
+        item.unit.evidence_id: _role_mask(item, objectives) for item in ordered
+    }
+    available_role_mask = 0
+    for mask in candidate_roles.values():
+        available_role_mask |= mask
+    if full_role_mask & ~available_role_mask:
         raise QuestionEvidenceError("bounded packet lacks required evidence coverage")
 
-    best: tuple[_ResolvedEvidence, ...] | None = None
-    best_key: tuple[int, int, tuple[str, ...]] | None = None
-    # ponytail: at most 16**5 combinations; replace with DP if the objective cap grows.
-    for choices in product(*role_options):
-        unique = {item.unit.evidence_id: item for item in choices}
-        required = tuple(sorted(unique.values(), key=_resolved_sort_key))
-        if _evidence_characters(required) > MAX_EVIDENCE_CHARACTERS:
+    states: dict[int, tuple[_CoverState, ...]] = {
+        0: (_CoverState((), frozenset(), 0, 0),)
+    }
+    for item in ordered:
+        item_roles = candidate_roles[item.unit.evidence_id]
+        if not item_roles:
             continue
-        key = (
-            -sum(item.unit.source_priority for item in required),
-            len(required),
-            tuple(sorted(unique)),
+        prior_states = tuple(
+            (mask, state) for mask, frontier in states.items() for state in frontier
         )
-        if best_key is None or key < best_key:
-            best = required
-            best_key = key
-    if best is None:
+        for mask, state in prior_states:
+            new_mask = mask | item_roles
+            if new_mask == mask or len(state.selected) >= MAX_EVIDENCE_UNITS:
+                continue
+            signature = _claim_signature(item.unit.normalized_text)
+            added_characters = (
+                0
+                if signature in state.signatures
+                else len(_normalized_text(item.unit.normalized_text))
+            )
+            if state.characters + added_characters > MAX_EVIDENCE_CHARACTERS:
+                continue
+            candidate = _CoverState(
+                selected=state.selected + (item,),
+                signatures=state.signatures | {signature},
+                characters=state.characters + added_characters,
+                priority=state.priority + item.unit.source_priority,
+            )
+            states[new_mask] = _bounded_frontier(
+                (*states.get(new_mask, ()), candidate)
+            )
+
+    complete = states.get(full_role_mask, ())
+    if not complete:
         raise QuestionEvidenceError("bounded packet cannot retain required evidence coverage")
+    best = min(complete, key=_cover_state_key).selected
+    if len(best) > MAX_EVIDENCE_UNITS:
+        raise QuestionEvidenceError("required evidence cover exceeds 16 canonical units")
 
     selected = {item.unit.evidence_id: item for item in best}
-    selected_signatures = {
-        _claim_signature(item.unit.normalized_text) for item in selected.values()
-    }
-    character_count = _evidence_characters(tuple(selected.values()))
     for item in ordered:
         evidence_id = item.unit.evidence_id
         if evidence_id in selected:
             continue
         if len(selected) >= MAX_EVIDENCE_UNITS:
             break
-        signature = _claim_signature(item.unit.normalized_text)
-        added_characters = (
-            0
-            if signature in selected_signatures
-            else len(_normalized_text(item.unit.normalized_text))
-        )
-        if character_count + added_characters > MAX_EVIDENCE_CHARACTERS:
+        projected = (*selected.values(), item)
+        projected_characters = _evidence_characters(tuple(projected))
+        if projected_characters > MAX_EVIDENCE_CHARACTERS:
             continue
         selected[evidence_id] = item
-        selected_signatures.add(signature)
-        character_count += added_characters
 
     selected_ids = set(selected)
     omitted_ids = tuple(
@@ -477,17 +494,73 @@ def _select_bounded(
     return tuple(sorted(selected.values(), key=_resolved_sort_key)), omitted_ids
 
 
+def _role_mask(
+    item: _ResolvedEvidence,
+    objectives: tuple[QuestionObjective, ...],
+) -> int:
+    mask = 1 if item.supports_correct_answer_concept else 0
+    for index, objective in enumerate(objectives, start=1):
+        if objective.objective_id in item.objective_ids:
+            mask |= 1 << index
+    return mask
+
+
+def _bounded_frontier(states: tuple[_CoverState, ...]) -> tuple[_CoverState, ...]:
+    unique = {
+        tuple(item.unit.evidence_id for item in state.selected): state for state in states
+    }
+    frontier: list[_CoverState] = []
+    for state in unique.values():
+        if any(_dominates(other, state) for other in unique.values() if other is not state):
+            continue
+        frontier.append(state)
+    if len(frontier) <= _MAX_COVER_STATES_PER_MASK:
+        return tuple(sorted(frontier, key=_cover_state_key))
+    by_quality = sorted(frontier, key=_cover_state_key)[:64]
+    by_budget = sorted(
+        frontier,
+        key=lambda state: (
+            state.characters,
+            -state.priority,
+            len(state.selected),
+            _selected_ids(state),
+        ),
+    )[:64]
+    retained = {_selected_ids(state): state for state in (*by_quality, *by_budget)}
+    return tuple(sorted(retained.values(), key=_cover_state_key))
+
+
+def _dominates(first: _CoverState, second: _CoverState) -> bool:
+    return (
+        first.signatures == second.signatures
+        and first.characters <= second.characters
+        and first.priority >= second.priority
+        and len(first.selected) <= len(second.selected)
+        and (
+            first.characters < second.characters
+            or first.priority > second.priority
+            or len(first.selected) < len(second.selected)
+        )
+    )
+
+
+def _cover_state_key(state: _CoverState) -> tuple[int, int, tuple[str, ...]]:
+    return (-state.priority, len(state.selected), _selected_ids(state))
+
+
+def _selected_ids(state: _CoverState) -> tuple[str, ...]:
+    return tuple(sorted(item.unit.evidence_id for item in state.selected))
+
+
 def _resolved_sort_key(item: _ResolvedEvidence) -> tuple[int, str]:
     return (-item.unit.source_priority, item.unit.evidence_id)
 
 
 def _evidence_characters(items: tuple[_ResolvedEvidence, ...]) -> int:
-    by_signature = {
-        _claim_signature(item.unit.normalized_text): _normalized_text(
-            item.unit.normalized_text
-        )
-        for item in items
-    }
+    by_signature: dict[str, str] = {}
+    for item in sorted(items, key=_resolved_sort_key):
+        signature = _claim_signature(item.unit.normalized_text)
+        by_signature.setdefault(signature, _normalized_text(item.unit.normalized_text))
     return sum(len(text) for text in by_signature.values())
 
 
@@ -531,7 +604,30 @@ _OPERATOR_TRANSLATION = str.maketrans(
 
 def _claim_signature(text: str) -> str:
     comparable = _normalized_text(text).casefold().translate(_OPERATOR_TRANSLATION)
-    tokens = re.findall(r"\d+\.\d+|\w+|<=|>=|[<>=+\-/%]", comparable)
+    tokens: list[str] = []
+    word: list[str] = []
+
+    def flush_word() -> None:
+        if word:
+            tokens.append("".join(word))
+            word.clear()
+
+    for index, character in enumerate(comparable):
+        category = unicodedata.category(character)
+        is_decimal_point = (
+            character == "."
+            and index > 0
+            and index + 1 < len(comparable)
+            and comparable[index - 1].isdecimal()
+            and comparable[index + 1].isdecimal()
+        )
+        if category[0] in {"L", "M", "N"} or character == "_" or is_decimal_point:
+            word.append(character)
+            continue
+        flush_word()
+        if category[0] == "S" or character in "<>=+-/%":
+            tokens.append(character)
+    flush_word()
     normalized = " ".join(tokens)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
