@@ -1079,3 +1079,111 @@ def test_optional_fill_swaps_redundant_required_low_for_higher_priority_candidat
     }
     assert packet.omitted_evidence_ids == ("ev-low-required",)
     assert sum(len(unit.evidence_ids) for unit in packet.evidence) == 16
+
+
+def test_character_skipped_candidate_is_retried_after_coverage_becomes_redundant(
+    repository: KnowledgeRepository,
+) -> None:
+    concept_1000 = _add_evidence(
+        repository,
+        evidence_id="ev-concept-1000",
+        text="C" * 50,
+        source_priority=1_000,
+    )
+    concept_999 = _add_evidence(
+        repository,
+        evidence_id="ev-concept-999",
+        text="D" * 51,
+        source_priority=999,
+    )
+    objective_100 = _add_evidence(
+        repository,
+        evidence_id="ev-objective-100",
+        text="O" * 17_901,
+        source_priority=100,
+    )
+    objective_99 = _add_evidence(
+        repository,
+        evidence_id="ev-objective-99",
+        text="P" * 2,
+        source_priority=99,
+    )
+    provider = FakeRetrievalProvider(
+        _result(),
+        by_query={
+            "Factor VIII deficiency": _result(concept_1000, concept_999),
+            "Objective A": _result(objective_100, objective_99),
+        },
+    )
+
+    packet = _build(QuestionEvidencePacketBuilder(provider, repository), _request())
+
+    assert {
+        evidence_id for unit in packet.evidence for evidence_id in unit.evidence_ids
+    } == {"ev-concept-1000", "ev-concept-999", "ev-objective-99"}
+    assert packet.omitted_evidence_ids == ("ev-objective-100",)
+    assert sum(len(unit.normalized_text) for unit in packet.evidence) == 103
+
+
+def test_exact_pareto_frontier_has_bounded_dominance_work(
+    repository: KnowledgeRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    role_names = (
+        "Factor VIII deficiency",
+        "Objective A",
+        "Objective B",
+        "Objective C",
+    )
+    weights = (1, 7, 49, 343)
+    by_query: dict[str, RetrievalResult] = {}
+    for role_index, role_name in enumerate(role_names):
+        refs: list[EvidenceRef] = []
+        for variant in range(6):
+            prefix = f"Role {role_index} tradeoff {variant}"
+            target_length = 1_000 + weights[role_index] * (variant + 1)
+            text = f"{prefix}{'!' * (target_length - len(prefix))}"
+            refs.append(
+                _add_evidence(
+                    repository,
+                    evidence_id=f"ev-role-{role_index}-{variant}",
+                    text=text,
+                    source_priority=target_length,
+                )
+            )
+        by_query[role_name] = _result(*refs)
+    provider = FakeRetrievalProvider(_result(), by_query=by_query)
+    dominance_calls = 0
+    original_dominates = evidence_packets_module._required_dominates
+
+    def counted_dominates(
+        first: evidence_packets_module._CoverState,
+        second: evidence_packets_module._CoverState,
+    ) -> bool:
+        nonlocal dominance_calls
+        dominance_calls += 1
+        if dominance_calls > 5_000:
+            raise AssertionError("exact Pareto insertion exceeded its operation budget")
+        return original_dominates(first, second)
+
+    monkeypatch.setattr(
+        evidence_packets_module,
+        "_required_dominates",
+        counted_dominates,
+    )
+
+    packet = _build(
+        QuestionEvidencePacketBuilder(provider, repository),
+        _request(
+            objectives=(
+                QuestionObjective("obj-a", "Objective A"),
+                QuestionObjective("obj-b", "Objective B"),
+                QuestionObjective("obj-c", "Objective C"),
+            ),
+            mode=QuestionMode.INTEGRATED_BOARD_STYLE,
+        ),
+    )
+
+    assert dominance_calls <= 5_000
+    assert packet.objective_ids == ("obj-a", "obj-b", "obj-c")
+    assert sum(len(unit.evidence_ids) for unit in packet.evidence) <= 16
