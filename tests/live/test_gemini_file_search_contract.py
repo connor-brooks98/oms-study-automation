@@ -348,6 +348,18 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
             ),
         }
     ]
+    assert all_aio[-3].file_search_stores.documents.calls == [
+        (
+            "delete",
+            (
+                "fileSearchStores/sdk-store/documents/sdk-document",
+                {"force": True},
+            ),
+        )
+    ]
+    assert all_aio[-1].file_search_stores.calls == [
+        ("delete", ("fileSearchStores/sdk-store", {"force": True}))
+    ]
 
 
 def test_interaction_citation_must_bind_to_imported_document() -> None:
@@ -408,18 +420,6 @@ def test_interaction_citation_metadata_and_excerpt_are_bounded() -> None:
             SimpleNamespace(source="invalid\nexcerpt"),
             smoke.SYNTHETIC_FACT,
         )
-    assert all_aio[-3].file_search_stores.documents.calls == [
-        (
-            "delete",
-            (
-                "fileSearchStores/sdk-store/documents/sdk-document",
-                {"force": True},
-            ),
-        )
-    ]
-    assert all_aio[-1].file_search_stores.calls == [
-        ("delete", ("fileSearchStores/sdk-store", {"force": True}))
-    ]
 
 
 def test_authorized_entrypoint_reads_stored_key_once_without_retaining_it(

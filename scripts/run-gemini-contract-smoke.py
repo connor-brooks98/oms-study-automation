@@ -221,6 +221,7 @@ class GoogleGenaiSmokeSession:
             "model": self._config.file_search_model,
             "input": prompt,
             "store": False,
+            "response_mime_type": "application/json",
             "tools": [
                 {
                     "type": "file_search",
@@ -383,9 +384,7 @@ def _citations(
                     raise SmokeContractError(
                         "Gemini citation arrived before import identity was known"
                     )
-                locator = _field(annotation, "document_uri") or _field(
-                    annotation, "file_name"
-                )
+                locator = _field(annotation, "document_uri")
                 if (
                     not isinstance(locator, str)
                     or not locator
@@ -393,6 +392,8 @@ def _citations(
                     or not locator.isprintable()
                 ):
                     raise SmokeContractError("Gemini citation locator was unavailable")
+                if locator != document_name:
+                    raise SmokeContractError("Gemini citation referenced the wrong document")
                 excerpt = _citation_excerpt(annotation, _field(content, "text"))
                 found.append(
                     SmokeCitation(
@@ -406,16 +407,34 @@ def _citations(
 
 def _string_metadata(value: object) -> dict[str, str]:
     if isinstance(value, Mapping):
-        if not all(isinstance(key, str) and isinstance(text, str) for key, text in value.items()):
+        if len(value) > 16 or not all(
+            isinstance(key, str)
+            and 0 < len(key) <= 64
+            and key.isprintable()
+            and isinstance(text, str)
+            and 0 < len(text) <= 512
+            and text.isprintable()
+            for key, text in value.items()
+        ):
             raise SmokeContractError("Gemini citation metadata was invalid")
         return dict(value)
     if not isinstance(value, Iterable) or isinstance(value, (str, bytes)):
         return {}
     metadata: dict[str, str] = {}
     for item in value:
+        if len(metadata) >= 16:
+            raise SmokeContractError("Gemini citation metadata was invalid")
         key = _field(item, "key")
         text = _field(item, "string_value")
-        if not isinstance(key, str) or not isinstance(text, str) or key in metadata:
+        if (
+            not isinstance(key, str)
+            or not 0 < len(key) <= 64
+            or not key.isprintable()
+            or not isinstance(text, str)
+            or not 0 < len(text) <= 512
+            or not text.isprintable()
+            or key in metadata
+        ):
             raise SmokeContractError("Gemini citation metadata was invalid")
         metadata[key] = text
     return metadata
@@ -424,7 +443,7 @@ def _string_metadata(value: object) -> dict[str, str]:
 def _citation_excerpt(annotation: object, content_text: object) -> str:
     source = _field(annotation, "source")
     if isinstance(source, str) and source:
-        return source
+        return _bounded_excerpt(source)
     if not isinstance(content_text, str):
         raise SmokeContractError("Gemini citation excerpt was unavailable")
     start = _field(annotation, "start_index")
@@ -439,15 +458,25 @@ def _citation_excerpt(annotation: object, content_text: object) -> str:
     ):
         raise SmokeContractError("Gemini citation excerpt was unavailable")
     try:
-        return encoded[start:end].decode("utf-8")
+        return _bounded_excerpt(encoded[start:end].decode("utf-8"))
     except UnicodeDecodeError:
         raise SmokeContractError("Gemini citation excerpt was invalid") from None
+
+
+def _bounded_excerpt(value: str) -> str:
+    if len(value) > 4096 or not value.isprintable():
+        raise SmokeContractError("Gemini citation excerpt was invalid")
+    return value
 
 
 def _optional_page(value: object) -> int | None:
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= 1_000_000
+    ):
         raise SmokeContractError("Gemini citation page number was invalid")
     return value
 
