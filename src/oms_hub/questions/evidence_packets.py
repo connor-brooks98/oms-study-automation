@@ -437,45 +437,49 @@ def _select_bounded(
     groups: dict[str, list[_ResolvedEvidence]] = {}
     for item in ordered:
         groups.setdefault(_claim_signature(item.unit.normalized_text), []).append(item)
-    states: dict[tuple[int, int], _CoverState] = {(0, 0): _CoverState((), 0, 0)}
+    states: dict[tuple[int, int], tuple[_CoverState, ...]] = {
+        (0, 0): (_CoverState((), 0, 0),)
+    }
     for signature in sorted(groups):
         options = _group_options(tuple(groups[signature]), objectives)
         next_states = dict(states)
-        for (mask, count), state in states.items():
-            for option in options:
-                new_mask = mask | option.roles
-                new_count = count + len(option.selected)
-                if (
-                    new_mask == mask
-                    or new_count > MAX_EVIDENCE_UNITS
-                    or state.characters + option.characters
-                    > MAX_EVIDENCE_CHARACTERS
-                ):
-                    continue
-                candidate = _CoverState(
-                    selected=state.selected + option.selected,
-                    characters=state.characters + option.characters,
-                    priority=state.priority + option.priority,
-                )
-                key = (new_mask, new_count)
-                current = next_states.get(key)
-                if current is None or _required_state_key(candidate) < _required_state_key(
-                    current
-                ):
-                    next_states[key] = candidate
+        for (mask, count), frontier in states.items():
+            for state in frontier:
+                for option in options:
+                    new_mask = mask | option.roles
+                    new_count = count + len(option.selected)
+                    if (
+                        new_mask == mask
+                        or new_count > MAX_EVIDENCE_UNITS
+                        or state.characters + option.characters
+                        > MAX_EVIDENCE_CHARACTERS
+                    ):
+                        continue
+                    candidate = _CoverState(
+                        selected=state.selected + option.selected,
+                        characters=state.characters + option.characters,
+                        priority=state.priority + option.priority,
+                    )
+                    key = (new_mask, new_count)
+                    next_states[key] = _required_frontier(
+                        (*next_states.get(key, ()), candidate)
+                    )
         states = next_states
 
     complete = tuple(
-        state for (mask, _), state in states.items() if mask == full_role_mask
+        state
+        for (mask, _), frontier in states.items()
+        if mask == full_role_mask
+        for state in frontier
     )
     if not complete:
         raise QuestionEvidenceError("bounded packet cannot retain required evidence coverage")
     best = min(
         complete,
         key=lambda state: (
+            -state.priority,
             state.characters,
             len(state.selected),
-            -state.priority,
             _state_ids(state),
         ),
     ).selected
@@ -488,7 +492,8 @@ def _select_bounded(
         if evidence_id in selected:
             continue
         if len(selected) >= MAX_EVIDENCE_UNITS:
-            break
+            _swap_for_priority(selected, item, objectives)
+            continue
         projected = (*selected.values(), item)
         projected_characters = _evidence_characters(tuple(projected))
         if projected_characters > MAX_EVIDENCE_CHARACTERS:
@@ -515,6 +520,65 @@ def _role_mask(
         if objective.objective_id in item.objective_ids:
             mask |= 1 << index
     return mask
+
+
+def _required_frontier(states: tuple[_CoverState, ...]) -> tuple[_CoverState, ...]:
+    unique = {_state_ids(state): state for state in states}
+    frontier = tuple(
+        state
+        for state in unique.values()
+        if not any(
+            _required_dominates(other, state)
+            for other in unique.values()
+            if other is not state
+        )
+    )
+    return tuple(sorted(frontier, key=_required_state_key))
+
+
+def _required_dominates(first: _CoverState, second: _CoverState) -> bool:
+    if first.characters > second.characters or first.priority < second.priority:
+        return False
+    if first.characters < second.characters or first.priority > second.priority:
+        return True
+    return _state_ids(first) < _state_ids(second)
+
+
+def _swap_for_priority(
+    selected: dict[str, _ResolvedEvidence],
+    candidate: _ResolvedEvidence,
+    objectives: tuple[QuestionObjective, ...],
+) -> bool:
+    removable_items = sorted(
+        selected.values(),
+        key=lambda item: (item.unit.source_priority, item.unit.evidence_id),
+    )
+    for removable in removable_items:
+        if candidate.unit.source_priority <= removable.unit.source_priority:
+            return False
+        projected = tuple(
+            item
+            for evidence_id, item in selected.items()
+            if evidence_id != removable.unit.evidence_id
+        ) + (candidate,)
+        if not _covers_required_roles(projected, objectives):
+            continue
+        if _evidence_characters(projected) > MAX_EVIDENCE_CHARACTERS:
+            continue
+        del selected[removable.unit.evidence_id]
+        selected[candidate.unit.evidence_id] = candidate
+        return True
+    return False
+
+
+def _covers_required_roles(
+    selected: tuple[_ResolvedEvidence, ...],
+    objectives: tuple[QuestionObjective, ...],
+) -> bool:
+    available = 0
+    for item in selected:
+        available |= _role_mask(item, objectives)
+    return available == (1 << (1 + len(objectives))) - 1
 
 
 def _group_options(
