@@ -291,6 +291,40 @@ class IndexRepository:
             session.refresh(row)
             return self._job_from_row(row)
 
+    def claim_job(
+        self,
+        job_id: str,
+        worker_id: str,
+        now: datetime,
+        *,
+        lease_seconds: int,
+    ) -> IndexJob | None:
+        if not worker_id.strip() or len(worker_id) > 100:
+            raise ValueError("worker id is blank or unbounded")
+        if lease_seconds <= 0:
+            raise ValueError("lease seconds must be positive")
+        now_value = now.isoformat()
+        expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        with self.database.session() as session:
+            claimed = session.execute(
+                update(IndexJobModel)
+                .where(
+                    IndexJobModel.id == job_id,
+                    or_(
+                        IndexJobModel.lease_owner.is_(None),
+                        IndexJobModel.lease_expires_at.is_(None),
+                        IndexJobModel.lease_expires_at <= now_value,
+                    ),
+                )
+                .values(lease_owner=worker_id, lease_expires_at=expires)
+            )
+            if cast(CursorResult[Any], claimed).rowcount != 1:
+                return None
+            row = session.get(IndexJobModel, job_id)
+            assert row is not None
+            session.refresh(row)
+            return self._job_from_row(row)
+
     def claim_next_job(
         self,
         worker_id: str,

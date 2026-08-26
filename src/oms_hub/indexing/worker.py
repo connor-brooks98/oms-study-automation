@@ -140,55 +140,78 @@ class IndexWorker:
         resumed = 0
         terminal_failures = 0
         for job_id in candidates:
-            job = self.repository.get_job(job_id)
+            claim_token = self._claim_token()
+            job = self.repository.claim_job(
+                job_id,
+                claim_token,
+                now,
+                lease_seconds=self.lease_seconds,
+            )
             if job is None:
                 continue
-            if job.state in {
-                IndexState.READY,
-                IndexState.TERMINAL_FAILURE,
-                IndexState.DELETED,
-            }:
-                continue
-            if job.retry_count >= self.max_attempts:
-                self._save_job(job, state=IndexState.TERMINAL_FAILURE)
-                self._terminalize_document(job, last_error_category="retry-exhausted")
-                terminal_failures += 1
-                continue
-            if job.next_attempt_at is not None and job.next_attempt_at > now.isoformat():
-                continue
-            document = self.repository.get_document_by_source_revision(
-                job.store_id,
-                job.source_revision_id,
-            )
-            operation_name = (
-                document.provider_operation_name
-                if document is not None and document.provider_operation_name is not None
-                else job.provider_operation_name
-            )
-            identity_changes: dict[str, str] = {}
-            if (
-                document is not None
-                and document.provider_document_id is not None
-                and job.provider_document_id != document.provider_document_id
-            ):
-                identity_changes["provider_document_id"] = document.provider_document_id
-            if operation_name is not None and job.provider_operation_name != operation_name:
-                identity_changes["provider_operation_name"] = operation_name
-            if identity_changes:
-                job = self._save_job(
-                    job,
-                    state=job.state,
-                    **identity_changes,
-                )
-            if job.state is IndexState.IMPORTING and operation_name is None:
-                validate_transition(job.state, IndexState.FILE_UPLOADED)
-                self._save_job(job, state=IndexState.FILE_UPLOADED)
-                if document is not None and document.state is not IndexState.FILE_UPLOADED:
-                    validate_transition(document.state, IndexState.FILE_UPLOADED)
-                    self.repository.upsert_document(
-                        replace(document, state=IndexState.FILE_UPLOADED)
+            try:
+                if job.state in {
+                    IndexState.READY,
+                    IndexState.TERMINAL_FAILURE,
+                    IndexState.DELETED,
+                }:
+                    continue
+                if job.retry_count >= self.max_attempts:
+                    saved = self._save_job(
+                        job,
+                        state=IndexState.TERMINAL_FAILURE,
+                        lease_owner=claim_token,
                     )
-            resumed += 1
+                    self._terminalize_document(
+                        saved,
+                        last_error_category="retry-exhausted",
+                    )
+                    terminal_failures += 1
+                    continue
+                if job.next_attempt_at is not None and job.next_attempt_at > now.isoformat():
+                    continue
+                document = self.repository.get_document_by_source_revision(
+                    job.store_id,
+                    job.source_revision_id,
+                )
+                operation_name = (
+                    document.provider_operation_name
+                    if document is not None and document.provider_operation_name is not None
+                    else job.provider_operation_name
+                )
+                identity_changes: dict[str, str] = {}
+                if (
+                    document is not None
+                    and document.provider_document_id is not None
+                    and job.provider_document_id != document.provider_document_id
+                ):
+                    identity_changes["provider_document_id"] = document.provider_document_id
+                if operation_name is not None and job.provider_operation_name != operation_name:
+                    identity_changes["provider_operation_name"] = operation_name
+                if identity_changes:
+                    job = self._save_job(
+                        job,
+                        state=job.state,
+                        lease_owner=claim_token,
+                        **identity_changes,
+                    )
+                if job.state is IndexState.IMPORTING and operation_name is None:
+                    validate_transition(job.state, IndexState.FILE_UPLOADED)
+                    self._save_job(
+                        job,
+                        state=IndexState.FILE_UPLOADED,
+                        lease_owner=claim_token,
+                    )
+                    if document is not None and document.state is not IndexState.FILE_UPLOADED:
+                        validate_transition(document.state, IndexState.FILE_UPLOADED)
+                        self.repository.upsert_document(
+                            replace(document, state=IndexState.FILE_UPLOADED)
+                        )
+                resumed += 1
+            except _ClaimLost:
+                pass
+            finally:
+                self.repository.release_job_lease(job.id, claim_token)
         return RecoveryReport(
             reclaimed_leases=reclaimed,
             resumed_jobs=resumed,
@@ -259,6 +282,7 @@ class IndexWorker:
                 job,
                 state=result.state,
                 next_attempt_at=None,
+                lease_owner=lease_owner,
                 **identity_changes,
             )
 
