@@ -274,6 +274,46 @@ def test_database_rejects_duplicate_provider_identity_and_document_identity(
     assert repository.get_document(saved_document.id) is not None
 
 
+def test_repository_persists_multiple_bounded_inputs_for_one_revision(
+    database: Database,
+) -> None:
+    repository = IndexRepository(database)
+    saved_store = repository.create_store(store())
+    pdf = repository.save_document(
+        ProviderDocument(
+            store_id=saved_store.id,
+            provider="gemini",
+            provider_document_id="documents/pdf",
+            source_revision_id="sr_lecture_1",
+            input_key="pdf",
+            input_kind="pdf",
+            input_sha256="a" * 64,
+        )
+    )
+    markdown = repository.save_document(
+        ProviderDocument(
+            store_id=saved_store.id,
+            provider="gemini",
+            provider_document_id="documents/markdown",
+            source_revision_id="sr_lecture_1",
+            input_key="normalized_markdown",
+            input_kind="markdown",
+            input_sha256="b" * 64,
+        )
+    )
+
+    assert repository.get_document_by_source_revision(
+        saved_store.id, "sr_lecture_1", input_key="pdf"
+    ) == pdf
+    assert repository.get_document_by_source_revision(
+        saved_store.id, "sr_lecture_1", input_key="normalized_markdown"
+    ) == markdown
+    assert [item.input_key for item in repository.list_documents(saved_store)] == [
+        "normalized_markdown",
+        "pdf",
+    ]
+
+
 def test_repository_does_not_create_schema_in_constructor(tmp_path: Path) -> None:
     path = tmp_path / "not-created.sqlite"
     database = Database(f"sqlite:///{path}")

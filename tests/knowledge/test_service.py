@@ -27,6 +27,7 @@ from oms_hub.knowledge.models import (
     SourceRevisionState,
 )
 from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_course_revision
+from oms_hub.knowledge.normalization import render_index_markdown
 from oms_hub.knowledge.repository import KnowledgeRepository
 from oms_hub.knowledge.service import (
     KnowledgeIntegrityError,
@@ -179,10 +180,75 @@ def test_resolve_index_input_returns_frozen_verified_opaque_view(tmp_path: Path)
     assert view.pdf.artifact_id == f"{revision_id}:pdf"
     assert view.pptx.path == tmp_path / "deck.pptx"
     assert view.pdf.sha256 == sha256_file(tmp_path / "deck.pdf")
+    assert view.markdown.path.is_file()
+    assert view.markdown.path.read_text(encoding="utf-8") == render_index_markdown(evidence)
+    assert view.markdown.sha256 == sha256_file(view.markdown.path)
+    assert service.resolve_index_input(revision_id).markdown == view.markdown
     assert view.evidence_units == evidence
     assert (view.course_id, view.exam_id, view.lecture_id) == scope
     with pytest.raises(FrozenInstanceError):
         view.course_id = "changed"  # type: ignore[misc]
+
+
+def test_index_asset_contract_keeps_explicit_semantics_dimensions_and_evidence(
+    tmp_path: Path,
+) -> None:
+    asset_path = tmp_path / "figure.png"
+    asset_path.write_bytes(b"image")
+    pptx = tmp_path / "deck.pptx"
+    pdf = tmp_path / "deck.pdf"
+    pptx.write_bytes(b"pptx")
+    pdf.write_bytes(b"pdf")
+    source_id = "legacy-study-revision:7"
+    revision_id = make_revision_id(source_id, sha256_file(pptx))
+    asset = ParsedAsset(
+        key="figure-1",
+        path=asset_path,
+        media_type="image/png",
+        sha256=sha256_file(asset_path),
+        locator=DocumentLocator("slide 1 figure 1", slide_number=1),
+        width=640,
+        height=480,
+        visual_semantic=True,
+    )
+    segment = ParsedSegment(
+        "slide-1-figure-1",
+        SegmentKind.IMAGE,
+        "Diagnostic morphology",
+        asset.locator,
+        asset_keys=(asset.key,),
+    )
+    document = _document(
+        pptx,
+        revision_id,
+        segments=(segment,),
+        assets=(asset,),
+    )
+    course_id, exam_id, lecture_id = scope_ids("Heme", 2, 7)
+    evidence = normalize_course_revision(
+        CourseRevisionInput(
+            source_revision_id=revision_id,
+            course_id=course_id,
+            exam_id=exam_id,
+            lecture_id=lecture_id,
+            parsed_document=document,
+        )
+    )
+    service = KnowledgeService(
+        _Knowledge(
+            SourceRevision(source_id, revision_id, sha256_file(pptx)),
+            evidence,
+        ),
+        _Artifacts(pptx, pdf),
+        parser=_Parser(document),
+    )
+
+    view = service.resolve_index_input(revision_id)
+
+    assert len(view.assets) == 1
+    assert view.assets[0].visual_semantic is True
+    assert (view.assets[0].width, view.assets[0].height) == (640, 480)
+    assert view.assets[0].evidence_ids == (evidence[0].evidence_id,)
 
 
 def test_resolve_index_input_fails_closed_for_unsupported_state(tmp_path: Path) -> None:
