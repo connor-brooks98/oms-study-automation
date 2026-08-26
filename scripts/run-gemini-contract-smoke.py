@@ -36,7 +36,8 @@ SYNTHETIC_COURSE_ID = "task-2-8-synthetic-course"
 SYNTHETIC_EXAM_ID = "task-2-8-synthetic-exam"
 SYNTHETIC_LECTURE_ID = "task-2-8-synthetic-lecture"
 SYNTHETIC_REVISION_ID = "sr_aaaaaaaaaaaaaaaaaaaaaaaaaa"
-SYNTHETIC_FACT = "The Task 2.8 synthetic marker is cobalt-otter-28."
+SYNTHETIC_MARKER = "cobalt-otter-28"
+SYNTHETIC_FACT = f"The Task 2.8 synthetic marker is {SYNTHETIC_MARKER}."
 WRONG_LECTURE_ID = "task-2-8-wrong-lecture"
 
 
@@ -45,6 +46,8 @@ class SmokeContractError(RuntimeError):
         {
             "citation_wrong_file",
             "positive_answer_invalid",
+            "positive_answer_missing_marker",
+            "positive_answer_unsupported",
             "positive_citation_missing",
             "positive_citation_unresolved",
             "structured_output_invalid",
@@ -615,7 +618,7 @@ async def run_contract_smoke(
             failure_evidence["failure_stage"] = "positive_query"
         positive = await session.query(
             store_name,
-            f"Return the exact synthetic marker stated in the indexed PDF: {SYNTHETIC_FACT}",
+            "Return only the Task 2.8 synthetic marker value stated in the indexed PDF.",
             SmokeScope(SYNTHETIC_COURSE_ID, SYNTHETIC_EXAM_ID, SYNTHETIC_LECTURE_ID),
             response_schema=SmokeAnswer,
             omit_thinking=True,
@@ -629,10 +632,15 @@ async def run_contract_smoke(
                 "Gemini structured output did not match the required schema",
                 reason="structured_output_invalid",
             ) from None
-        if answer.answer != SYNTHETIC_FACT or not answer.supported:
+        if not answer.supported:
             raise SmokeContractError(
-                "structured output did not preserve the synthetic fact",
-                reason="positive_answer_invalid",
+                "structured output did not report grounded support",
+                reason="positive_answer_unsupported",
+            )
+        if SYNTHETIC_MARKER not in answer.answer:
+            raise SmokeContractError(
+                "structured output did not preserve the synthetic marker",
+                reason="positive_answer_missing_marker",
             )
         if not positive.citations:
             raise SmokeContractError(
