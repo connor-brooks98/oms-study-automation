@@ -1,5 +1,6 @@
 """Pure classification for the anonymous public quiz boundary."""
 
+import re
 from dataclasses import dataclass
 
 _ASSETS = frozenset(
@@ -34,8 +35,12 @@ def classify_public_path(path: str) -> PublicPathPolicy:
     if canonical in {"/public/quizzes", "/public/practice-questions"}:
         return PublicPathPolicy(True, is_canonical, "general")
     asset_prefix = "/public/quizzes/assets/"
-    if canonical.startswith(asset_prefix) and canonical[len(asset_prefix) :] in _ASSETS:
-        return PublicPathPolicy(True, is_canonical, "general")
+    if canonical.startswith(asset_prefix):
+        asset = canonical[len(asset_prefix) :]
+        if asset in _ASSETS or re.fullmatch(
+            r"(?:[0-9a-f]{12}-){4}[0-9a-f]{12}/library\.js", asset
+        ):
+            return PublicPathPolicy(True, is_canonical, "general")
     prefix = "/public/quizzes/"
     if not canonical.startswith(prefix):
         return PublicPathPolicy(False, is_canonical, None)

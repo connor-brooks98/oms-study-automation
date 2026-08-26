@@ -510,6 +510,11 @@ def test_successful_readiness_reports_database_and_current_schema(tmp_path) -> N
         ("/public/quizzes/assets/tokens.css", "general"),
         ("/public/quizzes/assets/reset.css", "general"),
         ("/public/quizzes/assets/study-hub.css", "general"),
+        (
+            "/public/quizzes/assets/0123456789ab-0123456789ab-0123456789ab-"
+            "0123456789ab-0123456789ab/library.js",
+            "general",
+        ),
     ],
 )
 def test_public_classifier_covers_every_canonical_and_one_slash_surface(
@@ -532,6 +537,7 @@ def test_public_classifier_covers_every_canonical_and_one_slash_surface(
         "/public/practice-questions//",
         "/public/quizzes/token//content",
         "/public/quizzes/token/unrecognized",
+        "/public/quizzes/assets/not-a-version/library.js",
     ],
 )
 def test_public_classifier_rejects_repeated_slashes_and_unrecognized_paths(path: str) -> None:
