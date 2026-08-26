@@ -234,6 +234,7 @@ def test_evidence_remap_is_append_only_and_preserves_original_objective() -> Non
     try:
         first_revision, first_unit = _seed_evidence(knowledge, suffix="hit-v1")
         second_revision, second_unit = _seed_evidence(knowledge, suffix="hit-v2")
+        third_revision, third_unit = _seed_evidence(knowledge, suffix="hit-v3")
         objective = _objective(first_revision, first_unit)
         repository.create_objective(objective)
 
@@ -258,6 +259,20 @@ def test_evidence_remap_is_append_only_and_preserves_original_objective() -> Non
         assert retry == remap
         assert remap.previous_evidence_ids == (first_unit,)
         assert remap.evidence_ids == (second_unit,)
+        assert repository.evidence_remaps("obj-hit") == (remap,)
+        for remap_id, created_at in (
+            ("remap-hit-v3-equal", "2026-08-25T14:00:00+00:00"),
+            ("remap-hit-v3-backdated", "2026-08-25T13:59:59+00:00"),
+        ):
+            with pytest.raises(ValueError, match="newer than the previous remap"):
+                repository.record_evidence_remap(
+                    "obj-hit",
+                    remap_id=remap_id,
+                    source_revision_ids=(third_revision,),
+                    evidence_ids=(third_unit,),
+                    reason="Source revision superseded again.",
+                    created_at=created_at,
+                )
         assert repository.evidence_remaps("obj-hit") == (remap,)
         assert {link.evidence_id for link in repository.evidence_links("obj-hit")} == {
             first_unit,
