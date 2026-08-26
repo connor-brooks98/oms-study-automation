@@ -926,3 +926,62 @@ def test_required_cover_selection_has_bounded_accounting_work(
 
     assert accounting_calls <= 128
     assert sum(len(unit.evidence_ids) for unit in packet.evidence) <= 16
+
+
+def test_cover_selection_keeps_signature_needed_by_later_role(
+    repository: KnowledgeRepository,
+) -> None:
+    concept_refs = tuple(
+        _add_evidence(
+            repository,
+            evidence_id=f"ev-concept-{index:02d}",
+            text=(
+                f"Target reusable claim{'!' * 17_900}"
+                if index == 8
+                else f"Alternative concept claim {index:02d}{'!' * (index * 200)}."
+            ),
+            source_priority=-10_000 if index == 8 else 100 + index,
+        )
+        for index in range(16)
+    )
+    first_objective_refs = tuple(
+        _add_evidence(
+            repository,
+            evidence_id=f"ev-first-objective-{index:02d}",
+            text=f"First objective support {index:02d}{'?' * (index * 200)}.",
+            source_priority=200 + index,
+        )
+        for index in range(16)
+    )
+    later_role = _add_evidence(
+        repository,
+        evidence_id="ev-later-role",
+        text=f"target REUSABLE claim{'?' * 18_000}",
+        source_priority=-10_001,
+    )
+    objectives = (
+        QuestionObjective("obj-a", "Objective A"),
+        QuestionObjective("obj-b", "Objective B"),
+    )
+    provider = FakeRetrievalProvider(
+        _result(),
+        by_query={
+            "Factor VIII deficiency": _result(*concept_refs),
+            "Objective A": _result(*first_objective_refs),
+            "Objective B": _result(later_role),
+        },
+    )
+
+    packet = _build(
+        QuestionEvidencePacketBuilder(provider, repository),
+        _request(
+            objectives=objectives,
+            mode=QuestionMode.INTEGRATED_BOARD_STYLE,
+        ),
+    )
+
+    retained_ids = {
+        evidence_id for unit in packet.evidence for evidence_id in unit.evidence_ids
+    }
+    assert {"ev-concept-08", "ev-later-role"}.issubset(retained_ids)
+    assert sum(len(unit.normalized_text) for unit in packet.evidence) <= 18_000
