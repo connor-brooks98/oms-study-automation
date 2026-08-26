@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 import pytest
@@ -95,6 +96,92 @@ def test_credentials_are_saved_independently_and_blank_retains_existing(tmp_path
     assert openai.headers["cache-control"] == "no-store"
 
 
+def test_openrouter_uses_only_generic_provider_routes_and_clears_diagnostics(tmp_path):
+    client, app, secrets = prepared_client(tmp_path)
+    app.state.llm_settings.record_test(
+        ProviderName.OPENROUTER,
+        state="failed",
+        tested_at="2026-08-09T00:00:00+00:00",
+        diagnostic_source="network",
+        diagnostic_message="stale diagnostic",
+    )
+
+    saved = client.post(
+        "/settings/ai/openrouter/credential",
+        json={"credential": "router-secret"},
+    )
+
+    source = Path(settings_routes.__file__).read_text(encoding="utf-8")
+    preference = app.state.llm_settings.get(ProviderName.OPENROUTER)
+    assert saved.json() == {"provider": "openrouter", "configured": True}
+    assert secrets.values["openrouter-api-key"] == "router-secret"
+    assert preference.last_test_state is None
+    assert preference.diagnostic_message is None
+    assert '@router.post("/ai/openrouter/credential")' not in source
+    assert '@router.post("/ai/openrouter/model")' not in source
+    assert '@router.post("/ai/openrouter/test")' not in source
+    assert '@router.post("/accuracy-gate")' in source
+
+
+def test_openrouter_generic_test_uses_its_saved_card_model_not_accuracy_assignment(tmp_path):
+    client, app, secrets = prepared_client(tmp_path)
+    secrets.set("openrouter-api-key", "router-secret")
+    app.state.llm_settings.set_model(ProviderName.OPENROUTER, "router/card-model")
+    app.state.llm_settings.set_assignment(
+        LLMTask.ACCURACY_REVIEW,
+        ProviderName.GEMINI,
+        "gemini/assigned-model",
+    )
+
+    response = client.post("/settings/ai/openrouter/test")
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "openrouter"
+    assert response.json()["state"] == "connected"
+    assert app.state.llm_settings.assignment(LLMTask.ACCURACY_REVIEW).model == (
+        "gemini/assigned-model"
+    )
+
+
+def test_openrouter_generic_model_change_preserves_accuracy_assignment(tmp_path):
+    client, app, _ = prepared_client(tmp_path)
+    app.state.llm_settings.set_assignment(
+        LLMTask.ACCURACY_REVIEW,
+        ProviderName.GEMINI,
+        "gemini/assigned-model",
+    )
+    app.state.llm_settings.record_test(
+        ProviderName.OPENROUTER,
+        state="failed",
+        tested_at="2026-08-09T00:00:00+00:00",
+        diagnostic_source="provider_model",
+        diagnostic_message="stale model diagnostic",
+    )
+
+    response = client.post(
+        "/settings/ai/openrouter/model",
+        json={"model": "openrouter/card-model"},
+    )
+
+    assert response.status_code == 200
+    preference = app.state.llm_settings.get(ProviderName.OPENROUTER)
+    assert preference.model == "openrouter/card-model"
+    assert preference.last_test_state is None
+    assert preference.diagnostic_message is None
+    assignment = app.state.llm_settings.assignment(LLMTask.ACCURACY_REVIEW)
+    assert assignment.provider is ProviderName.GEMINI
+    assert assignment.model == "gemini/assigned-model"
+
+
+def test_accuracy_gate_has_a_distinct_non_provider_endpoint(tmp_path):
+    client, _, _ = prepared_client(tmp_path)
+
+    response = client.post("/settings/accuracy-gate", json={"enabled": True})
+
+    assert response.status_code == 200
+    assert response.json() == {"enabled": True}
+
+
 def test_voyage_credential_is_saved_separately_and_blank_retains_existing(tmp_path):
     client, app, secrets = prepared_client(tmp_path)
     client.get("/settings")
@@ -130,6 +217,27 @@ def test_model_can_change_without_restart(tmp_path):
     assert app.state.llm_settings.get(ProviderName.GEMINI).model == (
         "gemini-3.6-flash"
     )
+
+
+def test_model_mutation_clears_prior_provider_diagnostics(tmp_path):
+    client, app, _ = prepared_client(tmp_path)
+    app.state.llm_settings.record_test(
+        ProviderName.GEMINI,
+        state="failed",
+        tested_at="2026-08-09T00:00:00+00:00",
+        diagnostic_source="provider_model",
+        diagnostic_message="old model failure",
+    )
+
+    response = client.post(
+        "/settings/ai/gemini/model",
+        json={"model": "gemini-3.6-flash"},
+    )
+
+    assert response.status_code == 200
+    preference = app.state.llm_settings.get(ProviderName.GEMINI)
+    assert preference.last_test_state is None
+    assert preference.diagnostic_message is None
 
 
 def test_connection_test_returns_connected_state_and_safe_metadata(tmp_path):

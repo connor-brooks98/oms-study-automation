@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -175,14 +176,26 @@ class GenerationWorker:
             )
             generate = getattr(self.notebook, "generate", None)
             if callable(generate):
-                generated = generate(
-                    lecture.subject,
-                    lecture.exam_number,
-                    job.lecture_id,
-                    pdf,
-                    transcript,
-                    notebook_prompt,
+                scope = getattr(self.notebook, "mutation_scope", None)
+                scope_context = (
+                    scope(
+                        lecture.subject,
+                        lecture.exam_number,
+                        "generation",
+                        str(job.id),
+                    )
+                    if callable(scope)
+                    else nullcontext()
                 )
+                with scope_context:
+                    generated = generate(
+                        lecture.subject,
+                        lecture.exam_number,
+                        job.lecture_id,
+                        pdf,
+                        transcript,
+                        notebook_prompt,
+                    )
                 notebook_ref = generated.notebook
                 sources = generated.sources
                 answer = generated.answer

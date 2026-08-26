@@ -925,6 +925,27 @@ test("authoritative job lecture labels override the local lecture catalog", () =
   assert.equal(row.children[0].children[1].children[0].textContent, "MSK Lecture 07");
 });
 
+test("authoritative job lecture labels override the local lecture catalog", () => {
+  class Node {
+    constructor() { this.dataset = {}; this.children = []; }
+    append(...children) { this.children.push(...children); }
+    setAttribute() {}
+  }
+  const row = anki.jobRow(
+    { createElement: () => new Node() },
+    {
+      id: 8,
+      state: "queued",
+      lecture_id: 2,
+      lecture_label: "MSK Lecture 07",
+      target_deck: "Study Hub::MSK",
+      updated_at: "2026-08-07T14:00:00",
+    },
+    [],
+  );
+  assert.equal(row.children[0].children[1].children[0].textContent, "MSK Lecture 07");
+});
+
 // -- Minimal fake DOM sufficient to drive initializeReview --
 
 class FakeReviewElement {

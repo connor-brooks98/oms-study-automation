@@ -15,6 +15,8 @@ from oms_hub.study_generation.native_quiz import (
 from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.artifact_routes import outline_pdf_response
+from oms_hub.web.csrf import require_form_csrf
+from oms_hub.web.lecture_labels import lecture_label
 from oms_hub.web.routes import _course_hue
 
 router = APIRouter(prefix="/public")
@@ -63,6 +65,17 @@ def _shared_style_version() -> str:
 class AnswerSubmission(BaseModel):
     question_id: _PublicId
     choice_id: _PublicId
+
+
+class QuestionFlagSubmission(BaseModel):
+    version: int
+    question_id: _PublicId
+    reason: Annotated[
+        str,
+        StringConstraints(
+            pattern=r"^(inaccurate_question|ambiguous_question|want_to_review|other)$"
+        ),
+    ]
 
 
 @router.get("/quizzes/assets/player.js", include_in_schema=False)
@@ -204,12 +217,17 @@ def _quiz_library(
                 ),
                 "is_studio": lecture is None,
                 "primary_label": (
-                    f"Lecture {lecture.lecture_number}"
+                    lecture_label(lecture.subject, lecture.lecture_number)
                     if lecture is not None
                     else published.title
                 ),
                 "secondary_label": lecture.topic if lecture is not None else None,
                 "url": f"/public/quizzes/{published.token}",
+                "open_flag_count": (
+                    repository.open_published_quiz_flag_count(published.token)
+                    if management_mode
+                    else 0
+                ),
                 "outline_url": (
                     f"/public/quizzes/{published.token}/outline"
                     if outline is not None
@@ -220,11 +238,13 @@ def _quiz_library(
     grouped = tuple(
         {
             "name": course_names[subject_key],
+            "key": subject_key,
             "hue": _course_hue(course_names[subject_key]),
             "quiz_count": sum(len(rows) for rows in exams.values()),
             "exams": tuple(
                 {
                     "number": number,
+                    "quiz_count": len(exams[number]),
                     "quizzes": tuple(exams[number]),
                 }
                 for number in sorted(exams)
@@ -462,3 +482,19 @@ def answer_question(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/quizzes/{token}/flags")
+def flag_question(
+    request: Request, token: str, submission: QuestionFlagSubmission
+) -> JSONResponse:
+    require_form_csrf(request, None)
+    try:
+        _repository(request).record_published_quiz_flag(
+            token, submission.version, submission.question_id, submission.reason
+        )
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    except KeyError as error:
+        raise HTTPException(404, "quiz was not found") from error
+    return JSONResponse({"status": "recorded"}, headers={"Cache-Control": "no-store"})

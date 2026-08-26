@@ -147,13 +147,24 @@ class PublicQuizRateLimiter:
 def public_client_identifier(
     forwarded_address: str | None,
     peer_address: str | None,
+    *,
+    trusted_proxy_addresses: frozenset[str] = frozenset({"127.0.0.1", "::1"}),
 ) -> str:
-    if forwarded_address:
+    peer = peer_address.strip() if peer_address else None
+    try:
+        normalized_peer = str(ip_address(peer)) if peer else None
+    except ValueError:
+        normalized_peer = peer
+    if (
+        normalized_peer in trusted_proxy_addresses
+        and forwarded_address
+        and "," not in forwarded_address
+    ):
         candidate = forwarded_address.strip()
         try:
             return str(ip_address(candidate))
         except ValueError:
             pass
-    if peer_address:
-        return peer_address
+    if normalized_peer:
+        return normalized_peer
     return "unknown"

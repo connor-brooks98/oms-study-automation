@@ -12,7 +12,10 @@ from oms_hub.files.office import (
 )
 from oms_hub.files.promotion import PromotionRecoveryError
 from oms_hub.ingestion.domain import IngestionJob, UploadKind, UploadState
-from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.ingestion.repository import (
+    IngestionRepository,
+    TranscriptAdmissionPending,
+)
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
 from oms_hub.transcripts.pipeline import TranscriptValidationError
 
@@ -47,7 +50,7 @@ class IngestionWorker:
         if job is None:
             return False
         try:
-            if job.action != "process":
+            if job.action not in {"process", "confirmed_process"}:
                 raise ValueError(f"unsupported ingestion action: {job.action}")
             pipeline = (
                 self.slide_pipeline
@@ -64,7 +67,9 @@ class IngestionWorker:
         claim_contention = isinstance(
             error, (ArtifactWriteContended, ArtifactWriteClaimLost)
         )
-        recovery_pending = isinstance(error, PromotionRecoveryError)
+        recovery_pending = isinstance(
+            error, (PromotionRecoveryError, TranscriptAdmissionPending)
+        )
         if claim_contention or (self._is_transient(error) and (
             recovery_pending or job.attempts < self.max_attempts
         )):
@@ -119,6 +124,7 @@ class IngestionWorker:
                 OfficeTimeoutError,
                 OfficeUnavailableError,
                 PromotionRecoveryError,
+                TranscriptAdmissionPending,
             ),
         )
 

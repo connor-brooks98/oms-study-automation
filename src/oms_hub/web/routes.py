@@ -185,6 +185,11 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
     generation = GenerationRepository(request.app.state.database)
     outline = generation.current_outline(lecture_id)
     quiz = generation.current_quiz(lecture_id)
+    subject_lectures = sorted(
+        (item for item in _repo(request).list_lectures() if item.subject == lecture.subject),
+        key=lambda item: (item.exam_number, item.lecture_number, item.id),
+    )
+    position = next(index for index, item in enumerate(subject_lectures) if item.id == lecture.id)
     return templates.TemplateResponse(
         request=request,
         name="lecture.html",
@@ -215,6 +220,12 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
             "quiz_job": generation.current_job(
                 lecture_id,
                 GenerationKind.QUIZ,
+            ),
+            "previous_lecture": subject_lectures[position - 1] if position else None,
+            "next_lecture": (
+                subject_lectures[position + 1]
+                if position + 1 < len(subject_lectures)
+                else None
             ),
         },
     )

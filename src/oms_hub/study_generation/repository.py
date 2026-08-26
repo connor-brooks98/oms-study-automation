@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
@@ -21,9 +21,11 @@ from oms_hub.models import (
     GoogleConnectionModel,
     LectureModel,
     NotebookMappingModel,
+    NotebookScopeLeaseModel,
     NotebookSourceMappingModel,
     OutlineOutputModel,
     OutlineReplacementReviewModel,
+    PublishedQuizFlagModel,
     PublishedQuizMediaModel,
     PublishedQuizModel,
     QuizOutputModel,
@@ -66,6 +68,10 @@ _ACTIVE_STATES = {
     GenerationState.PAUSED.value,
 }
 _ANKI_PROMPT_DIRECTORY_KEY = "anki_curation_prompt_directory"
+
+
+class StudioPublicationRecoveryConflict(RuntimeError):
+    """Active Studio publication ownership cannot be resolved safely."""
 
 
 class DirectImportReviewer(Protocol):
@@ -251,6 +257,101 @@ class GenerationRepository:
                 )
             )
             return self._notebook_mapping(model) if model is not None else None
+
+    def acquire_notebook_scope(
+        self,
+        subject_key: str,
+        exam_number: int,
+        owner_kind: str,
+        owner_id: str,
+        *,
+        now: datetime | None = None,
+        lease_duration: timedelta = timedelta(minutes=30),
+    ) -> bool:
+        """Atomically acquire or renew one logical NotebookLM mutation scope."""
+        normalized_key = _normalize(subject_key)
+        normalized_kind = owner_kind.strip()
+        normalized_owner = owner_id.strip()
+        if not normalized_key or not normalized_kind or not normalized_owner:
+            raise ValueError("notebook scope owner fields cannot be empty")
+        if exam_number < 1:
+            raise ValueError("exam number must be positive")
+        now = now or datetime.now(UTC)
+        expires_at = (now + lease_duration).isoformat()
+        with self.database.session() as session:
+            result = session.execute(
+                text(
+                    "INSERT INTO notebook_scope_leases "
+                    "(subject_key, exam_number, owner_kind, owner_id, "
+                    "lease_expires_at, updated_at) "
+                    "VALUES (:subject_key, :exam_number, :owner_kind, :owner_id, "
+                    ":lease_expires_at, :updated_at) "
+                    "ON CONFLICT(subject_key, exam_number) DO UPDATE SET "
+                    "owner_kind=excluded.owner_kind, owner_id=excluded.owner_id, "
+                    "lease_expires_at=excluded.lease_expires_at, "
+                    "updated_at=excluded.updated_at "
+                    "WHERE notebook_scope_leases.lease_expires_at <= :updated_at "
+                    "OR (notebook_scope_leases.owner_kind=:owner_kind "
+                    "AND notebook_scope_leases.owner_id=:owner_id)"
+                ),
+                {
+                    "subject_key": normalized_key,
+                    "exam_number": exam_number,
+                    "owner_kind": normalized_kind[:30],
+                    "owner_id": normalized_owner[:100],
+                    "lease_expires_at": expires_at,
+                    "updated_at": now.isoformat(),
+                },
+            )
+            return cast(CursorResult[Any], result).rowcount == 1
+
+    def release_notebook_scope(
+        self,
+        subject_key: str,
+        exam_number: int,
+        owner_kind: str,
+        owner_id: str,
+    ) -> bool:
+        """Release only the lease still owned by this exact durable operation."""
+        with self.database.session() as session:
+            result = session.execute(
+                delete(NotebookScopeLeaseModel).where(
+                    NotebookScopeLeaseModel.subject_key == _normalize(subject_key),
+                    NotebookScopeLeaseModel.exam_number == exam_number,
+                    NotebookScopeLeaseModel.owner_kind == owner_kind.strip()[:30],
+                    NotebookScopeLeaseModel.owner_id == owner_id.strip()[:100],
+                )
+            )
+            return cast(CursorResult[Any], result).rowcount == 1
+
+    def renew_notebook_scope(
+        self,
+        subject_key: str,
+        exam_number: int,
+        owner_kind: str,
+        owner_id: str,
+        *,
+        now: datetime | None = None,
+        lease_duration: timedelta = timedelta(minutes=30),
+    ) -> bool:
+        """Extend a live lease without reclaiming an expired or replaced owner."""
+        now = now or datetime.now(UTC)
+        with self.database.session() as session:
+            result = session.execute(
+                update(NotebookScopeLeaseModel)
+                .where(
+                    NotebookScopeLeaseModel.subject_key == _normalize(subject_key),
+                    NotebookScopeLeaseModel.exam_number == exam_number,
+                    NotebookScopeLeaseModel.owner_kind == owner_kind.strip()[:30],
+                    NotebookScopeLeaseModel.owner_id == owner_id.strip()[:100],
+                    NotebookScopeLeaseModel.lease_expires_at > now.isoformat(),
+                )
+                .values(
+                    lease_expires_at=(now + lease_duration).isoformat(),
+                    updated_at=now.isoformat(),
+                )
+            )
+            return cast(CursorResult[Any], result).rowcount == 1
 
     def save_notebook_mapping(
         self,
@@ -934,11 +1035,13 @@ class GenerationRepository:
         job_id: str,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
-        self._validate_accuracy(quiz)
         with self.database.session() as session:
             lecture = session.get(LectureModel, lecture_id)
             if lecture is None:
                 raise ValueError("lecture was removed")
+            # Lecture generation owns this title; Studio/import labels remain untouched.
+            quiz = replace(quiz, title=lecture.topic.strip())
+            self._validate_accuracy(quiz)
             model = session.scalar(
                 select(PublishedQuizModel).where(
                     PublishedQuizModel.lecture_id == lecture_id,
@@ -1017,6 +1120,100 @@ class GenerationRepository:
             session.flush()
             return self._published_quiz(model)
 
+    def replace_published_quiz_payload(self, token: str, payload_json: str) -> PublishedQuizRecord:
+        """Atomically validate, replace, and version a private editor update."""
+        quiz = parse_native_quiz(payload_json)
+        with self.database.session() as session:
+            model = self._active_published_quiz_in_session(session, token)
+            available_image_keys = set(
+                session.scalars(
+                    select(PublishedQuizMediaModel.image_key).where(
+                        PublishedQuizMediaModel.quiz_token == token
+                    )
+                ).all()
+            )
+            unknown_images = {
+                question.image_ref.key
+                for question in quiz.questions
+                if question.image_ref is not None
+            } - available_image_keys
+            if unknown_images:
+                raise ValueError(
+                    "quiz references unavailable image media: "
+                    + ", ".join(sorted(unknown_images))
+                )
+            old_version = model.version
+            # Question editing is intentionally title-neutral: a stale library form
+            # must not undo a title PATCH that already succeeded in this session.
+            quiz = replace(quiz, title=model.title)
+            model.payload_json = serialize_native_quiz(quiz)
+            model.version += 1
+            session.execute(
+                update(PublishedQuizFlagModel)
+                .where(
+                    PublishedQuizFlagModel.quiz_token == token,
+                    PublishedQuizFlagModel.quiz_version == old_version,
+                    PublishedQuizFlagModel.status == "open",
+                )
+                .values(status="resolved")
+            )
+            session.flush()
+            return self._published_quiz(model)
+
+    def record_published_quiz_flag(
+        self, token: str, version: int, question_id: str, reason: str
+    ) -> None:
+        with self.database.session() as session:
+            model = self._active_published_quiz_in_session(session, token)
+            question_ids = {
+                question.id for question in parse_native_quiz(model.payload_json).questions
+            }
+            if model.version != version or question_id not in question_ids:
+                raise ValueError("quiz question is no longer current")
+            session.execute(
+                text(
+                    "INSERT INTO published_quiz_flags "
+                    "(quiz_token, quiz_version, question_id, reason, occurrence_count, status, "
+                    "created_at, updated_at) "
+                    "VALUES (:token, :version, :question_id, :reason, 1, 'open', :now, :now) "
+                    "ON CONFLICT (quiz_token, quiz_version, question_id, reason) DO UPDATE SET "
+                    "occurrence_count = published_quiz_flags.occurrence_count + 1, "
+                    "status = 'open', updated_at = :now"
+                ),
+                {"token": token, "version": version, "question_id": question_id, "reason": reason,
+                 "now": datetime.now(UTC).isoformat()},
+            )
+
+    def open_published_quiz_flags(self, token: str) -> tuple[dict[str, object], ...]:
+        with self.database.session() as session:
+            self._active_published_quiz_in_session(session, token)
+            rows = session.scalars(
+                select(PublishedQuizFlagModel)
+                .where(
+                    PublishedQuizFlagModel.quiz_token == token,
+                    PublishedQuizFlagModel.status == "open",
+                )
+                .order_by(
+                    PublishedQuizFlagModel.updated_at.desc(),
+                    PublishedQuizFlagModel.id.desc(),
+                )
+            ).all()
+            return tuple({"question_id": row.question_id, "reason": row.reason,
+                          "count": row.occurrence_count, "version": row.quiz_version}
+                         for row in rows)
+
+    def open_published_quiz_flag_count(self, token: str) -> int:
+        with self.database.session() as session:
+            return int(
+                session.scalar(
+                    select(func.count(PublishedQuizFlagModel.id)).where(
+                        PublishedQuizFlagModel.quiz_token == token,
+                        PublishedQuizFlagModel.status == "open",
+                    )
+                )
+                or 0
+            )
+
     def move_published_quiz(
         self,
         token: str,
@@ -1083,65 +1280,314 @@ class GenerationRepository:
     ) -> PublishedQuizRecord:
         self._validate_accuracy(quiz)
         with self.database.session() as session:
+            return self._publish_studio_quiz_in_session(session, run_id, quiz)
+
+    def publish_and_complete_studio_run(
+        self,
+        run_id: str,
+        quiz: NativeQuiz,
+        notebook_id: str,
+        raw_response: str,
+    ) -> PublishedQuizRecord:
+        """Atomically publish a generated Studio quiz and complete its run.
+
+        The same-run branch also repairs the historical split-commit state: an
+        active publication already owned by the run is adopted, not duplicated.
+        """
+        self._validate_accuracy(quiz)
+        with self.database.session() as session:
             run = session.get(StudioRunModel, run_id)
             if run is None:
                 raise ValueError("Studio run was removed")
-            model = None
-            if run.supersedes_run_id:
-                model = session.scalar(
-                    select(PublishedQuizModel).where(
-                        PublishedQuizModel.studio_run_id == run.supersedes_run_id
-                    )
+            owned = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id == run_id,
+                    PublishedQuizModel.active.is_(True),
                 )
-            if model is None:
-                duplicate = session.scalar(
-                    select(PublishedQuizModel).where(
-                        PublishedQuizModel.studio_run_id.is_not(None),
-                        PublishedQuizModel.destination_subject_key == run.destination_subject_key,
-                        PublishedQuizModel.destination_exam_number == run.destination_exam_number,
-                        PublishedQuizModel.label_key == run.label_key,
-                        PublishedQuizModel.active.is_(True),
-                    )
-                )
-                if duplicate is not None:
-                    raise ValueError(
-                        "a published Studio quiz already uses this label for that exam"
-                    )
-                model = PublishedQuizModel(
-                    token=secrets.token_hex(32),
-                    lecture_id=None,
-                    job_id=None,
-                    studio_run_id=run.id,
-                    destination_subject=run.destination_subject,
-                    destination_subject_key=run.destination_subject_key,
-                    destination_exam_number=run.destination_exam_number,
-                    label=run.label,
-                    label_key=run.label_key,
-                    title=quiz.title,
-                    payload_json=serialize_native_quiz(quiz),
-                    content_kind=run.content_kind,
-                    version=1,
-                    active=True,
-                )
-                model.display_order = self._next_display_order(session, model)
-                session.add(model)
+            )
+            adopting_historical_publication = owned is not None
+            if owned is None:
+                created = self._publish_studio_quiz_in_session(session, run_id, quiz)
+                # The helper returns a domain value, so reacquire the persisted row.
+                published = session.get(PublishedQuizModel, created.token)
+                assert published is not None
             else:
-                previous = session.get(StudioRunModel, run.supersedes_run_id)
-                if previous is not None:
-                    previous.published_token = None
-                model.studio_run_id = run.id
-                model.destination_subject = run.destination_subject
-                model.destination_subject_key = run.destination_subject_key
-                model.destination_exam_number = run.destination_exam_number
-                model.label = run.label
-                model.label_key = run.label_key
-                model.title = quiz.title
-                model.payload_json = serialize_native_quiz(quiz)
-                model.content_kind = run.content_kind
-                model.version += 1
-                model.active = True
+                published = owned
+            run.state = StudioRunState.COMPLETE.value
+            run.stage = StudioRunStage.COMPLETE.value
+            if not adopting_historical_publication or run.notebook_id is None:
+                run.notebook_id = notebook_id
+            if not adopting_historical_publication or run.raw_response is None:
+                run.raw_response = raw_response
+            run.published_token = published.token
+            run.error = None
+            run.next_attempt_at = None
             session.flush()
-            return self._published_quiz(model)
+            return self._published_quiz(published)
+
+    def adopt_owned_studio_publication(
+        self,
+        run_id: str,
+    ) -> PublishedQuizRecord | None:
+        """Complete a historical split run without repeating its remote work."""
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise ValueError("Studio run was removed")
+            published = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id == run_id,
+                    PublishedQuizModel.active.is_(True),
+                )
+            )
+            if published is None:
+                return None
+            run.state = StudioRunState.COMPLETE.value
+            run.stage = StudioRunStage.COMPLETE.value
+            run.published_token = published.token
+            run.error = None
+            run.next_attempt_at = None
+            session.flush()
+            return self._published_quiz(published)
+
+    def recover_owned_studio_publications(self) -> int:
+        """Atomically converge publication owners and conflicting active runs.
+
+        Older code could commit the publication and subsequently mark its run
+        failed.  Such a run is outside the normal queued/retrying claim set, so
+        startup recovery must discover it from publication ownership instead
+        of waiting for the run worker to claim it. The publication owner and
+        every conflicting active run are updated in this one SQL transaction.
+        """
+        with self.database.session() as session:
+            publications = session.scalars(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id.is_not(None),
+                    PublishedQuizModel.active.is_(True),
+                ).order_by(
+                    PublishedQuizModel.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number,
+                    PublishedQuizModel.label_key,
+                    PublishedQuizModel.token,
+                )
+            ).all()
+            recovered = 0
+            seen_scopes: set[tuple[str, int, str]] = set()
+            for published in publications:
+                assert published.studio_run_id is not None
+                scope = (
+                    published.destination_subject_key,
+                    published.destination_exam_number,
+                    published.label_key,
+                )
+                if scope in seen_scopes:
+                    raise StudioPublicationRecoveryConflict(
+                        "startup recovery conflict: multiple active Studio publications "
+                        f"exist for {scope[0]} exam {scope[1]} label {scope[2]}"
+                    )
+                seen_scopes.add(scope)
+                run = session.get(StudioRunModel, published.studio_run_id)
+                if run is None:
+                    raise StudioPublicationRecoveryConflict(
+                        "startup recovery conflict: active Studio publication "
+                        f"{published.token} references missing run {published.studio_run_id}"
+                    )
+                owner_already_complete = (
+                    run.state == StudioRunState.COMPLETE.value
+                    and run.published_token == published.token
+                )
+                conflicts = session.scalars(
+                    select(StudioRunModel).where(
+                        StudioRunModel.destination_subject_key == scope[0],
+                        StudioRunModel.destination_exam_number == scope[1],
+                        StudioRunModel.label_key == scope[2],
+                        StudioRunModel.id != run.id,
+                        StudioRunModel.state.in_(
+                            {
+                                StudioRunState.QUEUED.value,
+                                StudioRunState.RUNNING.value,
+                                StudioRunState.RETRYING.value,
+                            }
+                        ),
+                    )
+                ).all()
+                for conflict in conflicts:
+                    if conflict.supersedes_run_id == run.id:
+                        # A declared rerun intentionally coexists with its
+                        # predecessor's durable publication until replacement.
+                        # Leave it active for normal interrupted-run recovery.
+                        continue
+                    conflict.state = StudioRunState.FAILED.value
+                    conflict.diagnostic_source = "recovery"
+                    conflict.error = (
+                        f"active publication {published.token} is owned by Studio run "
+                        f"{run.id}; conflicting run retired during startup recovery"
+                    )
+                    conflict.next_attempt_at = None
+                run.state = StudioRunState.COMPLETE.value
+                run.stage = StudioRunStage.COMPLETE.value
+                run.published_token = published.token
+                run.error = None
+                run.next_attempt_at = None
+                if not owner_already_complete:
+                    recovered += 1
+            session.flush()
+            return recovered
+
+    def prepare_studio_run_chat(self, run_id: str) -> bool:
+        """Resolve publication ownership before a claimed run may do remote work.
+
+        Returns true when the scope has no active publication or when a rerun
+        is replacing its declared predecessor. Owning runs adopt their durable
+        publication; unrelated non-owning runs enter a targeted terminal
+        recovery state. The check and state transition share one SQL transaction
+        so the worker never merely returns with a running claim.
+        """
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise ValueError("Studio run was removed")
+            publications = session.scalars(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id.is_not(None),
+                    PublishedQuizModel.destination_subject_key
+                    == run.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number
+                    == run.destination_exam_number,
+                    PublishedQuizModel.label_key == run.label_key,
+                    PublishedQuizModel.active.is_(True),
+                )
+            ).all()
+            if not publications:
+                run.stage = StudioRunStage.CHAT.value
+                session.flush()
+                return True
+            if len(publications) > 1:
+                raise StudioPublicationRecoveryConflict(
+                    "worker recovery conflict: multiple active Studio publications "
+                    f"exist for {run.destination_subject_key} exam "
+                    f"{run.destination_exam_number} label {run.label_key}"
+                )
+            published = publications[0]
+            assert published.studio_run_id is not None
+            if published.studio_run_id == run.id:
+                run.state = StudioRunState.COMPLETE.value
+                run.stage = StudioRunStage.COMPLETE.value
+                run.published_token = published.token
+                run.error = None
+                run.next_attempt_at = None
+            elif (
+                run.supersedes_run_id is not None
+                and published.studio_run_id == run.supersedes_run_id
+            ):
+                # A rerun deliberately keeps its predecessor's publication live
+                # until the replacement is ready. That durable predecessor does
+                # not make the successor's remote work unsafe.
+                run.stage = StudioRunStage.CHAT.value
+                session.flush()
+                return True
+            else:
+                run.state = StudioRunState.FAILED.value
+                run.diagnostic_source = "recovery"
+                run.error = (
+                    f"active publication {published.token} is owned by Studio run "
+                    f"{published.studio_run_id}; remote chat was not created"
+                )
+                run.next_attempt_at = None
+            session.flush()
+            return False
+
+    @staticmethod
+    def _require_unreserved_studio_publication_scope(
+        session: Session,
+        run: StudioRunModel,
+    ) -> None:
+        competing_active_run = session.scalar(
+            select(StudioRunModel).where(
+                StudioRunModel.destination_subject_key
+                == run.destination_subject_key,
+                StudioRunModel.destination_exam_number
+                == run.destination_exam_number,
+                StudioRunModel.label_key == run.label_key,
+                StudioRunModel.id != run.id,
+                StudioRunModel.state.in_(
+                    {
+                        StudioRunState.QUEUED.value,
+                        StudioRunState.RUNNING.value,
+                        StudioRunState.RETRYING.value,
+                    }
+                ),
+            )
+        )
+        if competing_active_run is not None:
+            raise ValueError(
+                "another active Studio run owns this publication scope; "
+                "publication was not changed"
+            )
+
+    def _publish_studio_quiz_in_session(
+        self, session: Session, run_id: str, quiz: NativeQuiz
+    ) -> PublishedQuizRecord:
+        run = session.get(StudioRunModel, run_id)
+        if run is None:
+            raise ValueError("Studio run was removed")
+        self._require_unreserved_studio_publication_scope(session, run)
+        model = None
+        if run.supersedes_run_id:
+            model = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id == run.supersedes_run_id
+                )
+            )
+        if model is None:
+            duplicate = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id.is_not(None),
+                    PublishedQuizModel.destination_subject_key == run.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number == run.destination_exam_number,
+                    PublishedQuizModel.label_key == run.label_key,
+                    PublishedQuizModel.active.is_(True),
+                )
+            )
+            if duplicate is not None:
+                raise ValueError(
+                    "a published Studio quiz already uses this label for that exam"
+                )
+            model = PublishedQuizModel(
+                token=secrets.token_hex(32),
+                lecture_id=None,
+                job_id=None,
+                studio_run_id=run.id,
+                destination_subject=run.destination_subject,
+                destination_subject_key=run.destination_subject_key,
+                destination_exam_number=run.destination_exam_number,
+                label=run.label,
+                label_key=run.label_key,
+                title=quiz.title,
+                payload_json=serialize_native_quiz(quiz),
+                content_kind=run.content_kind,
+                version=1,
+                active=True,
+            )
+            model.display_order = self._next_display_order(session, model)
+            session.add(model)
+        else:
+            previous = session.get(StudioRunModel, run.supersedes_run_id)
+            if previous is not None:
+                previous.published_token = None
+            model.studio_run_id = run.id
+            model.destination_subject = run.destination_subject
+            model.destination_subject_key = run.destination_subject_key
+            model.destination_exam_number = run.destination_exam_number
+            model.label = run.label
+            model.label_key = run.label_key
+            model.title = quiz.title
+            model.payload_json = serialize_native_quiz(quiz)
+            model.content_kind = run.content_kind
+            model.version += 1
+            model.active = True
+        session.flush()
+        return self._published_quiz(model)
 
     def publish_reviewed_studio_quiz(
         self,
@@ -1159,6 +1605,7 @@ class GenerationRepository:
                     and existing.studio_run_id == run_id
                 ):
                     return self._published_quiz(existing)
+            self._require_unreserved_studio_publication_scope(session, run)
             if run.workflow_kind == QuizWorkflowKind.DIRECT_IMPORT.value:
                 if run.state != StudioRunState.AWAITING_REVIEW.value:
                     raise ValueError("imported quiz is not awaiting question review")

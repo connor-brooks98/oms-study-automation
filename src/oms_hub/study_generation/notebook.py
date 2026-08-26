@@ -2,13 +2,17 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
+from threading import Event, Lock, Thread
+from time import monotonic
 from typing import Any, Literal, Protocol, cast
+from uuid import uuid4
 
 from pydantic import (
     BaseModel,
@@ -32,6 +36,8 @@ from oms_hub.study_generation.domain import (
 )
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
+    NotebookScopeBusyError,
+    NotebookScopeLostError,
     translate_notebook_error,
 )
 from oms_hub.study_generation.notebook_storage import PlaintextNotebookStorage
@@ -42,6 +48,20 @@ logger = logging.getLogger(__name__)
 __all__ = ["NotebookAuthenticationError"]
 _active_client: ContextVar[Any | None] = ContextVar(
     "notebooklm_active_client",
+    default=None,
+)
+
+
+@dataclass(slots=True)
+class _MutationScopeState:
+    gateway_id: int
+    subject_key: str
+    exam_number: int
+    lost: Event
+
+
+_active_scope: ContextVar[_MutationScopeState | None] = ContextVar(
+    "notebooklm_active_scope",
     default=None,
 )
 
@@ -220,6 +240,8 @@ class StoredNotebookLMGateway:
         repository: GenerationRepository,
         *,
         client_factory: Callable[[], Any] | None = None,
+        scope_lease_duration: timedelta = timedelta(minutes=30),
+        scope_renew_interval_seconds: float = 60.0,
     ):
         self.storage = (
             PlaintextNotebookStorage(storage_path)
@@ -228,14 +250,178 @@ class StoredNotebookLMGateway:
         )
         self.repository = repository
         self.client_factory = client_factory
+        if scope_lease_duration.total_seconds() <= scope_renew_interval_seconds:
+            raise ValueError("notebook scope lease must exceed its renewal interval")
+        if scope_renew_interval_seconds <= 0:
+            raise ValueError("notebook scope renewal interval must be positive")
+        self._scope_lease_duration = scope_lease_duration
+        self._scope_renew_interval_seconds = scope_renew_interval_seconds
+        self._scope_locks: dict[tuple[str, int], Lock] = {}
+        self._scope_locks_guard = Lock()
+
+    @contextmanager
+    def mutation_scope(
+        self,
+        subject: str,
+        exam_number: int,
+        owner_kind: str,
+        owner_id: str,
+    ) -> Iterator[None]:
+        """Serialize every local and cross-process mutation of one notebook."""
+        subject_key = " ".join(subject.casefold().split())
+        scope = (subject_key, exam_number)
+        active = _active_scope.get()
+        if self._scope_matches(active, subject_key, exam_number):
+            self._raise_if_scope_lost(active)
+            yield
+            self._raise_if_scope_lost(active)
+            return
+        with self._scope_locks_guard:
+            local_lock = self._scope_locks.setdefault(scope, Lock())
+        if not local_lock.acquire(blocking=False):
+            raise NotebookScopeBusyError()
+        durable_acquired = False
+        acquire = getattr(self.repository, "acquire_notebook_scope", None)
+        renew = getattr(self.repository, "renew_notebook_scope", None)
+        release = getattr(self.repository, "release_notebook_scope", None)
+        stop_renewal = Event()
+        state = _MutationScopeState(id(self), subject_key, exam_number, Event())
+        renewal_thread: Thread | None = None
+        try:
+            if callable(acquire):
+                durable_acquired = bool(
+                    acquire(
+                        subject_key,
+                        exam_number,
+                        owner_kind,
+                        owner_id,
+                        lease_duration=self._scope_lease_duration,
+                    )
+                )
+                if not durable_acquired:
+                    raise NotebookScopeBusyError()
+                if not callable(renew):
+                    raise RuntimeError("durable notebook scope does not support renewal")
+                renewal_thread = Thread(
+                    target=self._renew_scope_lease,
+                    args=(
+                        subject_key,
+                        exam_number,
+                        owner_kind,
+                        owner_id,
+                        renew,
+                        stop_renewal,
+                        state.lost,
+                    ),
+                    name=f"oms-notebook-scope-{exam_number}",
+                    daemon=True,
+                )
+                renewal_thread.start()
+            token = _active_scope.set(state)
+            try:
+                yield
+                stop_renewal.set()
+                if renewal_thread is not None:
+                    renewal_thread.join(timeout=5)
+                self._raise_if_scope_lost(state)
+            finally:
+                _active_scope.reset(token)
+                stop_renewal.set()
+                if renewal_thread is not None and renewal_thread.is_alive():
+                    renewal_thread.join(timeout=5)
+                if durable_acquired and callable(release):
+                    try:
+                        release(subject_key, exam_number, owner_kind, owner_id)
+                    except Exception:  # noqa: BLE001 - expiry remains a safe fallback
+                        logger.exception("NotebookLM scope lease release failed")
+        finally:
+            local_lock.release()
+
+    def _scope_matches(
+        self,
+        active: _MutationScopeState | None,
+        subject_key: str,
+        exam_number: int,
+    ) -> bool:
+        return bool(
+            active is not None
+            and active.gateway_id == id(self)
+            and active.subject_key == subject_key
+            and active.exam_number == exam_number
+        )
+
+    @staticmethod
+    def _raise_if_scope_lost(active: _MutationScopeState | None) -> None:
+        if active is not None and active.lost.is_set():
+            raise NotebookScopeLostError()
+
+    def _renew_scope_lease(
+        self,
+        subject_key: str,
+        exam_number: int,
+        owner_kind: str,
+        owner_id: str,
+        renew: Callable[..., object],
+        stop: Event,
+        lost: Event,
+    ) -> None:
+        deadline = monotonic() + self._scope_lease_duration.total_seconds()
+        while not stop.wait(self._scope_renew_interval_seconds):
+            try:
+                renewed = bool(
+                    renew(
+                        subject_key,
+                        exam_number,
+                        owner_kind,
+                        owner_id,
+                        lease_duration=self._scope_lease_duration,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - retry until the existing lease expires
+                logger.exception("NotebookLM scope lease renewal failed")
+                if monotonic() >= deadline:
+                    lost.set()
+                    return
+                continue
+            if not renewed:
+                lost.set()
+                return
+            deadline = monotonic() + self._scope_lease_duration.total_seconds()
+
+    @contextmanager
+    def _remote_notebook_scope(
+        self,
+        notebook_id: str,
+        owner_kind: str,
+    ) -> Iterator[None]:
+        mapping = self.repository.notebook_mapping_by_remote_id(notebook_id)
+        if mapping is None:
+            raise SourceIsolationError("NotebookLM notebook is not bound to an exam")
+        subject_key = " ".join(mapping.subject_key.casefold().split())
+        active = _active_scope.get()
+        if self._scope_matches(active, subject_key, mapping.exam_number):
+            self._raise_if_scope_lost(active)
+            yield
+            self._raise_if_scope_lost(active)
+            return
+        with self.mutation_scope(
+            subject_key,
+            mapping.exam_number,
+            owner_kind,
+            str(uuid4()),
+        ):
+            yield
 
     def ensure_notebook(self, subject: str, exam_number: int) -> NotebookRef:
-        return cast(
-            NotebookRef,
-            _run(
-                self._ensure_notebook(subject, exam_number),
-            ),
-        )
+        with self.mutation_scope(
+            subject, exam_number, "notebook", str(uuid4())
+        ):
+            return cast(
+                NotebookRef,
+                _run(
+                    self._ensure_notebook(subject, exam_number),
+                ),
+            )
 
     def ensure_sources(
         self,
@@ -244,17 +430,18 @@ class StoredNotebookLMGateway:
         pdf: RevisionSource,
         transcript: RevisionSource,
     ) -> LectureSourceSet:
-        return cast(
-            LectureSourceSet,
-            _run(
-                self._ensure_sources(
-                    notebook,
-                    lecture_id,
-                    pdf,
-                    transcript,
-                )
-            ),
-        )
+        with self._remote_notebook_scope(notebook.id, "generation"):
+            return cast(
+                LectureSourceSet,
+                _run(
+                    self._ensure_sources(
+                        notebook,
+                        lecture_id,
+                        pdf,
+                        transcript,
+                    )
+                ),
+            )
 
     def ask(
         self,
@@ -276,19 +463,22 @@ class StoredNotebookLMGateway:
         transcript: RevisionSource,
         prompt: PromptSnapshot,
     ) -> NotebookGeneration:
-        return cast(
-            NotebookGeneration,
-            _run(
-                self._generate(
-                    subject,
-                    exam_number,
-                    lecture_id,
-                    pdf,
-                    transcript,
-                    prompt,
-                )
-            ),
-        )
+        with self.mutation_scope(
+            subject, exam_number, "generation", str(uuid4())
+        ):
+            return cast(
+                NotebookGeneration,
+                _run(
+                    self._generate(
+                        subject,
+                        exam_number,
+                        lecture_id,
+                        pdf,
+                        transcript,
+                        prompt,
+                    )
+                ),
+            )
 
     def attach_studio_source(
         self,
@@ -301,20 +491,66 @@ class StoredNotebookLMGateway:
         text: str | None = None,
         url: str | None = None,
     ) -> tuple[str, str]:
-        return cast(
-            tuple[str, str],
-            _run(
-                self._attach_studio_source(
-                    subject,
-                    exam_number,
-                    source_type,
-                    title,
-                    path=path,
-                    text=text,
-                    url=url,
-                )
-            ),
-        )
+        with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
+            return cast(
+                tuple[str, str],
+                _run(
+                    self._attach_studio_source(
+                        subject,
+                        exam_number,
+                        source_type,
+                        title,
+                        path=path,
+                        text=text,
+                        url=url,
+                    )
+                ),
+            )
+
+    def prepare_studio_source_add(
+        self,
+        subject: str,
+        exam_number: int,
+    ) -> tuple[str, frozenset[str]]:
+        """Resolve the notebook and snapshot its sources before a durable add."""
+        with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
+            return cast(
+                tuple[str, frozenset[str]],
+                _run(self._prepare_studio_source_add(subject, exam_number)),
+            )
+
+    def add_studio_source_to_notebook(
+        self,
+        notebook_id: str,
+        source_type: str,
+        title: str,
+        *,
+        path: Path | None = None,
+        text: str | None = None,
+        url: str | None = None,
+    ) -> str:
+        """Perform the effect only after the caller commits its operation intent."""
+        with self._remote_notebook_scope(notebook_id, "studio"):
+            return cast(
+                str,
+                _run(
+                    self._add_studio_source_to_notebook(
+                        notebook_id,
+                        source_type,
+                        title,
+                        path=path,
+                        text=text,
+                        url=url,
+                    )
+                ),
+            )
+
+    def list_studio_source_ids(self, notebook_id: str) -> frozenset[str]:
+        with self._remote_notebook_scope(notebook_id, "studio"):
+            return cast(
+                frozenset[str],
+                _run(self._list_studio_source_ids(notebook_id)),
+            )
 
     def ask_studio(
         self,
@@ -323,10 +559,11 @@ class StoredNotebookLMGateway:
         prompt: str,
         source_ids: list[str],
     ) -> tuple[str, str]:
-        return cast(
-            tuple[str, str],
-            _run(self._ask_studio(subject, exam_number, prompt, source_ids)),
-        )
+        with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
+            return cast(
+                tuple[str, str],
+                _run(self._ask_studio(subject, exam_number, prompt, source_ids)),
+            )
 
     def answer_studio_question(
         self,
@@ -335,24 +572,32 @@ class StoredNotebookLMGateway:
         question: QuestionDraft,
         source_ids: tuple[str, ...],
     ) -> NotebookQuestionResult:
-        return cast(
-            NotebookQuestionResult,
-            _run(
-                self._answer_studio_question(
-                    subject,
-                    exam_number,
-                    question,
-                    source_ids,
-                )
-            ),
-        )
+        with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
+            return cast(
+                NotebookQuestionResult,
+                _run(
+                    self._answer_studio_question(
+                        subject,
+                        exam_number,
+                        question,
+                        source_ids,
+                    )
+                ),
+            )
 
-    def delete_studio_source(self, notebook_id: str, source_id: str) -> None:
-        _run(self._delete_studio_source(notebook_id, source_id))
+    def delete_studio_source(self, notebook_id: str, source_id: str) -> bool:
+        with self._remote_notebook_scope(notebook_id, "studio"):
+            return cast(bool, _run(self._delete_studio_source(notebook_id, source_id)))
 
-    async def _delete_studio_source(self, notebook_id: str, source_id: str) -> None:
+    async def _delete_studio_source(self, notebook_id: str, source_id: str) -> bool:
         async with self._with_client() as client:
-            await client.sources.delete(notebook_id, source_id)
+            try:
+                await client.sources.delete(notebook_id, source_id)
+            except Exception as error:
+                if _is_remote_source_not_found(error):
+                    return False
+                raise
+        return True
 
     async def _ask_studio(
         self,
@@ -439,29 +684,62 @@ class StoredNotebookLMGateway:
             token = _active_client.set(client)
             try:
                 notebook = await self._ensure_notebook(subject, exam_number)
-                if source_type == "file" and path is not None:
-                    remote = await client.sources.add_file(
-                        notebook.id,
-                        path,
-                        wait=True,
-                        title=title,
-                    )
-                elif source_type == "text" and text is not None:
-                    remote = await client.sources.add_text(
-                        notebook.id,
-                        title,
-                        text,
-                        wait=True,
-                    )
-                elif source_type == "url" and url is not None:
-                    remote = await client.sources.add_url(notebook.id, url, wait=True)
-                else:
-                    raise ValueError("Studio source payload is incomplete")
-                if not _remote_ready(remote):
-                    raise SourceIsolationError("NotebookLM source did not become ready")
-                return notebook.id, str(remote.id)
+                remote_id = await self._add_studio_source_to_notebook(
+                    notebook.id,
+                    source_type,
+                    title,
+                    path=path,
+                    text=text,
+                    url=url,
+                )
+                return notebook.id, remote_id
             finally:
                 _active_client.reset(token)
+
+    async def _prepare_studio_source_add(
+        self,
+        subject: str,
+        exam_number: int,
+    ) -> tuple[str, frozenset[str]]:
+        notebook = await self._ensure_notebook(subject, exam_number)
+        return notebook.id, await self._list_studio_source_ids(notebook.id)
+
+    async def _list_studio_source_ids(self, notebook_id: str) -> frozenset[str]:
+        async with self._with_client() as client:
+            return frozenset(str(source.id) for source in await client.sources.list(notebook_id))
+
+    async def _add_studio_source_to_notebook(
+        self,
+        notebook_id: str,
+        source_type: str,
+        title: str,
+        *,
+        path: Path | None,
+        text: str | None,
+        url: str | None,
+    ) -> str:
+        async with self._with_client() as client:
+            if source_type == "file" and path is not None:
+                remote = await client.sources.add_file(
+                    notebook_id,
+                    path,
+                    wait=True,
+                    title=title,
+                )
+            elif source_type == "text" and text is not None:
+                remote = await client.sources.add_text(
+                    notebook_id,
+                    title,
+                    text,
+                    wait=True,
+                )
+            elif source_type == "url" and url is not None:
+                remote = await client.sources.add_url(notebook_id, url, wait=True)
+            else:
+                raise ValueError("Studio source payload is incomplete")
+            if not _remote_ready(remote):
+                raise SourceIsolationError("NotebookLM source did not become ready")
+            return str(remote.id)
 
     async def _generate(
         self,
@@ -760,6 +1038,14 @@ def _contains_hedge(value: str) -> bool:
             "appears to be",
         )
     )
+
+
+def _is_remote_source_not_found(error: BaseException) -> bool:
+    status = getattr(error, "status_code", None) or getattr(error, "status", None)
+    if status == 404:
+        return True
+    message = str(error).casefold()
+    return "not found" in message or "does not exist" in message
 
 
 def _validate_revision_source(

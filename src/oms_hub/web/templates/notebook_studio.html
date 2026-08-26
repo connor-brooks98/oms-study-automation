@@ -93,11 +93,11 @@
           <button class="button primary sh-btn sh-btn--primary" type="submit">Add URL</button><p data-form-message aria-live="polite"></p>
         </form>
       </div>
-      <ul class="sh-validation" data-import-source-list><li>Add at least one local source.</li></ul>
+      <ul class="sh-validation" data-import-source-list><li data-import-empty="true">Add at least one local source.</li></ul>
     </section>
     <section class="card sh-card studio-runner"><h2>Queue imported questions</h2><form data-import-run-form><label class="sh-field-label">Quiz label<input class="sh-input" name="label" maxlength="300" required></label><div class="studio-scope-fields"><label class="sh-field-label">Publish under course<select class="sh-select" data-import-destination-course required><option value="">Select course</option>{% for course in courses %}<option value="{{ course.subject }}" data-exams="{{ course.exams|join(',') }}">{{ course.subject }}</option>{% endfor %}</select></label><label class="sh-field-label">Publish under exam<select class="sh-select" data-import-destination-exam disabled required><option value="">Select exam</option></select></label></div><button class="button primary sh-btn sh-btn--primary" type="submit">Queue practice-question review</button><p data-import-run-message aria-live="polite"></p></form></section>
   </section>
-  <section class="card sh-card studio-runs"><h2>Run history</h2><div data-run-list><p>Select a source course and exam to view runs.</p></div></section>
+  <section class="card sh-card studio-runs"><h2>Run history</h2><div data-run-list tabindex="-1"><p>Select a source course and exam to view runs.</p></div></section>
 </section>
 {% endblock %}
 {% block scripts %}<script src="/static/notebook_studio.js" defer></script>{% endblock %}

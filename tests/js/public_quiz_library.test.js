@@ -55,6 +55,32 @@ test("corrupt browser progress is treated as not started", () => {
   assert.equal(library.readProgress(storage, "token", 1), "Not started");
 });
 
+test("structured editor payload retains image metadata", () => {
+  const retained = {
+    stem: "stem", choices: ["A", "B"], correct_index: 1, rationale: "why",
+    image_ref: { key: "image-1", source_title: "source", locator: "slide 1", description: "diagram" },
+  };
+  const payload = JSON.parse(library.structuredPayload("Title", [retained]));
+  assert.equal(payload.questions[0].correct_index, 1);
+  assert.deepEqual(payload.questions[0].image_ref, retained.image_ref);
+});
+
+test("structured editor never shifts a selected answer past a blank choice", () => {
+  const fields = [
+    { value: "A" }, { value: "" }, { value: "C" },
+  ];
+  const radios = [{ checked: false }, { checked: false }, { checked: true }];
+  const question = {
+    dataset: { imageRef: "null" },
+    querySelectorAll(selector) { return selector === "[data-choice]" ? fields : radios; },
+    querySelector() { return { value: "text" }; },
+  };
+  const form = { querySelectorAll() { return [question]; } };
+  const result = library.readStructuredQuestions(form)[0];
+  assert.equal(result.correct_index, 2);
+  assert.deepEqual(result.choices, ["A", "", "C"]);
+});
+
 test("course disclosures keep aria and the shared glyph state in sync", () => {
   const glyph = {
     states: [],
@@ -74,6 +100,39 @@ test("course disclosures keep aria and the shared glyph state in sync", () => {
   assert.equal(button.attributes["aria-expanded"], "false");
   assert.equal(panel.hidden, true);
   assert.deepEqual(glyph.states, [false]);
+});
+
+test("closing a course semantically collapses its open descendant exams", () => {
+  const examPanel = { hidden: false, querySelectorAll: () => [] };
+  const panels = new Map();
+  const makeButton = (controls, expanded) => ({
+    attributes: { "aria-controls": controls, "aria-expanded": String(expanded) },
+    setAttribute(name, value) { this.attributes[name] = value; },
+    getAttribute(name) { return this.attributes[name] || null; },
+    querySelector() { return null; },
+    ownerDocument: { getElementById(id) { return panels.get(id) || null; } },
+  });
+  const exam = makeButton("exam-1", true);
+  const coursePanel = {
+    hidden: false,
+    querySelectorAll(selector) {
+      return selector === ".disclosure[aria-expanded='true']" ? [exam] : [];
+    },
+  };
+  const course = makeButton("course-1", true);
+  panels.set("course-1", coursePanel);
+  panels.set("exam-1", examPanel);
+
+  library.setExpanded(course, false);
+
+  assert.equal(course.attributes["aria-expanded"], "false");
+  assert.equal(coursePanel.hidden, true);
+  assert.equal(exam.attributes["aria-expanded"], "false");
+  assert.equal(examPanel.hidden, true);
+
+  library.setExpanded(course, true);
+  assert.equal(exam.attributes["aria-expanded"], "false");
+  assert.equal(examPanel.hidden, true);
 });
 
 // -- Minimal fake DOM sufficient to drive initialize()'s reset controls --
@@ -300,6 +359,107 @@ test("remove clears local progress and removes a row only after successful unpub
   assert.equal(row.removed, true);
 });
 
+test("successful unpublish updates the UI when browser progress cleanup is denied", async () => {
+  const storage = {
+    getItem: () => null,
+    removeItem() { throw new Error("storage denied"); },
+    key: () => null,
+    get length() { return 0; },
+  };
+  const row = new FakeQuizRow("tok1", 1);
+  const removeButton = new FakeRemoveButton("tok1", 1, row);
+  const documentRef = new FakeLibraryDocument({ rows: [row], removeButtons: [removeButton] });
+  const originalConfirm = global.confirm;
+  const originalFetch = global.fetch;
+  global.confirm = () => true;
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        state: "unpublished",
+        exam_quiz_count: 0,
+        course_quiz_count: 0,
+      };
+    },
+  });
+  try {
+    library.initialize(documentRef, storage);
+    await removeButton._listeners.click[0]();
+  } finally {
+    global.confirm = originalConfirm;
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(row.removed, true);
+  assert.match(documentRef.resetMessage.textContent, /released quiz was removed/i);
+  assert.match(documentRef.resetMessage.textContent, /progress could not be cleared/i);
+});
+
+test("storage-denied unpublish still applies authoritative counts, pruning, disclosure, and focus", async () => {
+  const storage = {
+    getItem: () => null,
+    removeItem() { throw new Error("storage denied"); },
+    key: () => null,
+    get length() { return 0; },
+  };
+  const examCount = { textContent: "1 quiz" };
+  const courseCount = { textContent: "2 quizzes" };
+  const courseDisclosure = { attributes: { "aria-expanded": "true" } };
+  const exam = {
+    removed: false,
+    querySelector(selector) { return selector === "[data-exam-count]" ? examCount : null; },
+    remove() { this.removed = true; },
+  };
+  const course = {
+    removed: false,
+    querySelector(selector) {
+      if (selector === "[data-course-count]") return courseCount;
+      if (selector === ".disclosure") return courseDisclosure;
+      return null;
+    },
+    remove() { this.removed = true; },
+  };
+  const survivingControl = {
+    focused: false, isConnected: true, disabled: false,
+    focus() { this.focused = true; },
+  };
+  const survivingRow = { querySelector: () => survivingControl };
+  const row = new FakeQuizRow("tok1", 1);
+  row.nextElementSibling = survivingRow;
+  row.closest = (selector) => selector === "[data-exam-key]" ? exam : course;
+  const removeButton = new FakeRemoveButton("tok1", 1, row);
+  const documentRef = new FakeLibraryDocument({ rows: [row], removeButtons: [removeButton] });
+  const originalConfirm = global.confirm;
+  const originalFetch = global.fetch;
+  global.confirm = () => true;
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        state: "unpublished", exam_key: "neuro:1", course_key: "neuro",
+        exam_quiz_count: 0, course_quiz_count: 1,
+      };
+    },
+  });
+  try {
+    library.initialize(documentRef, storage);
+    await removeButton._listeners.click[0]();
+  } finally {
+    global.confirm = originalConfirm;
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(row.removed, true);
+  assert.equal(examCount.textContent, "0 quizzes");
+  assert.equal(courseCount.textContent, "1 quiz");
+  assert.equal(exam.removed, true);
+  assert.equal(course.removed, false);
+  assert.equal(courseDisclosure.attributes["aria-expanded"], "true");
+  assert.equal(survivingControl.focused, true);
+  assert.match(documentRef.resetMessage.textContent, /released quiz was removed/i);
+  assert.match(documentRef.resetMessage.textContent, /progress could not be cleared/i);
+});
+
 test("failed remove keeps the row and reports the server detail", async () => {
   const storage = makeMemoryStorage();
   const row = new FakeQuizRow("tok1", 1);
@@ -326,7 +486,7 @@ test("failed remove keeps the row and reports the server detail", async () => {
   assert.equal(documentRef.resetMessage.textContent, "Cloudflare Access identity is required");
 });
 
-test("title edit sends a trimmed PATCH and reloads only after success", async () => {
+test("title edit sends a trimmed PATCH and preserves the page after success", async () => {
   const titleForm = new FakeTitleForm("  Revised title  ");
   const documentRef = new FakeLibraryDocument({ titleForms: [titleForm] });
   documentRef.cookie = "study_hub_csrf=csrf-token";
@@ -337,7 +497,7 @@ test("title edit sends a trimmed PATCH and reloads only after success", async ()
   global.location = { reload: () => { reloads += 1; } };
   global.fetch = async (url, options) => {
     request = { url, options };
-    return { ok: true, async json() { return { title: "Revised title" }; } };
+    return { ok: true, async json() { return { token: "tok1", title: "Revised title" }; } };
   };
   try {
     library.initialize(documentRef, makeMemoryStorage());
@@ -358,7 +518,122 @@ test("title edit sends a trimmed PATCH and reloads only after success", async ()
       body: JSON.stringify({ title: "Revised title" }),
     },
   });
-  assert.equal(reloads, 1);
+  assert.equal(reloads, 0);
+  assert.equal(titleForm.saveButton.disabled, false);
+  assert.equal(documentRef.resetMessage.textContent, "Quiz title updated.");
+});
+
+test("rename applies the authoritative title in place and focuses an enabled title input", () => {
+  const display = new FakeLibraryElement();
+  const input = new FakeLibraryElement();
+  input.value = "Old title";
+  input.dataset.titleInput = "";
+  const namedSurface = (dataset, tagName) => ({
+    dataset,
+    tagName,
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
+  });
+  const reset = namedSurface({ resetQuiz: "" });
+  const overflow = namedSurface({}, "SUMMARY");
+  overflow.attributes.title = "More actions";
+  const dragHandle = namedSurface({ quizDragHandle: "" });
+  dragHandle.attributes.title = "Reorder quiz";
+  dragHandle.textContent = "⠿";
+  const save = new FakeLibraryElement();
+  save.disabled = true;
+  input.disabled = false;
+  let focused = false;
+  input.focus = () => { focused = true; };
+  const documentRef = {
+    querySelectorAll(selector) {
+      assert.equal(selector, '[data-quiz-title-for="tok1"]');
+      return [display, input, reset, overflow, dragHandle];
+    },
+  };
+
+  library.applyRenamedTitle(documentRef, "tok1", "Authoritative title", input);
+
+  assert.equal(display.textContent, "Authoritative title");
+  assert.equal(input.value, "Authoritative title");
+  assert.equal(reset.attributes["aria-label"], "Restart Authoritative title");
+  assert.equal(reset.attributes.title, "Restart Authoritative title");
+  assert.equal(overflow.attributes["aria-label"], "More actions for Authoritative title");
+  assert.equal(dragHandle.attributes["aria-label"], "Reorder Authoritative title. Use Arrow Up or Arrow Down.");
+  assert.equal(dragHandle.attributes.title, "Reorder quiz");
+  assert.equal(dragHandle.textContent, "⠿");
+  assert.equal(input.disabled, false);
+  assert.equal(focused, true);
+});
+
+test("unpublish uses authoritative counts, prunes empty shells, and focuses a surviving row control", () => {
+  const count = { textContent: "2 quizzes" };
+  const exam = { removed: false, querySelector: () => count, remove() { this.removed = true; } };
+  const course = { removed: false, querySelector: () => count, remove() { this.removed = true; } };
+  const neighborLink = { focused: false, focus() { this.focused = true; } };
+  const neighbor = { querySelector() { return neighborLink; } };
+  const row = {
+    removed: false,
+    nextElementSibling: neighbor,
+    remove() { this.removed = true; },
+    closest() { return null; },
+  };
+  const documentRef = {
+    querySelector(selector) {
+      if (selector === '[data-exam-key="neuro:1"]') return exam;
+      if (selector === '[data-course-key="neuro"]') return course;
+      return null;
+    },
+  };
+
+  library.applyUnpublish(documentRef, row, {
+    exam_key: "neuro:1",
+    course_key: "neuro",
+    exam_quiz_count: 0,
+    course_quiz_count: 0,
+  });
+
+  assert.equal(row.removed, true);
+  assert.equal(exam.removed, true);
+  assert.equal(course.removed, true);
+  assert.equal(neighborLink.focused, true);
+});
+
+test("unpublish of the final row ignores pruned controls and focuses the library main", () => {
+  const main = { focused: false, focus() { this.focused = true; } };
+  const examControl = { isConnected: true, focus() { throw new Error("removed control must not receive focus"); } };
+  const courseControl = { isConnected: true, focus() { throw new Error("removed control must not receive focus"); } };
+  const examCount = { textContent: "1 quiz" };
+  const courseCount = { textContent: "1 quiz" };
+  const exam = {
+    isConnected: true,
+    querySelector(selector) { return selector === "[data-exam-count]" ? examCount : examControl; },
+    remove() { this.isConnected = false; examControl.isConnected = false; },
+  };
+  const course = {
+    isConnected: true,
+    querySelector(selector) { return selector === "[data-course-count]" ? courseCount : courseControl; },
+    remove() { this.isConnected = false; courseControl.isConnected = false; },
+  };
+  const row = {
+    remove() {},
+    closest(selector) { return selector === "[data-exam-key]" ? exam : course; },
+  };
+  const documentRef = {
+    querySelector(selector) {
+      if (selector === "[data-quiz-library]") return main;
+      return null;
+    },
+  };
+
+  library.applyUnpublish(documentRef, row, {
+    exam_key: "neuro:1",
+    course_key: "neuro",
+    exam_quiz_count: 0,
+    course_quiz_count: 0,
+  });
+
+  assert.equal(main.focused, true);
 });
 
 test("library controls and direction sequences preserve management payloads", async () => {
@@ -396,6 +671,58 @@ test("library controls and direction sequences preserve management payloads", as
   assert.deepEqual(library.directionSequence(0, 3), ["down", "down", "down"]);
   assert.deepEqual(library.directionSequence(3, 1), ["up", "up"]);
   assert.deepEqual(library.directionSequence(2, 2), []);
+});
+
+test("pointer drag marks its target and submits the required direction", async () => {
+  const classes = () => {
+    const values = new Set();
+    return {
+      add: (...names) => names.forEach((name) => values.add(name)),
+      remove: (...names) => names.forEach((name) => values.delete(name)),
+      contains: (name) => values.has(name),
+    };
+  };
+  const parent = { querySelectorAll: () => [source, target] };
+  const source = {
+    dataset: { orderUrl: "/api/published-quizzes/tok1/order" },
+    parentElement: parent,
+    classList: classes(),
+  };
+  const target = { parentElement: parent, classList: classes() };
+  const handle = new FakeLibraryElement();
+  handle.closest = () => source;
+  handle.setPointerCapture = () => {};
+  const documentRef = new FakeLibraryDocument({});
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  documentRef.elementFromPoint = () => ({ closest: () => target });
+  documentRef.querySelectorAll = (selector) => (
+    selector === ".is-drop-target" ? [source, target] : []
+  );
+  const originalFetch = global.fetch;
+  const originalLocation = global.location;
+  const requests = [];
+  let reloads = 0;
+  global.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body).direction);
+    return { ok: true, async json() { return {}; } };
+  };
+  global.location = { reload: () => { reloads += 1; } };
+  try {
+    library.bindPointerReorder(documentRef, handle);
+    handle._listeners.pointerdown[0]({ button: 0, pointerId: 7 });
+    handle._listeners.pointermove[0]({ pointerId: 7, clientX: 10, clientY: 20 });
+    assert.equal(source.classList.contains("is-dragging"), true);
+    assert.equal(target.classList.contains("is-drop-target"), true);
+    await handle._listeners.pointerup[0]({ pointerId: 7, clientX: 10, clientY: 20 });
+  } finally {
+    global.fetch = originalFetch;
+    global.location = originalLocation;
+  }
+
+  assert.deepEqual(requests, ["down"]);
+  assert.equal(reloads, 1);
+  assert.equal(source.classList.contains("is-dragging"), false);
+  assert.equal(target.classList.contains("is-drop-target"), false);
 });
 
 test("failed drag reorder keeps the control usable and reports the server detail", async () => {

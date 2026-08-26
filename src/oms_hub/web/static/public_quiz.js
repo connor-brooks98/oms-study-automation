@@ -343,6 +343,26 @@
     return payload;
   };
 
+  const flagRequest = async (
+    fetchImpl,
+    url,
+    version,
+    questionId,
+    reason,
+    csrf,
+  ) => {
+    const response = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf,
+      },
+      body: JSON.stringify({ version, question_id: questionId, reason }),
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("Question flag could not be recorded.");
+  };
+
   const element = (documentRef, tag, className, text, focusKey) => {
     const node = documentRef.createElement(tag);
     if (className) node.className = className;
@@ -428,6 +448,37 @@
     `oms-study-hub-quiz:${content.token}:v${content.version}`
   );
 
+  const safeStorage = (windowRefOrGetter) => {
+    const memory = new Map();
+    let persistent = null;
+    try {
+      const windowRef = typeof windowRefOrGetter === "function"
+        ? windowRefOrGetter()
+        : windowRefOrGetter;
+      persistent = windowRef?.localStorage || null;
+    } catch (_) {
+      // Browsers may deny even reading the localStorage property.
+    }
+    return {
+      getItem(key) {
+        if (memory.has(key)) return memory.get(key);
+        try {
+          return persistent?.getItem(key) ?? null;
+        } catch (_) {
+          return null;
+        }
+      },
+      setItem(key, value) {
+        memory.set(key, value);
+        try {
+          persistent?.setItem(key, value);
+        } catch (_) {
+          // The in-memory copy keeps this quiz playable for the session.
+        }
+      },
+    };
+  };
+
   const initialize = async (
     documentRef,
     fetchImpl = root.fetch.bind(root),
@@ -446,16 +497,26 @@
         return;
       }
       const content = await response.json();
-      const storage = documentRef.defaultView?.localStorage;
+      const storage = safeStorage(() => documentRef.defaultView);
       const key = storageKey(content);
-      let state = restoreProgress(content, storage?.getItem(key));
+      let state = restoreProgress(content, storage.getItem(key));
+      const informationOpen = new Map();
+      let pendingFocusKey;
 
       const persist = () => {
-        storage?.setItem(key, serializeProgress(state));
+        storage.setItem(key, serializeProgress(state));
       };
 
       const render = () => {
-        const focusKey = captureFocusKey(documentRef, app);
+        const focusKey = pendingFocusKey ?? captureFocusKey(documentRef, app);
+        pendingFocusKey = undefined;
+        const priorInformation = app.querySelector?.("[data-question-information]");
+        if (priorInformation?.dataset?.questionInformation) {
+          informationOpen.set(
+            priorInformation.dataset.questionInformation,
+            priorInformation.open === true,
+          );
+        }
         app.replaceChildren();
         if (state.currentIndex >= content.questions.length) {
           const summary = performanceSummary(content, state);
@@ -538,12 +599,12 @@
         const shell = element(documentRef, "article", "quiz-shell");
         const header = element(documentRef, "header", "quiz-header");
         const meta = element(documentRef, "div", "quiz-meta");
+        const lectureLabel = content.lecture_number != null
+          ? `${content.course} Lecture ${String(content.lecture_number).padStart(2, "0")}`
+          : content.course;
         const context = [
-          content.course,
+          lectureLabel,
           content.exam_number != null ? `Exam ${content.exam_number}` : null,
-          content.lecture_number != null
-            ? `Lecture ${content.lecture_number}`
-            : null,
           content.topic,
         ].filter(Boolean).join(" · ");
         meta.append(
@@ -571,13 +632,17 @@
           `${((state.currentIndex + 1) / content.questions.length) * 100}%`
         );
         track.append(fill);
-        header.append(meta, track);
+        header.append(
+          element(documentRef, "h1", "quiz-title", content.title || "Study Hub quiz"),
+          meta,
+          track,
+        );
 
         const body = element(documentRef, "div", "quiz-body");
         body.append(
           element(documentRef, "p", "quiz-label", content.topic),
         );
-        const stem = element(documentRef, "p", "quiz-question");
+        const stem = element(documentRef, "h2", "quiz-question");
         renderHighlightedText(
           documentRef,
           stem,
@@ -661,8 +726,24 @@
           flagSelect.append(option);
         }
         flagSelect.value = questionProgress.flagReason || "";
-        flagSelect.addEventListener("change", () => {
+        flagSelect.addEventListener("change", async () => {
           state = setFlagReason(state, question.id, flagSelect.value);
+          if (flagSelect.value) {
+            try {
+              await flagRequest(
+                fetchImpl,
+                `/public/quizzes/${content.token}/flags`,
+                content.version,
+                question.id,
+                flagSelect.value,
+                csrfToken(documentRef),
+              );
+            } catch (error) {
+              flagSelect.value = "";
+              state = setFlagReason(state, question.id, "");
+              // Keep the local selector honest; the next render exposes its normal status.
+            }
+          }
           persist();
         });
         flagLabel.append(flagSelect);
@@ -793,6 +874,7 @@
           submit.type = "button";
           submit.disabled = !questionProgress.selectedChoiceId;
           submit.addEventListener("click", async () => {
+            pendingFocusKey = "forward";
             submit.disabled = true;
             submit.textContent = "Checking…";
             try {
@@ -807,6 +889,7 @@
               persist();
               render();
             } catch (error) {
+              pendingFocusKey = undefined;
               submit.disabled = false;
               submit.textContent = "Submit Answer";
               const message = element(
@@ -871,6 +954,11 @@
             "details",
             "quiz-information",
           );
+          information.dataset.questionInformation = question.id;
+          information.open = informationOpen.get(question.id) === true;
+          information.addEventListener("toggle", () => {
+            informationOpen.set(question.id, information.open === true);
+          });
           const summary = element(
             documentRef,
             "summary",
@@ -899,6 +987,7 @@
     FLAG_REASONS,
     addHighlight,
     answerRequest,
+    flagRequest,
     captureFocusKey,
     clearHighlights,
     createQuizState,
@@ -908,6 +997,7 @@
     recordFeedback,
     restoreFocus,
     restoreProgress,
+    safeStorage,
     selectChoice,
     setFlagReason,
     serializeProgress,

@@ -40,6 +40,10 @@ def test_exact_question_numbers_pair_before_semantic_matching() -> None:
     )
 
     assert [draft.correct_index for draft in drafts] == [0, 1]
+    assert [draft.rationale for draft in drafts] == [
+        "Source-marked correct answer: A",
+        "Source-marked correct answer: B",
+    ]
     assert all(draft.answer_provenance is AnswerProvenance.PROVIDED_BY_SOURCE for draft in drafts)
 
 

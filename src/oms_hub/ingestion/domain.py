@@ -51,6 +51,7 @@ class StagedUpload:
     sha256: str
     size_bytes: int
     original_filename: str
+    manifest_owned: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,29 @@ class ChunkSession:
     expected_sha256: str
     received: int
     expires_at: str
+    manifest_owned: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class UploadManifestSlot:
+    """An immutable member of a browser upload action.
+
+    Slots deliberately exist only in staging until every member has passed
+    validation.  They are not queue records.
+    """
+
+    id: str
+    filename: str
+    size_bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class UploadManifest:
+    id: str
+    kind: UploadKind
+    lecture_id: int | None
+    slots: tuple[UploadManifestSlot, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,12 +130,16 @@ class UploadBatch:
     created_at: str
     updated_at: str
     items: tuple[UploadItem, ...]
+    lifecycle: str = "active"
+    outcome: str = "uploading"
 
     def public_dict(self) -> dict[str, object]:
         return {
             "id": self.id,
             "kind": self.kind.value,
             "state": self.state.value,
+            "lifecycle": self.lifecycle,
+            "outcome": self.outcome,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "items": [

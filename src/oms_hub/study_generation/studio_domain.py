@@ -23,6 +23,8 @@ class StudioSourceState(StrEnum):
     ATTACHED = "attached"
     READY = "ready"
     FAILED = "failed"
+    DELETING = "deleting"
+    NEEDS_REVIEW = "needs_review"
     DELETED = "deleted"
 
 
@@ -78,6 +80,22 @@ class StudioSource:
     snapshot_sha256: str | None = None
     media_type: str | None = None
     final_url: str | None = None
+    import_role: ImportSourceRole | None = None
+    import_attach_to_notebook: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class StudioSourceOperation:
+    id: str
+    source_id: str
+    operation_kind: str
+    state: str
+    notebook_id: str | None
+    remote_source_id: str | None
+    baseline_remote_ids: frozenset[str]
+    attempts: int
+    diagnostic_source: str | None
+    error: str | None
 
 
 @dataclass(frozen=True, slots=True)

@@ -115,11 +115,23 @@ class NoSupportNotebook:
         self.attach_calls = 0
         self.answer_calls = 0
         self.no_support_results = 0
+        self.remote_ids: set[str] = set()
 
-    def attach_studio_source(self, *args: object, **kwargs: object) -> tuple[str, str]:
+    def prepare_studio_source_add(
+        self, *args: object, **kwargs: object
+    ) -> tuple[str, frozenset[str]]:
+        del args, kwargs
+        return "notebook-1", frozenset(self.remote_ids)
+
+    def add_studio_source_to_notebook(self, *args: object, **kwargs: object) -> str:
         del args, kwargs
         self.attach_calls += 1
-        return "notebook-1", "support-1"
+        self.remote_ids.add("support-1")
+        return "support-1"
+
+    def list_studio_source_ids(self, *args: object, **kwargs: object) -> frozenset[str]:
+        del args, kwargs
+        return frozenset(self.remote_ids)
 
     def answer_studio_question(self, *args: object) -> NotebookQuestionResult:
         del args

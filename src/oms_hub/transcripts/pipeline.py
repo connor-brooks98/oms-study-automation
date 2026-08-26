@@ -21,6 +21,7 @@ from oms_hub.ingestion.domain import (
     UploadState,
 )
 from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.ingestion.staging import UploadRejected, decode_utf8_transcript
 from oms_hub.llm.domain import CleanResult
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import (
@@ -42,9 +43,9 @@ def validate_transcript_bytes(payload: bytes, max_bytes: int) -> str:
     if prefix.startswith((b"<!doctype html", b"<html")):
         raise TranscriptValidationError("transcript is an HTML response")
     try:
-        text = payload.decode("utf-8-sig")
-    except UnicodeDecodeError as error:
-        raise TranscriptValidationError("transcript is not UTF-8") from error
+        text = decode_utf8_transcript(payload)
+    except UploadRejected as error:
+        raise TranscriptValidationError(str(error)) from error
     if not text.strip():
         raise TranscriptValidationError("transcript is empty")
     if _is_data_envelope(text):

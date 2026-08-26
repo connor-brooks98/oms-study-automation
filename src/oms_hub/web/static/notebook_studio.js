@@ -12,7 +12,7 @@
   };
 
   const hasActiveSources = (sources) => sources.some(
-    (source) => source.state === "pending" || source.state === "attaching",
+    (source) => ["pending", "attaching", "deleting"].includes(source.state),
   );
 
   const hasActiveRuns = (runs) => runs.some(
@@ -22,6 +22,36 @@
   const importRoleAllowsNotebook = (role) => (
     role === "supporting_reference" || role === "combined_questions_answers"
   );
+
+  const captureRenderState = (documentRef, container) => ({
+    openKeys: new Set(Array.from(
+      container.querySelectorAll?.("details[data-state-key]") || [],
+      (details) => details.open ? details.dataset.stateKey : null,
+    ).filter(Boolean)),
+    focusKey: documentRef.activeElement?.dataset?.focusKey || null,
+  });
+
+  const connectedFocusable = (element) => (
+    element && element.isConnected !== false && !element.disabled && element.focus
+      ? element
+      : null
+  );
+
+  const restoreRenderState = (container, state) => {
+    const keyed = Array.from(container.querySelectorAll?.("[data-state-key]") || []);
+    keyed.forEach((element) => {
+      if (state.openKeys.has(element.dataset.stateKey)) element.open = true;
+    });
+    if (!state.focusKey) return;
+    const focusable = Array.from(container.querySelectorAll?.("[data-focus-key]") || [])
+      .filter(connectedFocusable);
+    const runKey = state.focusKey.match(/^(run:[^:]+):/)?.[1] || null;
+    const focus = focusable.find((element) => element.dataset.focusKey === state.focusKey)
+      || (runKey && focusable.find((element) => element.dataset.focusKey.startsWith(`${runKey}:`)))
+      || focusable[0]
+      || connectedFocusable(container);
+    focus?.focus({ preventScroll: true });
+  };
 
   const applyImportRoleState = (form) => {
     const role = form.querySelector("[data-import-role]")?.value || "questions";
@@ -33,10 +63,45 @@
     return { role, attach_to_notebook: Boolean(checkbox?.checked) };
   };
 
+  const buildImportSourceFormData = (
+    form, course, exam, token, FormDataConstructor = root.FormData,
+  ) => {
+    const roleState = applyImportRoleState(form);
+    const body = new FormDataConstructor(form);
+    body.set("role", roleState.role);
+    body.set("attach_to_notebook", String(roleState.attach_to_notebook));
+    body.set("subject", course.value);
+    body.set("exam_number", exam.value);
+    body.set("csrf_token", token);
+    return { body, roleState };
+  };
+
   const workflowPanelState = (workflow) => ({
     generate: workflow === "generate",
     import: workflow === "import",
   });
+
+  const scopeUrl = (navigation) => {
+    const href = navigation?.location?.href;
+    if (!href) return null;
+    try {
+      return new URL(href);
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const selectedCourseOption = (course, value) => {
+    const normalized = normalizeSubject(value || "");
+    if (!normalized) return null;
+    return Array.from(course.options || []).find(
+      (option) => normalizeSubject(option.value || "") === normalized,
+    ) || null;
+  };
+
+  const selectedWorkflowFromUrl = (url) => (
+    url?.searchParams.get("workflow") === "import" ? "import" : "generate"
+  );
 
   const toggleClass = (element, className, enabled) => {
     if (element.classList) {
@@ -160,17 +225,20 @@
   };
 
   const renderRuns = (documentRef, container, runs) => {
+    const state = captureRenderState(documentRef, container);
     container.replaceChildren();
     if (!runs.length) {
       const note = documentRef.createElement("p");
       note.textContent = "No prompt runs yet.";
       container.append(note);
+      restoreRenderState(container, state);
       return false;
     }
     runs.forEach((run) => {
       const card = documentRef.createElement("article");
       card.className = "sh-card studio-run";
       card.dataset.runId = run.id;
+      card.dataset.stateKey = `run:${run.id}`;
       const heading = documentRef.createElement("h3");
       heading.textContent = run.label;
       card.append(heading);
@@ -191,6 +259,7 @@
         const images = documentRef.createElement("a");
         images.className = "button primary compact sh-btn sh-btn--primary";
         images.href = run.image_review_url;
+        images.dataset.focusKey = `run:${run.id}:images`;
         images.textContent = "Add images";
         card.append(images);
       }
@@ -198,6 +267,7 @@
         const review = documentRef.createElement("a");
         review.className = "button primary compact sh-btn sh-btn--primary";
         review.href = run.review_url;
+        review.dataset.focusKey = `run:${run.id}:review`;
         review.textContent = "Review questions";
         card.append(review);
       }
@@ -205,12 +275,14 @@
         const link = documentRef.createElement("a");
         link.className = "button secondary compact sh-btn sh-btn--secondary";
         link.href = run.published_url;
+        link.dataset.focusKey = `run:${run.id}:published`;
         link.textContent = "Open published quiz";
         card.append(link);
         const unpublish = documentRef.createElement("button");
         unpublish.type = "button";
         unpublish.className = "button secondary compact sh-btn sh-btn--secondary";
         unpublish.dataset.unpublishRun = run.id;
+        unpublish.dataset.focusKey = `run:${run.id}:unpublish`;
         unpublish.textContent = "Unpublish";
         card.append(unpublish);
       }
@@ -221,6 +293,7 @@
         rerun.type = "button";
         rerun.className = "button secondary compact sh-btn sh-btn--secondary";
         rerun.dataset.rerun = run.id;
+        rerun.dataset.focusKey = `run:${run.id}:rerun`;
         rerun.textContent = "↻";
         rerun.ariaLabel = "Re-run this quiz";
         rerun.title = "Re-run";
@@ -230,6 +303,7 @@
         remove.type = "button";
         remove.className = "button danger compact sh-btn sh-btn--danger";
         remove.dataset.removeRun = run.id;
+        remove.dataset.focusKey = `run:${run.id}:remove`;
         remove.textContent = "×";
         remove.ariaLabel = "Remove run from history";
         remove.title = "Remove from history";
@@ -241,7 +315,9 @@
       attempts.forEach((attempt) => {
         if (!attempt.error) return;
         const details = documentRef.createElement("details");
+        details.dataset.stateKey = `run:${run.id}:attempt:${attempt.attempt_number}`;
         const summary = documentRef.createElement("summary");
+        summary.dataset.focusKey = `${details.dataset.stateKey}:summary`;
         summary.textContent = `Attempt ${attempt.attempt_number} · ${attempt.diagnostic_source}`;
         const error = documentRef.createElement("p");
         error.textContent = attempt.error;
@@ -250,6 +326,7 @@
       });
       container.append(card);
     });
+    restoreRenderState(container, state);
     return hasActiveRuns(runs);
   };
 
@@ -283,7 +360,11 @@
     sources: Array.from(rows, (row) => ({
       source_id: row.dataset.sourceId,
       role: row.querySelector("[data-import-row-role]")?.value || row.dataset.role,
-      attach_to_notebook: Boolean(row.querySelector("[data-import-row-notebook]")?.checked),
+      attach_to_notebook: (() => {
+        const role = row.querySelector("[data-import-row-role]")?.value || row.dataset.role;
+        return importRoleAllowsNotebook(role)
+          && Boolean(row.querySelector("[data-import-row-notebook]")?.checked);
+      })(),
     })),
   });
 
@@ -331,6 +412,33 @@
     list.append(row);
   };
 
+  const hydrateImportSources = (documentRef, list, sources) => {
+    const readyImports = sources.filter((source) => (
+      source.state === "ready"
+      && source.purpose === "local_import"
+      && source.import_defaults
+    ));
+    const readyImportIds = new Set(readyImports.map((source) => source.id));
+    const existing = new Set();
+    Array.from(list.querySelectorAll?.("[data-import-source-row]") || []).forEach((row) => {
+      const sourceId = row.dataset.sourceId;
+      if (existing.has(sourceId) || !readyImportIds.has(sourceId)) row.remove?.();
+      else existing.add(sourceId);
+    });
+    readyImports.forEach((source) => {
+      if (existing.has(source.id)) return;
+      const defaults = source.import_defaults;
+      appendImportSource(
+        documentRef,
+        list,
+        source,
+        defaults.role || "questions",
+        importRoleAllowsNotebook(defaults.role) && Boolean(defaults.attach_to_notebook),
+      );
+      existing.add(source.id);
+    });
+  };
+
   const populateExams = (documentRef, course, exam) => {
     exam.replaceChildren();
     const placeholder = documentRef.createElement("option");
@@ -347,10 +455,63 @@
         option.textContent = `Exam ${number}`;
         exam.append(option);
       });
+    exam.value = "";
     exam.disabled = !course.value;
   };
 
-  const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
+  const restoreScopeFromUrl = (documentRef, course, exam, navigation) => {
+    const url = scopeUrl(navigation);
+    const workflow = selectedWorkflowFromUrl(url);
+    const courseOption = selectedCourseOption(
+      course,
+      url?.searchParams.get("subject") || "",
+    );
+    course.value = courseOption?.value || "";
+    populateExams(documentRef, course, exam);
+    const requestedExam = url?.searchParams.get("exam") || "";
+    const validExam = Array.from(exam.options || []).some(
+      (option) => option.value === requestedExam && requestedExam !== "",
+    );
+    exam.value = validExam ? requestedExam : "";
+    return { workflow, scopeValid: Boolean(course.value && exam.value) };
+  };
+
+  const updateScopeUrl = (course, exam, workflow, navigation) => {
+    const url = scopeUrl(navigation);
+    if (!url || !navigation?.history?.replaceState) return;
+    if (course.value) {
+      url.searchParams.set("subject", normalizeSubject(course.value));
+    } else {
+      url.searchParams.delete("subject");
+    }
+    if (course.value && exam.value) url.searchParams.set("exam", exam.value);
+    else url.searchParams.delete("exam");
+    if (workflow === "import") url.searchParams.set("workflow", "import");
+    else url.searchParams.delete("workflow");
+    navigation.history.replaceState(navigation.history.state, "", url.toString());
+  };
+
+  const clearImportSources = (documentRef, list) => {
+    hydrateImportSources(documentRef, list, []);
+    list.querySelector("[data-import-empty]")?.remove();
+    const empty = documentRef.createElement("li");
+    empty.dataset.importEmpty = "true";
+    empty.textContent = "Add at least one local source.";
+    list.append(empty);
+  };
+
+  const restoreFailedAction = (target, status, detail) => {
+    if (status) status.textContent = detail;
+    if (!target) return;
+    target.disabled = false;
+    if (target.isConnected !== false) target.focus?.({ preventScroll: true });
+  };
+
+  const initialize = (
+    documentRef,
+    fetchImpl = root.fetch.bind(root),
+    navigation = root,
+  ) => {
     const page = documentRef.querySelector("[data-studio-page]");
     if (!page) return;
     const course = page.querySelector("[data-studio-course]");
@@ -375,20 +536,31 @@
     const basePollDelayMs = 2000;
     const maxPollDelayMs = 30000;
     let pollDelayMs = basePollDelayMs;
+    let refreshGeneration = 0;
 
+    let selectedWorkflow = "generate";
     const workflowTabs = Array.from(page.querySelectorAll("[data-workflow-tab]"));
     workflowTabs.forEach((tab, index) => {
-      tab.addEventListener("click", () => setWorkflowState(page, tab.dataset.workflowTab));
+      tab.addEventListener("click", () => {
+        selectedWorkflow = tab.dataset.workflowTab;
+        setWorkflowState(page, selectedWorkflow);
+        updateScopeUrl(course, exam, selectedWorkflow, navigation);
+      });
       tab.addEventListener("keydown", (event) => {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
         const next = event.key === "Home" ? 0 : event.key === "End" ? workflowTabs.length - 1
           : (index + (event.key === "ArrowRight" ? 1 : -1) + workflowTabs.length) % workflowTabs.length;
-        setWorkflowState(page, workflowTabs[next].dataset.workflowTab);
+        selectedWorkflow = workflowTabs[next].dataset.workflowTab;
+        setWorkflowState(page, selectedWorkflow);
+        updateScopeUrl(course, exam, selectedWorkflow, navigation);
         workflowTabs[next].focus();
       });
     });
-    setWorkflowState(page, "generate");
+    const restoredScope = restoreScopeFromUrl(documentRef, course, exam, navigation);
+    selectedWorkflow = restoredScope.workflow;
+    setWorkflowState(page, selectedWorkflow);
+    updateScopeUrl(course, exam, selectedWorkflow, navigation);
     root.addEventListener?.("resize", () => {
       const active = workflowTabs.find((tab) => tab.getAttribute("aria-selected") === "true");
       if (active) setWorkflowState(page, active.dataset.workflowTab);
@@ -407,23 +579,33 @@
     };
 
     const refresh = async () => {
+      const generation = ++refreshGeneration;
       pollHandle = null;
       if (!course.value || !exam.value) return;
-      const query = `subject_key=${encodeURIComponent(normalizeSubject(course.value))}&exam_number=${encodeURIComponent(exam.value)}`;
+      const subjectKey = normalizeSubject(course.value);
+      const examNumber = exam.value;
+      const query = `subject_key=${encodeURIComponent(subjectKey)}&exam_number=${encodeURIComponent(examNumber)}`;
       try {
         const [sourcePayload, runPayload] = await Promise.all([
           loadJson(`/studio/sources?${query}`),
           loadJson(`/studio/runs?${query}`),
         ]);
+        if (
+          generation !== refreshGeneration
+          || normalizeSubject(course.value) !== subjectKey
+          || exam.value !== examNumber
+        ) return;
         if (pollStatus) pollStatus.textContent = "";
         if (sourceStatus) sourceStatus.textContent = "";
         pollDelayMs = basePollDelayMs;
         const activeSources = renderSources(documentRef, list, sourcePayload.sources || []);
         renderSourcePicker(documentRef, picker, sourcePayload.sources || []);
         filterSourcePicker(picker, sourceFilter.value);
+        hydrateImportSources(documentRef, importSourceList, sourcePayload.sources || []);
         const activeRuns = renderRuns(documentRef, runList, runPayload.runs || []);
         if (activeSources || activeRuns) scheduleRefresh(pollDelayMs);
       } catch (error) {
+        if (generation !== refreshGeneration) return;
         // Keep the previously rendered lists in place; surface the failure
         // in the dedicated status region and keep polling with backoff.
         const message = error instanceof Error ? error.message : "Quiz Builder status could not be loaded.";
@@ -434,14 +616,22 @@
     };
 
     course.addEventListener("change", () => {
+      refreshGeneration += 1;
       if (pollHandle !== null) root.clearTimeout(pollHandle);
       pollHandle = null;
       populateExams(documentRef, course, exam);
+      clearImportSources(documentRef, importSourceList);
       list.textContent = "Select an exam to view sources.";
       picker.textContent = "Select a source course and exam first.";
       runList.textContent = "Select a source course and exam to view runs.";
+      updateScopeUrl(course, exam, selectedWorkflow, navigation);
     });
     exam.addEventListener("change", () => {
+      refreshGeneration += 1;
+      if (pollHandle !== null) root.clearTimeout(pollHandle);
+      pollHandle = null;
+      clearImportSources(documentRef, importSourceList);
+      updateScopeUrl(course, exam, selectedWorkflow, navigation);
       if (exam.value) {
         list.textContent = "";
         const loading = documentRef.createElement("li");
@@ -449,7 +639,7 @@
         list.append(loading);
         if (sourceStatus) sourceStatus.textContent = "Loading sources…";
       }
-      refresh();
+      return refresh();
     });
     destinationCourse.addEventListener("change", () => {
       populateExams(documentRef, destinationCourse, destinationExam);
@@ -608,11 +798,7 @@
         await refresh();
       } catch (error) {
         const detail = error instanceof Error ? error.message : "Quiz Builder action could not be completed.";
-        if (deleteButton) {
-          if (sourceStatus) sourceStatus.textContent = detail;
-        } else {
-          runList.textContent = detail;
-        }
+        restoreFailedAction(target, deleteButton ? sourceStatus : pollStatus, detail);
       } finally {
         target.disabled = false;
       }
@@ -664,12 +850,10 @@
           message.textContent = "Select a course and exam first.";
           return;
         }
-        const roleState = applyImportRoleState(form);
         const token = csrf(documentRef);
-        const body = new FormData(form);
-        body.append("subject", course.value);
-        body.append("exam_number", exam.value);
-        body.append("csrf_token", token);
+        const { body, roleState } = buildImportSourceFormData(
+          form, course, exam, token,
+        );
         const submitButton = form.querySelector('button[type="submit"]');
         if (submitButton) submitButton.disabled = true;
         try {
@@ -753,24 +937,48 @@
         if (submitButton) submitButton.disabled = false;
       }
     });
+
+    navigation?.addEventListener?.("popstate", () => {
+      refreshGeneration += 1;
+      if (pollHandle !== null) root.clearTimeout(pollHandle);
+      pollHandle = null;
+      const restored = restoreScopeFromUrl(
+        documentRef,
+        course,
+        exam,
+        navigation,
+      );
+      selectedWorkflow = restored.workflow;
+      setWorkflowState(page, selectedWorkflow);
+      clearImportSources(documentRef, importSourceList);
+      if (restored.scopeValid) refresh();
+    });
+
+    if (restoredScope.scopeValid) return refresh();
+    return Promise.resolve();
   };
 
   const api = {
     appendImportSource,
     buildRunPayload,
     buildImportRunPayload,
+    buildImportSourceFormData,
     applyImportRoleState,
     filterSourcePicker,
     hasActiveRuns,
     hasActiveSources,
+    hydrateImportSources,
     initialize,
     imageUrlFromDrop,
     normalizeSubject,
     renderRuns,
     renderSources,
     retryStatus,
+    restoreFailedAction,
+    restoreScopeFromUrl,
     selectAllAttachedSources,
     setWorkflowState,
+    updateScopeUrl,
     workflowPanelState,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

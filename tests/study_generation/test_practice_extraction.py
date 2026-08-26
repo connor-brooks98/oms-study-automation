@@ -130,6 +130,7 @@ def test_extractor_retries_schema_failure_once(tmp_path: Path) -> None:
 
     assert len(result.questions) == 2
     assert len(structured_generator.requests) == 2
+    assert "color, highlighting" in structured_generator.requests[0].instruction
     assert (
         "previous response failed schema validation"
         in structured_generator.requests[1].instruction
@@ -199,6 +200,227 @@ def test_prompt_keeps_source_order_and_source_context(tmp_path: Path) -> None:
     assert "source_title: Professor packet" in prompt
     assert "source_role: questions" in prompt
     assert prompt.index("segment_key: heading") < prompt.index("segment_key: questions-1")
+
+
+def test_prompt_includes_answer_formatting_sidecar_without_rewriting_text(
+    tmp_path: Path,
+) -> None:
+    document = _document(
+        tmp_path,
+        segments=(
+            ParsedSegment(
+                "questions-1",
+                SegmentKind.PARAGRAPH,
+                "C) Correct answer",
+                DocumentLocator("slide 2", slide_number=2),
+                style_metadata=("bold: C) Correct answer", "color #FF0000: C) Correct answer"),
+            ),
+        ),
+    )
+    generator = StructuredGenerator([valid_extraction_json()])
+
+    PracticeQuestionExtractor(generator).extract((document,))
+
+    prompt = generator.requests[0].input_text
+    assert "text: C) Correct answer" in prompt
+    assert (
+        "source_style_metadata: bold: C) Correct answer; color #FF0000: C) Correct answer"
+        in prompt
+    )
+
+
+@pytest.mark.parametrize(
+    "cue",
+    (
+        "bold: B) Correct",
+        "italic: B) Correct",
+        "underline: B) Correct",
+        "highlighted: B) Correct",
+        "color #FF0000: B) Correct",
+    ),
+)
+def test_extractor_applies_unique_styled_option_on_following_slide(
+    tmp_path: Path, cue: str
+) -> None:
+    document = _document(
+        tmp_path,
+        segments=(
+            ParsedSegment(
+                "question",
+                SegmentKind.PARAGRAPH,
+                "Which answer? A) Wrong B) Correct",
+                DocumentLocator("slide 1", slide_number=1),
+            ),
+            ParsedSegment(
+                "answer",
+                SegmentKind.PARAGRAPH,
+                "Which answer? A) Wrong B) Correct",
+                DocumentLocator("slide 2", slide_number=2),
+                style_metadata=(cue,),
+            ),
+        ),
+    )
+    payload = {
+        "questions": [
+            {
+                "original_identifier": None,
+                "stem": "Which answer?",
+                "choices": ["Wrong", "Correct"],
+                "supplied_correct_index": None,
+                "rationale": None,
+                "source_segments": [
+                    {"source_id": "source-1", "segment_key": "question"}
+                ],
+                "candidate_assets": [],
+                "confidence": 0.9,
+            }
+        ],
+        "answers": [],
+    }
+
+    result = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(payload)])
+    ).extract((document,))
+
+    assert result.questions[0].supplied_correct_index == 1
+    assert result.questions[0].rationale == "Source-marked correct answer: Correct"
+    assert result.questions[0].source_segments[-1].segment_key == "answer"
+
+
+def test_extractor_does_not_guess_when_multiple_options_are_styled(tmp_path: Path) -> None:
+    document = _document(
+        tmp_path,
+        segments=(
+            ParsedSegment(
+                "question",
+                SegmentKind.PARAGRAPH,
+                "Which answer? A) One B) Two",
+                DocumentLocator("slide 1", slide_number=1),
+            ),
+            ParsedSegment(
+                "answer",
+                SegmentKind.PARAGRAPH,
+                "Which answer? A) One B) Two",
+                DocumentLocator("slide 2", slide_number=2),
+                style_metadata=("bold: A) One", "bold: B) Two"),
+            ),
+        ),
+    )
+    payload = json.loads(valid_extraction_json())
+    payload["questions"] = [
+        {
+            "original_identifier": None,
+            "stem": "Which answer?",
+            "choices": ["One", "Two"],
+            "supplied_correct_index": None,
+            "rationale": None,
+            "source_segments": [
+                {"source_id": "source-1", "segment_key": "question"}
+            ],
+            "candidate_assets": [],
+            "confidence": 0.9,
+        }
+    ]
+
+    result = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(payload)])
+    ).extract((document,))
+
+    assert result.questions[0].supplied_correct_index is None
+
+
+def test_extractor_does_not_apply_next_questions_styled_option(
+    tmp_path: Path,
+) -> None:
+    document = _document(
+        tmp_path,
+        segments=(
+            ParsedSegment(
+                "question-one",
+                SegmentKind.PARAGRAPH,
+                "What is the first diagnosis? A) Shared B) Other",
+                DocumentLocator("slide 1", slide_number=1),
+            ),
+            ParsedSegment(
+                "question-two",
+                SegmentKind.PARAGRAPH,
+                "What is the second diagnosis? A) Shared B) Different",
+                DocumentLocator("slide 2", slide_number=2),
+                style_metadata=("bold: A) Shared",),
+            ),
+        ),
+    )
+    payload = {
+        "questions": [
+            {
+                "original_identifier": None,
+                "stem": "What is the first diagnosis?",
+                "choices": ["Shared", "Other"],
+                "supplied_correct_index": None,
+                "rationale": None,
+                "source_segments": [
+                    {"source_id": "source-1", "segment_key": "question-one"}
+                ],
+                "candidate_assets": [],
+                "confidence": 0.9,
+            }
+        ],
+        "answers": [],
+    }
+
+    result = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(payload)])
+    ).extract((document,))
+
+    assert result.questions[0].supplied_correct_index is None
+
+
+def test_extractor_accepts_repeated_slide_with_minor_stem_wording_change(
+    tmp_path: Path,
+) -> None:
+    document = _document(
+        tmp_path,
+        segments=(
+            ParsedSegment(
+                "question",
+                SegmentKind.PARAGRAPH,
+                "He develops flushing during his vancomycin infusion. What explains this? "
+                "A) Allergy B) Histamine release",
+                DocumentLocator("slide 1", slide_number=1),
+            ),
+            ParsedSegment(
+                "answer",
+                SegmentKind.PARAGRAPH,
+                "He develops flushing during his antibiotic infusion. What explains this? "
+                "A) Allergy B) Histamine release",
+                DocumentLocator("slide 2", slide_number=2),
+                style_metadata=("bold: B) Histamine release",),
+            ),
+        ),
+    )
+    payload = {
+        "questions": [
+            {
+                "original_identifier": None,
+                "stem": "He develops flushing during his vancomycin infusion. What explains this?",
+                "choices": ["Allergy", "Histamine release"],
+                "supplied_correct_index": None,
+                "rationale": None,
+                "source_segments": [
+                    {"source_id": "source-1", "segment_key": "question"}
+                ],
+                "candidate_assets": [],
+                "confidence": 0.9,
+            }
+        ],
+        "answers": [],
+    }
+
+    result = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(payload)])
+    ).extract((document,))
+
+    assert result.questions[0].supplied_correct_index == 1
 
 
 def test_extractor_blocks_partial_results_when_source_has_a_sequential_question_set(

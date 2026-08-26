@@ -38,7 +38,7 @@ def test_stylesheet_order_and_system_font_contract() -> None:
     for name, page_css in (
         ("public_quiz.html", "/public/quizzes/assets/player.css"),
         ("public_quiz_library.html", "/public/quizzes/assets/library.css"),
-        ("studio_quiz_preview.html", "/public/quizzes/assets/player.css"),
+        ("studio_quiz_preview.html", "/static/public_quiz.css"),
     ):
         template = source(name)
         assert "IBM+Plex+Sans" not in template
@@ -47,11 +47,57 @@ def test_stylesheet_order_and_system_font_contract() -> None:
         )
         assert 'class="sh-app' in template or '<body class="sh-app"' in template
 
+    preview = source("studio_quiz_preview.html")
+    assert "/public/quizzes/assets/" not in preview
+    for asset in ("reset.css", "tokens.css", "study-hub.css", "public_quiz.css"):
+        assert f'/static/{asset}?v={{{{ player_asset_version }}}}' in preview
+    assert '/static/public_quiz.js?v={{ player_asset_version }}' in preview
+
 
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260825.12" %}' in base
+    assert '{% set shell_asset_version = "20260818.2" %}' in base
+    for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
+        assert (
+            f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
+            in base
+        )
+
+
+def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
+    base = source("base.html")
+    shell_js = static_source("study_hub_shell.js")
+
+    assert 'class="site-header sh-topbar"' in base
+    assert "Home</a>" in base
+    assert "Lectures</a>" in base
+    assert "Anki</a>" in base
+    assert "Quiz Builder</a>" in base
+    assert "Practice Questions</a>" in base
+    assert '<details class="sh-more">' in base
+    for destination in (
+        "/uploads/slides",
+        "/uploads/transcripts",
+        "/quarantine",
+        "/review",
+        "/settings",
+    ):
+        assert destination in base
+
+    assert '<dialog class="sh-dialog sh-command" id="command-palette"' in base
+    assert '<dialog class="sh-dialog sh-mobile-nav" id="mobile-navigation"' in base
+    assert 'href="/" data-dialog-initial-focus>Home</a>' in base
+    assert 'aria-keyshortcuts="Meta+K Control+K"' in base
+    assert "event.metaKey || event.ctrlKey" in shell_js
+    assert 'event.key === "ArrowDown" || event.key === "ArrowUp"' in shell_js
+    assert 'dialog.addEventListener("close", () => restoreFocus(dialog))' in shell_js
+
+
+def test_private_shell_stylesheets_share_one_release_version() -> None:
+    base = source("base.html")
+
+    assert '{% set shell_asset_version = "20260825.13" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
@@ -170,6 +216,17 @@ def test_presentational_contracts_cover_forms_and_deferred_review_hooks() -> Non
     assert "sh-option" in (STATIC / "public_quiz.js").read_text(encoding="utf-8")
     assert "data-practice-review" in source("studio_quiz_review.html")
     assert "data-review-blockers" in source("studio_quiz_review.html")
+    assert "content-visibility: auto" in static_source("app.css")
+    assert "contain-intrinsic-size: auto 22rem" in static_source("app.css")
+
+
+def test_upload_queue_owns_required_file_validation() -> None:
+    upload_input = next(
+        line for line in source("uploads.html").splitlines() if 'id="upload-files"' in line
+    )
+
+    assert " required" not in upload_input
+    assert "if (!chosenFiles.length)" in static_source("uploads.js")
 
 
 def test_daily_workbench_keeps_progress_labels_and_unavailable_actions_honest() -> None:
@@ -188,6 +245,24 @@ def test_daily_workbench_keeps_progress_labels_and_unavailable_actions_honest() 
     assert "subject }} Lecture {{ \"%02d\"|format(lecture.lecture_number) }}" in review
 
 
+def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
+    app_css = static_source("app.css")
+    library_css = static_source("public_quiz_library.css")
+    uploads = source("uploads.html")
+    lecture = source("lecture.html")
+
+    assert ".upload-results, .upload-status, .upload-items, .upload-items li" in app_css
+    assert "overflow-wrap: anywhere" in app_css
+    assert ".selected-file-name" in app_css
+    assert ".selected-file-size" in app_css
+    assert ".file-card .file-actions" in app_css
+    assert "repeat(auto-fit, minmax(10rem, 1fr))" in app_css
+    assert "touch-action: none" in library_css
+    assert "uploads.js?v=20260818.2" in uploads
+    assert "Download Cleaned Transcript" in lecture
+    assert "Download Lecture Outline" in lecture
+
+
 def test_tracker_control_and_disclosure_scans_cover_the_locked_residuals() -> None:
     anki = source("anki.html")
     studio = source("notebook_studio.html")
@@ -200,7 +275,7 @@ def test_tracker_control_and_disclosure_scans_cover_the_locked_residuals() -> No
     assert "sh-input" in studio and "sh-textarea" in studio and "sh-file" in studio
     assert dashboard.index("needs review") < dashboard.index('class="heading-actions"')
     assert "⌄" not in library
-    assert "sh-seg" in library and "sh-subject-dot" in library
+    assert "sh-nav" in library and "sh-subject-dot" in library
     assert "13/13 complete" not in source("lecture.html")
     assert "release_steps|length }}/{{ release_steps|length }} complete" in source("lecture.html")
     assert '"✕"' in (STATIC / "public_quiz.js").read_text(encoding="utf-8")
@@ -307,7 +382,7 @@ def test_visual_followups_keep_layout_and_restart_controls_in_their_owners() -> 
     assert ".anki-workbench-panel" in app_css
     assert ".provider-card-heading > :first-child" in app_css
     assert ".exam-card { margin-top: var(--sp-2); padding: 0;" in library_css
-    assert ".library-heading .sh-seg__btn { white-space: nowrap; }" in library_css
+    assert ".sh-topbar .sh-nav { width: 100%; flex-wrap: wrap; overflow: visible; }" in library_css
     assert 'title="Restart {{ row.title }}"' in library
     assert "Reset quiz" not in player_js
     assert "Start Over" not in player_js
@@ -405,6 +480,7 @@ def test_player_and_dynamic_foundations_preserve_shared_components() -> None:
     assert ".quiz-app {" not in player_css
     assert ".quiz-flag-select { max-width: 16rem; }" in player_css
     assert 'class="chevron sh-disclose"' in library
+    assert 'aria-expanded="false"' in library
     assert '"sh-empty anki-empty-compact"' in anki_js
     assert '"sh-empty__title"' in anki_js
     assert '"1 Study Hub quiz is ready."' in lecture_js
@@ -453,6 +529,10 @@ def test_import_checks_and_image_rows_escape_late_legacy_cascade() -> None:
 
     assert ".studio-import-intake label:not(.sh-check)" in app_css
     assert ".studio-import-intake [data-import-source-row] label:not(.sh-check)" in app_css
+    assert (
+        '.studio-import-intake [data-import-source-row] .sh-check '
+        'input[type="checkbox"] { width: 16px; min-width: 16px; }'
+    ) in app_css
     assert ".studio-import-intake label {" not in app_css
     assert ".studio-import-intake [data-import-source-row] label {" not in app_css
 

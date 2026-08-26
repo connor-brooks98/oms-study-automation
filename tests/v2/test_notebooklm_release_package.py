@@ -1,4 +1,5 @@
 import importlib.util
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -12,11 +13,18 @@ def _builder():
     return module
 
 
+def _head() -> str:
+    return subprocess.check_output(
+        ["git", "-C", Path(__file__).parents[2], "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+
+
 def test_source_release_includes_generation_runtime_and_excludes_google_state(
     tmp_path,
 ):
     root = Path(__file__).parents[2]
-    _, source = _builder().build_releases(root, tmp_path, "test")
+    _, source = _builder().build_releases(root, tmp_path, "test", _head())
     with zipfile.ZipFile(source) as archive:
         names = set(archive.namelist())
 
@@ -38,7 +46,7 @@ def test_source_release_includes_generation_runtime_and_excludes_google_state(
 
 def test_hotfix_contains_dependencies_and_lecture_controls(tmp_path):
     root = Path(__file__).parents[2]
-    hotfix, _ = _builder().build_releases(root, tmp_path, "test")
+    hotfix, _ = _builder().build_releases(root, tmp_path, "test", _head())
     with zipfile.ZipFile(hotfix) as archive:
         names = set(archive.namelist())
 

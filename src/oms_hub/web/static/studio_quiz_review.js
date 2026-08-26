@@ -53,9 +53,70 @@
   const candidateSelectionPayload = (candidateId) => ({ image_candidate_id: candidateId });
   const candidateSelectionUrl = (runId, questionId) => `/studio/runs/${encodeURIComponent(runId)}/questions/${encodeURIComponent(questionId)}/image-selection`;
 
+  const reindexChoiceRows = (group, questionId = "") => {
+    Array.from(group?.querySelectorAll?.(".studio-review-choice") || []).forEach((row, index) => {
+      const choice = row.querySelector?.('input[name="choice"]');
+      const correct = row.querySelector?.('input[name="correct_index"]');
+      const overflow = row.querySelector?.("details");
+      const summary = overflow?.querySelector?.("summary");
+      const remove = row.querySelector?.("[data-remove-choice]");
+      choice?.setAttribute?.("aria-label", `Choice ${index + 1}`);
+      correct?.setAttribute?.("aria-label", `Correct choice ${index + 1}`);
+      summary?.setAttribute?.("aria-label", `More actions for choice ${index + 1}`);
+      if (correct) correct.value = String(index);
+      if (!questionId) return;
+      if (choice) choice.dataset.focusKey = `question:${questionId}:choice:${index}`;
+      if (correct) correct.dataset.focusKey = `question:${questionId}:correct:${index}`;
+      if (overflow) overflow.dataset.stateKey = `question:${questionId}:choice:${index}:overflow`;
+      if (summary) summary.dataset.focusKey = `question:${questionId}:choice:${index}:overflow:summary`;
+      if (remove) remove.dataset.focusKey = `question:${questionId}:choice:${index}:remove`;
+    });
+  };
+
+  const removeChoiceRow = (remove) => {
+    const row = remove.closest?.(".studio-review-choice");
+    const group = remove.closest?.("[data-choices]");
+    const card = remove.closest?.("[data-question-id]");
+    const rows = Array.from(group?.querySelectorAll?.(".studio-review-choice") || []);
+    if (!row || !group || !card || rows.length <= 2) return false;
+    const removedIndex = rows.indexOf(row);
+    row.remove();
+    card.dataset.dirty = "true";
+    reindexChoiceRows(group, card.dataset.questionId || "");
+    const remaining = Array.from(group.querySelectorAll?.(".studio-review-choice") || []);
+    const fallbackRow = remaining[Math.min(Math.max(removedIndex, 0), remaining.length - 1)];
+    const fallback = fallbackRow?.querySelector?.("[data-focus-key]")
+      || group.querySelector?.("[data-add-choice]")
+      || card;
+    fallback?.focus?.({ preventScroll: true });
+    return true;
+  };
+
   const csrf = (documentRef) => {
     const value = documentRef.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("study_hub_csrf="));
     return value ? decodeURIComponent(value.split("=").slice(1).join("=")) : "";
+  };
+
+  const captureRenderState = (documentRef, page) => ({
+    openKeys: new Set(Array.from(
+      page.querySelectorAll?.("details[data-state-key]") || [],
+      (details) => details.open ? details.dataset.stateKey : null,
+    ).filter(Boolean)),
+    focusKey: documentRef.activeElement?.dataset?.focusKey || null,
+  });
+
+  const restoreRenderState = (page, state) => {
+    Array.from(page.querySelectorAll?.("details[data-state-key]") || []).forEach((details) => {
+      if (state.openKeys.has(details.dataset.stateKey)) details.open = true;
+    });
+    const focus = Array.from(page.querySelectorAll?.("[data-focus-key]") || [])
+      .find((element) => element.dataset.focusKey === state.focusKey);
+    if (!state.focusKey) return;
+    if (focus?.focus && !focus.disabled && focus.isConnected !== false) {
+      focus.focus({ preventScroll: true });
+      return;
+    }
+    page.focus?.({ preventScroll: true });
   };
 
   const text = (documentRef, tagName, value, className = "") => {
@@ -65,7 +126,7 @@
     return node;
   };
 
-  const input = (documentRef, labelValue, name, value, type = "text") => {
+  const input = (documentRef, labelValue, name, value, type = "text", focusKey = "") => {
     const label = documentRef.createElement("label");
     label.append(text(documentRef, "span", labelValue, "sh-field-label"));
     const field = documentRef.createElement("input");
@@ -73,22 +134,24 @@
     field.name = name;
     field.value = value ?? "";
     field.className = "sh-input";
+    if (focusKey) field.dataset.focusKey = focusKey;
     label.append(field);
     return label;
   };
 
-  const textarea = (documentRef, labelValue, name, value) => {
+  const textarea = (documentRef, labelValue, name, value, focusKey = "") => {
     const label = documentRef.createElement("label");
     label.append(text(documentRef, "span", labelValue, "sh-field-label"));
     const field = documentRef.createElement("textarea");
     field.name = name;
     field.value = value ?? "";
     field.className = "sh-textarea";
+    if (focusKey) field.dataset.focusKey = focusKey;
     label.append(field);
     return label;
   };
 
-  const choiceRow = (documentRef, choice, index, correctIndex) => {
+  const choiceRow = (documentRef, choice, index, correctIndex, questionId = "") => {
     const row = documentRef.createElement("div");
     row.className = "studio-review-choice";
     const choiceInput = documentRef.createElement("input");
@@ -96,6 +159,7 @@
     choiceInput.name = "choice";
     choiceInput.value = choice;
     choiceInput.className = "sh-input";
+    if (questionId) choiceInput.dataset.focusKey = `question:${questionId}:choice:${index}`;
     choiceInput.setAttribute("aria-label", `Choice ${index + 1}`);
     const correctLabel = documentRef.createElement("label");
     correctLabel.className = "sh-check";
@@ -104,15 +168,21 @@
     correct.name = "correct_index";
     correct.value = String(index);
     correct.checked = index === correctIndex;
+    if (questionId) correct.dataset.focusKey = `question:${questionId}:correct:${index}`;
     correct.setAttribute("aria-label", `Correct choice ${index + 1}`);
     correctLabel.append(correct, text(documentRef, "span", "Correct"));
     const overflow = documentRef.createElement("details");
     overflow.className = "studio-review-choice-overflow";
     const summary = text(documentRef, "summary", "⋯", "sh-iconbtn");
+    if (questionId) {
+      overflow.dataset.stateKey = `question:${questionId}:choice:${index}:overflow`;
+      summary.dataset.focusKey = `${overflow.dataset.stateKey}:summary`;
+    }
     summary.setAttribute("aria-label", `More actions for choice ${index + 1}`);
     const remove = documentRef.createElement("button");
     remove.type = "button";
     remove.dataset.removeChoice = "true";
+    if (questionId) remove.dataset.focusKey = `question:${questionId}:choice:${index}:remove`;
     remove.className = "sh-btn sh-btn--danger";
     remove.textContent = "Remove choice";
     overflow.append(summary, remove);
@@ -123,7 +193,44 @@
   const renderCandidates = (documentRef, question) => {
     const section = documentRef.createElement("section");
     section.className = "studio-review-candidates";
-    section.append(text(documentRef, "h4", "Image candidates", "sh-section-label"));
+    section.append(text(documentRef, "h4", "Question image", "sh-section-label"));
+    if (question.image_required) {
+      const toggle = documentRef.createElement("button");
+      toggle.type = "button";
+      toggle.dataset.imageOverride = question.id;
+      toggle.dataset.imageNotNeeded = String(Boolean(question.image_not_needed));
+      toggle.className = "sh-btn sh-btn--secondary";
+      toggle.textContent = question.image_not_needed ? "Require image" : "No image needed";
+      section.append(toggle);
+    }
+    if (question.image_attached) {
+      section.append(text(documentRef, "p", "An image is attached.", "sh-row__meta"));
+      if (question.image_preview_url && !question.selected_candidate_id) {
+        const preview = documentRef.createElement("img");
+        preview.src = question.image_preview_url;
+        preview.alt = "Uploaded question image";
+        preview.loading = "lazy";
+        section.append(preview);
+      }
+    }
+    const upload = documentRef.createElement("form");
+    upload.dataset.imageUpload = question.id;
+    upload.className = "studio-review-image-upload";
+    upload.enctype = "multipart/form-data";
+    const uploadLabel = documentRef.createElement("label");
+    uploadLabel.append(text(documentRef, "span", "Use my own image", "sh-field-label"));
+    const uploadInput = documentRef.createElement("input");
+    uploadInput.type = "file";
+    uploadInput.name = "file";
+    uploadInput.accept = "image/png,image/jpeg,image/webp";
+    uploadInput.required = true;
+    uploadLabel.append(uploadInput);
+    const uploadButton = documentRef.createElement("button");
+    uploadButton.type = "submit";
+    uploadButton.className = "sh-btn sh-btn--secondary";
+    uploadButton.textContent = "Upload image";
+    upload.append(uploadLabel, uploadButton);
+    section.append(upload);
     const list = documentRef.createElement("div");
     list.className = "studio-review-candidate-list";
     question.candidates.forEach((candidate) => {
@@ -139,6 +246,7 @@
       const select = documentRef.createElement("button");
       select.type = "button";
       select.dataset.selectCandidate = candidate.candidate_id;
+      select.dataset.focusKey = `question:${question.id}:candidate:${candidate.candidate_id}`;
       select.className = "sh-btn sh-btn--secondary";
       select.textContent = candidate.candidate_id === question.selected_candidate_id ? "Selected" : "Use this image";
       select.disabled = candidate.candidate_id === question.selected_candidate_id;
@@ -149,7 +257,7 @@
     return section;
   };
 
-  const renderQuestion = (documentRef, question) => {
+  const renderQuestion = (documentRef, question, issues = []) => {
     const card = documentRef.createElement("article");
     card.className = "sh-card studio-review-question";
     card.dataset.questionId = question.id;
@@ -157,6 +265,15 @@
     card.append(text(documentRef, "h3", question.original_identifier ? `Question ${question.original_identifier}` : question.id));
     card.append(text(documentRef, "p", `Answer provenance: ${question.provenance || "unresolved"}`, "sh-row__meta"));
     card.append(text(documentRef, "p", `Extraction confidence: ${question.confidence}`, "sh-row__meta"));
+    if (issues.length) {
+      const blocking = issues.some((issue) => issue.role === "err");
+      card.append(text(
+        documentRef,
+        "p",
+        `${blocking ? "Needs review" : "Review note"}: ${issues.map((issue) => issue.message).join(" · ")}`,
+        `sh-pill sh-pill--${blocking ? "err" : "warn"}`,
+      ));
+    }
     const refs = documentRef.createElement("ul");
     refs.className = "studio-review-sources";
     refs.setAttribute("aria-label", "Source references");
@@ -165,39 +282,73 @@
     const form = documentRef.createElement("form");
     form.dataset.questionEdit = question.id;
     form.className = "studio-review-form";
-    form.append(textarea(documentRef, "Question stem", "stem", question.stem));
+    form.append(textarea(documentRef, "Question stem", "stem", question.stem, `question:${question.id}:stem`));
     const choices = documentRef.createElement("section");
     choices.className = "sh-card studio-review-choice-group";
     choices.dataset.choices = "true";
     choices.append(text(documentRef, "p", "Choices (select the correct answer)", "sh-section-label"));
-    question.choices.forEach((choice, index) => choices.append(choiceRow(documentRef, choice, index, question.correct_index)));
+    question.choices.forEach((choice, index) => choices.append(choiceRow(documentRef, choice, index, question.correct_index, question.id)));
     const add = documentRef.createElement("button");
     add.type = "button";
     add.dataset.addChoice = "true";
+    add.dataset.focusKey = `question:${question.id}:add-choice`;
     add.className = "sh-btn sh-btn--secondary";
     add.textContent = "Add choice";
     choices.append(add);
-    form.append(choices, textarea(documentRef, "Rationale", "rationale", question.rationale));
-    form.append(input(documentRef, "Topic", "topic", question.topic));
-    form.append(input(documentRef, "Area", "area", question.area));
-    form.append(input(documentRef, "Learning objective", "learning_objective", question.learning_objective));
+    form.append(choices, textarea(documentRef, "Rationale", "rationale", question.rationale, `question:${question.id}:rationale`));
+    form.append(input(documentRef, "Topic", "topic", question.topic, "text", `question:${question.id}:topic`));
+    form.append(input(documentRef, "Area", "area", question.area, "text", `question:${question.id}:area`));
+    form.append(input(documentRef, "Learning objective", "learning_objective", question.learning_objective, "text", `question:${question.id}:learning-objective`));
     const save = documentRef.createElement("button");
     save.type = "submit";
     save.className = "sh-btn sh-btn--primary";
+    save.dataset.focusKey = `question:${question.id}:save`;
     save.textContent = "Save question";
-    form.append(save);
+    const status = text(documentRef, "p", "", "studio-review-question-message");
+    status.dataset.questionMessage = "true";
+    status.setAttribute("aria-live", "polite");
+    form.append(save, status);
     card.append(form);
     if (question.verification_required) {
       const verify = documentRef.createElement("button");
       verify.type = "button";
       verify.dataset.verifyQuestion = question.id;
+      verify.dataset.focusKey = `question:${question.id}:verify`;
       verify.className = "sh-btn sh-btn--secondary";
       verify.textContent = question.verified_at ? "Answer verified" : "Verify answer";
       verify.disabled = Boolean(question.verified_at);
       card.append(verify);
     }
-    if (question.candidates.length) card.append(renderCandidates(documentRef, question));
+    card.append(renderCandidates(documentRef, question));
     return card;
+  };
+
+  const setReviewTab = (questions, tab) => {
+    const selected = tab === "ready" ? "ready" : "needs-review";
+    questions.dataset.activeReviewTab = selected;
+    Array.from(questions.querySelectorAll?.("[data-review-tab]") || []).forEach((button) => {
+      const active = button.dataset.reviewTab === selected;
+      button.classList.toggle("sh-seg__btn--active", active);
+      button.setAttribute("aria-selected", String(active));
+      button.tabIndex = active ? 0 : -1;
+    });
+    Array.from(questions.querySelectorAll?.("[data-review-panel]") || []).forEach((panel) => {
+      panel.hidden = panel.dataset.reviewPanel !== selected;
+    });
+  };
+
+  const moveReviewTab = (tab, key) => {
+    const tabs = Array.from(tab.parentElement?.querySelectorAll?.("[data-review-tab]") || []);
+    const current = tabs.indexOf(tab);
+    if (current < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) return false;
+    const index = key === "Home"
+      ? 0
+      : key === "End"
+        ? tabs.length - 1
+        : (current + (key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    setReviewTab(tab.parentElement.parentElement, tabs[index].dataset.reviewTab);
+    tabs[index].focus();
+    return true;
   };
 
   const renderIssues = (documentRef, page, payload) => {
@@ -206,7 +357,11 @@
     const issues = payload.issues || payload.blockers.map((message) => ({
       question_id: message.split(":", 1)[0], display_label: message.split(":", 1)[0], type: "review", message, role: "err",
     }));
-    if (!issues.length) {
+    const hasBlockingRunDiagnostic = (payload.run_diagnostics || []).some((diagnostic) => (
+      diagnostic.severity === "blocker"
+      && !(diagnostic.overridable && diagnostic.acknowledged)
+    ));
+    if (!issues.length && !hasBlockingRunDiagnostic) {
       const ready = documentRef.createElement("section");
       ready.className = "sh-empty";
       ready.append(text(documentRef, "h3", "Ready for preview and publication.", "sh-empty__title"));
@@ -217,7 +372,9 @@
     groupIssues(issues).forEach((group) => {
       const details = documentRef.createElement("details");
       details.className = "studio-review-issue-group sh-card";
+      details.dataset.stateKey = `issue-group:${group.type}`;
       const summary = documentRef.createElement("summary");
+      summary.dataset.focusKey = `${details.dataset.stateKey}:summary`;
       summary.append(text(documentRef, "span", `${group.type.replaceAll("_", " ")} (${group.issues.length})`, "sh-section-label"));
       details.append(summary);
       const list = documentRef.createElement("ul");
@@ -235,26 +392,128 @@
     });
   };
 
+  const renderRunDiagnostics = (documentRef, page, payload) => {
+    const target = page.querySelector("[data-review-blockers]");
+    (payload.run_diagnostics || []).forEach((diagnostic) => {
+      const item = documentRef.createElement("section");
+      item.className = "studio-review-issue-group sh-card";
+      item.append(text(documentRef, "p", diagnostic.message, "sh-section-label"));
+      if (diagnostic.overridable && !diagnostic.acknowledged) {
+        const acknowledge = documentRef.createElement("button");
+        acknowledge.type = "button";
+        acknowledge.className = "sh-btn sh-btn--secondary";
+        acknowledge.dataset.acknowledgeRunDiagnostic = diagnostic.code;
+        acknowledge.textContent = "Acknowledge";
+        item.append(acknowledge);
+      } else if (!diagnostic.overridable) {
+        item.append(text(documentRef, "p", "Blocking diagnostic; acknowledgement is unavailable."));
+      }
+      target.append(item);
+    });
+  };
+
   const render = (documentRef, page, payload) => {
+    const state = captureRenderState(documentRef, page);
     renderIssues(documentRef, page, payload);
+    renderRunDiagnostics(documentRef, page, payload);
     const publish = page.querySelector("[data-publish-quiz]");
     publish.disabled = !canPublish(payload.blockers);
     const preview = page.querySelector("[data-preview-link]");
     preview.hidden = !payload.preview_url;
     preview.href = payload.preview_url || "";
     const questions = page.querySelector("[data-review-questions]");
-    questions.replaceChildren();
-    if (shouldRenderNoCandidateEmpty(payload)) {
-      const empty = documentRef.createElement("section");
-      empty.className = "sh-empty";
-      empty.append(text(documentRef, "h3", "No image candidates were found.", "sh-empty__title"));
-      empty.append(text(documentRef, "p", "Continue answer review or add images only where required.", "sh-empty__text"));
-      questions.append(empty);
-    }
-    payload.questions.forEach((question) => questions.append(renderQuestion(documentRef, question)));
+    const existing = new Map(Array.from(
+      questions.querySelectorAll?.("[data-question-id]") || [],
+      (card) => [card.dataset.questionId, card],
+    ));
+    const blockingQuestionIds = new Set(
+      (payload.issues || []).filter((issue) => issue.role === "err").map((issue) => issue.question_id),
+    );
+    const needsReview = [];
+    const ready = [];
+    payload.questions.forEach((question) => {
+      const current = existing.get(question.id);
+      const card = current?.dataset.dirty === "true"
+        ? current
+        : renderQuestion(
+          documentRef,
+          question,
+          (payload.issues || []).filter((issue) => issue.question_id === question.id),
+        );
+      (blockingQuestionIds.has(question.id) ? needsReview : ready).push(card);
+      existing.delete(question.id);
+    });
+    existing.forEach((card) => {
+      if (card.dataset.dirty === "true") needsReview.push(card);
+    });
+    const tabs = documentRef.createElement("div");
+    tabs.className = "sh-seg studio-review-tabs";
+    tabs.setAttribute("role", "tablist");
+    const needsTab = documentRef.createElement("button");
+    needsTab.type = "button";
+    needsTab.className = "sh-btn sh-btn--secondary sh-seg__btn";
+    needsTab.dataset.reviewTab = "needs-review";
+    needsTab.setAttribute("role", "tab");
+    needsTab.id = "studio-review-tab-needs-review";
+    needsTab.setAttribute("aria-controls", "studio-review-panel-needs-review");
+    needsTab.textContent = `Needs review (${needsReview.length})`;
+    const readyTab = documentRef.createElement("button");
+    readyTab.type = "button";
+    readyTab.className = "sh-btn sh-btn--secondary sh-seg__btn";
+    readyTab.dataset.reviewTab = "ready";
+    readyTab.setAttribute("role", "tab");
+    readyTab.id = "studio-review-tab-ready";
+    readyTab.setAttribute("aria-controls", "studio-review-panel-ready");
+    readyTab.textContent = `Ready (${ready.length})`;
+    tabs.append(needsTab, readyTab);
+    const needsPanel = documentRef.createElement("section");
+    needsPanel.dataset.reviewPanel = "needs-review";
+    needsPanel.setAttribute("role", "tabpanel");
+    needsPanel.id = "studio-review-panel-needs-review";
+    needsPanel.setAttribute("aria-labelledby", needsTab.id);
+    const readyPanel = documentRef.createElement("section");
+    readyPanel.dataset.reviewPanel = "ready";
+    readyPanel.setAttribute("role", "tabpanel");
+    readyPanel.id = "studio-review-panel-ready";
+    readyPanel.setAttribute("aria-labelledby", readyTab.id);
+    if (needsReview.length) needsPanel.append(...needsReview);
+    else needsPanel.append(text(documentRef, "p", "No question issues remain.", "sh-empty__text"));
+    if (ready.length) readyPanel.append(...ready);
+    else readyPanel.append(text(documentRef, "p", "Questions move here as their issues are resolved.", "sh-empty__text"));
+    questions.replaceChildren(tabs, needsPanel, readyPanel);
+    setReviewTab(questions, questions.dataset.activeReviewTab || "needs-review");
+    restoreRenderState(page, state);
+  };
+
+  const applyQuestionSave = (documentRef, page, form, payload) => {
+    const card = form.closest?.("[data-question-id]");
+    const questionId = card?.dataset.questionId;
+    if (card) delete card.dataset.dirty;
+    render(documentRef, page, payload);
+    const saved = Array.from(page.querySelectorAll?.("[data-question-id]") || [])
+      .find((item) => item.dataset.questionId === questionId);
+    return saved?.querySelector?.("[data-question-message]") || null;
+  };
+
+  const questionMessage = (page, questionId) => {
+    const card = Array.from(page.querySelectorAll?.("[data-question-id]") || [])
+      .find((item) => item.dataset.questionId === questionId);
+    return card?.querySelector?.("[data-question-message]") || null;
   };
 
   const safeJson = async (response) => { try { return await response.json(); } catch (_error) { return {}; } };
+
+  const reviewErrorMessage = (payload, fallback) => {
+    const error = payload && typeof payload === "object" ? payload.error : null;
+    if (error && typeof error === "object") {
+      const message = typeof error.message === "string" && error.message
+        ? error.message
+        : fallback;
+      const recovery = typeof error.recovery === "string" ? error.recovery.trim() : "";
+      return recovery ? `${message} ${recovery}` : message;
+    }
+    return typeof payload?.detail === "string" && payload.detail ? payload.detail : fallback;
+  };
 
   const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
     const page = documentRef.querySelector("[data-practice-review]");
@@ -266,7 +525,7 @@
       const request = ++generation;
       const response = await fetchImpl(page.dataset.reviewUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
       const payload = await safeJson(response);
-      if (!response.ok) throw new Error(payload.detail || "Review data is unavailable.");
+      if (!response.ok) throw new Error(reviewErrorMessage(payload, "Review data is unavailable."));
       if (request === generation) render(documentRef, page, payload);
       return payload;
     };
@@ -277,10 +536,36 @@
         body: JSON.stringify(body || {}),
       });
       const payload = await safeJson(response);
-      if (!response.ok) throw new Error(payload.detail || "Review update was rejected.");
+      if (!response.ok) throw new Error(reviewErrorMessage(payload, "Review update was rejected."));
       return payload;
     };
     page.addEventListener("submit", async (event) => {
+      const imageUpload = event.target.closest?.("[data-image-upload]");
+      if (imageUpload) {
+        event.preventDefault();
+        const questionId = imageUpload.dataset.imageUpload;
+        const file = imageUpload.querySelector('input[name="file"]')?.files?.[0];
+        const localMessage = questionMessage(page, questionId) || message;
+        if (!file) {
+          localMessage.textContent = "Choose an image before uploading.";
+          return;
+        }
+        localMessage.textContent = "Uploading image…";
+        try {
+          const body = new root.FormData();
+          body.append("file", file);
+          const response = await fetchImpl(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(questionId)}/image`, {
+            method: "POST", headers: { "X-CSRF-Token": csrf(documentRef) }, body,
+          });
+          const updated = await safeJson(response);
+          if (!response.ok) throw new Error(reviewErrorMessage(updated, "Image upload was rejected."));
+          render(documentRef, page, updated);
+          (questionMessage(page, questionId) || message).textContent = "Image uploaded.";
+        } catch (error) {
+          localMessage.textContent = error instanceof Error ? error.message : "Image could not be uploaded.";
+        }
+        return;
+      }
       const form = event.target.closest?.("[data-question-edit]");
       if (!form) return;
       event.preventDefault();
@@ -291,37 +576,79 @@
         rationale: form.querySelector('[name="rationale"]').value, topic: form.querySelector('[name="topic"]').value,
         area: form.querySelector('[name="area"]').value, learning_objective: form.querySelector('[name="learning_objective"]').value,
       });
+      const localMessage = form.querySelector("[data-question-message]") || message;
       if (payload.choices.length < 2 || payload.choices.length > 8 || payload.correct_index < 0 || payload.correct_index >= payload.choices.length) {
-        message.textContent = "Provide two to eight choices and select the correct answer.";
+        localMessage.textContent = "Provide two to eight choices and select the correct answer.";
         return;
       }
+      if (!payload.rationale) {
+        localMessage.textContent = "Provide an answer rationale before saving.";
+        return;
+      }
+      localMessage.textContent = "Saving…";
       try {
-        await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(form.dataset.questionEdit)}`, "PATCH", payload);
-        await refresh();
-        message.textContent = "Question saved.";
+        const updated = await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(form.dataset.questionEdit)}`, "PATCH", payload);
+        const savedMessage = applyQuestionSave(documentRef, page, form, updated) || message;
+        const remaining = (updated.issues || []).filter((issue) => issue.question_id === form.dataset.questionEdit);
+        savedMessage.textContent = remaining.length
+          ? `Question saved. Remaining: ${remaining.map((issue) => issue.message).join(" · ")}`
+          : "Question saved.";
       } catch (error) {
-        message.textContent = error instanceof Error ? error.message : "Question could not be saved.";
+        localMessage.textContent = error instanceof Error ? error.message : "Question could not be saved.";
       }
     });
+    const markDirty = (event) => {
+      const card = event.target.closest?.("[data-question-edit]")?.closest?.("[data-question-id]");
+      if (card) card.dataset.dirty = "true";
+    };
+    page.addEventListener("input", markDirty);
+    page.addEventListener("change", markDirty);
+    page.addEventListener("keydown", (event) => {
+      const reviewTab = event.target.closest?.("[data-review-tab]");
+      if (reviewTab && moveReviewTab(reviewTab, event.key)) event.preventDefault();
+    });
     page.addEventListener("click", async (event) => {
+      const reviewTab = event.target.closest?.("[data-review-tab]");
+      if (reviewTab) {
+        setReviewTab(page.querySelector("[data-review-questions]"), reviewTab.dataset.reviewTab);
+        return;
+      }
       const add = event.target.closest?.("[data-add-choice]");
       if (add) {
         const group = add.closest("[data-choices]");
+        const card = add.closest("[data-question-id]");
         const rows = group.querySelectorAll(".studio-review-choice");
-        if (rows.length < 8) group.insertBefore(choiceRow(documentRef, "", rows.length, -1), add);
+        const questionId = add.closest("[data-question-id]")?.dataset.questionId || "";
+        if (rows.length < 8) {
+          group.insertBefore(choiceRow(documentRef, "", rows.length, -1, questionId), add);
+          reindexChoiceRows(group, questionId);
+          if (card) card.dataset.dirty = "true";
+        }
         return;
       }
       const remove = event.target.closest?.("[data-remove-choice]");
       if (remove) {
-        const group = remove.closest("[data-choices]");
-        if (group.querySelectorAll(".studio-review-choice").length > 2) remove.closest(".studio-review-choice").remove();
+        removeChoiceRow(remove);
         return;
       }
       const candidate = event.target.closest?.("[data-select-candidate]");
+      const imageOverride = event.target.closest?.("[data-image-override]");
+      const acknowledgement = event.target.closest?.("[data-acknowledge-run-diagnostic]");
       const verify = event.target.closest?.("[data-verify-question]");
       const publish = event.target.closest?.("[data-publish-quiz]");
       try {
-        if (candidate) {
+        if (imageOverride) {
+          const questionId = imageOverride.dataset.imageOverride;
+          const method = imageOverride.dataset.imageNotNeeded === "true" ? "DELETE" : "PUT";
+          const updated = await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(questionId)}/image-override`, method);
+          render(documentRef, page, updated);
+          const localMessage = questionMessage(page, questionId) || message;
+          localMessage.textContent = method === "PUT" ? "Image marked as not needed." : "Image is required again.";
+        } else if (acknowledgement) {
+          await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/run-diagnostics/${encodeURIComponent(acknowledgement.dataset.acknowledgeRunDiagnostic)}/acknowledgement`, "POST");
+          await refresh();
+          message.textContent = "Run diagnostic acknowledged.";
+        } else if (candidate) {
           const card = candidate.closest("[data-question-id]");
           await send(candidateSelectionUrl(page.dataset.runId, card.dataset.questionId), "POST", candidateSelectionPayload(candidate.dataset.selectCandidate));
           await refresh();
@@ -345,7 +672,9 @@
   const api = {
     blockersText, canPublish, questionAnchor, issueSummary, groupIssues, hasImageReviewIssues,
     shouldRenderNoCandidateEmpty, normalizedEditPayload,
-    candidateSelectionPayload, candidateSelectionUrl, initialize, render,
+    candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
+    restoreRenderState, reindexChoiceRows, removeChoiceRow, choiceRow,
+    initialize, render, renderRunDiagnostics, setReviewTab, moveReviewTab, applyQuestionSave, questionMessage, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

@@ -6,7 +6,7 @@
   --quiz-surface: var(--surface);
   --quiz-text: var(--text-1);
   --quiz-muted: var(--text-2);
-  --quiz-faint: var(--text-3);
+  --quiz-faint: var(--text-3-strong);
   --quiz-brand: var(--brand);
   --quiz-brand-mid: var(--link);
   --quiz-brand-tint: var(--brand-tint);
@@ -20,7 +20,7 @@
   background: var(--quiz-page);
 }
 
-:focus-visible { outline: 3px solid oklch(0.67 0.16 255); outline-offset: 3px; }
+:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 3px; }
 ::selection { background: var(--quiz-brand-tint); }
 
 .skip-link {
@@ -74,12 +74,19 @@
   border: 1px solid var(--quiz-border);
   border-radius: .75rem;
   background: var(--quiz-card);
-  box-shadow: 0 12px 30px rgb(29 42 66 / 7%);
+  box-shadow: var(--shadow-sm);
 }
 
 .quiz-header {
   padding: 1.2rem 1.35rem 1.05rem;
   border-bottom: 1px solid var(--quiz-border);
+}
+
+.quiz-title {
+  margin: 0 0 var(--sp-3);
+  color: var(--quiz-text);
+  font-size: clamp(1rem, 2.2vw, 1.2rem);
+  line-height: 1.3;
 }
 
 .studio-preview-actions {

@@ -1,3 +1,4 @@
+import json
 from dataclasses import asdict, replace
 from io import BytesIO
 from pathlib import Path
@@ -14,7 +15,7 @@ from oms_hub.document_processing.domain import (
     SegmentKind,
 )
 from oms_hub.files.atomic import sha256_file
-from oms_hub.models import StudioRunModel
+from oms_hub.models import PublishedQuizModel, StudioRunModel
 from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.practice_contracts import (
     AssetCitation,
@@ -30,6 +31,7 @@ from oms_hub.study_generation.practice_domain import (
     QuizContentKind,
 )
 from oms_hub.study_generation.practice_extraction import ExtractionResult
+from oms_hub.study_generation.practice_matching import pair_supplied_answers
 from oms_hub.study_generation.practice_review import PracticeReviewService
 from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.quiz_import_worker import (
@@ -150,6 +152,105 @@ def test_generated_answer_blocks_until_same_question_is_verified(tmp_path: Path)
     assert service.blockers(run_id) == ()
 
 
+def test_overridable_run_diagnostic_is_stored_once_and_acknowledgement_persists(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=False), _draft("q2", generated=False)))
+    service.repository.save_run_artifact(
+        "run-1",
+        "review:run-diagnostics",
+        "a" * 64,
+        json.dumps(
+            [
+                {
+                    "code": "incomplete-sequential-question-extraction",
+                    "message": "Question count needs review",
+                    "severity": "blocker",
+                    "overridable": True,
+                    "acknowledged": False,
+                }
+            ]
+        ),
+    )
+
+    assert service.blockers("run-1") == ("Question count needs review",)
+    assert len(service.run_diagnostics("run-1")) == 1
+    with pytest.raises(ValueError, match="Question count needs review"):
+        service.to_native_quiz("run-1")
+
+    service.acknowledge_run_diagnostic(
+        "run-1", "incomplete-sequential-question-extraction"
+    )
+    reloaded = PracticeReviewService(service.repository)
+
+    assert reloaded.run_diagnostics("run-1")[0]["acknowledged"] is True
+    assert reloaded.blockers("run-1") == ()
+    assert len(reloaded.to_native_quiz("run-1").questions) == 2
+
+
+def test_hard_run_diagnostic_cannot_be_acknowledged(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=False),))
+    service.repository.save_run_artifact(
+        "run-1",
+        "review:run-diagnostics",
+        "a" * 64,
+        json.dumps(
+            [
+                {
+                    "code": "parser-blocker",
+                    "message": "OCR is unavailable for slide 2",
+                    "severity": "blocker",
+                    "overridable": False,
+                    "acknowledged": False,
+                }
+            ]
+        ),
+    )
+
+    with pytest.raises(ValueError, match="cannot be acknowledged"):
+        service.acknowledge_run_diagnostic("run-1", "parser-blocker")
+    assert service.blockers("run-1") == ("OCR is unavailable for slide 2",)
+
+
+def test_claimed_run_reserves_scope_against_reviewed_direct_import_publish(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=False),))
+    database = service.repository.database
+    with database.session() as session:
+        session.add(
+            StudioRunModel(
+                id="claimed-chat-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Imported practice",
+                label_key="imported practice",
+                prompt="Remote work",
+                state="running",
+                stage="chat",
+            )
+        )
+    publisher = GenerationRepository(database, practice_review=service)
+
+    with pytest.raises(
+        ValueError,
+        match="another active Studio run owns this publication scope",
+    ):
+        publisher.publish_reviewed_studio_quiz("run-1")
+
+    with database.session() as session:
+        reviewed = session.get(StudioRunModel, "run-1")
+        assert reviewed is not None and reviewed.state == "awaiting_review"
+        assert session.query(PublishedQuizModel).count() == 0
+
+
 def test_missing_answer_is_not_mislabeled_as_ai_generated(tmp_path: Path) -> None:
     service = _service(tmp_path)
     draft = replace(
@@ -164,7 +265,132 @@ def test_missing_answer_is_not_mislabeled_as_ai_generated(tmp_path: Path) -> Non
     blockers = service.blockers("run-1")
 
     assert "q1: answer is missing" in blockers
+    assert "q1: answer rationale is missing" in blockers
     assert "q1: AI-generated answer requires verification" not in blockers
+
+
+@pytest.mark.parametrize(
+    "content_kind",
+    [QuizContentKind.EXAM_REVIEW, QuizContentKind.PRACTICE_QUESTIONS],
+)
+def test_manual_answer_save_clears_import_blockers_and_can_publish(
+    tmp_path: Path,
+    content_kind: QuizContentKind,
+) -> None:
+    service = _service(tmp_path)
+    extracted = ExtractedQuestion(
+        original_identifier="1",
+        stem="What is correct?",
+        choices=("A", "B"),
+        supplied_correct_index=None,
+        rationale=None,
+        source_segments=(
+            SegmentCitation(
+                source_id="source",
+                segment_key="question-1",
+            ),
+        ),
+        candidate_assets=(),
+        confidence=0.8,
+    )
+    draft = pair_supplied_answers((extracted,), ())[0]
+    service.store("run-1", (draft,))
+    with service.repository.database.session() as session:
+        run = session.get(StudioRunModel, "run-1")
+        assert run is not None
+        run.content_kind = content_kind.value
+
+    assert "question-1-1: answer is missing" in service.blockers("run-1")
+    updated = service.update_question(
+        "run-1",
+        "question-1-1",
+        {
+            "choices": ["A", "B", "C"],
+            "correct_index": 2,
+            "rationale": "Choice C is correct.",
+        },
+    )
+
+    assert updated.draft.correct_index == 2
+    assert updated.draft.rationale == "Choice C is correct."
+    assert updated.answer_provenance is AnswerProvenance.MANUALLY_CORRECTED
+    assert updated.verification_required is False
+    assert updated.draft.diagnostics == ()
+    assert service.question("run-1", "question-1-1") == updated
+    assert service.blockers("run-1") == ()
+
+    publisher = GenerationRepository(
+        service.repository.database,
+        practice_review=service,
+    )
+    published = publisher.publish_reviewed_studio_quiz("run-1")
+    assert published.content_kind == content_kind.value
+
+
+def test_resaving_legacy_manual_answer_clears_stale_conflict_blocker(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    legacy = replace(
+        _draft("question-18-18", generated=False),
+        original_identifier="18",
+        correct_index=1,
+        answer_provenance=AnswerProvenance.MANUALLY_CORRECTED,
+        diagnostics=(
+            DraftDiagnostic(
+                "duplicate-supplied-answer",
+                "conflicting supplied answers",
+                DiagnosticSeverity.BLOCKER,
+            ),
+        ),
+        verification_required=True,
+        verified_at="2026-08-13T14:25:53+00:00",
+    )
+    service.store("run-1", (legacy,))
+
+    assert service.blockers("run-1") == (
+        "question-18-18: conflicting supplied answers",
+    )
+    updated = service.update_question(
+        "run-1",
+        "question-18-18",
+        {
+            "choices": list(legacy.choices),
+            "correct_index": 1,
+            "rationale": legacy.rationale,
+        },
+    )
+
+    assert updated.answer_provenance is AnswerProvenance.MANUALLY_CORRECTED
+    assert updated.draft.diagnostics == ()
+    assert updated.verification_required is False
+    assert updated.verified_at is None
+    assert service.blockers("run-1") == ()
+
+
+def test_resolving_import_diagnostic_does_not_bypass_ai_verification(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    draft = replace(
+        _draft("q1", generated=True),
+        diagnostics=(
+            DraftDiagnostic(
+                "missing-supplied-answer",
+                "supplied answer is missing",
+                DiagnosticSeverity.BLOCKER,
+            ),
+        ),
+    )
+    service.store("run-1", (draft,))
+
+    updated = service.update_question("run-1", "q1", {"correct_index": 1})
+
+    assert updated.draft.diagnostics == ()
+    assert updated.verification_required is True
+    assert service.blockers("run-1") == (
+        "q1: AI-generated answer requires verification",
+    )
 
 
 def test_structured_issues_keep_warnings_non_blocking_and_deduplicate(tmp_path: Path) -> None:
@@ -399,6 +625,30 @@ def test_import_candidates_hide_paths_and_selecting_one_publishes_media(tmp_path
     assert media[0].path.is_file()
 
 
+def test_candidate_batch_reuses_parse_and_extract_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _ = _image_review_service(tmp_path)
+    first = service.question("run-1", "q1").draft
+    second = replace(first, question_id="q2", original_identifier="q2")
+    service.store("run-1", (first, second))
+    questions = service.review("run-1")
+    calls: list[str] = []
+    run_artifact = service.repository.run_artifact
+
+    def recorded(run_id: str, key: str):
+        calls.append(key)
+        return run_artifact(run_id, key)
+
+    monkeypatch.setattr(service.repository, "run_artifact", recorded)
+
+    candidates = service.candidates_by_question("run-1", questions)
+
+    assert set(candidates) == {"q1", "q2"}
+    assert calls.count("parse:source") == 1
+    assert calls.count("extract") == 1
+
+
 def test_import_candidate_selection_rejects_changed_source_file(tmp_path: Path) -> None:
     service, path = _image_review_service(tmp_path)
     candidate = service.candidates("run-1", "q1")[0]
@@ -407,6 +657,25 @@ def test_import_candidate_selection_rejects_changed_source_file(tmp_path: Path) 
     with pytest.raises(ValueError, match="could not be verified"):
         service.select_image_candidate("run-1", "q1", candidate.candidate_id)
     assert service.question("run-1", "q1").chosen_image is None
+
+
+def test_image_requirement_can_be_waived_and_restored(tmp_path: Path) -> None:
+    service, _ = _image_review_service(tmp_path)
+    candidate = service.candidates("run-1", "q1")[0]
+    service.select_image_candidate("run-1", "q1", candidate.candidate_id)
+
+    waived = service.set_image_not_needed("run-1", "q1", True)
+
+    assert waived.chosen_image is None
+    assert waived.selected_candidate_id is None
+    assert waived.image_not_needed is True
+    assert service.blockers("run-1") == ()
+    assert service.to_native_quiz("run-1").questions[0].image_ref is None
+
+    restored = service.set_image_not_needed("run-1", "q1", False)
+
+    assert restored.image_not_needed is False
+    assert service.blockers("run-1") == ("q1: required image is unresolved",)
 
 
 def test_extraction_candidate_citation_creates_a_stable_image_requirement(tmp_path: Path) -> None:
@@ -442,7 +711,7 @@ def test_extraction_candidate_citation_creates_a_stable_image_requirement(tmp_pa
     assert service.blockers("run-1") == ("q1: required image is unresolved",)
 
 
-def test_review_auto_selects_only_a_unique_exact_candidate(tmp_path: Path) -> None:
+def test_review_does_not_auto_select_a_source_screenshot(tmp_path: Path) -> None:
     service = _service(tmp_path)
     _, document = _candidate_asset(tmp_path)
     draft = _draft("q1", generated=False)
@@ -470,8 +739,8 @@ def test_review_auto_selects_only_a_unique_exact_candidate(tmp_path: Path) -> No
 
     reviewed = service.review("run-1")[0]
 
-    assert reviewed.chosen_image is not None
-    assert service.blockers("run-1") == ()
+    assert reviewed.chosen_image is None
+    assert service.blockers("run-1") == ("q1: required image is unresolved",)
 
 
 @pytest.mark.parametrize(

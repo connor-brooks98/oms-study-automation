@@ -74,9 +74,13 @@ class ParsedSegment:
     parent_key: str | None = None
     previous_key: str | None = None
     next_key: str | None = None
+    # Parser-only provenance for cues such as a bold or coloured answer. It is
+    # separate from ``text`` so importing never rewrites source wording.
+    style_metadata: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "asset_keys", tuple(self.asset_keys))
+        object.__setattr__(self, "style_metadata", tuple(self.style_metadata))
 
 
 @dataclass(frozen=True, slots=True)

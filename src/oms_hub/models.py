@@ -171,6 +171,12 @@ class StudyRevisionModel(Base):
             unique=True,
             sqlite_where=text("current = 1"),
         ),
+        Index(
+            "uq_study_revisions_transcript_cleaning_lecture",
+            "lecture_id",
+            unique=True,
+            sqlite_where=text("kind='transcripts' AND state='cleaning'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -355,6 +361,19 @@ class NotebookMappingModel(Base):
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
 
 
+class NotebookScopeLeaseModel(Base):
+    """Durable cross-worker ownership of one logical NotebookLM notebook."""
+
+    __tablename__ = "notebook_scope_leases"
+
+    subject_key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    exam_number: Mapped[int] = mapped_column(primary_key=True)
+    owner_kind: Mapped[str] = mapped_column(String(30))
+    owner_id: Mapped[str] = mapped_column(String(100))
+    lease_expires_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
 class NotebookSourceMappingModel(Base):
     __tablename__ = "notebook_source_mappings"
     __table_args__ = (
@@ -390,6 +409,8 @@ class StudioSourceModel(Base):
     payload_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     purpose: Mapped[str] = mapped_column(String(30), default="notebook")
+    import_role: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    import_attach_to_notebook: Mapped[bool] = mapped_column(default=False)
     snapshot_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     media_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -401,6 +422,52 @@ class StudioSourceModel(Base):
     remote_notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     remote_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     converted_from_pptx: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class StudioSourceOperationModel(Base):
+    """Durable command journal for externally-visible Studio source mutations."""
+
+    __tablename__ = "studio_source_operations"
+    __table_args__ = (
+        Index("ix_studio_source_operations_poll", "state", "created_at"),
+        Index("ix_studio_source_operations_source", "source_id", "created_at"),
+        Index(
+            "ix_studio_source_operations_notebook_active",
+            "notebook_id",
+            unique=True,
+            sqlite_where=text(
+                "notebook_id IS NOT NULL AND state IN "
+                "('queued', 'executing', 'reconciling', 'deleting')"
+            ),
+        ),
+        Index(
+            "ix_studio_source_operations_scope_active",
+            "subject_key",
+            "exam_number",
+            unique=True,
+            sqlite_where=text(
+                "subject_key IS NOT NULL AND exam_number IS NOT NULL AND state IN "
+                "('queued', 'executing', 'reconciling', 'deleting')"
+            ),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_id: Mapped[str] = mapped_column(ForeignKey("studio_sources.id"))
+    operation_kind: Mapped[str] = mapped_column(String(20))
+    state: Mapped[str] = mapped_column(String(30), default="queued")
+    subject_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    exam_number: Mapped[int | None] = mapped_column(nullable=True)
+    notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    remote_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    baseline_remote_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    attempts: Mapped[int] = mapped_column(default=0)
+    lease_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lease_expires_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    diagnostic_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
 
@@ -842,3 +909,21 @@ class PublishedQuizMediaModel(Base):
     height: Mapped[int]
     alt_text: Mapped[str] = mapped_column(String(1000))
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class PublishedQuizFlagModel(Base):
+    __tablename__ = "published_quiz_flags"
+    __table_args__ = (
+        UniqueConstraint("quiz_token", "quiz_version", "question_id", "reason"),
+        Index("ix_published_quiz_flags_open", "quiz_token", "status", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quiz_token: Mapped[str] = mapped_column(ForeignKey("published_quizzes.token"))
+    quiz_version: Mapped[int]
+    question_id: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str] = mapped_column(String(100))
+    occurrence_count: Mapped[int] = mapped_column(default=1)
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)

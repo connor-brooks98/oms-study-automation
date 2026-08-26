@@ -74,10 +74,6 @@
         <h1 class="sh-title">{{ library_title }}</h1>
         <p class="sh-subtitle">{{ library_summary }}</p>
       </div>
-      <div class="sh-seg" role="group" aria-label="Quiz library view">
-        <a class="button secondary sh-btn sh-btn--secondary sh-seg__btn {% if library_path == quiz_library_path %}sh-seg__btn--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
-        <a class="button secondary sh-btn sh-btn--secondary sh-seg__btn {% if library_path == practice_library_path %}sh-seg__btn--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Practice Questions</a>
-      </div>
     </header>
 
     {% if courses %}
@@ -117,6 +113,7 @@
                   </span>
                   <span class="progress-pill sh-pill" data-quiz-progress>Not started</span>
                 </a>
+                {% if management_mode and row.open_flag_count %}<span class="sh-pill sh-pill--warn" aria-label="{{ row.open_flag_count }} open question {{ 'flag' if row.open_flag_count == 1 else 'flags' }}">{{ row.open_flag_count }} {{ 'flag' if row.open_flag_count == 1 else 'flags' }}</span>{% endif %}
                 <div class="sh-row__actions quiz-row-actions">
                   <button
                     class="sh-iconbtn reset-quiz-button"
@@ -140,7 +137,7 @@
                     <summary class="button management-button sh-btn sh-btn--secondary">Edit title</summary>
                     <form class="quiz-title-editor__form" data-title-form data-title-url="/api/published-quizzes/{{ row.token }}/title">
                       <label class="sh-field-label">Quiz title
-                        <input class="sh-input" type="text" maxlength="300" value="{{ row.title }}" data-title-input required>
+                        <input class="sh-input" type="text" maxlength="300" value="{{ row.title }}" data-title-input data-quiz-title-for="{{ row.token }}" required>
                       </label>
                       <button class="sh-btn sh-btn--primary" type="submit" data-save-title>Save title</button>
                     </form>
@@ -153,6 +150,17 @@
                     data-library-url="/api/published-quizzes/{{ row.token }}/library"
                     data-target-section="{{ 'practice_questions' if library_path == quiz_library_path else 'quizzes' }}"
                   >Move to {{ 'Practice Questions' if library_path == quiz_library_path else 'Quizzes' }}</button>
+                  <button class="button management-button sh-btn sh-btn--secondary" type="button" data-view-flags data-flags-url="/api/published-quizzes/{{ row.token }}/flags">Open flags</button>
+                  <details class="quiz-title-editor" data-payload-editor data-payload-url="/api/published-quizzes/{{ row.token }}/payload">
+                    <summary class="button management-button sh-btn sh-btn--secondary">Edit questions</summary>
+                    <p data-payload-loading>Open to load this quiz’s questions.</p>
+                    <form data-payload-form data-payload-url="/api/published-quizzes/{{ row.token }}/payload" hidden>
+                      <input type="hidden" data-payload-title value="{{ row.title }}">
+                      <div data-payload-questions></div>
+                      <button type="button" data-add-question>Add question</button>
+                      <button class="sh-btn sh-btn--primary" type="submit">Save questions</button>
+                    </form>
+                  </details>
                   <button
                     class="button remove-quiz-button sh-btn sh-btn--danger"
                     type="button"

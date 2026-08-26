@@ -41,6 +41,10 @@ if TYPE_CHECKING:
 LATEST_SCHEMA_VERSION = 29
 
 
+class StudioPublicationMigrationConflict(RuntimeError):
+    """Legacy Studio publication ownership is ambiguous and needs recovery."""
+
+
 def _ensure_column(
     database: "Database",
     table_name: str,
@@ -1264,6 +1268,13 @@ def _validate_existing_artifact_graph(database: "Database", *, version: int) -> 
     """
     inspector = inspect(database.engine)
     _validate_required_import_tables(database, version=version)
+    audit_columns = {
+        item["name"] for item in inspector.get_columns("existing_artifact_imports")
+    }
+    modern_slide_identity = {
+        "slide_source_sha256",
+        "slide_pdf_sha256",
+    } <= audit_columns
     required_tables = {
         "existing_artifact_imports",
         "lectures",
@@ -1275,11 +1286,11 @@ def _validate_existing_artifact_graph(database: "Database", *, version: int) -> 
     assert required_tables <= set(inspector.get_table_names())
     audit_slide_columns = (
         "a.slide_source_sha256 AS audit_source, a.slide_pdf_sha256 AS audit_pdf,"
-        if version >= 21
+        if modern_slide_identity
         else "NULL AS audit_source, a.slide_sha256 AS audit_pdf,"
     )
     outline_slide_columns = (
-        "o.slide_source_sha256 AS outline_source," if version >= 21 else "NULL AS outline_source,"
+        "o.slide_source_sha256 AS outline_source," if modern_slide_identity else "NULL AS outline_source,"
     )
     with database.engine.connect() as connection:
         foreign_key_errors = connection.execute(text("PRAGMA foreign_key_check")).first()
@@ -1352,7 +1363,7 @@ def _validate_existing_artifact_graph(database: "Database", *, version: int) -> 
                 "transcript_filename",
                 "outline_filename",
             ]
-            if version >= 21:
+            if modern_slide_identity:
                 required.append("audit_source")
             if (
                 any(row[key] is None or row[key] == "" for key in required)
@@ -1363,7 +1374,7 @@ def _validate_existing_artifact_graph(database: "Database", *, version: int) -> 
                 or row["slide_lecture"] != row["audit_lecture"]
                 or row["slide_kind"] != "slides"
                 or row["slide_pdf"] != row["audit_pdf"]
-                or (version >= 21 and row["slide_source"] != row["audit_source"])
+                or (modern_slide_identity and row["slide_source"] != row["audit_source"])
                 or row["transcript_lecture"] != row["audit_lecture"]
                 or row["transcript_kind"] != "transcripts"
                 or row["transcript_provenance"] != "imported_cleaned"
@@ -1393,7 +1404,7 @@ def _validate_existing_artifact_graph(database: "Database", *, version: int) -> 
                 or row["outline_immutable"] != row["immutable_outline_path"]
                 or row["outline_slide_id"] != row["slide_revision_id"]
                 or row["outline_pdf"] != row["audit_pdf"]
-                or (version >= 21 and row["outline_source"] != row["audit_source"])
+                or (modern_slide_identity and row["outline_source"] != row["audit_source"])
                 or row["outline_transcript_id"] != row["audit_transcript_id"]
                 or row["outline_transcript"] != row["audit_transcript"]
                 or row["outline_sha"] != row["audit_outline"]
@@ -1975,6 +1986,80 @@ def _upgrade_studio_run_active_label_index(database: "Database") -> None:
     if not inspector.has_table("studio_runs"):
         return
     with database.engine.begin() as connection:
+        publication_conflicts = connection.execute(
+            text(
+                "SELECT destination_subject_key, destination_exam_number, label_key "
+                "FROM published_quizzes WHERE active = 1 AND studio_run_id IS NOT NULL "
+                "GROUP BY destination_subject_key, destination_exam_number, label_key "
+                "HAVING COUNT(*) > 1"
+            )
+        ).mappings().all()
+        if publication_conflicts:
+            conflict = publication_conflicts[0]
+            raise StudioPublicationMigrationConflict(
+                "migration recovery conflict: multiple active Studio publications exist "
+                f"for {conflict['destination_subject_key']} exam "
+                f"{conflict['destination_exam_number']} label {conflict['label_key']}"
+            )
+        # Older Studio databases can contain multiple active rows from before
+        # the partial index existed.  Repair them deterministically before
+        # creating the guard, otherwise the upgrade itself prevents startup.
+        duplicates = connection.execute(
+            text(
+                "SELECT destination_subject_key, destination_exam_number, label_key "
+                "FROM studio_runs WHERE state IN ('queued', 'running', 'retrying') "
+                "GROUP BY destination_subject_key, destination_exam_number, label_key "
+                "HAVING COUNT(*) > 1"
+            )
+        ).mappings().all()
+        for group in duplicates:
+            rows = connection.execute(
+                text(
+                    "SELECT id FROM studio_runs WHERE destination_subject_key=:subject "
+                    "AND destination_exam_number=:exam AND label_key=:label "
+                    "AND state IN ('queued', 'running', 'retrying') "
+                    "ORDER BY created_at, id"
+                ),
+                {
+                    "subject": group["destination_subject_key"],
+                    "exam": group["destination_exam_number"],
+                    "label": group["label_key"],
+                },
+            ).mappings().all()
+            owner_ids = connection.execute(
+                text(
+                    "SELECT DISTINCT studio_run_id FROM published_quizzes "
+                    "WHERE destination_subject_key=:subject "
+                    "AND destination_exam_number=:exam AND label_key=:label "
+                    "AND active = 1 AND studio_run_id IS NOT NULL"
+                ),
+                {
+                    "subject": group["destination_subject_key"],
+                    "exam": group["destination_exam_number"],
+                    "label": group["label_key"],
+                },
+            ).scalars().all()
+            retained_id = owner_ids[0] if owner_ids else rows[0]["id"]
+            active_ids = {row["id"] for row in rows}
+            retain_active_owner = retained_id in active_ids
+            for row in rows:
+                if retain_active_owner and row["id"] == retained_id:
+                    continue
+                connection.execute(
+                    text(
+                        "UPDATE studio_runs SET state='failed', next_attempt_at=NULL, "
+                        "diagnostic_source='migration', error=:error WHERE id=:id"
+                    ),
+                    {
+                        "id": row["id"],
+                        "error": (
+                            "migration active-label conflict; retained active publication "
+                            f"owner {retained_id}"
+                            if owner_ids
+                            else f"migration active-label conflict; retained run {retained_id}"
+                        ),
+                    },
+                )
         connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_studio_runs_active_label "
@@ -1983,6 +2068,132 @@ def _upgrade_studio_run_active_label_index(database: "Database") -> None:
                 "WHERE state IN ('queued', 'running', 'retrying')"
             )
         )
+
+
+def _upgrade_studio_durability_v19(database: "Database") -> None:
+    """Add additive local-import defaults and external-source operation journal."""
+    _ensure_column(database, "studio_sources", "import_role", "VARCHAR(40)")
+    _ensure_column(
+        database,
+        "studio_sources",
+        "import_attach_to_notebook",
+        "BOOLEAN NOT NULL DEFAULT 0",
+    )
+
+
+def _upgrade_transcript_cleaning_reservation_v20(database: "Database") -> None:
+    """Fence one paid first-transcript cleaning owner per lecture."""
+    if database.engine.dialect.name != "sqlite":
+        return
+    if not inspect(database.engine).has_table("study_revisions"):
+        return
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_study_revisions_transcript_cleaning_lecture "
+                "ON study_revisions(lecture_id) "
+                "WHERE kind='transcripts' AND state='cleaning'"
+            )
+        )
+
+
+def _upgrade_studio_source_operation_claims_v20(database: "Database") -> None:
+    """Add recoverable compare-and-swap leases for external source mutations."""
+    _ensure_column(
+        database,
+        "studio_source_operations",
+        "lease_owner",
+        "VARCHAR(100)",
+    )
+    _ensure_column(
+        database,
+        "studio_source_operations",
+        "lease_expires_at",
+        "VARCHAR(40)",
+    )
+
+
+def _upgrade_studio_source_scope_fence_v21(database: "Database") -> None:
+    """Reserve a logical notebook before any remote source mutation begins."""
+    _ensure_column(
+        database,
+        "studio_source_operations",
+        "subject_key",
+        "VARCHAR(100)",
+    )
+    _ensure_column(
+        database,
+        "studio_source_operations",
+        "exam_number",
+        "INTEGER",
+    )
+    if database.engine.dialect.name != "sqlite":
+        return
+    if not inspect(database.engine).has_table("studio_source_operations"):
+        return
+    active_states = "('queued', 'executing', 'reconciling', 'deleting')"
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE studio_source_operations SET "
+                "subject_key=(SELECT subject_key FROM studio_sources "
+                "WHERE studio_sources.id=studio_source_operations.source_id), "
+                "exam_number=(SELECT exam_number FROM studio_sources "
+                "WHERE studio_sources.id=studio_source_operations.source_id) "
+                "WHERE subject_key IS NULL OR exam_number IS NULL"
+            )
+        )
+        active = connection.execute(
+            text(
+                "SELECT id, source_id, subject_key, exam_number "
+                "FROM studio_source_operations "
+                f"WHERE state IN {active_states} "
+                "AND subject_key IS NOT NULL AND exam_number IS NOT NULL "
+                "ORDER BY created_at, id"
+            )
+        ).mappings()
+        retained_by_scope: dict[tuple[str, int], str] = {}
+        for operation in active:
+            scope = (operation["subject_key"], operation["exam_number"])
+            retained_id = retained_by_scope.setdefault(scope, operation["id"])
+            if retained_id == operation["id"]:
+                continue
+            message = (
+                "migration notebook-scope conflict; manual review is required; "
+                f"retained operation {retained_id}"
+            )
+            connection.execute(
+                text(
+                    "UPDATE studio_source_operations SET state='needs_review', "
+                    "lease_owner=NULL, lease_expires_at=NULL, "
+                    "diagnostic_source='migration', error=:error WHERE id=:id"
+                ),
+                {"id": operation["id"], "error": message},
+            )
+            connection.execute(
+                text(
+                    "UPDATE studio_sources SET state='needs_review', "
+                    "next_attempt_at=NULL, diagnostic_source='migration', "
+                    "error=:error WHERE id=:id"
+                ),
+                {"id": operation["source_id"], "error": message},
+            )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ix_studio_source_operations_scope_active "
+                "ON studio_source_operations(subject_key, exam_number) "
+                "WHERE subject_key IS NOT NULL AND exam_number IS NOT NULL "
+                f"AND state IN {active_states}"
+            )
+        )
+
+
+def _upgrade_notebook_scope_leases_v22(database: "Database") -> None:
+    """Create the cross-worker NotebookLM scope reservation table."""
+    if not inspect(database.engine).has_table("notebook_scope_leases"):
+        database.create_schema()
 
 
 def _upgrade_quiz_import_v15(database: "Database") -> None:
@@ -2069,6 +2280,12 @@ def _upgrade_anki_replay_inputs_v19(database: "Database") -> None:
     # ``create_schema`` creates the new table on both clean installs and upgrades.
     # Keep this explicit for installations whose metadata creation is customized.
     if not inspect(database.engine).has_table("anki_stage_replay_inputs"):
+        database.create_schema()
+
+
+def _upgrade_published_quiz_flags_v23(database: "Database") -> None:
+    """Additive aggregate public-question flags; fresh schemas already have it."""
+    if not inspect(database.engine).has_table("published_quiz_flags"):
         database.create_schema()
 
 
@@ -2280,6 +2497,12 @@ def migrate_database(database: "Database") -> None:
     _upgrade_studio_history_v16(database)
     _upgrade_runtime_settings_v17(database)
     _upgrade_published_quiz_display_order_v18(database)
+    _upgrade_studio_durability_v19(database)
+    _upgrade_transcript_cleaning_reservation_v20(database)
+    _upgrade_studio_source_operation_claims_v20(database)
+    _upgrade_studio_source_scope_fence_v21(database)
+    _upgrade_notebook_scope_leases_v22(database)
+    _upgrade_published_quiz_flags_v23(database)
     _upgrade_anki_replay_inputs_v19(database)
     _upgrade_existing_artifact_import_v20(database)
     _upgrade_existing_artifact_slide_identity_v21(database)

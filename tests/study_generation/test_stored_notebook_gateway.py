@@ -1,9 +1,13 @@
 import hashlib
+import threading
+import time
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
+from oms_hub.db import Database
 from oms_hub.study_generation.domain import (
     LectureSourceSet,
     NotebookMapping,
@@ -22,7 +26,12 @@ from oms_hub.study_generation.notebook import (
     NotebookQuestionStatus,
     StoredNotebookLMGateway,
 )
+from oms_hub.study_generation.notebook_errors import (
+    NotebookScopeBusyError,
+    NotebookScopeLostError,
+)
 from oms_hub.study_generation.practice_domain import QuestionDraft, QuestionSourceRef
+from oms_hub.study_generation.repository import GenerationRepository
 
 
 @dataclass
@@ -277,6 +286,219 @@ def test_gateway_translates_expired_storage_into_safe_auth_error(tmp_path):
         gateway.ensure_notebook("Neuro", 1)
 
     assert "accounts.google.com" not in str(error.value)
+
+
+def test_studio_saga_gateway_snapshots_then_adds_to_known_notebook(tmp_path):
+    events = []
+    repository = FakeRepository(events)
+    client = FakeClient([FakeRemote("existing", "Existing")], events)
+    gateway = _gateway(tmp_path, client, repository)
+    payload = tmp_path / "notes.pdf"
+    payload.write_bytes(b"pdf")
+
+    notebook_id, baseline = gateway.prepare_studio_source_add("Neuro", 1)
+    remote_id = gateway.add_studio_source_to_notebook(
+        notebook_id,
+        "file",
+        "Notes",
+        path=payload,
+    )
+
+    assert notebook_id == "nb-1"
+    assert baseline == frozenset({"existing"})
+    assert remote_id == "new-1"
+    assert gateway.list_studio_source_ids("nb-1") == frozenset(
+        {"existing", "new-1"}
+    )
+
+
+def test_generation_notebook_creation_blocks_competing_studio_preparation(tmp_path):
+    create_started = threading.Event()
+    allow_create = threading.Event()
+    events = []
+
+    class EmptyRepository(FakeRepository):
+        def __init__(self):
+            super().__init__(events)
+            self.notebook = None
+
+        def notebook_mapping(self, subject_key, exam_number):
+            return self.notebook
+
+        def notebook_mapping_by_remote_id(self, remote_notebook_id):
+            return self.notebook
+
+    class BlockingNotebooks(FakeNotebooks):
+        async def create(self, title):
+            create_started.set()
+            assert allow_create.wait(timeout=5)
+            created = FakeRemote("nb-1", title)
+            self.items.append(created)
+            return created
+
+    repository = EmptyRepository()
+    client = FakeClient([], events)
+    client.notebooks = BlockingNotebooks([])
+    gateway = _gateway(tmp_path, client, repository)
+    generation_result = []
+
+    thread = threading.Thread(
+        target=lambda: generation_result.append(
+            gateway.ensure_notebook("Neuro", 1)
+        )
+    )
+    thread.start()
+    assert create_started.wait(timeout=5)
+
+    with pytest.raises(NotebookScopeBusyError):
+        gateway.prepare_studio_source_add("Neuro", 1)
+
+    allow_create.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert generation_result == [NotebookRef("nb-1", "Neuro · Exam 1")]
+    assert len(client.notebooks.items) == 1
+
+    notebook_id, baseline = gateway.prepare_studio_source_add("Neuro", 1)
+    assert notebook_id == "nb-1"
+    assert baseline == frozenset()
+    assert len(client.notebooks.items) == 1
+
+
+def test_durable_scope_heartbeat_blocks_competitor_past_initial_expiry(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    first_repository = GenerationRepository(database)
+    second_repository = GenerationRepository(database)
+    first_repository.save_notebook_mapping(
+        "Neuro", "neuro", 1, "nb-1", "Neuro · Exam 1"
+    )
+    upload_started = threading.Event()
+    allow_upload = threading.Event()
+    events = []
+
+    class BlockingSources(FakeSources):
+        async def add_file(self, notebook_id, path, *, wait, title):
+            upload_started.set()
+            assert allow_upload.wait(timeout=5)
+            return await super().add_file(
+                notebook_id, path, wait=wait, title=title
+            )
+
+    client = FakeClient([], events)
+    client.sources = BlockingSources([], events)
+    first_gateway = StoredNotebookLMGateway(
+        tmp_path / "first-storage.json",
+        first_repository,
+        client_factory=lambda: FakeClientContext(client),
+        scope_lease_duration=timedelta(milliseconds=180),
+        scope_renew_interval_seconds=0.03,
+    )
+    second_gateway = StoredNotebookLMGateway(
+        tmp_path / "second-storage.json",
+        second_repository,
+        client_factory=lambda: FakeClientContext(client),
+        scope_lease_duration=timedelta(milliseconds=180),
+        scope_renew_interval_seconds=0.03,
+    )
+    payload = tmp_path / "notes.pdf"
+    payload.write_bytes(b"pdf")
+    result = []
+    failure = []
+
+    def upload() -> None:
+        try:
+            with first_gateway.mutation_scope("Neuro", 1, "studio", "op-1"):
+                result.append(
+                    first_gateway.add_studio_source_to_notebook(
+                        "nb-1", "file", "Notes", path=payload
+                    )
+                )
+        except BaseException as error:  # pragma: no cover - surfaced below
+            failure.append(error)
+
+    thread = threading.Thread(target=upload)
+    thread.start()
+    assert upload_started.wait(timeout=5)
+    time.sleep(0.35)
+
+    with pytest.raises(NotebookScopeBusyError):
+        with second_gateway.mutation_scope("Neuro", 1, "studio", "op-2"):
+            pytest.fail("competing worker entered a renewed mutation scope")
+
+    allow_upload.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert failure == []
+    assert result == ["new-1"]
+
+    with second_gateway.mutation_scope("Neuro", 1, "studio", "op-2"):
+        pass
+    database.close()
+
+
+def test_durable_scope_reports_lost_owner_after_failed_renewal(tmp_path):
+    upload_started = threading.Event()
+    allow_upload = threading.Event()
+    events = []
+
+    class LosingRepository(FakeRepository):
+        def acquire_notebook_scope(self, *args, **kwargs):
+            return True
+
+        def renew_notebook_scope(self, *args, **kwargs):
+            return False
+
+        def release_notebook_scope(self, *args, **kwargs):
+            return True
+
+    class BlockingSources(FakeSources):
+        async def add_file(self, notebook_id, path, *, wait, title):
+            upload_started.set()
+            assert allow_upload.wait(timeout=5)
+            return await super().add_file(
+                notebook_id, path, wait=wait, title=title
+            )
+
+    client = FakeClient([], events)
+    client.sources = BlockingSources([], events)
+    gateway = StoredNotebookLMGateway(
+        tmp_path / "storage.json",
+        LosingRepository(events),
+        client_factory=lambda: FakeClientContext(client),
+        scope_lease_duration=timedelta(milliseconds=180),
+        scope_renew_interval_seconds=0.03,
+    )
+    payload = tmp_path / "notes.pdf"
+    payload.write_bytes(b"pdf")
+
+    def release_upload() -> None:
+        assert upload_started.wait(timeout=5)
+        time.sleep(0.08)
+        allow_upload.set()
+
+    releaser = threading.Thread(target=release_upload)
+    releaser.start()
+    with pytest.raises(NotebookScopeLostError, match="ownership was lost"):
+        with gateway.mutation_scope("Neuro", 1, "studio", "op-1"):
+            gateway.add_studio_source_to_notebook(
+                "nb-1", "file", "Notes", path=payload
+            )
+    releaser.join(timeout=5)
+
+
+def test_studio_saga_gateway_treats_remote_not_found_delete_as_success(tmp_path):
+    events = []
+    repository = FakeRepository(events)
+    client = FakeClient([], events)
+
+    async def missing(notebook_id, source_id):
+        raise RuntimeError("remote source not found")
+
+    client.sources.delete = missing
+    gateway = _gateway(tmp_path, client, repository)
+
+    assert gateway.delete_studio_source("nb-1", "missing") is False
 
 
 def test_changed_revision_binds_replacement_before_old_and_legacy_delete(tmp_path):

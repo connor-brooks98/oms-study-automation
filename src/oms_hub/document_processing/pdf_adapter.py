@@ -17,6 +17,7 @@ from oms_hub.document_processing.domain import (
     SegmentKind,
     SourceSnapshot,
 )
+from oms_hub.document_processing.ocr import LocalOcr
 from oms_hub.files.pdf import inspect_pdf
 
 
@@ -24,7 +25,10 @@ class PdfProcessor:
     """Preserve page provenance and distinguish OCR work from an empty document."""
 
     name = "pdf"
-    version = "1"
+    version = "2"
+
+    def __init__(self, ocr: LocalOcr | None = None) -> None:
+        self.ocr = ocr or LocalOcr()
 
     def supports(self, snapshot: SourceSnapshot) -> bool:
         return (
@@ -61,16 +65,73 @@ class PdfProcessor:
             warnings.append("PDF contained no extractable text")
         assets, image_warnings = _extract_images(snapshot.path, asset_root)
         warnings.extend(image_warnings)
+        ocr_segments, ocr_warnings = _ocr_required_pages(
+            snapshot.path, asset_root, inspection.pages_needing_ocr, self.ocr
+        )
+        segments.extend(ocr_segments)
+        warnings.extend(ocr_warnings)
         return ParsedDocument(
             source_id=snapshot.id,
             source_sha256=snapshot.sha256,
             source_format="pdf",
             parser_name=self.name,
             parser_version=self.version,
-            segments=tuple(segments),
+            segments=tuple(
+                sorted(
+                    segments,
+                    key=lambda segment: (segment.locator.page_number or 10**9, segment.key),
+                )
+            ),
             assets=assets,
             warnings=tuple(warnings),
         )
+
+
+def _ocr_required_pages(
+    path: Path, asset_root: Path, pages: tuple[int, ...], ocr: LocalOcr
+) -> tuple[tuple[ParsedSegment, ...], tuple[str, ...]]:
+    if not pages:
+        return (), ()
+    fitz_module = _lazy_fitz()
+    if fitz_module is None:
+        return (), tuple(
+            f"BLOCKER: OCR is required but unavailable or empty for page {page}" for page in pages
+        )
+    segments: list[ParsedSegment] = []
+    warnings: list[str] = []
+    try:
+        with fitz_module.open(path) as document:
+            for page_number in pages:
+                if not 1 <= page_number <= len(document):
+                    warnings.append(f"BLOCKER: OCR page {page_number} is outside the PDF")
+                    continue
+                stored = persist_asset(
+                    asset_root,
+                    f"page-{page_number}-ocr-render",
+                    "image/png",
+                    document[page_number - 1].get_pixmap(alpha=False).tobytes("png"),
+                )
+                text = ocr.text(stored.path) if stored.path is not None else None
+                if text:
+                    segments.append(
+                        ParsedSegment(
+                            key=f"page-{page_number}-ocr",
+                            kind=SegmentKind.PARAGRAPH,
+                            text=text,
+                            locator=DocumentLocator(
+                                f"page {page_number} OCR", page_number=page_number
+                            ),
+                        )
+                    )
+                else:
+                    warnings.append(
+                        f"BLOCKER: OCR is required but unavailable or empty for page {page_number}"
+                    )
+    except Exception:
+        warnings.extend(
+            f"BLOCKER: OCR is required but unavailable or empty for page {page}" for page in pages
+        )
+    return tuple(segments), tuple(dict.fromkeys(warnings))
 
 
 def _page_texts(path: Path) -> tuple[str | Exception, ...]:

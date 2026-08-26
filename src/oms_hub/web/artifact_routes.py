@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import cast
 
@@ -7,11 +8,15 @@ from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
 from oms_hub.artifacts import (
+    ArtifactCleanupError,
     ArtifactConflict,
+    ArtifactError,
     ArtifactNotFound,
+    ArtifactRecoveryError,
     ArtifactRole,
     ArtifactService,
     ResolvedArtifact,
+    artifact_operator_diagnostic,
 )
 from oms_hub.files.atomic import sha256_file
 from oms_hub.files.pdf import validate_pdf
@@ -24,6 +29,7 @@ from oms_hub.study_generation.repository import GenerationRepository
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+logger = logging.getLogger(__name__)
 
 
 @router.get("/artifacts/outlines/{outline_id}")
@@ -33,6 +39,17 @@ def outline_artifact(request: Request, outline_id: int) -> FileResponse:
     if record is None:
         raise HTTPException(404, "outline was not found")
     return outline_pdf_response(request, record)
+
+
+@router.get("/artifacts/outlines/{outline_id}/download")
+def download_outline_artifact(request: Request, outline_id: int) -> FileResponse:
+    repository = GenerationRepository(request.app.state.database)
+    record = repository.outline(outline_id)
+    if record is None:
+        raise HTTPException(404, "outline was not found")
+    response = outline_pdf_response(request, record)
+    response.headers["Content-Disposition"] = f'attachment; filename="{record.path.name}"'
+    return response
 
 
 def outline_pdf_response(
@@ -178,7 +195,16 @@ def approve_replacement(
         _service(request).approve(revision_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="revision not found") from error
-    except (ArtifactConflict, ArtifactNotFound) as error:
+    except (ArtifactCleanupError, ArtifactRecoveryError) as error:
+        diagnostic = artifact_operator_diagnostic(error)
+        logger.error(
+            "artifact approval requires operator recovery: backup_paths=%s "
+            "recovery_journal_path=%s",
+            diagnostic.backup_paths,
+            diagnostic.recovery_journal_path,
+        )
+        raise HTTPException(status_code=409, detail=diagnostic.as_detail()) from error
+    except ArtifactError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return RedirectResponse("/review", status_code=303)
 

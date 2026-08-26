@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from oms_hub.document_processing.domain import ParsedDocument
 from oms_hub.files.atomic import sha256_file
 from oms_hub.models import StudioRunArtifactModel
 from oms_hub.study_generation.domain import NativeQuiz, QuizChoice, QuizImageRef, QuizQuestion
@@ -21,6 +22,7 @@ from oms_hub.study_generation.practice_domain import (
     DiagnosticSeverity,
     QuestionDraft,
 )
+from oms_hub.study_generation.practice_extraction import ExtractionResult
 from oms_hub.study_generation.quiz_import_worker import (
     _document_from_json,
     _drafts_from_json,
@@ -33,6 +35,27 @@ if TYPE_CHECKING:
     from oms_hub.study_generation.quiz_images import StudioQuizImageService
 
 _ARTIFACT_KEY = "review:questions"
+_RUN_DIAGNOSTICS_ARTIFACT_KEY = "review:run-diagnostics"
+
+_MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES = frozenset(
+    {
+        "conflicting-supplied-answers",
+        "duplicate-supplied-answer",
+        "missing-supplied-answer",
+        "notebook-support-not-selected",
+        "supplied-answer-out-of-bounds",
+        "unmatched-question",
+        "unmatched-supplied-answer",
+    }
+)
+
+
+class ReviewArtifactUnavailable(RuntimeError):
+    """A direct-import run lost the artifacts required to reconstruct review."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__("Review data is unavailable for this import run.")
+        self.run_id = run_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +66,7 @@ class ReviewQuestion:
     learning_objective: str | None = None
     chosen_image: QuizImageRef | None = None
     selected_candidate_id: str | None = None
+    image_not_needed: bool = False
 
     @property
     def answer_provenance(self) -> AnswerProvenance | None:
@@ -113,20 +137,73 @@ class PracticeReviewService:
         question = self.question(run_id, question_id)
         return tuple(item.candidate for item in self._candidate_bindings(run_id, question))
 
+    def candidates_by_question(
+        self, run_id: str, questions: tuple[ReviewQuestion, ...]
+    ) -> dict[str, tuple[ImageCandidate, ...]]:
+        documents: dict[str, ParsedDocument | None] = {}
+        source_titles: dict[str, str] = {}
+        artifact = self.repository.run_artifact(run_id, "extract")
+        extraction = (
+            _extraction_from_json(artifact.payload_json)
+            if artifact
+            else ExtractionResult((), (), (), (), ())
+        )
+        return {
+            question.draft.question_id: tuple(
+                item.candidate
+                for item in self._candidate_bindings(
+                    run_id,
+                    question,
+                    documents=documents,
+                    source_titles=source_titles,
+                    extraction=extraction,
+                )
+            )
+            for question in questions
+        }
+
     def _candidate_bindings(
-        self, run_id: str, question: ReviewQuestion
+        self,
+        run_id: str,
+        question: ReviewQuestion,
+        *,
+        documents: dict[str, ParsedDocument | None] | None = None,
+        source_titles: dict[str, str] | None = None,
+        extraction: ExtractionResult | None = None,
     ) -> tuple[_ImageCandidateBinding, ...]:
         """Resolve media solely from immutable ``parse:{source_id}`` artifacts."""
         references = question.draft.source_refs
-        explicit = self._candidate_asset_keys(run_id, question.draft)
+        explicit = self._candidate_asset_keys(run_id, question.draft, extraction)
         bindings: dict[tuple[str, str], _ImageCandidateBinding] = {}
         for reference in references:
-            artifact = self.repository.run_artifact(run_id, f"parse:{reference.source_id}")
-            if artifact is None:
+            if documents is None:
+                artifact = self.repository.run_artifact(
+                    run_id, f"parse:{reference.source_id}"
+                )
+                document = (
+                    _document_from_json(artifact.payload_json) if artifact else None
+                )
+            else:
+                if reference.source_id not in documents:
+                    artifact = self.repository.run_artifact(
+                        run_id, f"parse:{reference.source_id}"
+                    )
+                    documents[reference.source_id] = (
+                        _document_from_json(artifact.payload_json) if artifact else None
+                    )
+                document = documents[reference.source_id]
+            if document is None:
                 continue
-            document = _document_from_json(artifact.payload_json)
-            source = self.repository.get(reference.source_id)
-            source_title = source.title if source is not None else reference.source_id
+            if source_titles is None:
+                source = self.repository.get(reference.source_id)
+                source_title = source.title if source is not None else reference.source_id
+            else:
+                if reference.source_id not in source_titles:
+                    source = self.repository.get(reference.source_id)
+                    source_titles[reference.source_id] = (
+                        source.title if source is not None else reference.source_id
+                    )
+                source_title = source_titles[reference.source_id]
             exact_locator = _locator_key(reference.locator)
             adjacent_asset_keys = _adjacent_asset_keys(document, reference.segment_key)
             for asset in document.assets:
@@ -189,7 +266,7 @@ class PracticeReviewService:
         if binding is None:
             raise ValueError("image candidate is not available for this question")
         candidate = binding.candidate
-        image_key = _image_key(question_id)
+        image_key = _image_key(current.draft.question_id)
         self.image_service.copy_import_candidate(
             run_id,
             image_key,
@@ -211,6 +288,64 @@ class PracticeReviewService:
             chosen_image=chosen,
             draft=replace(current.draft, image_ref=chosen),
             selected_candidate_id=candidate.candidate_id,
+            image_not_needed=False,
+        )
+        self._save(
+            run_id,
+            tuple(
+                updated if item.draft.question_id == question_id else item
+                for item in self.review(run_id)
+            ),
+        )
+        return updated
+
+    def set_image_not_needed(
+        self, run_id: str, question_id: str, enabled: bool
+    ) -> ReviewQuestion:
+        current = self.question(run_id, question_id)
+        if current.draft.image_ref is None:
+            raise ValueError("question does not have an image requirement")
+        updated = replace(
+            current,
+            chosen_image=None if enabled else current.chosen_image,
+            selected_candidate_id=None if enabled else current.selected_candidate_id,
+            image_not_needed=enabled,
+        )
+        self._save(
+            run_id,
+            tuple(
+                updated if item.draft.question_id == question_id else item
+                for item in self.review(run_id)
+            ),
+        )
+        return updated
+
+    def upload_image(
+        self,
+        run_id: str,
+        question_id: str,
+        original_filename: str,
+        payload: bytes,
+    ) -> ReviewQuestion:
+        if self.image_service is None:
+            raise ValueError("imported image review is not configured")
+        current = self.question(run_id, question_id)
+        image_key = _image_key(question_id)
+        self.image_service.upload_import_review_image(
+            run_id, image_key, original_filename, payload
+        )
+        chosen = QuizImageRef(
+            image_key,
+            "Reviewer upload",
+            "Question image",
+            "Reviewer-provided question image",
+        )
+        updated = replace(
+            current,
+            draft=replace(current.draft, image_ref=chosen),
+            chosen_image=chosen,
+            selected_candidate_id=None,
+            image_not_needed=False,
         )
         self._save(
             run_id,
@@ -255,13 +390,12 @@ class PracticeReviewService:
             return _questions_from_json(stored.payload_json)
         normalized = self.repository.run_artifact(run_id, "normalized")
         if normalized is None:
-            raise KeyError(run_id)
+            raise ReviewArtifactUnavailable(run_id)
         questions = self._initialize_image_requirements(
             run_id,
             _drafts_from_json(normalized.payload_json),
         )
         self._save(run_id, questions)
-        self._auto_select_unique_exact_candidate(run_id, questions)
         stored = self.repository.run_artifact(run_id, _ARTIFACT_KEY)
         assert stored is not None
         return _questions_from_json(stored.payload_json)
@@ -297,34 +431,17 @@ class PracticeReviewService:
             )
         return tuple(initialized)
 
-    def _auto_select_unique_exact_candidate(
-        self, run_id: str, questions: tuple[ReviewQuestion, ...]
-    ) -> None:
-        """A unique exact source/page match is the only safe automatic selection."""
-        if self.image_service is None:
-            return
-        for question in questions:
-            if question.draft.image_ref is None or question.chosen_image is not None:
-                continue
-            exact = tuple(
-                item
-                for item in self._candidate_bindings(run_id, question)
-                if item.candidate.exact_match
-            )
-            if len(exact) == 1:
-                self.select_image_candidate(
-                    run_id,
-                    question.draft.question_id,
-                    exact[0].candidate.candidate_id,
-                )
-
     def _candidate_asset_keys(
-        self, run_id: str, draft: QuestionDraft
+        self,
+        run_id: str,
+        draft: QuestionDraft,
+        extraction: ExtractionResult | None = None,
     ) -> frozenset[tuple[str, str]]:
-        artifact = self.repository.run_artifact(run_id, "extract")
-        if artifact is None:
-            return frozenset()
-        extraction = _extraction_from_json(artifact.payload_json)
+        if extraction is None:
+            artifact = self.repository.run_artifact(run_id, "extract")
+            if artifact is None:
+                return frozenset()
+            extraction = _extraction_from_json(artifact.payload_json)
         matches = [
             index
             for index, question in enumerate(extraction.questions)
@@ -383,9 +500,31 @@ class PracticeReviewService:
             or ("correct_index" in values and correct_index != draft.correct_index)
             or ("rationale" in values and rationale != draft.rationale)
         )
+        has_resolvable_answer_diagnostic = any(
+            diagnostic.code in _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES
+            for diagnostic in draft.diagnostics
+        )
+        manually_resolved_answer = (
+            "correct_index" in values
+            and isinstance(correct_index, int)
+            and has_resolvable_answer_diagnostic
+        )
         requires_verification = (
             draft.verification_required
             or draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+        ) and (
+            not manually_resolved_answer
+            or draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+        )
+        diagnostics = (
+            tuple(
+                diagnostic
+                for diagnostic in draft.diagnostics
+                if diagnostic.code
+                not in _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES
+            )
+            if manually_resolved_answer
+            else draft.diagnostics
         )
         updated_draft = replace(
             draft,
@@ -393,9 +532,10 @@ class PracticeReviewService:
             choices=choices,
             correct_index=cast(int | None, correct_index),
             rationale=rationale,
-            answer_provenance=(AnswerProvenance.MANUALLY_CORRECTED if answer_changed else draft.answer_provenance),  # noqa: E501
-            verification_required=(requires_verification if answer_changed else draft.verification_required),  # noqa: E501
-            verified_at=(None if answer_changed else draft.verified_at),
+            answer_provenance=(AnswerProvenance.MANUALLY_CORRECTED if answer_changed or manually_resolved_answer else draft.answer_provenance),  # noqa: E501
+            diagnostics=diagnostics,
+            verification_required=(requires_verification if answer_changed or manually_resolved_answer else draft.verification_required),  # noqa: E501
+            verified_at=(None if answer_changed or manually_resolved_answer else draft.verified_at),  # noqa: E501
         )
         updated = ReviewQuestion(
             updated_draft,
@@ -408,6 +548,7 @@ class PracticeReviewService:
             ),
             current.chosen_image,
             current.selected_candidate_id,
+            current.image_not_needed,
         )
         questions = tuple(
             updated if item.draft.question_id == question_id else item for item in self.review(run_id)  # noqa: E501
@@ -436,7 +577,45 @@ class PracticeReviewService:
         return updated
 
     def blockers(self, run_id: str) -> tuple[str, ...]:
-        return _blockers_from_issues(self.issues(run_id))
+        question_blockers = _blockers_from_issues(self.issues(run_id))
+        return (*question_blockers, *self.run_diagnostic_blockers(run_id))
+
+    def run_diagnostics(self, run_id: str) -> tuple[dict[str, object], ...]:
+        artifact = self.repository.run_artifact(run_id, _RUN_DIAGNOSTICS_ARTIFACT_KEY)
+        if artifact is None:
+            return ()
+        payload = json.loads(artifact.payload_json)
+        return tuple(item for item in payload if isinstance(item, dict))
+
+    def run_diagnostic_blockers(self, run_id: str) -> tuple[str, ...]:
+        return tuple(
+            str(item["message"])
+            for item in self.run_diagnostics(run_id)
+            if item.get("severity") == DiagnosticSeverity.BLOCKER.value
+            and not (item.get("overridable") and item.get("acknowledged"))
+        )
+
+    def acknowledge_run_diagnostic(self, run_id: str, code: str) -> None:
+        artifact = self.repository.run_artifact(run_id, _RUN_DIAGNOSTICS_ARTIFACT_KEY)
+        if artifact is None:
+            raise KeyError(code)
+        payload = json.loads(artifact.payload_json)
+        updated = False
+        for item in payload:
+            if item.get("code") == code:
+                if not item.get("overridable"):
+                    raise ValueError("this run diagnostic cannot be acknowledged")
+                item["acknowledged"] = True
+                updated = True
+        if not updated:
+            raise KeyError(code)
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        self.repository.save_run_artifact(
+            run_id,
+            _RUN_DIAGNOSTICS_ARTIFACT_KEY,
+            hashlib.sha256(serialized.encode()).hexdigest(),
+            serialized,
+        )
 
     def issues(self, run_id: str) -> tuple[ReviewIssue, ...]:
         return _issues(self.review(run_id))
@@ -452,9 +631,15 @@ class PracticeReviewService:
         )
         if artifact is None:
             raise ValueError("imported question review is missing")
+        blockers = self.run_diagnostic_blockers(run_id)
+        if blockers:
+            raise ValueError("; ".join(blockers))
         return _native_quiz(_questions_from_json(artifact.payload_json), title)
 
     def to_native_quiz(self, run_id: str, *, title: str | None = None) -> NativeQuiz:
+        blockers = self.run_diagnostic_blockers(run_id)
+        if blockers:
+            raise ValueError("; ".join(blockers))
         return _native_quiz(self.review(run_id), title or "Imported practice questions")
 
     def _save(self, run_id: str, questions: tuple[ReviewQuestion, ...]) -> None:
@@ -524,6 +709,18 @@ def _issues(questions: tuple[ReviewQuestion, ...]) -> tuple[ReviewIssue, ...]:
                     DiagnosticSeverity.BLOCKER,
                 )
             )
+        if not draft.rationale or not draft.rationale.strip():
+            issues.append(
+                ReviewIssue(
+                    draft.question_id,
+                    draft.original_identifier,
+                    display_label,
+                    "answer",
+                    "missing_rationale",
+                    "answer rationale is missing",
+                    DiagnosticSeverity.BLOCKER,
+                )
+            )
         if len(draft.choices) < 2 or len(draft.choices) > 8 or len(
             {choice.casefold() for choice in draft.choices}
         ) != len(draft.choices):
@@ -566,7 +763,11 @@ def _issues(questions: tuple[ReviewQuestion, ...]) -> tuple[ReviewIssue, ...]:
                     DiagnosticSeverity.BLOCKER,
                 )
             )
-        if draft.image_ref is not None and question.chosen_image is None:
+        if (
+            draft.image_ref is not None
+            and question.chosen_image is None
+            and not question.image_not_needed
+        ):
             issues.append(
                 ReviewIssue(
                     draft.question_id,
@@ -720,6 +921,7 @@ def _questions_json(questions: tuple[ReviewQuestion, ...]) -> str:
                     else None
                 ),
                 "selected_candidate_id": question.selected_candidate_id,
+                "image_not_needed": question.image_not_needed,
             }
             for question in questions
         ],
@@ -737,6 +939,7 @@ def _questions_from_json(payload: str) -> tuple[ReviewQuestion, ...]:
             item["learning_objective"],
             _image_ref(item["chosen_image"]),
             item.get("selected_candidate_id"),
+            bool(item.get("image_not_needed", False)),
         )
         for item in json.loads(payload)
     )

@@ -18,6 +18,9 @@ from oms_hub.document_processing.domain import (
     SegmentKind,
     SourceSnapshot,
 )
+from oms_hub.document_processing.ocr import LocalOcr
+
+_NATIVE_WORDS_WITH_OPTIONAL_IMAGE_OCR = 8
 
 if TYPE_CHECKING:
     from oms_hub.document_processing.run_styles import StyledTextRunSidecar
@@ -25,6 +28,9 @@ if TYPE_CHECKING:
 
 class PptxLocatorEnricher:
     """Restore unambiguous slide, notes, and image locations for an Anydoc result."""
+
+    def __init__(self, ocr: LocalOcr | None = None) -> None:
+        self.ocr = ocr or LocalOcr()
 
     def extract_run_styles(self, snapshot: SourceSnapshot) -> StyledTextRunSidecar:
         """Return the separate immutable style sidecar; never changes ParsedDocument."""
@@ -38,16 +44,35 @@ class PptxLocatorEnricher:
         presentation = Presentation(str(snapshot.path))
         image_locations = _image_locations(presentation)
         assets, asset_keys_by_location, warnings = _locate_assets(parsed.assets, image_locations)
+        source_segments = tuple(_slide_segments(presentation, asset_keys_by_location))
         segments = _enrich_segments(
             parsed.segments,
-            tuple(_slide_segments(presentation, asset_keys_by_location)),
+            source_segments,
             assets,
         )
+        ocr_segments, ocr_warnings = _ocr_slide_images(
+            presentation,
+            segments,
+            source_segments,
+            assets,
+            asset_keys_by_location,
+            self.ocr,
+        )
+        style_segments = _unmatched_style_segments(segments, source_segments)
         return replace(
             parsed,
-            segments=segments,
+            segments=tuple(
+                sorted(
+                    (*segments, *ocr_segments, *style_segments),
+                    key=lambda segment: (
+                        segment.locator.slide_number or 10**9,
+                        1 if segment.key.endswith("-ocr") else 0,
+                        segment.key,
+                    ),
+                )
+            ),
             assets=assets,
-            warnings=(*parsed.warnings, *warnings),
+            warnings=(*parsed.warnings, *warnings, *ocr_warnings),
         )
 
 
@@ -104,10 +129,26 @@ def _enrich_segments(
                     )
                 }
             )
+    locations.update(
+        _ordered_fragment_locations(parsed_segments, source_segments, locations)
+    )
     enriched: list[ParsedSegment] = []
+    styles_by_text: dict[str, tuple[str, ...]] = {}
+    for source in source_segments:
+        normalized = _normalize_text(source.text)
+        if normalized and source.style_metadata:
+            styles_by_text.setdefault(normalized, source.style_metadata)
     for segment in parsed_segments:
         if segment.key in locations:
-            enriched.append(replace(segment, locator=locations[segment.key]))
+            enriched.append(
+                replace(
+                    segment,
+                    locator=locations[segment.key],
+                    style_metadata=styles_by_text.get(
+                        _normalize_text(segment.text), segment.style_metadata
+                    ),
+                )
+            )
             continue
         slides = {asset_slides[key] for key in segment.asset_keys if key in asset_slides}
         if len(slides) == 1:
@@ -130,7 +171,137 @@ def _enrich_segments(
             for segment in source_segments
             if segment.kind is SegmentKind.NOTE
         )
-    return tuple(enriched)
+    return _restore_slide_styles(tuple(enriched), source_segments)
+
+
+def _ordered_fragment_locations(
+    candidates: tuple[ParsedSegment, ...],
+    references: tuple[ParsedSegment, ...],
+    known: dict[str, DocumentLocator],
+) -> dict[str, DocumentLocator]:
+    """Locate split Anydoc blocks by their monotonic position in native slide text."""
+    found: dict[str, DocumentLocator] = {}
+    for kind in SegmentKind:
+        kind_references = tuple(item for item in references if item.kind is kind)
+        normalized_references = tuple(_normalize_text(item.text) for item in kind_references)
+        reference_index = 0
+        text_offset = 0
+        for candidate in (item for item in candidates if item.kind is kind):
+            normalized = _normalize_text(candidate.text)
+            if not normalized:
+                continue
+            if candidate.key in known:
+                match = next(
+                    (
+                        index
+                        for index in range(reference_index, len(kind_references))
+                        if kind_references[index].locator == known[candidate.key]
+                    ),
+                    None,
+                )
+                if match is not None:
+                    reference_index = match
+                    position = normalized_references[match].find(normalized)
+                    text_offset = position + len(normalized) if position >= 0 else 0
+                continue
+            for index in range(reference_index, len(kind_references)):
+                start = text_offset if index == reference_index else 0
+                position = normalized_references[index].find(normalized, start)
+                if position < 0:
+                    continue
+                found[candidate.key] = kind_references[index].locator
+                reference_index = index
+                text_offset = position + len(normalized)
+                break
+    return found
+
+
+def _restore_slide_styles(
+    segments: tuple[ParsedSegment, ...],
+    source_segments: tuple[ParsedSegment, ...],
+) -> tuple[ParsedSegment, ...]:
+    """Attach unmatched run cues once to a text segment on their source slide."""
+    styles_by_slide: dict[int, list[str]] = {}
+    for source in source_segments:
+        slide_number = source.locator.slide_number
+        if slide_number is not None and source.style_metadata:
+            styles_by_slide.setdefault(slide_number, []).extend(source.style_metadata)
+    restored_cues = {
+        (segment.locator.slide_number, cue)
+        for segment in segments
+        if segment.locator.slide_number is not None
+        for cue in segment.style_metadata
+    }
+    restored = list(segments)
+    for slide_number, styles in styles_by_slide.items():
+        remaining = tuple(dict.fromkeys(
+            cue for cue in styles if (slide_number, cue) not in restored_cues
+        ))
+        if not remaining:
+            continue
+        index = next(
+            (
+                index
+                for index, segment in enumerate(restored)
+                if segment.locator.slide_number == slide_number
+                and segment.text.strip()
+                and any(
+                    _normalize_text(cue.partition(": ")[2])
+                    in _normalize_text(segment.text)
+                    for cue in remaining
+                    if cue.partition(": ")[2]
+                )
+            ),
+            None,
+        )
+        if index is None:
+            index = next(
+                (
+                    index
+                    for index, segment in enumerate(restored)
+                    if segment.locator.slide_number == slide_number and segment.text.strip()
+                ),
+                None,
+            )
+        if index is not None:
+            restored[index] = replace(
+                restored[index],
+                style_metadata=tuple(dict.fromkeys((*restored[index].style_metadata, *remaining))),
+            )
+    return tuple(restored)
+
+
+def _unmatched_style_segments(
+    segments: tuple[ParsedSegment, ...],
+    source_segments: tuple[ParsedSegment, ...],
+) -> tuple[ParsedSegment, ...]:
+    """Keep slide-level formatting cues even when candidate text has no slide locator."""
+    restored_slides = {
+        segment.locator.slide_number
+        for segment in segments
+        if segment.locator.slide_number is not None and segment.style_metadata
+    }
+    styles_by_slide: dict[int, list[str]] = {}
+    for source in source_segments:
+        slide_number = source.locator.slide_number
+        if (
+            slide_number is not None
+            and slide_number not in restored_slides
+            and source.style_metadata
+        ):
+            styles_by_slide.setdefault(slide_number, []).extend(source.style_metadata)
+    return tuple(
+        ParsedSegment(
+            key=f"slide-{slide_number}-style-metadata",
+            kind=SegmentKind.NOTE,
+            text="",
+            locator=DocumentLocator(
+                f"slide {slide_number} formatting", slide_number=slide_number
+            ),
+            style_metadata=tuple(dict.fromkeys(styles)),
+        )
+        for slide_number, styles in sorted(styles_by_slide.items())
+    )
 
 
 def _locate_assets(
@@ -142,6 +313,9 @@ def _locate_assets(
     for asset in parsed_assets:
         matches = image_locations.get(_normalize_part_name(asset.origin), ())
         slide_numbers = {match.slide_number for match in matches}
+        if asset.path is not None:
+            for occurrence in matches:
+                keys_by_location[(occurrence.slide_number, occurrence.image_number)] = asset.key
         if len(slide_numbers) == 1:
             match = matches[0]
             located = replace(
@@ -152,11 +326,6 @@ def _locate_assets(
                 ),
             )
             assets.append(located)
-            if located.path is not None:
-                for occurrence in matches:
-                    keys_by_location[(occurrence.slide_number, occurrence.image_number)] = (
-                        located.key
-                    )
             continue
         assets.append(asset)
         if slide_numbers:
@@ -233,6 +402,7 @@ def _slide_segments(
                     label=f"slide {slide_number} content {text_number}",
                     slide_number=slide_number,
                 ),
+                style_metadata=_shape_style_metadata(shape),
             )
         notes = _notes_text(slide)
         if notes:
@@ -272,6 +442,108 @@ def _shape_content(shape: Any) -> tuple[str, SegmentKind]:
     if shape.has_text_frame:
         return shape.text.strip(), SegmentKind.PARAGRAPH
     return "", SegmentKind.PARAGRAPH
+
+
+def _shape_style_metadata(shape: Any) -> tuple[str, ...]:
+    """Keep answer-format clues as provenance rather than modifying displayed text."""
+    if not getattr(shape, "has_text_frame", False):
+        return ()
+    cues: list[str] = []
+    for paragraph in shape.text_frame.paragraphs:
+        for run in paragraph.runs:
+            text = run.text.strip()
+            if not text:
+                continue
+            if run.font.bold:
+                cues.append(f"bold: {text}")
+            if run.font.italic:
+                cues.append(f"italic: {text}")
+            if run.font.underline:
+                cues.append(f"underline: {text}")
+            if run._r.xpath("./a:rPr/a:highlight"):  # pyright: ignore[reportPrivateUsage]
+                cues.append(f"highlighted: {text}")
+            color = getattr(getattr(run.font, "color", None), "rgb", None)
+            if color is not None:
+                cues.append(f"color #{color}: {text}")
+    return tuple(dict.fromkeys(cues))
+
+
+def _ocr_slide_images(
+    presentation: Any,
+    segments: tuple[ParsedSegment, ...],
+    source_segments: tuple[ParsedSegment, ...],
+    assets: tuple[ParsedAsset, ...],
+    asset_keys_by_location: dict[tuple[int, int], str],
+    ocr: LocalOcr,
+) -> tuple[tuple[ParsedSegment, ...], tuple[str, ...]]:
+    """OCR image-only slides and visual question screenshots, never small logos.
+
+    # ponytail: 30% slide-area threshold; tune only if real decks show false negatives.
+    """
+    text_slides = {
+        segment.locator.slide_number
+        for segment in segments
+        if segment.locator.slide_number is not None and segment.text.strip()
+    }
+    native_words_by_slide: dict[int, int] = {}
+    for segment in source_segments:
+        slide_number = segment.locator.slide_number
+        if slide_number is not None and segment.kind is not SegmentKind.NOTE:
+            native_words_by_slide[slide_number] = (
+                native_words_by_slide.get(slide_number, 0) + len(segment.text.split())
+            )
+    assets_by_slide: dict[int, list[ParsedAsset]] = {}
+    large_asset_locations: set[tuple[int, str]] = set()
+    slide_area = presentation.slide_width * presentation.slide_height
+    for slide_number, slide in enumerate(presentation.slides, start=1):
+        image_number = 0
+        for shape in _walk_shapes(slide.shapes):
+            if shape.shape_type is not MSO_SHAPE_TYPE.PICTURE:
+                continue
+            image_number += 1
+            if shape.width * shape.height >= slide_area * 0.30:
+                key = asset_keys_by_location.get((slide_number, image_number))
+                if key is not None:
+                    large_asset_locations.add((slide_number, key))
+    assets_by_key = {asset.key: asset for asset in assets if asset.path is not None}
+    for (slide_number, _image_number), key in asset_keys_by_location.items():
+        asset = assets_by_key.get(key)
+        if asset is not None and asset not in assets_by_slide.setdefault(slide_number, []):
+            assets_by_slide[slide_number].append(asset)
+    added: list[ParsedSegment] = []
+    blockers: list[str] = []
+    for slide_number, slide_assets in sorted(assets_by_slide.items()):
+        candidates = (
+            slide_assets
+            if slide_number not in text_slides
+            else [
+                asset
+                for asset in slide_assets
+                if (slide_number, asset.key) in large_asset_locations
+            ]
+        )
+        if not candidates:
+            continue
+        recognized = "\n".join(
+            text
+            for asset in candidates
+            if asset.path is not None and (text := ocr.text(asset.path))
+        ).strip()
+        if recognized:
+            added.append(
+                ParsedSegment(
+                    key=f"slide-{slide_number}-ocr",
+                    kind=SegmentKind.PARAGRAPH,
+                    text=recognized,
+                    locator=DocumentLocator(f"slide {slide_number} OCR", slide_number=slide_number),
+                    asset_keys=tuple(asset.key for asset in candidates),
+                )
+            )
+        elif native_words_by_slide.get(slide_number, 0) < _NATIVE_WORDS_WITH_OPTIONAL_IMAGE_OCR:
+            blockers.append(
+                f"BLOCKER: OCR is required but unavailable or empty for slide {slide_number}"
+            )
+    return tuple(added), tuple(blockers)
 
 
 def _notes_text(slide: Any) -> str:

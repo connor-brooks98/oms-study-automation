@@ -134,7 +134,7 @@ def pair_supplied_answers(
                 stem=question.stem,
                 choices=question.choices,
                 correct_index=correct_index,
-                rationale=_rationale(supplied, question),
+                rationale=_rationale(supplied, question, correct_index),
                 image_ref=None,
                 source_refs=(
                     question_source_refs[index] if question_source_refs is not None else ()
@@ -218,12 +218,18 @@ def _resolve_correct_index(
 
 
 def _rationale(
-    supplied: tuple[tuple[int, str | None], ...], question: ExtractedQuestion
+    supplied: tuple[tuple[int, str | None], ...],
+    question: ExtractedQuestion,
+    correct_index: int | None,
 ) -> str | None:
     for _, rationale in reversed(supplied):
-        if rationale is not None:
+        if rationale is not None and rationale.strip():
             return rationale
-    return question.rationale
+    if question.rationale is not None and question.rationale.strip():
+        return question.rationale
+    if correct_index is not None and supplied:
+        return f"Source-marked correct answer: {question.choices[correct_index]}"
+    return None
 
 
 def _append_unmatched_answer_diagnostic(

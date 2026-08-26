@@ -6,7 +6,7 @@ import warnings
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile, ZipInfo
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -20,6 +20,11 @@ from oms_hub.study_generation.studio_repository import StudioRepository
 
 MAX_QUIZ_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_QUIZ_IMAGE_PIXELS = 40_000_000
+MAX_OFFICE_ARCHIVE_MEMBERS = 2_000
+MAX_OFFICE_ARCHIVE_MEMBER_BYTES = MAX_QUIZ_IMAGE_BYTES
+MAX_OFFICE_ARCHIVE_TOTAL_BYTES = 50 * 1024 * 1024
+MAX_OFFICE_ARCHIVE_COMPRESSION_RATIO = 100
+OFFICE_ARCHIVE_READ_CHUNK_BYTES = 64 * 1024
 _SUPPORTED_FORMATS = frozenset({"PNG", "JPEG", "WEBP"})
 
 
@@ -156,6 +161,35 @@ class StudioQuizImageService:
         )
         return image
 
+    def upload_import_review_image(
+        self,
+        run_id: str,
+        image_key: str,
+        original_filename: str,
+        payload: bytes,
+    ) -> StudioStoredImage:
+        sanitized = sanitize_quiz_image(payload)
+        safe_name = PurePosixPath(original_filename.replace("\\", "/")).name[:500]
+        path = self.media_root / run_id / f"{image_key}-{sanitized.sha256}.png"
+        verified_atomic_write(sanitized.payload, path)
+        image = StudioStoredImage(
+            path,
+            sanitized.sha256,
+            sanitized.media_type,
+            sanitized.width,
+            sanitized.height,
+            safe_name or "reviewer-image",
+        )
+        self.repository.bind_import_review_image(
+            run_id,
+            image_key,
+            "Reviewer upload",
+            "Question image",
+            "Reviewer-provided question image",
+            image,
+        )
+        return image
+
     def auto_bind_from_sources(
         self,
         run_id: str,
@@ -169,6 +203,7 @@ class StudioQuizImageService:
         exactly and its page/slide locator identifies one extracted image.
         """
         bound: list[str] = []
+        extracted_by_source_id: dict[str, tuple[_ExtractedImage, ...]] = {}
         for requirement in requirements:
             if requirement.image is not None:
                 continue
@@ -182,7 +217,10 @@ class StudioQuizImageService:
             )
             if source is None or source.payload_path is None:
                 continue
-            candidates = _extract_source_images(source.payload_path)
+            candidates = extracted_by_source_id.get(source.id)
+            if candidates is None:
+                candidates = _extract_source_images(source.payload_path)
+                extracted_by_source_id[source.id] = candidates
             candidate = _select_candidate(candidates, requirement.locator)
             if candidate is None:
                 continue
@@ -285,15 +323,74 @@ def _extract_pdf_images(path: Path) -> tuple[_ExtractedImage, ...]:
 def _extract_zip_images(path: Path) -> tuple[_ExtractedImage, ...]:
     try:
         with ZipFile(path) as archive:
-            names = tuple(
-                name
-                for name in archive.namelist()
-                if "/media/" in name.casefold()
-                and Path(name).suffix.casefold() in {".png", ".jpg", ".jpeg", ".webp"}
-            )
-            return tuple(
-                _ExtractedImage(Path(name).name, archive.read(name), f"embedded image {index}")
-                for index, name in enumerate(names, start=1)
-            )
-    except (OSError, ValueError, KeyError):
+            infos = tuple(archive.infolist())
+            _validate_office_archive_metadata(infos)
+            images: list[_ExtractedImage] = []
+            expanded_total = 0
+            for info in infos:
+                if (
+                    "/media/" not in info.filename.casefold()
+                    or Path(info.filename).suffix.casefold()
+                    not in {".png", ".jpg", ".jpeg", ".webp"}
+                ):
+                    continue
+                payload, expanded_total = _read_bounded_archive_member(
+                    archive,
+                    info.filename,
+                    expanded_total,
+                )
+                images.append(
+                    _ExtractedImage(
+                        Path(info.filename).name,
+                        payload,
+                        f"embedded image {len(images) + 1}",
+                    )
+                )
+            return tuple(images)
+    except QuizImageError:
+        raise
+    except (BadZipFile, OSError, ValueError, KeyError):
         return ()
+
+
+def _validate_office_archive_metadata(infos: tuple[ZipInfo, ...]) -> None:
+    if len(infos) > MAX_OFFICE_ARCHIVE_MEMBERS:
+        raise QuizImageError("Office archive has too many members")
+    declared_total = 0
+    for info in infos:
+        file_size = info.file_size
+        compressed_size = info.compress_size
+        if file_size > MAX_OFFICE_ARCHIVE_MEMBER_BYTES:
+            raise QuizImageError("Office archive member exceeds the expanded-size limit")
+        if file_size and (
+            compressed_size == 0
+            or file_size / compressed_size > MAX_OFFICE_ARCHIVE_COMPRESSION_RATIO
+        ):
+            raise QuizImageError("Office archive member exceeds the compression-ratio limit")
+        declared_total += file_size
+        if declared_total > MAX_OFFICE_ARCHIVE_TOTAL_BYTES:
+            raise QuizImageError("Office archive exceeds the total expanded-size limit")
+
+
+def _read_bounded_archive_member(
+    archive: ZipFile,
+    name: str,
+    expanded_total: int,
+) -> tuple[bytes, int]:
+    payload = bytearray()
+    with archive.open(name) as member:
+        while True:
+            remaining_member = MAX_OFFICE_ARCHIVE_MEMBER_BYTES - len(payload)
+            remaining_total = MAX_OFFICE_ARCHIVE_TOTAL_BYTES - expanded_total
+            remaining = min(remaining_member, remaining_total)
+            chunk = member.read(min(OFFICE_ARCHIVE_READ_CHUNK_BYTES, remaining + 1))
+            if not chunk:
+                return bytes(payload), expanded_total
+            if len(chunk) > remaining:
+                if remaining_member <= remaining_total:
+                    raise QuizImageError(
+                        "Office archive member exceeds the expanded-size limit"
+                    )
+                raise QuizImageError("Office archive exceeds the total expanded-size limit")
+            payload.extend(chunk)
+            expanded_total += len(chunk)
