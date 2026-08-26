@@ -1,4 +1,4 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -55,8 +55,10 @@ class Knowledge:
     ) -> None:
         self.revision = revision or _revision()
         self.evidence = evidence or (_evidence(),)
+        self.requested_revisions: list[str] = []
 
     def get_revision(self, revision_id: str) -> SourceRevision | None:
+        self.requested_revisions.append(revision_id)
         return self.revision if revision_id == self.revision.source_revision_id else None
 
     def list_evidence(self, revision_id: str) -> tuple[EvidenceUnit, ...]:
@@ -175,6 +177,35 @@ def test_only_ambiguous_near_duplicates_reach_bounded_consolidation() -> None:
     assert left.evidence_ids == right.evidence_ids == ("evidence-1",)
 
 
+def test_all_exact_duplicates_collapse_before_ambiguous_consolidation() -> None:
+    second = replace(_evidence("evidence-2"), normalized_text="HIT may cause thrombosis.")
+    generator = Generator(
+        (
+            _proposal(),
+            _proposal(
+                concept="heparin-induced thrombocytopenia syndrome",
+                description="Differentiate the clinical HIT syndrome.",
+            ),
+            _proposal(
+                concept="Heparin induced thrombocytopenia syndrome",
+                description="Differentiate the clinical HIT syndrome.",
+                evidence_ids=("evidence-2",),
+            ),
+        )
+    )
+    consolidator = Consolidator(decision=False)
+
+    result = ObjectiveExtractor(
+        Knowledge(evidence=(_evidence(), second)),
+        generator,
+        consolidator,
+    ).extract(("revision-1",))
+
+    assert len(result) == 2
+    assert len(consolidator.calls) == 1
+    assert consolidator.calls[0][1].evidence_ids == ("evidence-1", "evidence-2")
+
+
 def test_extractor_fails_closed_for_unready_or_invented_source_evidence() -> None:
     unready_generator = Generator((_proposal(),))
     with pytest.raises(ValueError, match="ready"):
@@ -187,11 +218,7 @@ def test_extractor_fails_closed_for_unready_or_invented_source_evidence() -> Non
     unsupported_generator = Generator((_proposal(),))
     with pytest.raises(ValueError, match="requires evidence"):
         ObjectiveExtractor(
-            Knowledge(
-                evidence=(
-                    _evidence(authority=AuthorityClass.GENERATED_ARTIFACT),
-                )
-            ),
+            Knowledge(evidence=(_evidence(authority=AuthorityClass.GENERATED_ARTIFACT),)),
             unsupported_generator,
         ).extract(("revision-1",))
     assert unsupported_generator.calls == []
@@ -215,3 +242,43 @@ def test_extractor_reuses_gate2a_scope_policy_and_ids_are_deterministic() -> Non
         valid.extract(("revision-1",))[0].proposal_id
         == valid.extract(("revision-1",))[0].proposal_id
     )
+
+
+def test_extraction_limits_reject_work_before_repository_or_generator_use() -> None:
+    knowledge = Knowledge()
+    generator = Generator((_proposal(),))
+    with pytest.raises(ValueError, match="at most"):
+        ObjectiveExtractor(knowledge, generator).extract(
+            tuple(f"revision-{number}" for number in range(33))
+        )
+    assert knowledge.requested_revisions == []
+    assert generator.calls == []
+
+    oversized = replace(_evidence(), normalized_text="x" * 20_001)
+    with pytest.raises(ValueError, match="evidence text"):
+        ObjectiveExtractor(
+            Knowledge(evidence=(oversized,)),
+            generator,
+        ).extract(("revision-1",))
+    assert generator.calls == []
+
+
+def test_proposal_limits_bound_fields_links_and_generator_output() -> None:
+    with pytest.raises(ValueError, match="concept.*at most"):
+        _proposal(concept="x" * 201)
+    with pytest.raises(ValueError, match="description.*at most"):
+        _proposal(description="x" * 1_001)
+    with pytest.raises(ValueError, match="suggested_links.*at most"):
+        _proposal(
+            suggested_links=tuple(
+                SuggestedObjectiveLink(
+                    ObjectiveEdgeType.CONTRASTS_WITH,
+                    f"concept-{number}",
+                )
+                for number in range(33)
+            )
+        )
+
+    generator = Generator(tuple(_proposal() for _ in range(501)))
+    with pytest.raises(ValueError, match="at most 500 proposals"):
+        ObjectiveExtractor(Knowledge(), generator).extract(("revision-1",))

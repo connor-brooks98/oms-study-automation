@@ -79,3 +79,68 @@ test("scoped stylesheet imports frozen design tokens without central wiring", ()
   assert.match(css, /\.objective-review/);
   assert.match(css, /var\(--/);
 });
+
+function hostHarness() {
+  const listeners = {};
+  const host = {
+    innerHTML: "",
+    addEventListener(type, listener) { listeners[type] = listener; },
+  };
+  return { host, listeners };
+}
+
+test("initial load failure renders an accessible retry that recovers", async () => {
+  let attempts = 0;
+  const client = {
+    async list() {
+      attempts += 1;
+      if (attempts === 1) throw new Error("offline");
+      return { objectives: [] };
+    },
+  };
+  const { host, listeners } = hostHarness();
+  const panel = review.initialize(host, { client });
+
+  await panel.ready;
+  assert.match(host.innerHTML, /role="alert"/);
+  assert.match(host.innerHTML, /aria-live="assertive"/);
+  assert.match(host.innerHTML, /data-objective-retry/);
+  await listeners.click({
+    target: {
+      closest(selector) { return selector === "[data-objective-retry]" ? this : null; },
+    },
+  });
+  assert.equal(attempts, 2);
+  assert.equal(host.innerHTML, "");
+});
+
+test("evidence preview failure is rendered accessibly without a rejected handler", async () => {
+  const preview = {
+    textContent: "",
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
+  };
+  const details = { querySelector: () => preview };
+  const button = {
+    dataset: { previewEvidence: "evidence-1" },
+    closest: () => details,
+  };
+  const client = {
+    async list() { return { objectives: [] }; },
+    async previewEvidence() { throw new Error("preview unavailable"); },
+  };
+  const { host, listeners } = hostHarness();
+  const panel = review.initialize(host, { client });
+  await panel.ready;
+
+  await listeners.click({
+    target: {
+      closest(selector) { return selector === "[data-preview-evidence]" ? button : null; },
+    },
+  });
+
+  assert.equal(preview.textContent, "preview unavailable");
+  assert.equal(preview.attributes.role, "alert");
+  assert.equal(preview.attributes["aria-live"], "assertive");
+  assert.equal(panel.pending.has("evidence:evidence-1"), false);
+});

@@ -113,6 +113,14 @@ def test_objective_routes_validate_inputs_and_map_review_conflicts() -> None:
     assert client.post("/api/v1/objectives/missing/approve").status_code == 404
     assert client.post("/api/v1/objectives/merged/retire").status_code == 409
 
+    service = Service()
+    oversized = _client(service).post(
+        "/api/v1/objectives/extract",
+        json={"source_revision_ids": [f"revision-{number}" for number in range(33)]},
+    )
+    assert oversized.status_code == 422
+    assert service.calls == []
+
 
 def test_unexpected_route_failure_does_not_leak_internal_details() -> None:
     class Boom(Service):

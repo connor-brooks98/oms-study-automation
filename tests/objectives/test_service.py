@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from oms_hub.objectives.extraction import ProposedObjective
-from oms_hub.objectives.service import (
-    ObjectiveProposalDisposition,
-    ObjectiveService,
-)
+import pytest
+from sqlalchemy import text
 
 from oms_hub.db import Database
 from oms_hub.knowledge.ids import evidence_id, sha256_text, source_revision_id
@@ -15,8 +12,13 @@ from oms_hub.knowledge.models import (
     SourceRevisionState,
 )
 from oms_hub.knowledge.repository import KnowledgeRepository
+from oms_hub.objectives.extraction import ProposedObjective
 from oms_hub.objectives.models import ObjectiveStatus
 from oms_hub.objectives.repository import ObjectiveRepository
+from oms_hub.objectives.service import (
+    ObjectiveProposalDisposition,
+    ObjectiveService,
+)
 from oms_hub.providers.contracts import AuthorityClass
 
 NOW = "2026-08-26T14:00:00+00:00"
@@ -196,5 +198,64 @@ def test_retire_handles_pending_and_approved_records_without_rewriting_evidence(
         assert retired_objective is not None
         assert retired_objective.status is ObjectiveStatus.RETIRED
         assert retired_objective.evidence_ids == (second_unit,)
+    finally:
+        database.close()
+
+
+def test_approved_retirement_rolls_back_objective_and_proposal_together() -> None:
+    database, knowledge, objectives, service = _repositories()
+    try:
+        revision_id, unit_id = _seed(knowledge, "atomic-retire")
+        proposal = _proposal(revision_id, unit_id)
+        service.capture((proposal,))
+        service.approve(proposal.proposal_id)
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    CREATE TRIGGER reject_proposal_retirement
+                    BEFORE UPDATE OF disposition ON objective_proposals
+                    WHEN NEW.disposition = 'retired'
+                    BEGIN
+                        SELECT RAISE(ABORT, 'injected retirement failure');
+                    END
+                    """
+                )
+            )
+
+        with pytest.raises(Exception, match="injected retirement failure"):
+            service.retire(proposal.proposal_id)
+
+        restarted = ObjectiveService(objectives, clock=lambda: LATER)
+        restarted.initialize()
+        objective = objectives.get_objective(proposal.proposal_id)
+        assert objective is not None and objective.status is ObjectiveStatus.APPROVED
+        assert restarted.get_proposal(proposal.proposal_id).disposition is (
+            ObjectiveProposalDisposition.APPROVED
+        )
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize("disposition", ["approved", "merged"])
+def test_corrupted_proposal_disposition_links_fail_closed(disposition: str) -> None:
+    database, knowledge, objectives, service = _repositories()
+    try:
+        revision_id, unit_id = _seed(knowledge, f"corrupt-{disposition}")
+        proposal = _proposal(revision_id, unit_id)
+        service.capture((proposal,))
+        with database.engine.begin() as connection:
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+            connection.execute(
+                text(
+                    "UPDATE objective_proposals SET disposition = :disposition, "
+                    "approved_objective_id = NULL, merged_into_id = NULL WHERE id = :id"
+                ),
+                {"id": proposal.proposal_id, "disposition": disposition},
+            )
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+
+        with pytest.raises(ValueError, match=disposition):
+            service.get_proposal(proposal.proposal_id)
     finally:
         database.close()
