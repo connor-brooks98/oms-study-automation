@@ -1,0 +1,1027 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from threading import Barrier
+from typing import cast
+
+import pytest
+from sqlalchemy import event, inspect, text
+from sqlalchemy.exc import IntegrityError
+
+from oms_hub.ask.models import AskMode, AskPageContext, AskThread, QuizPageContext
+from oms_hub.ask.repository import AskRepository
+from oms_hub.db import Database
+from oms_hub.providers.contracts import RetrievalScope, TruthMode
+
+
+def _scope(
+    *,
+    lecture_ids: tuple[str, ...] = ("lecture-13",),
+    source_revision_ids: tuple[str, ...] = ("sr-1", "sr-2"),
+) -> RetrievalScope:
+    return RetrievalScope(
+        course_id="heme",
+        exam_id="exam-2",
+        lecture_ids=lecture_ids,
+        truth_mode=TruthMode.COURSE_ONLY,
+        source_revision_ids=source_revision_ids,
+    )
+
+
+def _provider_reference(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
+@pytest.fixture
+def database(tmp_path: Path) -> Iterator[Database]:
+    database = Database(f"sqlite:///{tmp_path / 'ask.db'}")
+    database.create_schema()
+    yield database
+    database.close()
+
+
+@pytest.fixture
+def repository(database: Database) -> AskRepository:
+    return AskRepository(database)
+
+
+def _update_with_foreign_keys_disabled(database: Database, statement: str) -> None:
+    connection = database.engine.raw_connection()
+    try:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(statement)
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_threads_are_actor_scoped_and_listed_by_exact_scope(
+    repository: AskRepository,
+) -> None:
+    scope = _scope()
+    alice = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, scope, thread_id="thread-alice"
+    )
+    repository.create_thread("actor-bob", AskMode.GLOBAL, scope, thread_id="thread-bob")
+
+    assert repository.list_threads(scope, "actor-alice") == [alice]
+    with pytest.raises(KeyError):
+        repository.get_thread(alice.thread_id, "actor-bob")
+
+
+def test_actor_ids_accept_email_like_values_but_respect_column_limit(
+    repository: AskRepository,
+) -> None:
+    scope = _scope()
+    thread = repository.create_thread(
+        "student@example.edu", AskMode.GLOBAL, scope, thread_id="thread-email-actor"
+    )
+    assert repository.get_thread(thread.thread_id, "student@example.edu").actor_id == (
+        "student@example.edu"
+    )
+    with pytest.raises(ValueError, match="actor_id"):
+        repository.create_thread("a" * 321, AskMode.GLOBAL, scope)
+
+
+def test_thread_and_message_ids_are_bounded_opaque(
+    repository: AskRepository,
+) -> None:
+    scope = _scope()
+    with pytest.raises(ValueError, match="thread_id"):
+        repository.create_thread(
+            "actor-alice", AskMode.GLOBAL, scope, thread_id="t" * 201
+        )
+
+    accepted_thread = AskThread(
+        thread_id="t" * 201,
+        mode=AskMode.GLOBAL,
+        scope=scope,
+    )
+    with pytest.raises(ValueError, match="thread_id"):
+        repository.create_thread("actor-alice", accepted_thread)
+
+    thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, scope, thread_id="thread-id-boundary"
+    )
+    with pytest.raises(ValueError, match="message_id"):
+        repository.append_user_message(
+            thread.thread_id,
+            "actor-alice",
+            "Question",
+            message_id="m" * 201,
+        )
+
+
+def test_quiz_thread_rejects_a_different_question_context(
+    repository: AskRepository,
+) -> None:
+    first_context = QuizPageContext(
+        quiz_id="quiz-1", question_id="question-1", submitted=False
+    )
+    second_context = QuizPageContext(
+        quiz_id="quiz-1", question_id="question-2", submitted=False
+    )
+    thread = repository.create_thread(
+        "actor-alice",
+        AskMode.QUIZ_PRE_SUBMIT,
+        _scope(),
+        page_context=first_context,
+        thread_id="thread-question-1",
+    )
+
+    repository.append_user_message(
+        thread.thread_id,
+        "actor-alice",
+        "Explain the concept.",
+        page_context=first_context,
+    )
+    with pytest.raises(ValueError, match="question context"):
+        repository.append_user_message(
+            thread.thread_id,
+            "actor-alice",
+            "Explain the other question.",
+            page_context=second_context,
+        )
+    with pytest.raises(ValueError, match="question context"):
+        repository.append_assistant_message(
+            thread.thread_id,
+            "actor-alice",
+            "Answer for the other question.",
+            page_context=second_context,
+        )
+
+
+def test_quiz_thread_requires_explicit_context_on_every_append(
+    repository: AskRepository,
+) -> None:
+    context = QuizPageContext(
+        quiz_id="quiz-1", question_id="question-1", submitted=False
+    )
+    thread = repository.create_thread(
+        "actor-alice",
+        AskMode.QUIZ_PRE_SUBMIT,
+        _scope(),
+        page_context=context,
+        thread_id="thread-question-1",
+    )
+
+    with pytest.raises(ValueError, match="explicit.*QuizPageContext"):
+        repository.append_user_message(thread.thread_id, "actor-alice", "Question")
+    repository.append_user_message(
+        thread.thread_id,
+        "actor-alice",
+        "Question",
+        page_context=context,
+    )
+    with pytest.raises(ValueError, match="explicit.*QuizPageContext"):
+        repository.append_assistant_message(thread.thread_id, "actor-alice", "Answer")
+    repository.append_assistant_message(
+        thread.thread_id,
+        "actor-alice",
+        "Answer",
+        page_context=context,
+    )
+
+
+def test_messages_are_append_only_and_deterministically_ordered(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-1"
+    )
+    user = repository.append_user_message(
+        thread.thread_id, "actor-alice", "First question", message_id="message-1"
+    )
+    assistant = repository.append_assistant_message(
+        thread.thread_id, "actor-alice", "First answer", message_id="message-2"
+    )
+    second_user = repository.append_user_message(
+        thread.thread_id, "actor-alice", "Follow up", message_id="message-3"
+    )
+
+    view = repository.get_thread(thread.thread_id, "actor-alice")
+    assert view.messages == (user, assistant, second_user)
+    assert [message.role for message in view.messages] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "DELETE FROM ask_messages WHERE thread_id = 'thread-corrupt-sequence' "
+        "AND sequence = 2",
+        "UPDATE ask_messages SET sequence = 4 WHERE thread_id = 'thread-corrupt-sequence' "
+        "AND sequence = 2",
+        "UPDATE ask_threads SET message_sequence = -1 "
+        "WHERE thread_id = 'thread-corrupt-sequence'",
+        "UPDATE ask_threads SET message_sequence = 'not-an-int' "
+        "WHERE thread_id = 'thread-corrupt-sequence'",
+    ),
+)
+def test_message_history_requires_nonnegative_contiguous_sequences(
+    repository: AskRepository,
+    database: Database,
+    mutation: str,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-corrupt-sequence"
+    )
+    for index in range(1, 4):
+        repository.append_user_message(
+            thread.thread_id,
+            "actor-alice",
+            f"Question {index}",
+            message_id=f"message-sequence-{index}",
+        )
+
+    with database.engine.begin() as connection:
+        connection.execute(text(mutation))
+
+    with pytest.raises(ValueError, match="message[_ ]sequence"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_mismatched_message_actor_is_not_omitted_from_history(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-message-actor"
+    )
+    repository.append_user_message(
+        thread.thread_id,
+        "actor-alice",
+        "Question",
+        message_id="message-actor",
+    )
+    _update_with_foreign_keys_disabled(
+        database,
+        "UPDATE ask_messages SET actor_id = 'actor-bob' "
+        "WHERE message_id = 'message-actor'",
+    )
+
+    with pytest.raises(ValueError, match="actor_id"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_mismatched_retrieval_actor_is_not_omitted_from_history(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-run-actor"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-actor",),
+        source_revision_ids=("sr-1",),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-actor",
+    )
+    _update_with_foreign_keys_disabled(
+        database,
+        "UPDATE retrieval_runs SET actor_id = 'actor-bob' "
+        "WHERE retrieval_run_id = 'retrieval-actor'",
+    )
+
+    with pytest.raises(ValueError, match="actor_id"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_child_actor_ids_are_structurally_bound_to_thread_owner(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-composite-fk"
+    )
+    repository.append_user_message(
+        thread.thread_id,
+        "actor-alice",
+        "Question",
+        message_id="message-composite-fk",
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-fk",),
+        source_revision_ids=("sr-1",),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-composite-fk",
+    )
+    with pytest.raises(IntegrityError):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE ask_messages SET actor_id = 'actor-bob' "
+                    "WHERE message_id = 'message-composite-fk'"
+                )
+            )
+    with pytest.raises(IntegrityError):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE retrieval_runs SET actor_id = 'actor-bob' "
+                    "WHERE retrieval_run_id = 'retrieval-composite-fk'"
+                )
+            )
+
+
+def test_concurrent_appends_allocate_unique_sequences(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-concurrent"
+    )
+    workers = 4
+    barrier = Barrier(workers)
+
+    def pause_before_legacy_max(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if "max(ask_messages.sequence)" in statement.lower():
+            barrier.wait(timeout=10)
+
+    event.listen(database.engine, "before_cursor_execute", pause_before_legacy_max)
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    repository.append_user_message,
+                    thread.thread_id,
+                    "actor-alice",
+                    f"Question {index}",
+                    message_id=f"message-{index}",
+                )
+                for index in range(workers)
+            ]
+            messages = [future.result() for future in futures]
+    finally:
+        event.remove(database.engine, "before_cursor_execute", pause_before_legacy_max)
+
+    assert {message.message_id for message in messages} == {
+        f"message-{index}" for index in range(workers)
+    }
+    assert len(repository.get_thread(thread.thread_id, "actor-alice").messages) == workers
+
+
+def test_retrieval_history_keeps_provenance_and_no_raw_evidence(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-1"
+    )
+    run = repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="snapshot-sha",
+        evidence_ids=("ev-1", "ev-2"),
+        source_revision_ids=("sr-1", "sr-2"),
+        provider_request_id="provider-request-1",
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-1",
+    )
+
+    view = repository.get_thread(thread.thread_id, "actor-alice")
+    assert view.retrieval_runs == (run,)
+    assert run.source_snapshot_hash == "snapshot-sha"
+    assert run.evidence_ids == ("ev-1", "ev-2")
+    assert run.source_revision_ids == ("sr-1", "sr-2")
+    assert run.provider_request_id == _provider_reference("provider-request-1")
+    assert run.prompt_version == "ask-grounded-v1"
+    assert run.schema_version == "ask-v1"
+    assert run.model == "model-1"
+    assert run.validation_outcome == "valid"
+
+    columns = {
+        column["name"] for column in inspect(database.engine).get_columns("retrieval_evidence")
+    }
+    assert "evidence_id" in columns
+    assert "source_revision_id" in columns
+    assert "raw_evidence" not in columns
+    assert "excerpt" not in columns
+    run_columns = {
+        column["name"] for column in inspect(database.engine).get_columns("retrieval_runs")
+    }
+    assert "evidence_ids_json" not in run_columns
+    assert "source_revision_ids_json" not in run_columns
+    assert "expected_evidence_count" in run_columns
+    with database.engine.connect() as connection:
+        assert connection.scalar(
+            text(
+                "SELECT expected_evidence_count FROM retrieval_runs "
+                "WHERE retrieval_run_id = 'retrieval-1'"
+            )
+        ) == 2
+        assert connection.scalar(
+            text(
+                "SELECT provider_request_id FROM retrieval_runs "
+                "WHERE retrieval_run_id = 'retrieval-1'"
+            )
+        ) == _provider_reference("provider-request-1")
+
+
+def test_provider_request_id_is_hashed_without_raw_content(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-private-prose"
+    )
+    private_prose = "Patient has chest pain and elevated troponin; review the diagnosis."
+    run = repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="snapshot-sha",
+        provider_request_id=private_prose,
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+    )
+    assert run.provider_request_id == _provider_reference(private_prose)
+    assert private_prose not in run.provider_request_id
+
+
+def test_private_prose_is_rejected_for_validation_outcome(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-private-outcome"
+    )
+    private_prose = "Patient has chest pain and elevated troponin; review the diagnosis."
+    with pytest.raises(ValueError, match="validation_outcome"):
+        repository.record_retrieval_run(
+            thread.thread_id,
+            "actor-alice",
+            source_snapshot_hash="snapshot-sha",
+            provider_request_id="provider-request-1",
+            prompt_version="ask-grounded-v1",
+            schema_version="ask-v1",
+            model="model-1",
+            validation_outcome=private_prose,
+        )
+
+
+def test_validation_outcome_accepts_defined_status_codes(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-validation-statuses"
+    )
+    statuses = ("valid", "invalid", "rejected", "insufficient", "error")
+    for index, status in enumerate(statuses):
+        run = repository.record_retrieval_run(
+            thread.thread_id,
+            "actor-alice",
+            source_snapshot_hash="snapshot-sha",
+            prompt_version="ask-grounded-v1",
+            schema_version="ask-v1",
+            model="model-1",
+            validation_outcome=status,
+            retrieval_run_id=f"retrieval-status-{index}",
+        )
+        assert run.validation_outcome == status
+
+
+def test_provenance_ids_follow_storage_column_limits(
+    repository: AskRepository,
+) -> None:
+    source_revision_id = "r" * 250
+    thread = repository.create_thread(
+        "actor-alice",
+        AskMode.LECTURE,
+        _scope(source_revision_ids=(source_revision_id,)),
+        thread_id="thread-provider-limits",
+    )
+    run = repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 128,
+        evidence_ids=("e" * 250,),
+        source_revision_ids=(source_revision_id,),
+        provider_request_id="p" * 500,
+        prompt_version="v" * 200,
+        schema_version="s" * 200,
+        model="m" * 300,
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-provider-limits",
+    )
+    assert run.provider_request_id == _provider_reference("p" * 500)
+    assert run.evidence_ids == ("e" * 250,)
+    assert run.source_revision_ids == (source_revision_id,)
+
+
+def test_provenance_requires_bounded_paired_and_scoped_ids(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-provenance"
+    )
+    cases = (
+        (("ev-1", "ev-2"), ("sr-1",), "model-1"),
+        (("private evidence prose",), ("sr-1",), "model-1"),
+        (("ev-1",), ("revision with spaces",), "model-1"),
+        (("ev-1",), ("sr-out-of-scope",), "model-1"),
+        (("ev-1",), ("sr-1",), "m" * 301),
+    )
+    for evidence_ids, source_revision_ids, model in cases:
+        with pytest.raises(ValueError):
+            repository.record_retrieval_run(
+                thread.thread_id,
+                "actor-alice",
+                source_snapshot_hash="a" * 64,
+                evidence_ids=evidence_ids,
+                source_revision_ids=source_revision_ids,
+                prompt_version="ask-grounded-v1",
+                schema_version="ask-v1",
+                model=model,
+                validation_outcome="valid",
+            )
+
+
+def test_unique_evidence_ids_may_pair_to_one_source_revision(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-shared-revision"
+    )
+    run = repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-1", "ev-2"),
+        source_revision_ids=("sr-1", "sr-1"),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+    )
+
+    assert run.evidence_ids == ("ev-1", "ev-2")
+    assert run.source_revision_ids == ("sr-1", "sr-1")
+
+
+def test_empty_revision_scope_allows_bounded_pairs_but_not_raw_prose(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice",
+        AskMode.LECTURE,
+        _scope(source_revision_ids=()),
+        thread_id="thread-broad-scope",
+    )
+    run = repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-broad-1", "ev-broad-2"),
+        source_revision_ids=("sr-broad", "sr-broad"),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+    )
+    assert run.source_revision_ids == ("sr-broad", "sr-broad")
+
+    with pytest.raises(ValueError):
+        repository.record_retrieval_run(
+            thread.thread_id,
+            "actor-alice",
+            source_snapshot_hash="a" * 64,
+            evidence_ids=("private evidence prose",),
+            source_revision_ids=("sr-broad",),
+            prompt_version="ask-grounded-v1",
+            schema_version="ask-v1",
+            model="model-1",
+            validation_outcome="valid",
+        )
+
+
+def test_corrupt_persisted_retrieval_link_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-corrupt"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-1",),
+        source_revision_ids=("sr-1",),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-corrupt",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE retrieval_evidence SET evidence_id = 'private evidence prose' "
+                "WHERE retrieval_run_id = 'retrieval-corrupt'"
+            )
+        )
+
+    with pytest.raises(ValueError, match="evidence_id"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_corrupt_persisted_scope_extra_key_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-corrupt-scope"
+    )
+    with database.engine.begin() as connection:
+        scope_json = connection.scalar(
+            text("SELECT scope_json FROM ask_threads WHERE thread_id = 'thread-corrupt-scope'")
+        )
+        assert isinstance(scope_json, str)
+        payload = json.loads(scope_json)
+        payload["raw_evidence"] = "Patient has chest pain."
+        connection.execute(
+            text("UPDATE ask_threads SET scope_json = :scope_json WHERE thread_id = :thread_id"),
+            {
+                "scope_json": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                "thread_id": thread.thread_id,
+            },
+        )
+
+    with pytest.raises(ValueError, match="scope"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_corrupt_persisted_page_context_extra_key_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice",
+        AskMode.LECTURE,
+        _scope(),
+        page_context=AskPageContext(kind="lecture"),
+        thread_id="thread-corrupt-page-context",
+    )
+    with database.engine.begin() as connection:
+        page_context_json = connection.scalar(
+            text(
+                "SELECT page_context_json FROM ask_threads "
+                "WHERE thread_id = 'thread-corrupt-page-context'"
+            )
+        )
+        assert isinstance(page_context_json, str)
+        payload = json.loads(page_context_json)
+        payload["raw_evidence"] = "Patient has chest pain."
+        connection.execute(
+            text(
+                "UPDATE ask_threads SET page_context_json = :page_context_json "
+                "WHERE thread_id = :thread_id"
+            ),
+            {
+                "page_context_json": json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                ),
+                "thread_id": thread.thread_id,
+            },
+        )
+
+    with pytest.raises(ValueError):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+@pytest.mark.parametrize(
+    "page_context_json",
+    (
+        '{"kind":"lecture","objective_ids":["obj-1"],'
+        '"objective_ids":["obj-2"]}',
+        '{ "objective_ids": ["obj-1", "obj-2"], "kind": "lecture" }',
+    ),
+)
+def test_corrupt_persisted_page_context_noncanonical_fails_closed(
+    repository: AskRepository,
+    database: Database,
+    page_context_json: str,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice",
+        AskMode.LECTURE,
+        _scope(),
+        page_context=AskPageContext(kind="lecture", objective_ids=("obj-1", "obj-2")),
+        thread_id="thread-corrupt-page-context-canonical",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE ask_threads SET page_context_json = :page_context_json "
+                "WHERE thread_id = :thread_id"
+            ),
+            {"page_context_json": page_context_json, "thread_id": thread.thread_id},
+        )
+
+    with pytest.raises(ValueError, match="page context"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_corrupt_persisted_message_id_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-corrupt-message-id"
+    )
+    repository.append_user_message(
+        thread.thread_id,
+        "actor-alice",
+        "Question",
+        message_id="message-corrupt-id",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE ask_messages SET message_id = 'bad message id' "
+                "WHERE message_id = 'message-corrupt-id'"
+            )
+        )
+
+    with pytest.raises(ValueError, match="message_id"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_missing_terminal_retrieval_link_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-missing-link"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-1", "ev-2"),
+        source_revision_ids=("sr-1", "sr-2"),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-missing-link",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "DELETE FROM retrieval_evidence "
+                "WHERE retrieval_run_id = 'retrieval-missing-link' AND ordinal = 1"
+            )
+        )
+
+    with pytest.raises(ValueError, match="evidence link count"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_corrupt_persisted_retrieval_timestamp_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-corrupt-time"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-1",),
+        source_revision_ids=("sr-1",),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-corrupt-time",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE retrieval_runs SET created_at = '0000-bad' "
+                "WHERE retrieval_run_id = 'retrieval-corrupt-time'"
+            )
+        )
+
+    with pytest.raises(ValueError, match="created_at"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_corrupt_persisted_privacy_fields_fail_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-corrupt-privacy"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        provider_request_id="provider-request-1",
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-corrupt-privacy",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE retrieval_runs SET provider_request_id = 'provider-request-1' "
+                "WHERE retrieval_run_id = 'retrieval-corrupt-privacy'"
+            )
+        )
+    with pytest.raises(ValueError, match="provider_request_id"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_corrupt_persisted_validation_outcome_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-corrupt-outcome"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        provider_request_id="provider-request-1",
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-corrupt-outcome",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE retrieval_runs SET validation_outcome = "
+                "'Patient has chest pain and elevated troponin.' "
+                "WHERE retrieval_run_id = 'retrieval-corrupt-outcome'"
+            )
+        )
+    with pytest.raises(ValueError, match="validation_outcome"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_delete_thread_removes_owned_derivatives_but_not_canonical_evidence(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    with database.engine.begin() as connection:
+        connection.execute(text("CREATE TABLE canonical_evidence (evidence_id TEXT PRIMARY KEY)"))
+        connection.execute(text("INSERT INTO canonical_evidence VALUES ('ev-1')"))
+
+    thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-1"
+    )
+    repository.append_user_message(thread.thread_id, "actor-alice", "Question")
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="snapshot-sha",
+        evidence_ids=("ev-1",),
+        source_revision_ids=("sr-1",),
+        provider_request_id="provider-request-1",
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+    )
+
+    assert repository.delete_thread(thread.thread_id, "actor-alice") is True
+    with pytest.raises(KeyError):
+        repository.get_thread(thread.thread_id, "actor-alice")
+    with database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT COUNT(*) FROM ask_messages")) == 0
+        assert connection.scalar(text("SELECT COUNT(*) FROM retrieval_runs")) == 0
+        assert connection.scalar(text("SELECT COUNT(*) FROM retrieval_evidence")) == 0
+        assert connection.scalar(text("SELECT COUNT(*) FROM canonical_evidence")) == 1
+
+
+def test_retention_deletion_is_actor_scoped_and_explicit(
+    repository: AskRepository,
+) -> None:
+    repository.create_thread("actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-a")
+    repository.create_thread("actor-bob", AskMode.GLOBAL, _scope(), thread_id="thread-b")
+
+    cutoff = (datetime.now(UTC) + timedelta(seconds=1)).isoformat()
+    assert repository.delete_threads_before("actor-alice", cutoff) == 1
+    with pytest.raises(KeyError):
+        repository.get_thread("thread-a", "actor-alice")
+    assert repository.get_thread("thread-b", "actor-bob").thread.thread_id == "thread-b"
+
+
+def test_retention_requires_timezone_aware_iso_cutoff(
+    repository: AskRepository,
+) -> None:
+    repository.create_thread("actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-a")
+    invalid_cutoffs: tuple[str | datetime, ...] = (
+        "zzzz",
+        "2026-08-24T00:00:00",
+        datetime(2026, 8, 24),
+    )
+    for cutoff in invalid_cutoffs:
+        with pytest.raises(ValueError):
+            repository.delete_threads_before("actor-alice", cutoff)
+    assert repository.get_thread("thread-a", "actor-alice").thread.thread_id == "thread-a"
+
+
+def test_retention_fails_closed_and_rolls_back_on_corrupt_thread_timestamp(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    old_thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-corrupt-created"
+    )
+    repository.append_user_message(old_thread.thread_id, "actor-alice", "Question")
+    repository.create_thread("actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-valid")
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE ask_threads SET created_at = '0000-bad' "
+                "WHERE thread_id = 'thread-corrupt-created'"
+            )
+        )
+
+    cutoff = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    with pytest.raises(ValueError, match="created_at"):
+        repository.delete_threads_before("actor-alice", cutoff)
+
+    with database.engine.connect() as connection:
+        assert connection.scalar(
+            text("SELECT COUNT(*) FROM ask_threads WHERE actor_id = 'actor-alice'")
+        ) == 2
+        assert connection.scalar(
+            text("SELECT COUNT(*) FROM ask_messages WHERE thread_id = 'thread-corrupt-created'")
+        ) == 1
+
+
+def test_missing_or_unauthorized_writes_fail_closed(repository: AskRepository) -> None:
+    with pytest.raises(KeyError):
+        repository.append_user_message("missing", "actor-alice", "Question")
+    with pytest.raises(KeyError):
+        repository.record_retrieval_run(
+            "missing",
+            "actor-alice",
+            source_snapshot_hash="snapshot-sha",
+            prompt_version="ask-grounded-v1",
+            schema_version="ask-v1",
+            model="model-1",
+            validation_outcome="valid",
+        )
+    with pytest.raises(KeyError):
+        repository.delete_thread("missing", "actor-alice")
+
+
+def test_validation_outcome_rejects_empty_or_unstructured_values(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-1"
+    )
+    for invalid in ({"state": "valid"}, {"raw_evidence": "private"}, ""):
+        with pytest.raises(ValueError, match="validation_outcome"):
+            repository.record_retrieval_run(
+                thread.thread_id,
+                "actor-alice",
+                source_snapshot_hash="snapshot-sha",
+                prompt_version="ask-grounded-v1",
+                schema_version="ask-v1",
+                model="model-1",
+                validation_outcome=cast(str, invalid),
+            )
