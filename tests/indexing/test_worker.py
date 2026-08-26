@@ -4,6 +4,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -124,6 +125,26 @@ def test_idle_worker_returns_no_work_result(tmp_path: Path) -> None:
 
     assert result == WorkResult(worked=False)
     assert service.calls == []
+
+
+def test_default_lease_covers_provider_request_and_operation_deadlines(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    repository = IndexRepository(database)
+    service = FakeIndexingService()
+    service.admin = SimpleNamespace(
+        client_factory=SimpleNamespace(
+            config=SimpleNamespace(
+                request_timeout_seconds=120,
+                operation_timeout_seconds=900,
+            )
+        )
+    )
+
+    worker = IndexWorker(repository, service, now=lambda: NOW)
+
+    assert worker.lease_seconds > 120 + 900
 
 
 def test_two_workers_claim_one_source_revision_exclusively(tmp_path: Path) -> None:
