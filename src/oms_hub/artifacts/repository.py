@@ -285,13 +285,14 @@ class ArtifactRepository:
             custom_quizzes = connection.execute(
                 text(
                     """
-                    SELECT p.token, p.studio_run_id, p.payload_json, p.created_at,
-                           s.prompt, s.workflow_kind
+                    SELECT p.token, p.studio_run_id, p.payload_json, p.version,
+                           p.updated_at, s.prompt
                     FROM published_quizzes p
                     JOIN studio_runs s ON s.id = p.studio_run_id
                     WHERE p.studio_run_id IS NOT NULL
                       AND p.job_id IS NULL
-                    ORDER BY p.created_at, p.token
+                      AND s.workflow_kind = 'notebook_generation'
+                    ORDER BY p.updated_at, p.token, p.version
                     """
                 )
             ).mappings().all()
@@ -349,15 +350,13 @@ class ArtifactRepository:
             recorded.append(
                 self.record_run(
                     ArtifactRun(
-                        artifact_id=f"legacy-custom-quiz:{row['token']}",
+                        artifact_id=(
+                            f"legacy-custom-quiz:{row['token']}:v{row['version']}"
+                        ),
                         artifact_kind=ArtifactKind.CUSTOM_QUIZ,
                         recipe_id="custom-quiz-current",
                         recipe_version="current-v1",
-                        provider=(
-                            "notebooklm"
-                            if row["workflow_kind"] == "notebook_generation"
-                            else None
-                        ),
+                        provider="notebooklm",
                         model=None,
                         prompt_version=prompt_hash,
                         schema_version=None,
@@ -366,6 +365,9 @@ class ArtifactRepository:
                         input_hash=compute_artifact_input_hash(
                             {
                                 "kind": "custom_quiz",
+                                "publication_token": row["token"],
+                                "publication_version": row["version"],
+                                "published_at": row["updated_at"],
                                 "prompt_sha256": prompt_hash,
                                 "studio_run_id": row["studio_run_id"],
                             }
@@ -373,7 +375,7 @@ class ArtifactRepository:
                         output_hash=hashlib.sha256(
                             row["payload_json"].encode("utf-8")
                         ).hexdigest(),
-                        created_at=row["created_at"],
+                        created_at=row["updated_at"],
                         validation_status="legacy_unverified",
                     )
                 )
