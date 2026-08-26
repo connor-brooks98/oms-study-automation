@@ -209,7 +209,12 @@ def test_injected_sdk_receives_raw_key_and_version_without_secret_wrapper() -> N
 
     run(exercise())
 
-    assert sdk.calls == [{"api_key": "raw-secret", "http_options": {"api_version": "v1beta"}}]
+    assert sdk.calls == [
+        {
+            "api_key": "raw-secret",
+            "http_options": {"api_version": "v1beta", "timeout": 120_000},
+        }
+    ]
 
 
 def test_one_top_level_sdk_client_is_created_per_context() -> None:

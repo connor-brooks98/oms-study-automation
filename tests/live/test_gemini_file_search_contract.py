@@ -209,8 +209,7 @@ class _SdkInteractions:
                 SimpleNamespace(
                     type="file_citation",
                     custom_metadata=metadata,
-                    document_uri="fileSearchStores/sdk-store/documents/sdk-document",
-                    file_name="files/sdk-file",
+                    file_name="task-2-8-synthetic.pdf",
                     page_number=1,
                     source=self.smoke.SYNTHETIC_FACT,
                 )
@@ -291,7 +290,7 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     def sdk_factory(**kwargs: object) -> _SdkClient:
         assert kwargs == {
             "api_key": "synthetic-sdk-key",
-            "http_options": {"api_version": "v1beta"},
+            "http_options": {"api_version": "v1beta", "timeout": 120_000},
         }
         client = _SdkClient(smoke)
         clients.append(client)
@@ -368,7 +367,7 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     ]
 
 
-def test_interaction_citation_must_bind_to_imported_document() -> None:
+def test_interaction_citation_must_bind_to_uploaded_file() -> None:
     smoke = _load_smoke()
     response = SimpleNamespace(
         steps=[
@@ -387,7 +386,7 @@ def test_interaction_citation_must_bind_to_imported_document() -> None:
                                     "lecture_id": smoke.SYNTHETIC_LECTURE_ID,
                                     "source_revision_id": smoke.SYNTHETIC_REVISION_ID,
                                 },
-                                document_uri="fileSearchStores/other/documents/other",
+                                file_name="other.pdf",
                                 page_number=1,
                                 source=smoke.SYNTHETIC_FACT,
                             )
@@ -398,7 +397,7 @@ def test_interaction_citation_must_bind_to_imported_document() -> None:
         ]
     )
 
-    with pytest.raises(smoke.SmokeContractError, match="wrong document"):
+    with pytest.raises(smoke.SmokeContractError, match="wrong file") as raised:
         smoke._citations(
             response,
             "fileSearchStores/sdk-store",
@@ -408,7 +407,24 @@ def test_interaction_citation_must_bind_to_imported_document() -> None:
                 smoke.SYNTHETIC_LECTURE_ID,
             ),
             "fileSearchStores/sdk-store/documents/sdk-document",
+            "task-2-8-synthetic.pdf",
         )
+    assert raised.value.reason == "citation_wrong_file"
+
+
+def test_contract_failure_record_retains_only_allowlisted_reason() -> None:
+    smoke = _load_smoke()
+
+    record = smoke._failure_record(
+        smoke.SmokeContractError(
+            "raw provider response must not be retained",
+            reason="structured_output_invalid",
+        ),
+        {"failure_stage": "positive_query"},
+    )
+
+    assert record["contract_reason"] == "structured_output_invalid"
+    assert "raw provider response" not in json.dumps(record, sort_keys=True)
 
 
 def test_interaction_citation_metadata_and_excerpt_are_bounded() -> None:
