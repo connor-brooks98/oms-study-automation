@@ -331,6 +331,7 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     assert all("generation_config" not in body for body in query_bodies)
     assert query_bodies[0]["model"] == "gemini-3.7-flash"
     assert query_bodies[0]["store"] is False
+    assert query_bodies[0]["response_mime_type"] == "application/json"
     assert query_bodies[0]["response_format"] == {
         "type": "text",
         "mime_type": "application/json",
@@ -347,6 +348,66 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
             ),
         }
     ]
+
+
+def test_interaction_citation_must_bind_to_imported_document() -> None:
+    smoke = _load_smoke()
+    response = SimpleNamespace(
+        steps=[
+            SimpleNamespace(
+                type="model_output",
+                content=[
+                    SimpleNamespace(
+                        type="text",
+                        text=smoke.SYNTHETIC_FACT,
+                        annotations=[
+                            SimpleNamespace(
+                                type="file_citation",
+                                custom_metadata={
+                                    "course_id": smoke.SYNTHETIC_COURSE_ID,
+                                    "exam_id": smoke.SYNTHETIC_EXAM_ID,
+                                    "lecture_id": smoke.SYNTHETIC_LECTURE_ID,
+                                    "source_revision_id": smoke.SYNTHETIC_REVISION_ID,
+                                },
+                                document_uri="fileSearchStores/other/documents/other",
+                                page_number=1,
+                                source=smoke.SYNTHETIC_FACT,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+    )
+
+    with pytest.raises(smoke.SmokeContractError, match="wrong document"):
+        smoke._citations(
+            response,
+            "fileSearchStores/sdk-store",
+            smoke.SmokeScope(
+                smoke.SYNTHETIC_COURSE_ID,
+                smoke.SYNTHETIC_EXAM_ID,
+                smoke.SYNTHETIC_LECTURE_ID,
+            ),
+            "fileSearchStores/sdk-store/documents/sdk-document",
+        )
+
+
+def test_interaction_citation_metadata_and_excerpt_are_bounded() -> None:
+    smoke = _load_smoke()
+
+    with pytest.raises(smoke.SmokeContractError, match="metadata was invalid"):
+        smoke._string_metadata({f"key-{index}": "value" for index in range(17)})
+    with pytest.raises(smoke.SmokeContractError, match="excerpt was invalid"):
+        smoke._citation_excerpt(
+            SimpleNamespace(source="x" * 4097),
+            smoke.SYNTHETIC_FACT,
+        )
+    with pytest.raises(smoke.SmokeContractError, match="excerpt was invalid"):
+        smoke._citation_excerpt(
+            SimpleNamespace(source="invalid\nexcerpt"),
+            smoke.SYNTHETIC_FACT,
+        )
     assert all_aio[-3].file_search_stores.documents.calls == [
         (
             "delete",
