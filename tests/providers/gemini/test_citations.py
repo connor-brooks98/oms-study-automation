@@ -3,15 +3,14 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from oms_hub.indexing.service import IndexManifest, IndexManifestInput
+from oms_hub.providers.contracts import AuthorityClass, EvidenceRef
 from oms_hub.providers.gemini.citations import (
     CitationMatchKind,
     ProviderCitation,
     map_provider_citation,
     select_citation_candidate,
 )
-
-from oms_hub.indexing.service import IndexManifest, IndexManifestInput
-from oms_hub.providers.contracts import AuthorityClass, EvidenceRef
 
 REVISION_ID = "sr_aaaaaaaaaaaaaaaaaaaaaaaaaa"
 
@@ -206,7 +205,8 @@ def test_fuzzy_excerpt_records_confidence_and_stays_within_one_input(
 def test_fuzzy_tie_and_cross_file_evidence_are_not_guessed(tmp_path: Path) -> None:
     first = _ref("ev_tie_a", 15, "alpha beta gamma delta")
     second = _ref("ev_tie_b", 16, "alpha beta gamma delta")
-    manifest = _manifest(tmp_path, first, second)
+    crossed_evidence = _ref("ev_crossed", 17, "Only the Markdown input contains this.")
+    manifest = _manifest(tmp_path, first, second, crossed_evidence)
     image_path = tmp_path / "figure.png"
     image_path.write_bytes(b"image")
     image_input = IndexManifestInput(
@@ -234,7 +234,7 @@ def test_fuzzy_tie_and_cross_file_evidence_are_not_guessed(tmp_path: Path) -> No
     crossed = map_provider_citation(
         ProviderCitation(
             provider_file_name="figure.png",
-            source_excerpt=second.excerpt,
+            source_excerpt=crossed_evidence.excerpt,
         ),
         manifest,
     )
