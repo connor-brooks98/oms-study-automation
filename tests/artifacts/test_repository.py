@@ -203,10 +203,14 @@ def test_mark_stale_by_revision_preserves_dependent_artifacts(
         "artifact-a",
         "artifact-b",
     )
-    assert repository.get_run("artifact-a").stale_reason == (
+    stale = repository.get_run("artifact-a")
+    other = repository.get_run("artifact-other")
+    assert stale is not None
+    assert other is not None
+    assert stale.stale_reason == (
         f"source_revision_stale:{revision.source_revision_id}"
     )
-    assert repository.get_run("artifact-other").stale_reason is None
+    assert other.stale_reason is None
     with database.engine.connect() as connection:
         assert connection.execute(text("SELECT COUNT(*) FROM artifact_runs")).scalar_one() == 3
 

@@ -29,7 +29,7 @@ def _run(**changes: object) -> ArtifactRun:
         created_at="2026-08-25T12:00:00+00:00",
         validation_status="valid",
     )
-    return replace(run, **changes)
+    return replace(run, **changes)  # type: ignore[arg-type]
 
 
 def test_artifact_input_hash_is_deterministic_across_dependency_order() -> None:
@@ -87,4 +87,3 @@ def test_artifact_evidence_link_rejects_blank_identifiers() -> None:
             source_revision_id="sr-a",
             evidence_id=" ",
         )
-
