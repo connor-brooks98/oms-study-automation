@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
+from bisect import bisect_left
 from dataclasses import dataclass
 
 from oms_hub.knowledge.ids import sha256_text
@@ -461,8 +462,9 @@ def _select_bounded(
                         priority=state.priority + option.priority,
                     )
                     key = (new_mask, new_count)
-                    next_states[key] = _required_frontier(
-                        (*next_states.get(key, ()), candidate)
+                    next_states[key] = _insert_required_state(
+                        next_states.get(key, ()),
+                        candidate,
                     )
         states = next_states
 
@@ -487,18 +489,15 @@ def _select_bounded(
         raise QuestionEvidenceError("required evidence cover exceeds 16 canonical units")
 
     selected = {item.unit.evidence_id: item for item in best}
+    deferred: list[_ResolvedEvidence] = []
     for item in ordered:
         evidence_id = item.unit.evidence_id
         if evidence_id in selected:
             continue
-        if len(selected) >= MAX_EVIDENCE_UNITS:
-            _swap_for_priority(selected, item, objectives)
-            continue
-        projected = (*selected.values(), item)
-        projected_characters = _evidence_characters(tuple(projected))
-        if projected_characters > MAX_EVIDENCE_CHARACTERS:
-            continue
-        selected[evidence_id] = item
+        if _add_or_swap(selected, item, objectives):
+            _retry_deferred(selected, deferred, objectives)
+        else:
+            deferred.append(item)
 
     selected_ids = set(selected)
     omitted_ids = tuple(
@@ -522,18 +521,23 @@ def _role_mask(
     return mask
 
 
-def _required_frontier(states: tuple[_CoverState, ...]) -> tuple[_CoverState, ...]:
-    unique = {_state_ids(state): state for state in states}
-    frontier = tuple(
-        state
-        for state in unique.values()
-        if not any(
-            _required_dominates(other, state)
-            for other in unique.values()
-            if other is not state
-        )
-    )
-    return tuple(sorted(frontier, key=_required_state_key))
+def _insert_required_state(
+    frontier: tuple[_CoverState, ...],
+    candidate: _CoverState,
+) -> tuple[_CoverState, ...]:
+    characters = [state.characters for state in frontier]
+    index = bisect_left(characters, candidate.characters)
+    if index and _required_dominates(frontier[index - 1], candidate):
+        return frontier
+    retained = list(frontier)
+    if index < len(retained) and retained[index].characters == candidate.characters:
+        if _required_dominates(retained[index], candidate):
+            return frontier
+        retained.pop(index)
+    while index < len(retained) and _required_dominates(candidate, retained[index]):
+        retained.pop(index)
+    retained.insert(index, candidate)
+    return tuple(retained)
 
 
 def _required_dominates(first: _CoverState, second: _CoverState) -> bool:
@@ -542,6 +546,34 @@ def _required_dominates(first: _CoverState, second: _CoverState) -> bool:
     if first.characters < second.characters or first.priority > second.priority:
         return True
     return _state_ids(first) < _state_ids(second)
+
+
+def _add_or_swap(
+    selected: dict[str, _ResolvedEvidence],
+    candidate: _ResolvedEvidence,
+    objectives: tuple[QuestionObjective, ...],
+) -> bool:
+    if len(selected) < MAX_EVIDENCE_UNITS:
+        projected = (*selected.values(), candidate)
+        if _evidence_characters(tuple(projected)) <= MAX_EVIDENCE_CHARACTERS:
+            selected[candidate.unit.evidence_id] = candidate
+            return True
+    return _swap_for_priority(selected, candidate, objectives)
+
+
+def _retry_deferred(
+    selected: dict[str, _ResolvedEvidence],
+    deferred: list[_ResolvedEvidence],
+    objectives: tuple[QuestionObjective, ...],
+) -> None:
+    changed = True
+    while changed:
+        changed = False
+        for candidate in tuple(deferred):
+            if _add_or_swap(selected, candidate, objectives):
+                deferred.remove(candidate)
+                changed = True
+                break
 
 
 def _swap_for_priority(
@@ -641,10 +673,6 @@ def _group_option_key(option: _GroupOption) -> tuple[int, int, int, tuple[str, .
         -option.priority,
         tuple(sorted(item.unit.evidence_id for item in option.selected)),
     )
-
-
-def _required_state_key(state: _CoverState) -> tuple[int, int, tuple[str, ...]]:
-    return (state.characters, -state.priority, _state_ids(state))
 
 
 def _state_ids(state: _CoverState) -> tuple[str, ...]:
