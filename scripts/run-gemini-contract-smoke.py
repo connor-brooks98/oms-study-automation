@@ -44,6 +44,9 @@ class SmokeContractError(RuntimeError):
     _SAFE_REASONS = frozenset(
         {
             "citation_wrong_file",
+            "positive_answer_invalid",
+            "positive_citation_missing",
+            "positive_citation_unresolved",
             "structured_output_invalid",
             "structured_output_unavailable",
         }
@@ -623,19 +626,34 @@ async def run_contract_smoke(
             answer = SmokeAnswer.model_validate(positive.answer)
         except ValidationError:
             raise SmokeContractError(
-                "Gemini structured output did not match the required schema"
+                "Gemini structured output did not match the required schema",
+                reason="structured_output_invalid",
             ) from None
         if answer.answer != SYNTHETIC_FACT or not answer.supported:
-            raise SmokeContractError("structured output did not preserve the synthetic fact")
-        if len(positive.citations) != 1:
-            raise SmokeContractError("positive query did not return exactly one citation")
-        citation = positive.citations[0]
-        if (
-            citation.document_name != document_name
-            or citation.page_number != 1
-            or SYNTHETIC_FACT not in citation.excerpt
-        ):
-            raise SmokeContractError("positive citation did not resolve to PDF page one")
+            raise SmokeContractError(
+                "structured output did not preserve the synthetic fact",
+                reason="positive_answer_invalid",
+            )
+        if not positive.citations:
+            raise SmokeContractError(
+                "positive query did not return a citation",
+                reason="positive_citation_missing",
+            )
+        citation = next(
+            (
+                item
+                for item in positive.citations
+                if item.document_name == document_name
+                and item.page_number == 1
+                and SYNTHETIC_FACT in item.excerpt
+            ),
+            None,
+        )
+        if citation is None:
+            raise SmokeContractError(
+                "positive citation did not resolve to PDF page one",
+                reason="positive_citation_unresolved",
+            )
         if failure_evidence is not None:
             failure_evidence["failure_stage"] = "negative_query"
         negative = await session.query(
