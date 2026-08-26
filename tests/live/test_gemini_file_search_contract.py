@@ -865,6 +865,34 @@ def test_negative_structured_answer_must_report_unsupported() -> None:
     )
 
 
+def test_negative_structured_answer_must_be_empty() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class NonemptyNegative(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id == smoke.WRONG_LECTURE_ID:
+                return smoke.SmokeQueryResult(
+                    answer={"answer": "unrelated text", "supported": False},
+                    citations=(),
+                )
+            return result
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        asyncio.run(
+            smoke.run_contract_smoke(
+                NonemptyNegative(smoke),
+                failure_evidence=evidence,
+            )
+        )
+
+    assert smoke._failure_record(raised.value, evidence)["contract_reason"] == (
+        "negative_answer_invalid"
+    )
+
+
 def test_positive_validation_accepts_the_retrieved_marker_value() -> None:
     smoke = _load_smoke()
 
