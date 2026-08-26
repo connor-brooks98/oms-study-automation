@@ -44,7 +44,12 @@ ALLOWED_TRANSITIONS: dict[IndexState, frozenset[IndexState]] = {
         {IndexState.IMPORTING, IndexState.RETRYABLE_FAILURE, IndexState.TERMINAL_FAILURE}
     ),
     IndexState.IMPORTING: frozenset(
-        {IndexState.READY, IndexState.RETRYABLE_FAILURE, IndexState.TERMINAL_FAILURE}
+        {
+            IndexState.FILE_UPLOADED,
+            IndexState.READY,
+            IndexState.RETRYABLE_FAILURE,
+            IndexState.TERMINAL_FAILURE,
+        }
     ),
     IndexState.READY: frozenset({IndexState.STALE, IndexState.DELETING}),
     IndexState.STALE: frozenset(

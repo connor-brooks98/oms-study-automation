@@ -91,6 +91,7 @@ class FakeIndexingService:
         self.block = block
         self.result_state = result_state
         self.provider_document_name = provider_document_name
+        self.admin: object | None = None
 
     async def index_revision(self, source_revision_id: str) -> IndexResult:
         self.calls.append(source_revision_id)
@@ -374,7 +375,7 @@ def test_unexpected_error_persists_only_its_type(tmp_path: Path) -> None:
 
     IndexWorker(
         repository,
-        FailingService(),  # type: ignore[arg-type]
+        FailingService(),
         worker_id="worker-1",
         lease_seconds=60,
         now=lambda: NOW,

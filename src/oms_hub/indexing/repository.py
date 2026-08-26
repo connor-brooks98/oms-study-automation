@@ -261,6 +261,36 @@ class IndexRepository:
             ).all()
             return [self._job_from_row(row) for row in rows]
 
+    def save_claimed_job(self, job: IndexJob, lease_owner: str) -> IndexJob | None:
+        if not lease_owner.strip() or len(lease_owner) > 100:
+            raise ValueError("lease owner is blank or unbounded")
+        with self.database.session() as session:
+            changed = session.execute(
+                update(IndexJobModel)
+                .where(
+                    IndexJobModel.id == job.id,
+                    IndexJobModel.lease_owner == lease_owner,
+                )
+                .values(
+                    store_id=job.store_id,
+                    source_revision_id=job.source_revision_id,
+                    provider_document_id=job.provider_document_id,
+                    provider_operation_name=job.provider_operation_name,
+                    state=job.state.value,
+                    retry_count=job.retry_count,
+                    last_error_category=job.last_error_category,
+                    last_error_message=job.last_error_message,
+                    next_attempt_at=job.next_attempt_at,
+                    updated_at=job.updated_at,
+                )
+            )
+            if cast(CursorResult[Any], changed).rowcount != 1:
+                return None
+            row = session.get(IndexJobModel, job.id)
+            assert row is not None
+            session.refresh(row)
+            return self._job_from_row(row)
+
     def claim_next_job(
         self,
         worker_id: str,

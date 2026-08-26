@@ -6,15 +6,32 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
+from uuid import uuid4
 
-from oms_hub.indexing.models import IndexJob, IndexState
+from oms_hub.indexing.models import IndexJob, IndexState, validate_transition
 from oms_hub.indexing.repository import IndexRepository
-from oms_hub.indexing.service import IndexingInputError, IndexingService, IndexResult
+from oms_hub.indexing.service import IndexingInputError, IndexResult
 from oms_hub.ingestion.worker import IngestionWorker
 from oms_hub.providers.gemini.errors import GeminiProviderError
-from oms_hub.providers.gemini.file_search import GeminiFileSearchAdmin
 from oms_hub.workers import RecoveryReport, WorkResult
+
+
+class _IndexingService(Protocol):
+    async def index_revision(self, source_revision_id: str) -> IndexResult: ...
+
+
+class _ProviderConfig(Protocol):
+    request_timeout_seconds: int
+    operation_timeout_seconds: int
+
+
+class _DocumentAdmin(Protocol):
+    async def delete_document(self, provider_document_id: str) -> None: ...
+
+
+class _ClaimLost(RuntimeError):
+    pass
 
 
 class IndexWorker:
@@ -25,9 +42,9 @@ class IndexWorker:
     def __init__(
         self,
         repository: IndexRepository,
-        service: IndexingService,
+        service: _IndexingService,
         *,
-        admin: GeminiFileSearchAdmin | None = None,
+        admin: _DocumentAdmin | None = None,
         worker_id: str = "gemini-index-worker",
         lease_seconds: int | None = None,
         max_attempts: int = max_attempts,
@@ -38,7 +55,9 @@ class IndexWorker:
             raise ValueError("worker ID is invalid")
         resolved_admin = admin or getattr(service, "admin", None)
         if lease_seconds is None:
-            config = getattr(getattr(resolved_admin, "client_factory", None), "config", None)
+            config: _ProviderConfig | None = getattr(
+                getattr(resolved_admin, "client_factory", None), "config", None
+            )
             request_timeout = getattr(config, "request_timeout_seconds", 120)
             operation_timeout = getattr(config, "operation_timeout_seconds", 900)
             lease_seconds = request_timeout * 5 + operation_timeout + 30
@@ -56,50 +75,56 @@ class IndexWorker:
 
     def run_once(self) -> WorkResult:
         now = self.now()
+        claim_token = self._claim_token()
         job = self.repository.claim_next_job(
-            self.worker_id,
+            claim_token,
             now,
             lease_seconds=self.lease_seconds,
         )
         if job is None:
             return WorkResult(worked=False)
         try:
-            if job.state is IndexState.DELETING:
-                self._delete_document(job)
-                self._save_job(job, state=IndexState.DELETED)
-            else:
-                result = self._run_indexing(job)
-                self._apply_result(job, result)
-        except IndexingInputError as error:
-            category = (
-                "file-too-large"
-                if any(
-                    marker in str(error).casefold()
-                    for marker in ("size limit", "size-limit", "exceeds")
+            try:
+                if job.state is IndexState.DELETING:
+                    self._delete_document(job)
+                    self._save_job(job, state=IndexState.DELETED, lease_owner=claim_token)
+                else:
+                    result = self._run_indexing(job)
+                    self._apply_result(job, result, lease_owner=claim_token)
+            except IndexingInputError as error:
+                category = (
+                    "file-too-large"
+                    if any(
+                        marker in str(error).casefold()
+                        for marker in ("size limit", "size-limit", "exceeds")
+                    )
+                    else "contract"
                 )
-                else "contract"
-            )
-            self._save_job(
-                job,
-                state=IndexState.TERMINAL_FAILURE,
-                last_error_category=category,
-                last_error_message=self._concise_error(error),
-            )
-            self._terminalize_document(
-                job,
-                last_error_category=category,
-            )
-        except GeminiProviderError as error:
-            self._handle_provider_error(job, error)
-        except Exception as error:  # noqa: BLE001 - durable job boundary
-            self._save_job(
-                job,
-                state=IndexState.TERMINAL_FAILURE,
-                last_error_category="worker",
-                last_error_message=self._concise_error(error),
-            )
+                self._save_job(
+                    job,
+                    state=IndexState.TERMINAL_FAILURE,
+                    last_error_category=category,
+                    last_error_message=category,
+                    lease_owner=claim_token,
+                )
+                self._terminalize_document(
+                    job,
+                    last_error_category=category,
+                )
+            except GeminiProviderError as error:
+                self._handle_provider_error(job, error, lease_owner=claim_token)
+            except Exception as error:  # noqa: BLE001 - durable job boundary
+                self._save_job(
+                    job,
+                    state=IndexState.TERMINAL_FAILURE,
+                    last_error_category="worker",
+                    last_error_message=type(error).__name__,
+                    lease_owner=claim_token,
+                )
+        except _ClaimLost:
+            pass
         finally:
-            self.repository.release_job_lease(job.id, self.worker_id)
+            self.repository.release_job_lease(job.id, claim_token)
         return WorkResult(worked=True, job_id=job.id)
 
     def recover_interrupted(self) -> RecoveryReport:
@@ -140,15 +165,26 @@ class IndexWorker:
                 if document is not None and document.provider_operation_name is not None
                 else job.provider_operation_name
             )
+            identity_changes: dict[str, str] = {}
+            if (
+                document is not None
+                and document.provider_document_id is not None
+                and job.provider_document_id != document.provider_document_id
+            ):
+                identity_changes["provider_document_id"] = document.provider_document_id
             if operation_name is not None and job.provider_operation_name != operation_name:
+                identity_changes["provider_operation_name"] = operation_name
+            if identity_changes:
                 job = self._save_job(
                     job,
                     state=job.state,
-                    provider_operation_name=operation_name,
+                    **identity_changes,
                 )
             if job.state is IndexState.IMPORTING and operation_name is None:
+                validate_transition(job.state, IndexState.FILE_UPLOADED)
                 self._save_job(job, state=IndexState.FILE_UPLOADED)
-                if document is not None:
+                if document is not None and document.state is not IndexState.FILE_UPLOADED:
+                    validate_transition(document.state, IndexState.FILE_UPLOADED)
                     self.repository.upsert_document(
                         replace(document, state=IndexState.FILE_UPLOADED)
                     )
@@ -170,7 +206,13 @@ class IndexWorker:
             raise ValueError("deleting job is missing its provider document admin input")
         asyncio.run(self.admin.delete_document(job.provider_document_id))
 
-    def _apply_result(self, job: IndexJob, result: IndexResult) -> None:
+    def _apply_result(
+        self,
+        job: IndexJob,
+        result: IndexResult,
+        *,
+        lease_owner: str,
+    ) -> None:
         document = self.repository.get_document_by_source_revision(
             job.store_id,
             job.source_revision_id,
@@ -196,6 +238,7 @@ class IndexWorker:
                 job,
                 last_error_category=category,
                 identity_changes=identity_changes,
+                lease_owner=lease_owner,
             )
         elif result.state is IndexState.TERMINAL_FAILURE:
             category = (
@@ -207,6 +250,7 @@ class IndexWorker:
                 job,
                 state=IndexState.TERMINAL_FAILURE,
                 last_error_category=category,
+                lease_owner=lease_owner,
                 **identity_changes,
             )
             self._terminalize_document(job, last_error_category=category)
@@ -222,24 +266,28 @@ class IndexWorker:
         self,
         job: IndexJob,
         error: GeminiProviderError,
+        *,
+        lease_owner: str,
     ) -> None:
         if error.retryable:
             self._save_retry_or_terminal(
                 job,
                 last_error_category=error.category,
-                last_error_message=self._concise_error(error),
+                last_error_message=error.category,
                 retry_state=(
                     IndexState.DELETING
                     if job.state is IndexState.DELETING
                     else IndexState.RETRYABLE_FAILURE
                 ),
+                lease_owner=lease_owner,
             )
             return
         self._save_job(
             job,
             state=IndexState.TERMINAL_FAILURE,
             last_error_category=error.category,
-            last_error_message=self._concise_error(error),
+            last_error_message=error.category,
+            lease_owner=lease_owner,
         )
         self._terminalize_document(job, last_error_category=error.category)
 
@@ -251,6 +299,7 @@ class IndexWorker:
         last_error_message: str | None = None,
         retry_state: IndexState = IndexState.RETRYABLE_FAILURE,
         identity_changes: dict[str, str | None] | None = None,
+        lease_owner: str | None = None,
     ) -> None:
         retry_count = job.retry_count + 1
         if retry_count >= self.max_attempts:
@@ -260,7 +309,7 @@ class IndexWorker:
             state = retry_state
             delay = timedelta(seconds=5 * (2 ** min(max(retry_count - 1, 0), 6)))
             next_attempt_at = (self.now() + delay).isoformat()
-        self._save_job(
+        saved = self._save_job(
             job,
             state=state,
             retry_count=retry_count,
@@ -268,22 +317,34 @@ class IndexWorker:
             last_error_category=last_error_category,
             last_error_message=last_error_message,
             **(identity_changes or {}),
+            lease_owner=lease_owner,
         )
         if state is IndexState.TERMINAL_FAILURE:
             self._terminalize_document(
-                job,
+                saved,
                 last_error_category=last_error_category,
             )
 
-    def _save_job(self, job: IndexJob, *, state: IndexState, **changes: Any) -> IndexJob:
-        return self.repository.upsert_job(
-            replace(
-                job,
-                state=state,
-                updated_at=self.now().isoformat(),
-                **changes,
-            )
+    def _save_job(
+        self,
+        job: IndexJob,
+        *,
+        state: IndexState,
+        lease_owner: str | None = None,
+        **changes: Any,
+    ) -> IndexJob:
+        candidate = replace(
+            job,
+            state=state,
+            updated_at=self.now().isoformat(),
+            **changes,
         )
+        if lease_owner is None:
+            return self.repository.upsert_job(candidate)
+        saved = self.repository.save_claimed_job(candidate, lease_owner)
+        if saved is None:
+            raise _ClaimLost("index job lease was replaced")
+        return saved
 
     def _terminalize_document(
         self,
@@ -309,10 +370,8 @@ class IndexWorker:
                 )
             )
 
-    @staticmethod
-    def _concise_error(error: Exception) -> str:
-        detail = " ".join(str(error).split())
-        return (detail or type(error).__name__)[:1000]
+    def _claim_token(self) -> str:
+        return f"{self.worker_id[:67]}:{uuid4().hex}"
 
 
 __all__ = ["IndexWorker"]
