@@ -219,7 +219,7 @@ def test_backfill_legacy_outline_and_quiz_without_fabricating_evidence(
     _seed_legacy_generation(database, source_hash)
     revision, _ = _source(
         database,
-        source_document_id="opaque-source-for-legacy",
+        source_document_id="legacy-study-revision:7",
         file_sha256=source_hash,
         evidence_id="ev-legacy",
     )
@@ -239,7 +239,7 @@ def test_backfill_legacy_outline_and_quiz_without_fabricating_evidence(
         assert connection.execute(text("SELECT COUNT(*) FROM artifact_evidence")).scalar_one() == 0
 
 
-def test_backfill_omits_ambiguous_source_revision_links(
+def test_backfill_requires_the_exact_cp0002_source_revision_mapping(
     database: Database,
     repository: ArtifactRepository,
 ) -> None:
@@ -247,15 +247,15 @@ def test_backfill_omits_ambiguous_source_revision_links(
     _seed_legacy_generation(database, source_hash)
     _source(
         database,
-        source_document_id="opaque-source-a",
+        source_document_id="opaque-unrelated-source",
         file_sha256=source_hash,
-        evidence_id="ev-a",
+        evidence_id="ev-unrelated",
     )
     _source(
         database,
-        source_document_id="opaque-source-b",
-        file_sha256=source_hash,
-        evidence_id="ev-b",
+        source_document_id="legacy-study-revision:7",
+        file_sha256="6" * 64,
+        evidence_id="ev-wrong-revision",
     )
 
     runs = repository.backfill_legacy_artifacts()
