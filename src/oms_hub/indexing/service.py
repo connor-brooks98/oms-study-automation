@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import warnings
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from PIL import Image
+
+from oms_hub.artifacts import ArtifactRole
 from oms_hub.indexing.models import (
     IndexState,
     ProviderDocument,
@@ -102,6 +106,8 @@ class IndexingService:
 
     async def index_revision(self, source_revision_id: str) -> IndexResult:
         view = self.knowledge_service.resolve_index_input(source_revision_id)
+        if view.source_revision_id != source_revision_id:
+            raise IndexingInputError("resolved source revision does not match request")
         key, path, metadata = self._provider_input(view)
         manifest = build_index_manifest(view)
         all_evidence_ids = tuple(ref.evidence_id for ref in manifest.evidence)
@@ -244,11 +250,21 @@ class IndexingService:
             if document.provider_operation_name is None:
                 file_name = document.provider_file_name
                 assert file_name is not None
+                chunking = (
+                    {
+                        "white_space_config": {
+                            "max_tokens_per_chunk": 700,
+                            "max_overlap_tokens": 100,
+                        }
+                    }
+                    if item.input_key == "normalized_markdown"
+                    else None
+                )
                 operation = await self.admin.import_file(
                     provider_store_name,
                     file_name,
                     metadata,
-                    None,
+                    chunking,
                 )
                 document = self._save(
                     document,
@@ -390,24 +406,25 @@ def build_index_manifest(view: IndexInputView) -> IndexManifest:
     )
     evidence_ids = tuple(ref.evidence_id for ref in evidence)
     known_evidence = set(evidence_ids)
-    inputs = [
-        _artifact_input(
-            input_key="pdf",
-            input_kind="pdf",
-            path=view.pdf.path,
-            media_type=view.pdf.media_type,
-            sha256=view.pdf.sha256,
-            evidence_ids=evidence_ids,
-        ),
-        _artifact_input(
-            input_key="normalized_markdown",
-            input_kind="markdown",
-            path=view.markdown.path,
-            media_type=view.markdown.media_type,
-            sha256=view.markdown.sha256,
-            evidence_ids=evidence_ids,
-        ),
-    ]
+    pdf = _artifact_input(
+        input_key="pdf",
+        input_kind="pdf",
+        path=view.pdf.path,
+        media_type=view.pdf.media_type,
+        sha256=view.pdf.sha256,
+        evidence_ids=evidence_ids,
+    )
+    markdown = _artifact_input(
+        input_key="normalized_markdown",
+        input_kind="markdown",
+        path=view.markdown.path,
+        media_type=view.markdown.media_type,
+        sha256=view.markdown.sha256,
+        evidence_ids=evidence_ids,
+    )
+    _validate_pdf_input(view.pdf.role, pdf)
+    _validate_markdown_input(view.markdown.role, markdown)
+    inputs = [pdf, markdown]
     selected: dict[str, IndexManifestInput] = {}
     for asset in view.assets:
         if (
@@ -431,6 +448,7 @@ def build_index_manifest(view: IndexInputView) -> IndexManifest:
             sha256=asset.sha256,
             evidence_ids=tuple(sorted(set(asset.evidence_ids))),
         )
+        _validate_image_input(asset.width, asset.height, item)
         previous = selected.get(item.input_key)
         if previous is not None:
             item = replace(
@@ -476,6 +494,49 @@ def _artifact_input(
         sha256=sha256,
         evidence_ids=evidence_ids,
     )
+
+
+def _validate_pdf_input(role: ArtifactRole, item: IndexManifestInput) -> None:
+    if role is not ArtifactRole.PDF or item.media_type != "application/pdf":
+        raise IndexingInputError("canonical PDF role or media type is invalid")
+    with item.path.open("rb") as stream:
+        if stream.read(5) != b"%PDF-":
+            raise IndexingInputError("canonical PDF content is invalid")
+
+
+def _validate_markdown_input(role: ArtifactRole, item: IndexManifestInput) -> None:
+    if role is not ArtifactRole.CLEANED or item.media_type != "text/markdown":
+        raise IndexingInputError("normalized Markdown role or media type is invalid")
+    try:
+        item.path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise IndexingInputError("normalized Markdown is not UTF-8") from error
+
+
+def _validate_image_input(
+    width: int,
+    height: int,
+    item: IndexManifestInput,
+) -> None:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(item.path) as image:
+                actual_media_type = {
+                    "JPEG": "image/jpeg",
+                    "PNG": "image/png",
+                }.get(image.format or "")
+                if actual_media_type != item.media_type:
+                    raise IndexingInputError("visual asset media type does not match its bytes")
+                if image.size != (width, height) or any(
+                    edge < 1 or edge > _MAX_IMAGE_EDGE for edge in image.size
+                ):
+                    raise IndexingInputError("visual asset dimensions do not match its bytes")
+                image.verify()
+    except IndexingInputError:
+        raise
+    except (OSError, ValueError, Image.DecompressionBombWarning) as error:
+        raise IndexingInputError("visual asset content is invalid") from error
 
 
 __all__ = [

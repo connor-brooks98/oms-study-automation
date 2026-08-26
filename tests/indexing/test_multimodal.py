@@ -341,8 +341,9 @@ def test_index_revision_persists_each_input_under_its_manifest_key(tmp_path: Pat
 def test_changed_selected_image_fails_before_provider_access(tmp_path: Path) -> None:
     view = _view(tmp_path)
     selected = view.assets[0]
-    assert selected.path is not None
-    selected.path.write_bytes(b"changed after contract resolution")
+    selected_path = selected.path
+    assert selected_path is not None
+    selected_path.write_bytes(b"changed after contract resolution")
 
     with pytest.raises(IndexingInputError):
         build_index_manifest(view)
@@ -406,14 +407,15 @@ def test_manifest_verifies_selected_image_bytes_and_dimensions(
 ) -> None:
     view = _view(tmp_path)
     selected = view.assets[0]
-    assert selected.path is not None
+    selected_path = selected.path
+    assert selected_path is not None
     if case == "format":
         selected = replace(selected, media_type="image/jpeg")
     elif case == "dimensions":
         selected = replace(selected, width=selected.width + 1 if selected.width else 1)
     else:
-        selected.path.write_bytes(b"not an image")
-        selected = replace(selected, sha256=_sha(selected.path))
+        selected_path.write_bytes(b"not an image")
+        selected = replace(selected, sha256=_sha(selected_path))
     view = replace(view, assets=(selected, *view.assets[1:]))
 
     with pytest.raises(IndexingInputError):
