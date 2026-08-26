@@ -97,7 +97,7 @@ def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260825.13" %}' in base
+    assert '{% set shell_asset_version = "20260826.1" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
@@ -255,8 +255,19 @@ def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
     assert "overflow-wrap: anywhere" in app_css
     assert ".selected-file-name" in app_css
     assert ".selected-file-size" in app_css
-    assert ".file-card .file-actions" in app_css
-    assert "repeat(auto-fit, minmax(10rem, 1fr))" in app_css
+    assert ".file-card .lecture-card-actions" in app_css
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in app_css
+    assert ".lecture-card-actions .sh-btn" in app_css
+    assert "white-space: normal" in app_css
+    assert lecture.count('class="file-actions lecture-card-actions"') == 4
+    assert lecture.index("Open Lecture PDF") < lecture.index("Upload Lecture PPTX")
+    assert lecture.index("Open Cleaned Transcript") < lecture.index(
+        "Upload Lecture Transcript"
+    )
+    assert lecture.index("Open Lecture Outline") < lecture.index(
+        "Download Lecture Outline"
+    )
+    assert lecture.index("Take Lecture Quiz") < lecture.index("Generate Quiz")
     assert "touch-action: none" in library_css
     assert "uploads.js?v=20260818.2" in uploads
     assert "Download Cleaned Transcript" in lecture

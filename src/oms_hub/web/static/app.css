@@ -427,8 +427,21 @@ button.exam-toggle {
   font: 400 .7rem/1.5 "IBM Plex Mono", monospace;
 }
 .file-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
-.file-card .file-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
-.file-card .file-actions > * { min-width: 0; }
+.file-card .lecture-card-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+}
+.file-card .lecture-card-actions > * { min-width: 0; }
+.lecture-card-actions .sh-btn {
+  width: 100%;
+  min-height: 3.25rem;
+  padding: .65rem var(--sp-3);
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .file-actions .button:not(.sh-btn) { min-height: var(--control-h); padding: .55rem .75rem; font-size: .78rem; }
 .checklist-card { padding: 1.25rem; margin-bottom: 1rem; }
 .section-heading { display: flex; justify-content: space-between; margin-bottom: 1rem; }
@@ -2191,6 +2204,7 @@ details[open] > summary > .sh-disclose { transform: rotate(90deg); }
   .provider-card-status { align-items: flex-start; justify-content: flex-start; }
   .button:not(.sh-btn) { width: 100%; }
   .file-actions { flex-direction: column; }
+  .file-card .lecture-card-actions { grid-template-columns: minmax(0, 1fr); }
   .anki-workflow { display: flex; overflow-x: auto; scroll-snap-type: x proximity; }
   .anki-workflow li { min-width: 9.25rem; scroll-snap-align: start; }
   .anki-job-link { grid-template-columns: .5rem minmax(0, 1fr); }
