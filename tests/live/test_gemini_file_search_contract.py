@@ -711,6 +711,53 @@ def _clock() -> Iterator[float]:
     yield 101.25
 
 
+def test_positive_validation_accepts_multiple_matching_citations() -> None:
+    smoke = _load_smoke()
+
+    class MultipleCitations(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id == smoke.SYNTHETIC_LECTURE_ID:
+                return smoke.SmokeQueryResult(
+                    answer=result.answer,
+                    citations=result.citations * 2,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                )
+            return result
+
+    record = asyncio.run(smoke.run_contract_smoke(MultipleCitations(smoke)))
+
+    assert record["status"] == "passed"
+    assert record["citation"]["page_number"] == 1
+
+
+def test_positive_validation_failure_retains_fixed_redacted_reason() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class NoCitations(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id == smoke.SYNTHETIC_LECTURE_ID:
+                return smoke.SmokeQueryResult(answer=result.answer, citations=())
+            return result
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        asyncio.run(
+            smoke.run_contract_smoke(
+                NoCitations(smoke),
+                failure_evidence=evidence,
+            )
+        )
+
+    record = smoke._failure_record(raised.value, evidence)
+    assert record["contract_reason"] == "positive_citation_missing"
+    assert smoke.SYNTHETIC_FACT not in json.dumps(record, sort_keys=True)
+
+
 def test_offline_fake_proves_full_smoke_sequence_and_redacted_record() -> None:
     smoke = _load_smoke()
     session = _FakeSession(smoke)
