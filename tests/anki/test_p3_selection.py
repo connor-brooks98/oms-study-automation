@@ -157,7 +157,7 @@ def test_selector_uses_tier_order_and_is_stable_when_inputs_are_shuffled() -> No
     assert first.excluded_existing_note_ids == ()
 
 
-def test_selector_applies_subset_and_equivalent_coverage_dominance() -> None:
+def test_selector_preserves_distinct_existing_facts_with_equivalent_concepts() -> None:
     source = _source()
     primary_id = next(
         passage.passage_id for passage in source.passages if passage.authority != "summary"
@@ -199,11 +199,11 @@ def test_selector_applies_subset_and_equivalent_coverage_dominance() -> None:
         generated_cards=(),
     )
 
-    assert result.selected_existing_note_ids == (12,)
-    assert result.excluded_existing_note_ids == (10, 11)
+    assert result.selected_existing_note_ids == (12, 10, 11)
+    assert result.excluded_existing_note_ids == ()
 
 
-def test_selector_preserves_exact_existing_duplicate_target_over_equivalent_coverage() -> None:
+def test_selector_preserves_duplicate_target_and_distinct_existing_fact() -> None:
     source = _source()
     primary_id = next(
         passage.passage_id for passage in source.passages if passage.authority != "summary"
@@ -248,8 +248,8 @@ def test_selector_preserves_exact_existing_duplicate_target_over_equivalent_cove
         generated_cards=(duplicate,),
     )
 
-    assert result.selected_existing_note_ids == (11,)
-    assert result.excluded_existing_note_ids == (10,)
+    assert result.selected_existing_note_ids == (11, 10)
+    assert result.excluded_existing_note_ids == ()
     assert result.mandatory_note_ids == (11,)
 
 

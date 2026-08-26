@@ -233,18 +233,6 @@ def test_s2_real_handler_propagates_provider_fault_to_worker(
             ),
             "invented a concept ID",
         ),
-        (
-            (
-                CardClassification(
-                    note_id=1,
-                    verdict="NO",
-                    primary_subject="fixture",
-                    reason="invented passage",
-                    supporting_passage_ids=("P99",),
-                ),
-            ),
-            "invented a supporting passage ID",
-        ),
     ],
 )
 def test_s4c_s6_schema_valid_invalid_rows_block_before_eligibility(
@@ -264,6 +252,35 @@ def test_s4c_s6_schema_valid_invalid_rows_block_before_eligibility(
             source_index=source,
             concept_ids=("C01",),
         )
+
+
+def test_s4c_s6_invented_passage_is_downgraded_before_eligibility() -> None:
+    source, card, _ledger = _source()
+    classifier = CardCentricClassifier(
+        SimpleNamespace(),
+        instruction="fixture",
+        capabilities=SimpleNamespace(prompt_prefix_caching=False),
+    )
+
+    result = classifier.validate_output(
+        CardClassificationBatchOutput(
+            results=(
+                CardClassification(
+                    note_id=1,
+                    verdict="NO",
+                    primary_subject="fixture",
+                    reason="invented passage",
+                    supporting_passage_ids=("P99",),
+                ),
+            )
+        ),
+        cards=(card,),
+        source_index=source,
+        concept_ids=("C01",),
+    )
+
+    assert result[0].verdict == "MAYBE"
+    assert result[0].supporting_passage_ids == ()
 
 
 @pytest.mark.parametrize("stage", ("S4c", "S6"))

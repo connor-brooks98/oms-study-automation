@@ -564,26 +564,13 @@ def test_p2_s4c_s6_retries_once_then_blocks_invalid_output() -> None:
     assert len(generator.instructions) == 2
 
 
-@pytest.mark.parametrize("invalid_kind", ("partition", "invented_passage", "ungrounded_yes"))
+@pytest.mark.parametrize("invalid_kind", ("partition", "ungrounded_yes"))
 def test_p2_s4c_s6_schema_valid_invalid_output_retries_once_then_blocks(
     invalid_kind: str,
 ) -> None:
     if invalid_kind == "partition":
         invalid = CardClassificationBatchOutput(results=()).model_dump_json()
         error = "exactly partition"
-    elif invalid_kind == "invented_passage":
-        invalid = CardClassificationBatchOutput(
-            results=(
-                CardClassification(
-                    note_id=1,
-                    verdict="YES",
-                    primary_subject="factor",
-                    reason="taught",
-                    supporting_passage_ids=("SLD:invented",),
-                ),
-            )
-        ).model_dump_json()
-        error = "invented"
     else:
         invalid = CardClassificationBatchOutput(
             results=(
@@ -609,6 +596,35 @@ def test_p2_s4c_s6_schema_valid_invalid_output_retries_once_then_blocks(
             )
         )
     assert len(generator.instructions) == 2
+
+
+def test_p2_s4c_s6_invented_passage_fails_closed_without_retry() -> None:
+    invalid = CardClassificationBatchOutput(
+        results=(
+            CardClassification(
+                note_id=1,
+                verdict="YES",
+                primary_subject="factor",
+                reason="taught",
+                supporting_passage_ids=("SLD:invented",),
+            ),
+        )
+    ).model_dump_json()
+    generator = _ThoroughGenerator([invalid])
+
+    result = asyncio.run(
+        _classifier(generator).classify(
+            (_card(1),),
+            source_index=_source(),
+            concept_ids=(),
+            provider=ProviderName.OPENAI,
+            model="configured-model",
+        )
+    )
+
+    assert result.results[0].verdict == "MAYBE"
+    assert result.results[0].supporting_passage_ids == ()
+    assert len(generator.instructions) == 1
 
 
 class _FaultingThoroughGenerator:

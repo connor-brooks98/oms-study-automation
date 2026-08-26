@@ -301,11 +301,15 @@ def _openrouter_context(request: Request) -> dict[str, object]:
     settings = cast(StudyAISettingsRepository, request.app.state.study_ai_settings).get()
     secrets = cast(SecretStore, request.app.state.secrets)
     assignment = _llm_settings(request).assignment(LLMTask.ACCURACY_REVIEW)
+    try:
+        configured = bool((secrets.get(OPENROUTER_API_KEY_SECRET) or "").strip())
+    except Exception:  # noqa: BLE001 - read-only status must not take down Settings
+        configured = False
     return {
         "model": assignment.model,
         "models": _OPENROUTER_MODELS,
         "accuracy_gate_enabled": settings.accuracy_gate_enabled,
-        "configured": bool((secrets.get(OPENROUTER_API_KEY_SECRET) or "").strip()),
+        "configured": configured,
     }
 
 

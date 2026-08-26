@@ -725,7 +725,7 @@ class IngestionRepository:
         with self.database.session() as session:
             revisions = session.scalars(
                 select(StudyRevisionModel)
-                .where(StudyRevisionModel.state == "proposed")
+                .where(StudyRevisionModel.state.in_(("proposed", "promoting")))
                 .order_by(StudyRevisionModel.created_at, StudyRevisionModel.id)
             ).all()
             return [self._study_revision(item) for item in revisions]
