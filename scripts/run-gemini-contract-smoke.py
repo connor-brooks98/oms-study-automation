@@ -221,7 +221,6 @@ class GoogleGenaiSmokeSession:
             "model": self._config.file_search_model,
             "input": prompt,
             "store": False,
-            "response_mime_type": "application/json",
             "tools": [
                 {
                     "type": "file_search",
