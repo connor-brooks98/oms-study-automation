@@ -464,6 +464,34 @@ def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> 
         assert raw_identity not in encoded
 
 
+def test_live_cli_failure_prints_redacted_json_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    smoke = _load_smoke()
+
+    async def fail_live(*, failure_evidence: dict[str, object]) -> dict[str, object]:
+        failure_evidence.update(
+            {
+                "failure_stage": "positive_query",
+                "resources_created": {"document": True, "file": True, "store": True},
+                "cleanup": {"attempted": 3, "status": "completed"},
+            }
+        )
+        raise smoke.GeminiProviderError(
+            "Gemini provider request failed.",
+            provider_status_code=400,
+        )
+
+    monkeypatch.setattr(smoke, "run_authorized_live_smoke", fail_live)
+
+    assert smoke.main(["--execute-live"]) == 1
+    record = json.loads(capsys.readouterr().out)
+    assert record["failure_stage"] == "positive_query"
+    assert record["provider_status_code"] == 400
+    assert record["cleanup"] == {"attempted": 3, "status": "completed"}
+
+
 def _clock() -> Iterator[float]:
     yield 100.0
     yield 101.25
@@ -494,6 +522,7 @@ def test_offline_fake_proves_full_smoke_sequence_and_redacted_record() -> None:
         "input_tokens": 11,
         "output_tokens": 7,
     }
+    assert record["cleanup"] == {"attempted": 3, "status": "completed"}
     for raw_identity in (
         session.store_name,
         session.file_name,

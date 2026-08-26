@@ -440,6 +440,7 @@ async def run_contract_smoke(
     session: SmokeSession,
     *,
     clock: Callable[[], float] = monotonic,
+    failure_evidence: dict[str, object] | None = None,
 ) -> dict[str, object]:
     pdf = synthetic_pdf_bytes()
     digest = hashlib.sha256(pdf).hexdigest()
@@ -457,14 +458,25 @@ async def run_contract_smoke(
     file_name: str | None = None
     document_name: str | None = None
     started = clock()
+    if failure_evidence is not None:
+        failure_evidence.clear()
+        failure_evidence["failure_stage"] = "create_store"
     try:
         store_name = await session.create_store(
             "Study Hub Task 2.8 synthetic contract",
             "models/gemini-embedding-2",
         )
+        if failure_evidence is not None:
+            failure_evidence["failure_stage"] = "upload_pdf"
         file_name = await session.upload_pdf("task-2-8-synthetic.pdf", pdf)
+        if failure_evidence is not None:
+            failure_evidence["failure_stage"] = "import_file"
         operation_name = await session.import_file(store_name, file_name, metadata)
+        if failure_evidence is not None:
+            failure_evidence["failure_stage"] = "wait_for_import"
         document_name = await session.wait_for_import(operation_name)
+        if failure_evidence is not None:
+            failure_evidence["failure_stage"] = "positive_query"
         positive = await session.query(
             store_name,
             f"Return the exact synthetic marker stated in the indexed PDF: {SYNTHETIC_FACT}",
@@ -472,6 +484,8 @@ async def run_contract_smoke(
             response_schema=SmokeAnswer,
             omit_thinking=True,
         )
+        if failure_evidence is not None:
+            failure_evidence["failure_stage"] = "positive_validation"
         answer = SmokeAnswer.model_validate(positive.answer)
         if answer.answer != SYNTHETIC_FACT or not answer.supported:
             raise SmokeContractError("structured output did not preserve the synthetic fact")
@@ -484,6 +498,8 @@ async def run_contract_smoke(
             or SYNTHETIC_FACT not in citation.excerpt
         ):
             raise SmokeContractError("positive citation did not resolve to PDF page one")
+        if failure_evidence is not None:
+            failure_evidence["failure_stage"] = "negative_query"
         negative = await session.query(
             store_name,
             "Return the indexed synthetic marker.",
@@ -491,8 +507,12 @@ async def run_contract_smoke(
             response_schema=SmokeAnswer,
             omit_thinking=True,
         )
+        if failure_evidence is not None:
+            failure_evidence["failure_stage"] = "negative_validation"
         if negative.citations:
             raise SmokeContractError("wrong-lecture metadata filter retrieved the document")
+        if failure_evidence is not None:
+            failure_evidence["failure_stage"] = "list_documents"
         if await session.list_documents(store_name) != (document_name,):
             raise SmokeContractError("document listing did not round-trip the imported document")
         duration_ms = round((clock() - started) * 1000)
@@ -535,12 +555,38 @@ async def run_contract_smoke(
             "warnings": [],
         }
     except BaseException:
+        cleanup_status = "completed"
         try:
             await _cleanup(session, document_name, file_name, store_name)
         except SmokeContractError:
-            pass
+            cleanup_status = "failed"
+        if failure_evidence is not None:
+            failure_evidence["resources_created"] = {
+                "document": document_name is not None,
+                "file": file_name is not None,
+                "store": store_name is not None,
+            }
+            failure_evidence["cleanup"] = {
+                "attempted": sum(
+                    value is not None for value in (document_name, file_name, store_name)
+                ),
+                "status": cleanup_status,
+            }
         raise
-    await _cleanup(session, document_name, file_name, store_name)
+    if failure_evidence is not None:
+        failure_evidence["failure_stage"] = "cleanup"
+    try:
+        await _cleanup(session, document_name, file_name, store_name)
+    except SmokeContractError:
+        if failure_evidence is not None:
+            failure_evidence["resources_created"] = {
+                "document": True,
+                "file": True,
+                "store": True,
+            }
+            failure_evidence["cleanup"] = {"attempted": 3, "status": "failed"}
+        raise
+    record["cleanup"] = {"attempted": 3, "status": "completed"}
     return record
 
 
@@ -568,6 +614,40 @@ async def _cleanup(
 
 def _redacted_identity(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _failure_record(
+    error: GeminiProviderError | SmokeContractError | SmokeTemporaryFailure,
+    evidence: Mapping[str, object],
+) -> dict[str, object]:
+    if isinstance(error, GeminiProviderError):
+        category = error.category
+        retryable = error.retryable
+        status_code = error.provider_status_code
+    elif isinstance(error, SmokeTemporaryFailure):
+        category = "transient"
+        retryable = True
+        status_code = None
+    else:
+        category = "contract"
+        retryable = False
+        status_code = None
+    if (
+        isinstance(status_code, bool)
+        or not isinstance(status_code, int)
+        or not 100 <= status_code <= 599
+    ):
+        status_code = None
+    return {
+        "schema_version": 1,
+        "status": "failed",
+        "failure_stage": evidence.get("failure_stage", "unknown"),
+        "error_category": category,
+        "provider_status_code": status_code,
+        "retryable": retryable,
+        "resources_created": evidence.get("resources_created", {}),
+        "cleanup": evidence.get("cleanup", {"attempted": 0, "status": "not_started"}),
+    }
 
 
 def run_temporary_failure_fixture() -> dict[str, object]:
@@ -630,6 +710,7 @@ async def run_authorized_live_smoke(
     *,
     secret_store: SecretStore | None = None,
     session_factory: Callable[[str], SmokeSession] | None = None,
+    failure_evidence: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if os.getenv("RUN_LIVE_GEMINI_TESTS") != "1":
         raise LiveSmokeBlocked("RUN_LIVE_GEMINI_TESTS=1 is required for a live smoke")
@@ -644,7 +725,10 @@ async def run_authorized_live_smoke(
     if not isinstance(api_key, str) or not api_key.strip():
         raise LiveSmokeBlocked("stored Gemini credential is unavailable")
     build_session = session_factory or GoogleGenaiSmokeSession
-    return await run_contract_smoke(build_session(api_key.strip()))
+    return await run_contract_smoke(
+        build_session(api_key.strip()),
+        failure_evidence=failure_evidence,
+    )
 
 
 def _plan() -> dict[str, object]:
@@ -672,10 +756,14 @@ def main(argv: list[str] | None = None) -> int:
     if not args.execute_live:
         print(json.dumps(_plan(), indent=2, sort_keys=True))
         return 0
+    failure_evidence: dict[str, object] = {}
     try:
-        record = asyncio.run(run_authorized_live_smoke())
+        record = asyncio.run(run_authorized_live_smoke(failure_evidence=failure_evidence))
     except LiveSmokeBlocked as error:
         parser.error(str(error))
+    except (GeminiProviderError, SmokeContractError, SmokeTemporaryFailure) as error:
+        print(json.dumps(_failure_record(error, failure_evidence), indent=2, sort_keys=True))
+        return 1
     print(json.dumps(record, indent=2, sort_keys=True))
     return 0
 
