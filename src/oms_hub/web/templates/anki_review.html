@@ -47,6 +47,14 @@
   </section>
 
   <div id="anki-review-content" hidden>
+    <section class="anki-selection-flow" aria-label="Selection pipeline">
+      <div><span>1</span><small>Candidate pool</small><strong data-flow-candidates>0</strong></div>
+      <div><span>2</span><small>Existing selected</small><strong data-flow-existing>0</strong></div>
+      <div><span>3</span><small>New gap cards</small><strong data-flow-generated>0</strong></div>
+      <div><span>4</span><small>Final deck</small><strong data-flow-final>0</strong></div>
+    </section>
+    <p class="anki-selection-note" data-flow-note></p>
+
     <section class="anki-review-summary" aria-label="Review totals">
       <div><strong data-count-pass1>0</strong><span>Pass 1 matches</span></div>
       <div><strong data-count-pass2>0</strong><span>Recovered after Pass 1</span></div>
@@ -60,9 +68,12 @@
     <p class="pipeline-note" data-convergence-warning hidden></p>
     <p class="pipeline-note" data-reconciliation-warning hidden></p>
 
-    <section class="card sh-card anki-policy-card" data-review-quality hidden>
+    <details class="sh-card anki-review-diagnostics" data-review-quality hidden>
+      <summary>
+        <span><span class="mono-label">Selection audit</span><strong>Why cards were selected or excluded</strong></span>
+        <span class="anki-explainer" data-diagnostic-count>Details</span>
+      </summary>
       <div>
-        <p class="mono-label">Quality-first selection</p>
         <h2>Evidence and card-count context</h2>
         <p>60 is a warning floor, 65 is the ordinary target, and 70 is a soft cap—not a quota to fill. Prefer fewer excellent, grounded, nonredundant cards; no card should be added merely to reach a count.</p>
         <p class="pipeline-note" data-review-sizing></p>
@@ -72,55 +83,71 @@
         <div data-review-selection-reasons></div>
         <div data-review-duplicates></div>
       </div>
-    </section>
-
-    <section class="anki-review-toolbar" aria-label="Review filters">
-      <div class="anki-review-switcher" role="group" aria-label="Review view">
-        <button class="button secondary sh-btn sh-btn--secondary sh-seg__btn sh-seg__btn--active is-active" type="button" data-review-view="final" aria-pressed="true">Final proposed changes <span data-count-final>0</span></button>
-        <button class="button secondary sh-btn sh-btn--secondary sh-seg__btn" type="button" data-review-view="candidates" aria-pressed="false">Candidates <span data-count-candidates>0</span></button>
-      </div>
-      <label class="anki-review-search">Search cards
-        <input class="sh-input" type="search" placeholder="Search card text, note ID, extra, or tags" data-review-search>
-      </label>
-    </section>
-
-    <section class="anki-review-group" aria-labelledby="concepts-heading" data-review-concepts>
-      <div class="anki-review-group-heading">
-        <div>
-          <p class="mono-label">Coverage checklist</p>
-          <h2 id="concepts-heading">Concept-first review</h2>
-        </div>
-      </div>
-      <div class="anki-review-list" data-group-concepts></div>
-    </section>
-
-    <section class="anki-review-group" aria-labelledby="existing-heading" data-review-existing>
-      <div class="anki-section-heading">
-        <div>
-          <p class="mono-label">Existing collection</p>
-          <h2 id="existing-heading" data-existing-heading>Existing notes to retag</h2>
-        </div>
-        <span class="anki-explainer" data-existing-explainer>Final selection</span>
-      </div>
-      <p class="anki-group-help" data-existing-help>Only cards currently proposed to receive the lecture tag are shown.</p>
-      <div class="anki-review-list" data-group-existing></div>
-    </section>
-
-    <section class="anki-review-group" aria-labelledby="generated-heading" data-review-generated>
-      <div class="anki-section-heading">
-        <div>
-          <p class="mono-label">Source-backed proposals</p>
-          <h2 id="generated-heading">New cards to create</h2>
-        </div>
-        <span class="anki-explainer">Editable before apply</span>
-      </div>
-      <div class="anki-review-list" data-group-generated></div>
-    </section>
-
-    <details class="anki-review-group" data-review-unresolved>
-      <summary>Unresolved items (<span data-count-unresolved-details>0</span>)</summary>
-      <div class="anki-review-list" data-group-unresolved></div>
     </details>
+
+    <div class="anki-review-workbench">
+      <aside class="anki-review-tools sh-card" aria-label="Deck review tools">
+        <div>
+          <p class="mono-label">Deck workspace</p>
+          <h2>Review the proposed deck</h2>
+          <p>Switch views without losing edits. Nothing reaches Anki until you approve the frozen apply plan.</p>
+        </div>
+        <div class="anki-review-tool-list" role="group" aria-label="Deck views">
+          <button type="button" class="is-active" data-workbench-view="final" aria-pressed="true"><span>Final deck</span><strong data-tool-final>0</strong></button>
+          <button type="button" data-workbench-view="candidates" aria-pressed="false"><span>All candidates</span><strong data-tool-candidates>0</strong></button>
+          <button type="button" data-workbench-view="generated" aria-pressed="false"><span>Generated cards</span><strong data-tool-generated>0</strong></button>
+          <button type="button" data-workbench-view="overlaps" aria-pressed="false"><span>Overlap flags</span><strong data-tool-overlaps>0</strong></button>
+          <button type="button" data-workbench-view="gaps" aria-pressed="false"><span>Coverage gaps</span><strong data-tool-gaps>0</strong></button>
+        </div>
+        <p class="anki-tool-hint">Generated cards edit in place. Existing notes keep source-managed tags locked.</p>
+      </aside>
+
+      <div class="anki-review-deck">
+        <header class="anki-review-deck-heading">
+          <div>
+            <p class="mono-label">Curated deck</p>
+            <h2>Generated and matched cards</h2>
+          </div>
+          <label class="anki-review-search">Search cards
+            <input class="sh-input" type="search" placeholder="Search card text, note ID, extra, or tags" data-review-search>
+          </label>
+          <span><strong data-deck-count>0</strong> selected</span>
+        </header>
+
+        <details class="anki-review-group anki-concept-panel" data-review-concepts>
+          <summary><span><span class="mono-label">Coverage checklist</span><strong id="concepts-heading">Concept-first review</strong></span></summary>
+          <div class="anki-review-list" data-group-concepts></div>
+        </details>
+
+        <section class="anki-review-group" aria-labelledby="existing-heading" data-review-existing>
+          <div class="anki-section-heading">
+            <div>
+              <p class="mono-label">Existing collection</p>
+              <h2 id="existing-heading" data-existing-heading>Existing notes to retag</h2>
+            </div>
+            <span class="anki-explainer" data-existing-explainer>Final selection</span>
+          </div>
+          <p class="anki-group-help" data-existing-help>Only cards currently proposed to receive the lecture tag are shown.</p>
+          <div class="anki-review-list" data-group-existing></div>
+        </section>
+
+        <section class="anki-review-group" aria-labelledby="generated-heading" data-review-generated>
+          <div class="anki-section-heading">
+            <div>
+              <p class="mono-label">Source-backed proposals</p>
+              <h2 id="generated-heading">New cards to create</h2>
+            </div>
+            <span class="anki-explainer">Editable before apply</span>
+          </div>
+          <div class="anki-review-list" data-group-generated></div>
+        </section>
+
+        <details class="anki-review-group" data-review-unresolved>
+          <summary>Unresolved items (<span data-count-unresolved-details>0</span>)</summary>
+          <div class="anki-review-list" data-group-unresolved></div>
+        </details>
+      </div>
+    </div>
 
     <section class="card sh-card anki-policy-card">
       <div>
@@ -163,5 +190,5 @@
 </article>
 {% endblock %}
 {% block scripts %}
-<script src="/static/anki.js?v=20260808.1" defer></script>
+<script src="/static/anki.js?v=20260825.2" defer></script>
 {% endblock %}

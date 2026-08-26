@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 from uuid import UUID
 
@@ -57,6 +58,15 @@ class FakeGateway:
         self.reject_generated_duplicates = False
         self.model_fields = ["Text", "Extra"]
         self.created_model_name: str | None = None
+        self.media: dict[str, str] = {}
+
+    async def store_media_file(self, filename: str, data_base64: str) -> str:
+        self.mutation_calls.append("store_media")
+        failure = self.mutation_failures.get("store_media")
+        if failure is not None:
+            raise failure
+        self.media[filename] = data_base64
+        return filename
 
     async def sync(self) -> None:
         self.sync_calls += 1
@@ -257,6 +267,7 @@ def _envelope(
     gateway: FakeGateway,
     *,
     generated: bool = False,
+    media: bool = False,
 ) -> ActionEnvelope:
     note = _current(gateway)
     after = ("#Pathoma::Hematology", "OMS::Reviewed")
@@ -275,6 +286,18 @@ def _envelope(
             ),
         ),
     )
+    proposal = _proposal()
+    if media:
+        proposal = replace(
+            proposal,
+            media=(
+                {
+                    "filename": "oms_anki_0123456789abcdef.png",
+                    "content_base64": "aGVsbG8=",
+                    "sha256": "a" * 64,
+                },
+            ),
+        )
     return EnvelopeBuilder(_policy()).build(
         changeset,
         {42: note},
@@ -282,7 +305,7 @@ def _envelope(
         snapshot_id="snapshot-1",
         target_deck="OMS::Heme::Lecture 3",
         target_tag=TARGET_TAG,
-        generated_cards=(_proposal(),) if generated else (),
+        generated_cards=(proposal,) if generated else (),
     )
 
 
@@ -417,6 +440,25 @@ def test_generated_note_retry_discovers_marker_and_does_not_duplicate() -> None:
         assert len(gateway.notes) == 2
         assert gateway.mutation_calls.count("add_notes") == 1
         assert result.created_note_ids == (100,)
+
+    asyncio.run(scenario())
+
+
+def test_generated_media_is_stored_before_the_note() -> None:
+    async def scenario() -> None:
+        gateway = FakeGateway()
+        envelope = _envelope(gateway, generated=True, media=True)
+        store = InMemoryApplyStore((envelope,))
+
+        result = await ApplyCoordinator(store, gateway).apply(envelope.envelope_id)
+
+        assert result.state is ApplyState.COMPLETE
+        assert gateway.mutation_calls.index("store_media") < gateway.mutation_calls.index(
+            "add_notes"
+        )
+        assert gateway.media == {
+            "oms_anki_0123456789abcdef.png": "aGVsbG8="
+        }
 
     asyncio.run(scenario())
 

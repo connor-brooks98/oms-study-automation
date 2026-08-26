@@ -2553,6 +2553,59 @@ class AnkiCurationRepository:
             ).all()
             return [self._gap_card(stored) for stored in models]
 
+    def update_gap_card_media(
+        self,
+        job_id: UUID,
+        card_id: str,
+        attachments: Sequence[dict[str, Any]],
+    ) -> GapCard:
+        with self.database.session() as session:
+            job = self._require_job_model(session, job_id)
+            if job.state != CurationState.READY_FOR_REVIEW.value:
+                raise ValueError("generated card media can only change during review")
+            stored = session.scalar(
+                select(AnkiGapCardModel).where(
+                    AnkiGapCardModel.job_id == str(job_id),
+                    AnkiGapCardModel.id == card_id,
+                )
+            )
+            if stored is None:
+                raise KeyError(card_id)
+            stored.generated_image_json = _canonical_json(
+                {"attachments": list(attachments)}
+            )
+            stored.image_state = "attached" if attachments else "none"
+            stored.media_filename = (
+                str(attachments[0]["filename"]) if attachments else None
+            )
+            stored.revision += 1
+            next_revision = job.review_revision + 1
+            session.add(
+                AnkiReviewChangeSetModel(
+                    job_id=str(job_id),
+                    revision=next_revision,
+                    prior_revision=job.review_revision,
+                    reviewer="local-user",
+                    payload_json=_canonical_json(
+                        {
+                            "gap_media": {
+                                "card_id": card_id,
+                                "attachments": [
+                                    {
+                                        "filename": item["filename"],
+                                        "sha256": item["sha256"],
+                                    }
+                                    for item in attachments
+                                ],
+                            }
+                        }
+                    ),
+                )
+            )
+            job.review_revision = next_revision
+            session.flush()
+            return self._gap_card(stored)
+
     def save_review(
         self,
         job_id: UUID,

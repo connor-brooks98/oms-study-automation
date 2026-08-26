@@ -111,6 +111,7 @@ class GapCardProposal:
     split: bool = False
     split_index: int | None = None
     image_needed: str | None = None
+    media: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

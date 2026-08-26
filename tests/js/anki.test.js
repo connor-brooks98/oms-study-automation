@@ -114,6 +114,60 @@ test("review defaults to only selected final changes and combines candidates", (
   assert.deepEqual(views.candidates.map((item) => item.note_id), [1, 2, 3]);
 });
 
+test("review workspace exposes where candidate cards went", () => {
+  const counts = anki.reviewWorkspaceCounts({
+    groups: {
+      pass_1_matches: [{ selected: true }, { selected: false }],
+      recovered_in_pass_2: [{ selected: true }],
+      generated_cards: [
+        { selected: true, validation_state: "valid" },
+        { selected: false, validation_state: "duplicate_of_existing" },
+      ],
+      unresolved: [{ concept_id: "C03" }],
+    },
+    review_surface: {
+      duplicate_resolutions: [{ card_id: "G02" }],
+    },
+  });
+
+  assert.deepEqual(counts, {
+    candidates: 3,
+    selectedExisting: 2,
+    generated: 2,
+    selectedGenerated: 1,
+    final: 3,
+    excludedExisting: 1,
+    overlaps: 1,
+    gaps: 1,
+    duplicateResolutions: 1,
+  });
+});
+
+test("review workspace views isolate final, generated, and overlap cards", () => {
+  const visible = (kind, view, selected = false, overlap = false) => (
+    anki.reviewCardVisible({
+      kind,
+      view,
+      selected,
+      overlap,
+      searchMatch: true,
+    })
+  );
+
+  assert.equal(visible("existing", "final", true), true);
+  assert.equal(visible("existing", "generated", true), false);
+  assert.equal(visible("generated", "generated"), true);
+  assert.equal(visible("generated", "overlaps", false, true), true);
+  assert.equal(visible("generated", "overlaps", false, false), false);
+  assert.equal(anki.reviewCardVisible({
+    kind: "generated",
+    view: "generated",
+    selected: true,
+    overlap: false,
+    searchMatch: false,
+  }), false);
+});
+
 test("review surface keeps below-floor guidance quality-first", () => {
   const display = anki.reviewSurfaceDisplay({
     selection: {
@@ -351,6 +405,8 @@ class FakeSourceNode {
     this.value = "";
     this.name = "";
     this.type = "";
+    this.attributes = {};
+    this._listeners = {};
   }
 
   append(...nodes) {
@@ -360,6 +416,18 @@ class FakeSourceNode {
   replaceChildren(...nodes) {
     this.children = [];
     this.append(...nodes);
+  }
+
+  addEventListener(type, handler) {
+    (this._listeners[type] ||= []).push(handler);
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = value;
+  }
+
+  focus() {
+    this.focused = true;
   }
 
   closest() {
@@ -658,6 +726,40 @@ test("generated-card review edits use stable card identity", () => {
     extra: "Split card",
     selected: true,
   }]);
+});
+
+test("generated cards preview first and edit inline without losing values", () => {
+  const documentRef = new FakeSourceDocument();
+  const article = anki.generatedCard(documentRef, {
+    card_id: "G01",
+    concept_id: "C01",
+    selected: true,
+    validation_state: "valid",
+    text: "Platelets form {{c1::plugs}}.",
+    extra: "Primary hemostasis.",
+    citations: [],
+  });
+  const [header, preview, editor] = article.children;
+  const editButton = header.children[1].children[1];
+  const text = editor.children[0].children[1];
+  const mediaInput = editor.children[2].children[2].children[1];
+
+  assert.equal(preview.hidden, undefined);
+  assert.equal(editor.hidden, true);
+  assert.equal(mediaInput.type, "file");
+  assert.equal(mediaInput.multiple, true);
+  assert.equal(mediaInput.accept, "image/png,image/jpeg,image/webp");
+  editButton._listeners.click[0]();
+  assert.equal(preview.hidden, true);
+  assert.equal(editor.hidden, false);
+  assert.equal(text.focused, true);
+
+  text.value = "Platelets form {{c1::primary plugs}}.";
+  text._listeners.input[0]();
+  assert.equal(
+    preview.children[0].children[1].textContent,
+    "Platelets form {{c1::primary plugs}}.",
+  );
 });
 
 test("failed-run actions use CSRF-protected retry and remove endpoints", async () => {

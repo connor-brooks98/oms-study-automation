@@ -6,6 +6,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,6 +14,7 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 from selectolax.parser import HTMLParser
 
 from oms_hub.anki.apply import ApplyCoordinator
@@ -71,6 +73,7 @@ from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.anki_routes import (
     _concept_review_groups,
     _convergence_summary,
+    _gap_proposal,
     _outline_ready_for_curation,
     _reconciliation_summary,
     _review_reconciliation_summary,
@@ -1649,6 +1652,70 @@ def test_review_groups_evidence_and_uses_optimistic_revision(
     assert saved.json()["revision"] == 1
     assert stale.status_code == 409
     assert evidence.json()["source_refs"][0]["locator"] == "slide 12"
+
+
+def test_review_card_image_upload_is_sanitized_persisted_and_removable(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+    job_id = _ready_job(app, lecture_id, revision_id)
+    review = client.get(f"/api/anki/jobs/{job_id}/review").json()
+    card_id = review["groups"]["generated_cards"][0]["card_id"]
+    source = BytesIO()
+    Image.new("RGB", (3, 2), "red").save(source, format="JPEG")
+
+    uploaded = client.post(
+        f"/api/anki/jobs/{job_id}/gap-cards/{card_id}/media",
+        files={"file": ("platelet.jpg", source.getvalue(), "image/jpeg")},
+    )
+
+    assert uploaded.status_code == 200
+    assert uploaded.json()["revision"] == 1
+    media = uploaded.json()["media"][0]
+    assert media["filename"].startswith("oms_anki_")
+    assert media["filename"].endswith(".png")
+    preview = client.get(media["preview_url"])
+    assert preview.status_code == 200
+    assert preview.headers["content-type"] == "image/png"
+    assert Image.open(BytesIO(preview.content)).size == (3, 2)
+    reloaded = client.get(f"/api/anki/jobs/{job_id}/review").json()
+    assert (
+        reloaded["groups"]["generated_cards"][0]["media"][0]["filename"]
+        == media["filename"]
+    )
+    repository: AnkiCurationRepository = app.state.anki_repository
+    card = next(
+        item
+        for item in repository.list_gap_cards(job_id)
+        if item.card_id == card_id
+    )
+    proposal = _gap_proposal(
+        card,
+        repository.require_job(job_id),
+        {
+            item.evidence_id
+            for item in repository.list_source_evidence(job_id)
+        },
+    )
+    assert proposal.media[0]["filename"] == media["filename"]
+    assert f'<img src="{media["filename"]}" alt="">' in proposal.fields["Extra"]
+    stale_review = client.put(
+        f"/api/anki/jobs/{job_id}/review",
+        json={
+            "contract_version": 1,
+            "expected_revision": 0,
+            "candidate_selections": {"42": True},
+            "gap_edits": [],
+            "tag_patches": [],
+        },
+    )
+    assert stale_review.status_code == 409
+
+    removed = client.delete(media["preview_url"])
+
+    assert removed.status_code == 200
+    assert removed.json()["revision"] == 2
+    assert removed.json()["media"] == []
 
 
 def test_review_keeps_convergence_candidates_visible_with_recovered_matches(

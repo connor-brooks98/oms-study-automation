@@ -13,6 +13,7 @@ from oms_hub.anki.contracts import (
     AddTagsOperation,
     Operation,
     RemoveTagsOperation,
+    StoreMediaOperation,
     SyncOperation,
     VerifyOperation,
     canonical_payload_sha256,
@@ -172,6 +173,35 @@ class EnvelopeBuilder:
         }
 
         operations: list[Operation] = []
+        media_by_filename: dict[str, dict[str, str]] = {}
+        for proposal in generated_cards:
+            for media in proposal.media:
+                filename = media["filename"]
+                existing = media_by_filename.get(filename)
+                if existing is not None and existing != media:
+                    raise EnvelopeBuildError(
+                        f"generated media filename collision: {filename}"
+                    )
+                media_by_filename[filename] = media
+        for filename, media in sorted(media_by_filename.items()):
+            payload = {
+                "filename": filename,
+                "content_base64": media["content_base64"],
+                "sha256": media["sha256"],
+            }
+            digest, operation_id = _operation_identity(
+                envelope_id,
+                "store_media",
+                filename,
+                payload,
+            )
+            operations.append(
+                StoreMediaOperation(
+                    operation_id=operation_id,
+                    content_sha256=digest,
+                    **payload,
+                )
+            )
         removals: dict[str, list[int]] = defaultdict(list)
         additions: dict[str, list[int]] = defaultdict(list)
         display_tags: dict[str, str] = {}

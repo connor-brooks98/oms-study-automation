@@ -111,6 +111,18 @@ class AnkiConnectClient:
             )
         return result
 
+    async def store_media_file(self, filename: str, data_base64: str) -> str:
+        result = await self._invoke(
+            "storeMediaFile",
+            filename=filename,
+            data=data_base64,
+        )
+        if not isinstance(result, str) or result != filename:
+            raise AnkiConnectProtocolError(
+                "AnkiConnect returned an invalid media filename"
+            )
+        return result
+
     async def add_tags(
         self,
         note_ids: Sequence[int],

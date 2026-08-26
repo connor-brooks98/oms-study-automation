@@ -13,6 +13,7 @@ from oms_hub.anki.contracts import (
     AddNotesOperation,
     AddTagsOperation,
     RemoveTagsOperation,
+    StoreMediaOperation,
     SyncOperation,
     VerifyOperation,
 )
@@ -21,7 +22,7 @@ from oms_hub.anki.envelope import field_hash
 from oms_hub.anki.runtime import AnkiPreflight
 from oms_hub.anki.tag_policy import tag_hash
 
-MutationOperation = RemoveTagsOperation | AddTagsOperation | AddNotesOperation
+MutationOperation = StoreMediaOperation | RemoveTagsOperation | AddTagsOperation | AddNotesOperation
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,8 @@ class ApplyResult:
 
 
 class ApplyGateway(Protocol):
+    async def store_media_file(self, filename: str, data_base64: str) -> str: ...
+
     async def sync(self) -> None: ...
 
     async def notes_info(
@@ -301,6 +304,7 @@ class ApplyCoordinator:
             if record.state == "complete":
                 continue
             if operation.operation_type in {
+                "store_media",
                 "remove_tags",
                 "add_tags",
                 "add_notes",
@@ -355,7 +359,13 @@ class ApplyCoordinator:
             operation.operation_id,
         )
         try:
-            if isinstance(operation, RemoveTagsOperation):
+            if isinstance(operation, StoreMediaOperation):
+                filename = await self.gateway.store_media_file(
+                    operation.filename,
+                    operation.content_base64,
+                )
+                result: dict[str, Any] = {"filename": filename}
+            elif isinstance(operation, RemoveTagsOperation):
                 recovered = await self._tag_operation_already_applied(
                     operation,
                     should_exist=False,
@@ -365,7 +375,7 @@ class ApplyCoordinator:
                         operation.note_ids,
                         (operation.tag,),
                     )
-                result: dict[str, Any] = {
+                result = {
                     "recovered": recovered,
                     "note_ids": list(operation.note_ids),
                     "tag": operation.tag,

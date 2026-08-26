@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import html
 import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID, uuid5
 
-from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import Field
 
@@ -78,6 +80,11 @@ from oms_hub.llm.domain import LLMTask, ProviderName
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
+from oms_hub.study_generation.quiz_images import (
+    MAX_QUIZ_IMAGE_BYTES,
+    QuizImageError,
+    sanitize_quiz_image,
+)
 from oms_hub.study_generation.repository import GenerationRepository
 
 router = APIRouter()
@@ -85,6 +92,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 GENERATED_NOTE_TYPE = (
     "AnKingOverhaul (OMS_II_Extra/JCBrooks) (OMS II Fall 2026 / jcbrooks)"
 )
+MAX_CARD_BACK_IMAGES = 8
 
 
 def _same_unique_identity_set(
@@ -790,6 +798,109 @@ async def read_anki_review(
         ),
         "envelope_reason": None,
     }
+
+
+@router.post("/api/anki/jobs/{job_id}/gap-cards/{card_id}/media")
+def upload_anki_gap_card_media(
+    request: Request,
+    job_id: UUID,
+    card_id: str,
+    file: Annotated[UploadFile, File()],
+) -> dict[str, Any]:
+    repository = _repository(request)
+    card = _require_gap_card(repository, job_id, card_id)
+    attachments = _gap_media_attachments(card)
+    if len(attachments) >= MAX_CARD_BACK_IMAGES:
+        raise HTTPException(
+            422,
+            f"A card back can contain at most {MAX_CARD_BACK_IMAGES} images",
+        )
+    try:
+        image = sanitize_quiz_image(
+            file.file.read(MAX_QUIZ_IMAGE_BYTES + 1)
+        )
+    except QuizImageError as exc:
+        raise HTTPException(
+            422,
+            str(exc).replace("quiz image", "card image"),
+        ) from exc
+    filename = f"oms_anki_{image.sha256[:16]}.png"
+    attachment = {
+        "filename": filename,
+        "content_base64": base64.b64encode(image.payload).decode("ascii"),
+        "sha256": image.sha256,
+        "original_filename": (file.filename or "image")[:500],
+        "width": str(image.width),
+        "height": str(image.height),
+    }
+    if not any(item["sha256"] == image.sha256 for item in attachments):
+        attachments.append(attachment)
+    try:
+        updated = repository.update_gap_card_media(
+            job_id,
+            card_id,
+            attachments,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {
+        **_gap_media_payload(job_id, updated),
+        "revision": repository.require_job(job_id).review_revision,
+    }
+
+
+@router.delete("/api/anki/jobs/{job_id}/gap-cards/{card_id}/media/{filename}")
+def remove_anki_gap_card_media(
+    request: Request,
+    job_id: UUID,
+    card_id: str,
+    filename: str,
+) -> dict[str, Any]:
+    repository = _repository(request)
+    card = _require_gap_card(repository, job_id, card_id)
+    original = _gap_media_attachments(card)
+    attachments = [
+        item for item in original if item["filename"] != filename
+    ]
+    if len(attachments) == len(original):
+        raise HTTPException(404, "Card image was not found")
+    try:
+        updated = repository.update_gap_card_media(
+            job_id,
+            card_id,
+            attachments,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {
+        **_gap_media_payload(job_id, updated),
+        "revision": repository.require_job(job_id).review_revision,
+    }
+
+
+@router.get("/api/anki/jobs/{job_id}/gap-cards/{card_id}/media/{filename}")
+def read_anki_gap_card_media(
+    request: Request,
+    job_id: UUID,
+    card_id: str,
+    filename: str,
+) -> Response:
+    card = _require_gap_card(_repository(request), job_id, card_id)
+    attachment = next(
+        (
+            item
+            for item in _gap_media_attachments(card)
+            if item["filename"] == filename
+        ),
+        None,
+    )
+    if attachment is None:
+        raise HTTPException(404, "Card image was not found")
+    return Response(
+        base64.b64decode(attachment["content_base64"], validate=True),
+        media_type="image/png",
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @router.put("/api/anki/jobs/{job_id}/review")
@@ -1686,6 +1797,62 @@ def _gap_payload(
         "source_refs": [_source_reference_payload(reference) for reference in card.source_refs],
         "initial_tags": list(card.initial_tags),
         "provenance": card.provenance,
+        "media": _gap_media_payload(None, card)["media"],
+    }
+
+
+def _require_gap_card(
+    repository: AnkiCurationRepository,
+    job_id: UUID,
+    card_id: str,
+) -> GapCard:
+    card = next(
+        (
+            item
+            for item in repository.list_gap_cards(job_id)
+            if item.card_id == card_id
+        ),
+        None,
+    )
+    if card is None:
+        raise HTTPException(404, "Generated card was not found")
+    return card
+
+
+def _gap_media_attachments(card: GapCard) -> list[dict[str, str]]:
+    raw = card.generated_image.get("attachments", [])
+    if not isinstance(raw, list):
+        return []
+    required = {"filename", "content_base64", "sha256"}
+    return [
+        {str(key): str(value) for key, value in item.items()}
+        for item in raw
+        if isinstance(item, dict) and required <= set(item)
+    ]
+
+
+def _gap_media_payload(job_id: UUID | None, card: GapCard) -> dict[str, Any]:
+    return {
+        "card_id": card.card_id,
+        "media": [
+            {
+                "filename": item["filename"],
+                "sha256": item["sha256"],
+                "original_filename": item.get(
+                    "original_filename",
+                    item["filename"],
+                ),
+                "width": int(item.get("width", "0")),
+                "height": int(item.get("height", "0")),
+                "preview_url": (
+                    f"/api/anki/jobs/{job_id}/gap-cards/{card.card_id}"
+                    f"/media/{item['filename']}"
+                    if job_id is not None
+                    else ""
+                ),
+            }
+            for item in _gap_media_attachments(card)
+        ],
     }
 
 
@@ -2606,7 +2773,22 @@ def _gap_proposal(
     prompt_version = str(card.provenance.get("prompt_version", job.gap_prompt_version)).strip()
     confidence = float(card.provenance.get("confidence", 0.0))
     note_type = GENERATED_NOTE_TYPE
-    fields = {"Text": card.text.strip(), "Extra": card.extra.strip()}
+    media = tuple(
+        {
+            "filename": item["filename"],
+            "content_base64": item["content_base64"],
+            "sha256": item["sha256"],
+        }
+        for item in _gap_media_attachments(card)
+    )
+    images = "".join(
+        f'<img src="{html.escape(item["filename"], quote=True)}" alt="">'
+        for item in media
+    )
+    extra = card.extra.strip()
+    if images:
+        extra += f'<div class="oms-anki-card-media">{images}</div>'
+    fields = {"Text": card.text.strip(), "Extra": extra}
     content_hash = hashlib.sha256(
         json.dumps(
             {"note_type": note_type, "fields": fields},
@@ -2628,6 +2810,7 @@ def _gap_proposal(
         confidence=confidence,
         content_hash=content_hash,
         provenance=dict(card.provenance),
+        media=media,
     )
 
 

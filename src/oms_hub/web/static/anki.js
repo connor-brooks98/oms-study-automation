@@ -39,6 +39,21 @@
     return payload;
   };
 
+  const requestForm = async (documentRef, fetchImpl, url, form, method = "POST") => {
+    const response = await fetchImpl(url, {
+      method,
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "X-CSRF-Token": csrfToken(documentRef),
+      },
+      ...(form ? { body: form } : {}),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "Card image could not be saved.");
+    return payload;
+  };
+
   const commaValues = (value) => [
     ...new Set(
       String(value || "")
@@ -1102,7 +1117,7 @@
   };
 
   const candidateCard = (documentRef, candidate, policy) => {
-    const card = element(documentRef, "article", "anki-match-card");
+    const card = element(documentRef, "article", "anki-match-card anki-studio-card");
     card.dataset.noteId = candidate.note_id;
     card.dataset.reviewKind = "existing";
     const tags = (candidate.note?.tags || []).map((tag) => tag.value || tag);
@@ -1122,7 +1137,7 @@
     checkbox.value = candidate.note_id;
     label.append(
       checkbox,
-      element(documentRef, "span", "", "Use this existing card"),
+      element(documentRef, "span", "", "Include in deck"),
     );
     const audit = candidateAudit(candidate);
     const score = element(
@@ -1201,11 +1216,45 @@
     return details;
   };
 
+  const cardMediaUrl = (documentRef, cardId, media) => media.preview_url || (
+    `/api/anki/jobs/${documentRef.querySelector("[data-anki-review]")?.dataset.jobId}`
+      + `/gap-cards/${cardId}/media/${encodeURIComponent(media.filename)}`
+  );
+
+  const renderCardMedia = (documentRef, article, media = []) => {
+    article.querySelectorAll("[data-card-media-gallery]").forEach((gallery) => {
+      const removable = gallery.dataset.removable === "true";
+      gallery.replaceChildren();
+      gallery.hidden = !media.length;
+      media.forEach((item) => {
+        const figure = element(documentRef, "figure", "anki-card-media-item");
+        const image = documentRef.createElement("img");
+        image.src = cardMediaUrl(documentRef, article.dataset.cardId, item);
+        image.alt = item.original_filename || "Card back image";
+        image.loading = "lazy";
+        figure.append(image);
+        if (removable) {
+          const remove = element(documentRef, "button", "anki-card-media-remove", "Remove");
+          remove.type = "button";
+          remove.dataset.removeCardMedia = item.filename;
+          remove.setAttribute("aria-label", `Remove ${image.alt}`);
+          figure.append(remove);
+        }
+        gallery.append(figure);
+      });
+    });
+  };
+
   const generatedCard = (documentRef, card) => {
-    const article = element(documentRef, "article", "anki-generated-card");
+    const article = element(documentRef, "article", "anki-generated-card anki-studio-card");
     article.dataset.cardId = card.card_id;
     article.dataset.conceptId = card.concept_id;
     article.dataset.reviewKind = "generated";
+    article.dataset.validationState = String(card.validation_state || "valid");
+    article.dataset.overlap = String(
+      card.validation_state === "overlap"
+        || String(card.validation_state || "").startsWith("duplicate_"),
+    );
     article.dataset.searchText = [card.card_id, card.text, card.extra]
       .filter(Boolean).join(" ").toLocaleLowerCase();
     const header = element(documentRef, "div", "anki-card-choice");
@@ -1215,17 +1264,45 @@
     checkbox.type = "checkbox";
     checkbox.checked = card.selected;
     checkbox.dataset.gapSelection = "";
-    label.append(checkbox, element(documentRef, "span", "", "Create this card"));
+    label.append(checkbox, element(documentRef, "span", "", "Include in deck"));
     const validation = element(
       documentRef,
       "span",
       `anki-validation is-${card.validation_state}`,
       readableState(card.validation_state),
     );
-    header.append(label, validation);
+    const editButton = element(documentRef, "button", "anki-card-edit-button", "Edit");
+    editButton.type = "button";
+    editButton.setAttribute("aria-expanded", "false");
+    const actions = element(documentRef, "div", "anki-card-actions");
+    actions.append(validation, editButton);
+    header.append(label, actions);
+
+    const preview = element(documentRef, "div", "anki-card-preview");
+    const previewQuestion = element(documentRef, "div", "anki-card-preview-row");
+    const previewAnswer = element(documentRef, "div", "anki-card-preview-row");
+    const previewQuestionText = element(documentRef, "p", "", card.text);
+    const previewAnswerText = element(documentRef, "p", "", card.extra);
+    const previewAnswerBody = element(documentRef, "div", "anki-card-answer");
+    const previewMedia = element(documentRef, "div", "anki-card-media-gallery");
+    previewMedia.dataset.cardMediaGallery = "";
+    previewMedia.dataset.removable = "false";
+    previewAnswerBody.append(previewAnswerText, previewMedia);
+    previewQuestion.append(
+      element(documentRef, "strong", "", "Q"),
+      previewQuestionText,
+    );
+    previewAnswer.append(
+      element(documentRef, "strong", "", "A"),
+      previewAnswerBody,
+    );
+    preview.append(previewQuestion, previewAnswer);
+
+    const editor = element(documentRef, "div", "anki-card-editor");
+    editor.hidden = true;
 
     const textLabel = element(documentRef, "label", "anki-card-field");
-    textLabel.append(element(documentRef, "span", "", "Cloze card"));
+    textLabel.append(element(documentRef, "span", "", "Question / cloze"));
     const text = documentRef.createElement("textarea");
     text.rows = 3;
     text.value = card.text;
@@ -1233,12 +1310,50 @@
     textLabel.append(text);
 
     const extraLabel = element(documentRef, "label", "anki-card-field");
-    extraLabel.append(element(documentRef, "span", "", "Extra"));
+    extraLabel.append(element(documentRef, "span", "", "Answer / extra"));
     const extra = documentRef.createElement("textarea");
     extra.rows = 3;
     extra.value = card.extra;
     extra.dataset.gapExtra = "";
     extraLabel.append(extra);
+    const mediaEditor = element(documentRef, "div", "anki-card-media-editor");
+    mediaEditor.append(
+      element(documentRef, "strong", "", "Images on card back"),
+      element(documentRef, "p", "", "Drop PNG, JPEG, or WebP images here. Up to 8 images, 10 MB each."),
+    );
+    const dropZone = documentRef.createElement("label");
+    dropZone.className = "anki-card-media-dropzone";
+    dropZone.dataset.cardMediaDropzone = "";
+    dropZone.tabIndex = 0;
+    dropZone.append(
+      element(documentRef, "span", "", "Drop images here or choose files"),
+    );
+    const fileInput = documentRef.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/png,image/jpeg,image/webp";
+    fileInput.multiple = true;
+    fileInput.dataset.cardMediaInput = "";
+    dropZone.append(fileInput);
+    const editorMedia = element(documentRef, "div", "anki-card-media-gallery");
+    editorMedia.dataset.cardMediaGallery = "";
+    editorMedia.dataset.removable = "true";
+    mediaEditor.append(dropZone, editorMedia);
+    editor.append(textLabel, extraLabel, mediaEditor);
+
+    editButton.addEventListener("click", () => {
+      const editing = editor.hidden;
+      editor.hidden = !editing;
+      preview.hidden = editing;
+      editButton.textContent = editing ? "Done" : "Edit";
+      editButton.setAttribute("aria-expanded", String(editing));
+      if (editing) text.focus?.();
+    });
+    text.addEventListener("input", () => {
+      previewQuestionText.textContent = text.value;
+    });
+    extra.addEventListener("input", () => {
+      previewAnswerText.textContent = extra.value;
+    });
 
     const citations = element(documentRef, "div", "anki-citations");
     citations.append(
@@ -1252,7 +1367,8 @@
     card.citations.forEach((citation) => {
       citations.append(citationCard(documentRef, citation));
     });
-    article.append(header, textLabel, extraLabel, citations);
+    article.append(header, preview, editor, citations);
+    renderCardMedia(documentRef, article, card.media || []);
     return article;
   };
 
@@ -1308,6 +1424,60 @@
     };
   };
 
+  const reviewWorkspaceCounts = (review) => {
+    const groups = review?.groups || {};
+    const existing = [
+      ...(groups.pass_1_matches || []),
+      ...(groups.recovered_in_pass_2 || []),
+    ];
+    const generated = groups.generated_cards || [];
+    const selectedExisting = existing.filter((candidate) => candidate.selected).length;
+    const selectedGenerated = generated.filter((card) => card.selected).length;
+    const duplicateResolutions = review?.review_surface?.duplicate_resolutions || [];
+    const overlapCards = generated.filter((card) => (
+      card.validation_state === "overlap"
+      || String(card.validation_state || "").startsWith("duplicate_")
+    )).length;
+    return {
+      candidates: existing.length,
+      selectedExisting,
+      generated: generated.length,
+      selectedGenerated,
+      final: selectedExisting + selectedGenerated,
+      excludedExisting: existing.length - selectedExisting,
+      overlaps: Math.max(overlapCards, duplicateResolutions.length),
+      gaps: (groups.unresolved || []).length,
+      duplicateResolutions: duplicateResolutions.length,
+    };
+  };
+
+  const setReviewView = (documentRef, view) => {
+    const page = documentRef.querySelector("[data-anki-review]");
+    if (!page) return;
+    page.dataset.reviewView = view;
+    documentRef.querySelectorAll("[data-review-view]").forEach((button) => {
+      const active = button.dataset.reviewView === view;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+    documentRef.querySelectorAll("[data-workbench-view]").forEach((button) => {
+      const active = button.dataset.workbenchView === view;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+    applyReviewFilters(documentRef);
+  };
+
+  const reviewCardVisible = ({ kind, view, selected, overlap, searchMatch }) => {
+    if (!searchMatch) return false;
+    if (kind === "existing") {
+      return view === "candidates" || (view === "final" && selected);
+    }
+    return (view === "final" && selected)
+      || view === "generated"
+      || (view === "overlaps" && overlap);
+  };
+
   const applyReviewFilters = (documentRef) => {
     const rootElement = documentRef.querySelector("[data-anki-review]");
     if (!rootElement) return;
@@ -1315,27 +1485,62 @@
     const query = String(documentRef.querySelector("[data-review-search]")?.value || "")
       .trim().toLocaleLowerCase();
     let selectedExisting = 0;
+    let visibleExisting = 0;
     documentRef.querySelectorAll('[data-review-kind="existing"]').forEach((card) => {
       const selected = Boolean(card.querySelector("[data-candidate-selection]")?.checked);
       if (selected) selectedExisting += 1;
-      card.hidden = (view === "final" && !selected)
-        || (query && !card.dataset.searchText.includes(query));
+      const visible = reviewCardVisible({
+        kind: "existing",
+        view,
+        selected,
+        overlap: false,
+        searchMatch: !query || card.dataset.searchText.includes(query),
+      });
+      card.hidden = !visible;
+      if (visible) visibleExisting += 1;
     });
     let selectedGenerated = 0;
+    let visibleGenerated = 0;
     documentRef.querySelectorAll('[data-review-kind="generated"]').forEach((card) => {
       const selected = Boolean(card.querySelector("[data-gap-selection]")?.checked);
       if (selected) selectedGenerated += 1;
-      card.hidden = view !== "final"
-        || !selected
-        || (query && !card.dataset.searchText.includes(query));
+      const visible = reviewCardVisible({
+        kind: "generated",
+        view,
+        selected,
+        overlap: card.dataset.overlap === "true",
+        searchMatch: !query || card.dataset.searchText.includes(query),
+      });
+      card.hidden = !visible;
+      if (visible) visibleGenerated += 1;
     });
     const candidateCount = documentRef.querySelectorAll('[data-review-kind="existing"]').length;
-    documentRef.querySelector("[data-count-final]").textContent = selectedExisting + selectedGenerated;
-    documentRef.querySelector("[data-count-candidates]").textContent = candidateCount;
+    const finalCount = selectedExisting + selectedGenerated;
+    const finalNode = documentRef.querySelector("[data-count-final]");
+    const candidateNode = documentRef.querySelector("[data-count-candidates]");
+    if (finalNode) finalNode.textContent = finalCount;
+    if (candidateNode) candidateNode.textContent = candidateCount;
+    [
+      ["[data-flow-existing]", selectedExisting],
+      ["[data-flow-generated]", selectedGenerated],
+      ["[data-flow-final]", finalCount],
+      ["[data-tool-final]", finalCount],
+      ["[data-deck-count]", finalCount],
+    ].forEach(([selector, value]) => {
+      const node = documentRef.querySelector(selector);
+      if (node) node.textContent = value;
+    });
+    const existingSection = documentRef.querySelector("[data-review-existing]");
+    if (existingSection) existingSection.hidden = visibleExisting === 0;
     const generatedSection = documentRef.querySelector("[data-review-generated]");
-    if (generatedSection) generatedSection.hidden = view !== "final" || selectedGenerated === 0;
+    if (generatedSection) generatedSection.hidden = visibleGenerated === 0;
     const unresolved = documentRef.querySelector("[data-review-unresolved]");
-    if (unresolved) unresolved.hidden = view !== "candidates";
+    if (unresolved) {
+      unresolved.hidden = !["candidates", "gaps"].includes(view);
+      unresolved.open = view === "gaps";
+    }
+    const diagnostics = documentRef.querySelector("[data-review-quality]");
+    if (diagnostics && view === "overlaps") diagnostics.open = true;
     documentRef.querySelector("[data-existing-heading]").textContent = view === "final"
       ? "Existing notes to retag"
       : "Candidates";
@@ -1384,6 +1589,7 @@
 
   const renderReview = (documentRef, review) => {
     const groups = review.groups;
+    const workspace = reviewWorkspaceCounts(review);
     const convergence = convergenceDisplay(review.convergence);
     const reconciliation = reconciliationDisplay(review.reconciliation);
     renderConceptGroups(documentRef, review.concepts);
@@ -1419,6 +1625,29 @@
       groups.unresolved.length;
     documentRef.querySelector("[data-count-unresolved-details]").textContent =
       groups.unresolved.length;
+    [
+      ["[data-flow-candidates]", workspace.candidates],
+      ["[data-flow-existing]", workspace.selectedExisting],
+      ["[data-flow-generated]", workspace.selectedGenerated],
+      ["[data-flow-final]", workspace.final],
+      ["[data-tool-final]", workspace.final],
+      ["[data-deck-count]", workspace.final],
+      ["[data-tool-candidates]", workspace.candidates],
+      ["[data-tool-generated]", workspace.generated],
+      ["[data-tool-overlaps]", workspace.overlaps],
+      ["[data-tool-gaps]", workspace.gaps],
+    ].forEach(([selector, value]) => {
+      const node = documentRef.querySelector(selector);
+      if (node) node.textContent = value;
+    });
+    const flowNote = documentRef.querySelector("[data-flow-note]");
+    if (flowNote) {
+      flowNote.textContent = `${workspace.excludedExisting} existing candidates were not selected. ${workspace.duplicateResolutions} generated ${workspace.duplicateResolutions === 1 ? "card was" : "cards were"} resolved as duplicates. Open Selection audit for the recorded reasons.`;
+    }
+    const diagnosticCount = documentRef.querySelector("[data-diagnostic-count]");
+    if (diagnosticCount) {
+      diagnosticCount.textContent = `${workspace.duplicateResolutions} duplicate ${workspace.duplicateResolutions === 1 ? "resolution" : "resolutions"}`;
+    }
     setGroup(
       documentRef,
       "[data-group-existing]",
@@ -1444,7 +1673,8 @@
     documentRef
       .querySelectorAll(
         "[data-candidate-selection], [data-gap-selection], "
-          + "[data-gap-text], [data-gap-extra], [data-tag-editor]",
+          + "[data-gap-text], [data-gap-extra], [data-tag-editor], "
+          + "[data-card-media-input]",
       )
       .forEach((control) => {
         control.disabled = control.disabled || !editable;
@@ -1612,6 +1842,40 @@
     let pollTimer;
     let dialogConfirmed = false;
 
+    const uploadCardMedia = async (article, files) => {
+      const accepted = [...files];
+      if (!accepted.length) return;
+      message.textContent = `Uploading ${accepted.length} card ${accepted.length === 1 ? "image" : "images"}…`;
+      for (const file of accepted) {
+        const form = new root.FormData();
+        form.append("file", file);
+        const payload = await requestForm(
+          documentRef,
+          fetchImpl,
+          `/api/anki/jobs/${jobId}/gap-cards/${article.dataset.cardId}/media`,
+          form,
+        );
+        if (Number.isInteger(payload.revision)) revision = payload.revision;
+        renderCardMedia(documentRef, article, payload.media || []);
+      }
+      message.textContent = "Card-back images saved. No Anki changes were made.";
+    };
+
+    const removeCardMedia = async (article, filename) => {
+      message.textContent = "Removing card image…";
+      const payload = await requestForm(
+        documentRef,
+        fetchImpl,
+        `/api/anki/jobs/${jobId}/gap-cards/${article.dataset.cardId}`
+          + `/media/${encodeURIComponent(filename)}`,
+        null,
+        "DELETE",
+      );
+      if (Number.isInteger(payload.revision)) revision = payload.revision;
+      renderCardMedia(documentRef, article, payload.media || []);
+      message.textContent = "Card image removed. No Anki changes were made.";
+    };
+
     if (dialog) {
       dialog.addEventListener("close", () => {
         if (!dialogConfirmed) {
@@ -1630,19 +1894,54 @@
       page.dataset.reviewListenersBound = "true";
       documentRef.querySelectorAll("[data-review-view]").forEach((button) => {
         button.addEventListener("click", () => {
-          page.dataset.reviewView = button.dataset.reviewView;
-          documentRef.querySelectorAll("[data-review-view]").forEach((item) => {
-            const active = item === button;
-            item.classList.toggle("is-active", active);
-            item.setAttribute("aria-pressed", String(active));
-          });
-          applyReviewFilters(documentRef);
+          setReviewView(documentRef, button.dataset.reviewView);
+        });
+      });
+      documentRef.querySelectorAll("[data-workbench-view]").forEach((button) => {
+        button.addEventListener("click", () => {
+          setReviewView(documentRef, button.dataset.workbenchView);
         });
       });
       documentRef.querySelector("[data-review-search]")?.addEventListener(
         "input",
         () => applyReviewFilters(documentRef),
       );
+      page.addEventListener("change", (event) => {
+        const input = event.target.closest?.("[data-card-media-input]");
+        const article = input?.closest(".anki-generated-card");
+        if (!input || !article) return;
+        uploadCardMedia(article, input.files).catch((error) => {
+          message.textContent = error.message;
+        }).finally(() => { input.value = ""; });
+      });
+      page.addEventListener("dragover", (event) => {
+        const zone = event.target.closest?.("[data-card-media-dropzone]");
+        if (!zone) return;
+        event.preventDefault();
+        zone.classList.add("is-dragging");
+      });
+      page.addEventListener("dragleave", (event) => {
+        event.target.closest?.("[data-card-media-dropzone]")
+          ?.classList.remove("is-dragging");
+      });
+      page.addEventListener("drop", (event) => {
+        const zone = event.target.closest?.("[data-card-media-dropzone]");
+        const article = zone?.closest(".anki-generated-card");
+        if (!zone || !article) return;
+        event.preventDefault();
+        zone.classList.remove("is-dragging");
+        uploadCardMedia(article, event.dataTransfer?.files || []).catch((error) => {
+          message.textContent = error.message;
+        });
+      });
+      page.addEventListener("click", (event) => {
+        const button = event.target.closest?.("[data-remove-card-media]");
+        const article = button?.closest(".anki-generated-card");
+        if (!button || !article) return;
+        removeCardMedia(article, button.dataset.removeCardMedia).catch((error) => {
+          message.textContent = error.message;
+        });
+      });
     }
 
     const basePollDelayMs = 2500;
@@ -1926,6 +2225,7 @@
     courseOptions,
     editableTagPatch,
     examOptions,
+    generatedCard,
     hasRequiredSources,
     initialize,
     initializeReview,
@@ -1944,7 +2244,9 @@
     reviewSurfaceDisplay,
     reviewSelectionDisplay,
     reviewSurfaceDetails,
+    reviewCardVisible,
     renderReviewSurface,
+    reviewWorkspaceCounts,
     reviewViews,
     renderV3ReviewSurface,
     renderProcessing,

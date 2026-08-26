@@ -1,3 +1,4 @@
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
@@ -152,6 +153,27 @@ def test_envelope_is_deterministic_ordered_and_self_contained() -> None:
         operation.note_ids == (note.note_id,)  # type: ignore[union-attr]
         for operation in existing_note_tag_operations
     )
+
+
+def test_generated_media_is_stored_before_its_note_is_added() -> None:
+    proposal = replace(
+        _proposal(),
+        media=(
+            {
+                "filename": "oms_anki_0123456789abcdef.png",
+                "content_base64": "aGVsbG8=",
+                "sha256": "a" * 64,
+            },
+        ),
+    )
+
+    envelope = _build(_current_note(), proposal=proposal)
+
+    assert [operation.operation_type for operation in envelope.operations][:2] == [
+        "store_media",
+        "remove_tags",
+    ]
+    assert envelope.operations[0].filename == "oms_anki_0123456789abcdef.png"
 
 
 def test_v2_envelope_binds_card_centric_job_and_reconciliation() -> None:
