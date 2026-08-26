@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "gate": "gate_2b_gemini_provider",
+  "state": "blocked",
+  "claim": "gate_not_open",
+  "assessment_ref": {
+    "branch": "sol2/gemini-indexing",
+    "sha": "SELF",
+    "self_reference_resolution": "Resolve SELF from the commit containing this blocked preparation record."
+  },
+  "assessed_input": {
+    "branch": "integration/studyhub-grounded-learning-v1",
+    "sha": "37c1b6ac572ecdc4549f4688ab5868c4a9a85240",
+    "task_2_7_handoff": "docs/implementation/handoffs/2.7.md",
+    "schema_version": 25
+  },
+  "offline_preparation": [
+    {
+      "id": "opt_in_guard",
+      "status": "prepared",
+      "evidence": "tests/live/test_gemini_file_search_contract.py"
+    },
+    {
+      "id": "deterministic_fake_sequence",
+      "status": "prepared",
+      "evidence": "scripts/run-gemini-contract-smoke.py"
+    },
+    {
+      "id": "redacted_record_shape",
+      "status": "prepared",
+      "evidence": "tests/live/test_gemini_file_search_contract.py"
+    }
+  ],
+  "live_verification": [
+    {
+      "id": "synthetic_provider_contract",
+      "status": "blocked",
+      "command": "RUN_LIVE_GEMINI_TESTS=1 python scripts/run-gemini-contract-smoke.py --execute-live",
+      "evidence": "Not run; live Gemini access is not authorized."
+    },
+    {
+      "id": "negative_metadata_filter",
+      "status": "blocked",
+      "evidence": "Specified and fake-tested offline; provider behavior is unverified."
+    },
+    {
+      "id": "private_lecture_13_shadow_index",
+      "status": "blocked",
+      "evidence": "Not run; private-data and live-provider access are not authorized."
+    },
+    {
+      "id": "terra_and_sol9_acceptance",
+      "status": "blocked",
+      "evidence": "Requires exact live evidence and the final candidate."
+    }
+  ],
+  "blockers": [
+    {
+      "id": "live_provider_authorization",
+      "status": "blocked",
+      "owner": "Connor",
+      "unblocking_action": "Explicitly authorize one synthetic Gemini smoke using the approved stored credential, disposable provider create/query/delete operations, and the resulting quota/cost."
+    },
+    {
+      "id": "official_sdk_dependency_and_adapter",
+      "status": "blocked",
+      "owner": "Program Sol-0",
+      "unblocking_action": "Integrate google-genai==2.14.0 in the shared dependency surface and a reviewed live SmokeSession adapter; Sol-2 must not edit the central dependency manifest without authorization."
+    },
+    {
+      "id": "private_lecture_shadow_authorization",
+      "status": "blocked",
+      "owner": "Connor and Program Sol-0 controlled private-data operator",
+      "unblocking_action": "Separately authorize one private Lecture 13 shadow index and provide or select its opaque source revision; retain only sanitized hashes, counts, states, timing, usage, and warnings."
+    },
+    {
+      "id": "live_acceptance_and_independent_review",
+      "status": "blocked",
+      "owner": "Sol-9, Terra, and Program Sol-0",
+      "unblocking_action": "Review the exact live evidence, verify cleanup and retry/rebuild contracts, integrate the accepted candidate, and only then replace this blocked record with a Gate 2B open record."
+    }
+  ],
+  "review": {
+    "terra_specification": "pending_live_evidence",
+    "terra_quality_release": "pending_live_evidence",
+    "sol9_acceptance": "pending_live_evidence",
+    "gate_open_approval": "not_granted"
+  }
+}
