@@ -10,13 +10,17 @@ import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from io import BytesIO
 from time import monotonic
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel, ConfigDict
 from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
+
+if TYPE_CHECKING:
+    from oms_hub.indexing.service import IndexResult
 
 SYNTHETIC_COURSE_ID = "task-2-8-synthetic-course"
 SYNTHETIC_EXAM_ID = "task-2-8-synthetic-exam"
@@ -98,6 +102,21 @@ class SmokeSession(Protocol):
     async def delete_file(self, file_name: str) -> None: ...
 
     async def delete_store(self, store_name: str) -> None: ...
+
+
+class _TemporaryRetryService:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def index_revision(self, source_revision_id: str) -> IndexResult:
+        from oms_hub.indexing.models import IndexState
+        from oms_hub.indexing.service import IndexResult
+        from oms_hub.providers.gemini.errors import GeminiTransientError
+
+        self.calls += 1
+        if self.calls == 1:
+            raise GeminiTransientError("synthetic temporary failure")
+        return IndexResult(source_revision_id, IndexState.READY)
 
 
 def synthetic_pdf_bytes() -> bytes:
@@ -233,6 +252,62 @@ def _redacted_identity(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:16]}"
 
 
+def run_temporary_failure_fixture() -> dict[str, object]:
+    from oms_hub.db import Database
+    from oms_hub.indexing.models import IndexJob, ProviderStore, StoreKey
+    from oms_hub.indexing.repository import IndexRepository
+    from oms_hub.indexing.worker import IndexWorker
+
+    database = Database("sqlite://")
+    database.create_schema()
+    try:
+        repository = IndexRepository(database)
+        key = StoreKey.course(SYNTHETIC_COURSE_ID, SYNTHETIC_EXAM_ID)
+        store = repository.create_store(
+            ProviderStore(
+                store_key=key,
+                provider="gemini",
+                provider_store_name="offlineFakeStores/task-2-8",
+                embedding_model="models/gemini-embedding-2",
+                authority_namespace=key.authority_namespace,
+                course_id=key.course_id,
+                exam_id=key.exam_id,
+            )
+        )
+        job = repository.save_job(
+            IndexJob(store_id=store.id, source_revision_id=SYNTHETIC_REVISION_ID)
+        )
+        clock = [datetime(2026, 8, 26, 12, 0, tzinfo=UTC)]
+        service = _TemporaryRetryService()
+        worker = IndexWorker(
+            repository,
+            service,
+            worker_id="task-2-8-offline-retry",
+            lease_seconds=60,
+            now=lambda: clock[0],
+        )
+
+        worker.run_once()
+        retry = repository.get_job(job.id)
+        assert retry is not None and retry.next_attempt_at is not None
+        next_attempt = datetime.fromisoformat(retry.next_attempt_at)
+        backoff_seconds = round((next_attempt - clock[0]).total_seconds())
+        clock[0] = next_attempt
+        worker.run_once()
+        resumed = repository.get_job(job.id)
+        assert resumed is not None
+        return {
+            "first_state": retry.state.value,
+            "retry_count": retry.retry_count,
+            "error_category": retry.last_error_category,
+            "backoff_seconds": backoff_seconds,
+            "resumed_state": resumed.state.value,
+            "service_calls": service.calls,
+        }
+    finally:
+        database.close()
+
+
 async def run_authorized_live_smoke() -> dict[str, object]:
     if os.getenv("RUN_LIVE_GEMINI_TESTS") != "1":
         raise LiveSmokeBlocked("RUN_LIVE_GEMINI_TESTS=1 is required for a live smoke")
@@ -254,8 +329,9 @@ def _plan() -> dict[str, object]:
             "create/query/delete operations, quota/cost, and approved secret-store access."
         ),
         "required_owner_action": (
-            "Program Sol-0 must integrate google-genai==2.14.0 and the reviewed live session "
-            "adapter before this command can cross the provider boundary."
+            "Program Sol-0 must integrate google-genai==2.14.0; a later explicitly authorized "
+            "Sol-2 change must implement a reviewed live SmokeSession and wire it into "
+            "run_authorized_live_smoke. The current hard block remains until that code lands."
         ),
     }
 

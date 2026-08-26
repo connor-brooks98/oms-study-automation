@@ -65,7 +65,7 @@
       "id": "official_sdk_dependency_and_adapter",
       "status": "blocked",
       "owner": "Program Sol-0",
-      "unblocking_action": "Integrate google-genai==2.14.0 in the shared dependency surface and a reviewed live SmokeSession adapter; Sol-2 must not edit the central dependency manifest without authorization."
+      "unblocking_action": "Integrate google-genai==2.14.0 in the shared dependency surface, then authorize a separate Sol-2 change that implements a reviewed live SmokeSession and wires it into run_authorized_live_smoke; the current hard block must remain until that code lands."
     },
     {
       "id": "private_lecture_shadow_authorization",
