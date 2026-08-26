@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,9 +12,10 @@ import pytest
 
 from oms_hub.artifacts import ArtifactRole
 from oms_hub.db import Database
-from oms_hub.indexing.models import IndexState, ProviderStore, StoreKey
+from oms_hub.indexing.models import IndexJob, IndexState, ProviderStore, StoreKey
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.indexing.service import IndexingInputError, IndexingService
+from oms_hub.indexing.worker import IndexWorker
 from oms_hub.knowledge.models import SourceRevisionState
 from oms_hub.knowledge.service import CanonicalInputArtifact, IndexInputView
 from oms_hub.providers.contracts import AuthorityClass
@@ -162,6 +164,73 @@ def service_bundle(
     admin = FakeAdmin(store, maximum_document_bytes=maximum_document_bytes)
     service = IndexingService(repository, FakeKnowledgeService(resolved_view), admin)
     return service, repository, admin, resolved_view
+
+
+def test_expired_index_worker_stops_before_another_provider_call_or_document_write(
+    tmp_path: Path,
+) -> None:
+    view = source_view(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'lease.db'}"
+    first_database = Database(database_url)
+    first_database.create_schema()
+    first_repository = IndexRepository(first_database)
+    key = StoreKey.course(view.course_id, view.exam_id)
+    store = first_repository.create_store(
+        ProviderStore(
+            store_key=key,
+            provider="gemini",
+            provider_store_name="fileSearchStores/course-1",
+            embedding_model="models/gemini-embedding-2",
+            authority_namespace=key.authority_namespace,
+            course_id=key.course_id,
+            exam_id=key.exam_id,
+        )
+    )
+    job = first_repository.save_job(
+        IndexJob(store_id=store.id, source_revision_id=view.source_revision_id)
+    )
+    second_repository = IndexRepository(Database(database_url))
+    clock = [datetime(2026, 8, 26, 12, 0, tzinfo=UTC)]
+    successor: list[IndexJob] = []
+
+    class ReplacingAdmin(FakeAdmin):
+        async def upload_file(self, path: Path, display_name: str) -> UploadedFileRef:
+            uploaded = await super().upload_file(path, display_name)
+            if len(self.upload_calls) == 1:
+                clock[0] += timedelta(seconds=2)
+                replacement = second_repository.claim_job(
+                    job.id,
+                    "worker-b",
+                    clock[0],
+                    lease_seconds=60,
+                )
+                assert replacement is not None
+                successor.append(replacement)
+            return uploaded
+
+    admin = ReplacingAdmin(store)
+    service = IndexingService(first_repository, FakeKnowledgeService(view), admin)
+    worker = IndexWorker(
+        first_repository,
+        service,
+        admin=admin,
+        worker_id="worker-a",
+        lease_seconds=1,
+        now=lambda: clock[0],
+    )
+
+    worker.run_once()
+
+    anchor = first_repository.get_document_by_source_revision(store.id, view.source_revision_id)
+    stored_job = second_repository.get_job(job.id)
+    assert len(successor) == 1
+    assert admin.upload_calls == [(view.pptx.path, "lecture.pptx")]
+    assert admin.import_calls == []
+    assert admin.wait_calls == []
+    assert anchor is not None and anchor.state is IndexState.UPLOADING_FILE
+    assert anchor.provider_file_name is None
+    assert stored_job is not None and stored_job.lease_owner == "worker-b"
+    assert stored_job.state is IndexState.NOT_INDEXED
 
 
 def test_course_revision_uploads_imports_and_persists_ready_document(tmp_path: Path) -> None:

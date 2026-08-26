@@ -247,6 +247,36 @@ def test_reconcile_reports_deterministic_multimodal_orphans_without_writes() -> 
     assert report.findings[2].input_key == markdown.input_key
 
 
+def test_snapshot_rejects_conflicting_duplicate_required_metadata() -> None:
+    database = _database()
+    repository = IndexRepository(database)
+    store = repository.create_store(_store())
+    items = [
+        SimpleNamespace(
+            name=f"{store.provider_store_name}/documents/conflicting",
+            custom_metadata=[
+                {"key": "source_revision_id", "string_value": REVISION},
+                {"key": "input_key", "string_value": "pdf"},
+                {"key": "input_key", "string_value": "normalized_markdown"},
+                {"key": "input_kind", "string_value": "pdf"},
+                {"key": "input_sha256", "string_value": "a" * 64},
+            ],
+        )
+    ]
+    factory = GeminiClientFactory(
+        GeminiConfig(api_key=SecretStr("synthetic-secret")),
+        sdk_factory=_sdk_factory(items),
+    )
+    admin = GeminiFileSearchAdmin(repository, factory)
+
+    snapshot = asyncio.run(admin.snapshot_documents(store))
+
+    assert len(snapshot) == 1
+    assert snapshot[0].validation_error == "invalid_metadata"
+    assert snapshot[0].input_key is None
+    assert repository.list_documents(store) == []
+
+
 def test_reconcile_missing_store_is_report_only_even_with_apply() -> None:
     database = _database()
     repository = IndexRepository(database)
@@ -334,6 +364,30 @@ def test_apply_schedules_permanent_delete_for_stale_revision() -> None:
 
     job = repository.get_job_by_revision(store.id, REVISION)
     assert [item.kind for item in report.findings] == [FindingKind.STALE_SOURCE]
+    assert job is not None and job.operation_kind == "delete"
+    assert job.state is IndexState.DELETING
+
+
+def test_stale_revision_delete_is_not_suppressed_by_duplicate_remote_tuple() -> None:
+    database = _database()
+    repository = IndexRepository(database)
+    store = repository.create_store(_store())
+    pdf = repository.save_document(_document(store, "pdf", "pdf", "a" * 64))
+    duplicate = _observation(pdf)
+    reconciler = IndexReconciler(
+        repository,
+        _Knowledge({REVISION: SourceRevisionState.STALE}),
+        _SnapshotAdmin((duplicate, duplicate)),
+        now=lambda: NOW,
+    )
+
+    report = asyncio.run(reconciler.reconcile_store(store.id, apply=True))
+
+    assert [item.kind for item in report.findings] == [
+        FindingKind.DUPLICATE_REMOTE,
+        FindingKind.STALE_SOURCE,
+    ]
+    job = repository.get_job_by_revision(store.id, REVISION)
     assert job is not None and job.operation_kind == "delete"
     assert job.state is IndexState.DELETING
 
@@ -494,6 +548,24 @@ def test_expired_lease_token_cannot_mutate_after_successor_claims(tmp_path: Path
     )
     assert second_repository.renew_revision_lease(second.id, second.lease_token, later, 60)
     assert first_repository.get_document(document.id).state is IndexState.READY  # type: ignore[union-attr]
+
+
+def test_expired_unchallenged_lease_cannot_save_job_state(tmp_path: Path) -> None:
+    database = _database(tmp_path / "expired.db")
+    repository = IndexRepository(database)
+    store = repository.create_store(_store())
+    job = repository.save_job(IndexJob(store_id=store.id, source_revision_id=REVISION))
+    claimed = repository.claim_job(job.id, "worker-a", NOW, lease_seconds=1)
+    assert claimed is not None
+
+    saved = repository.save_claimed_job(
+        replace(claimed, state=IndexState.READY),
+        "worker-a",
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert saved is None
+    assert repository.get_job(job.id).state is IndexState.NOT_INDEXED  # type: ignore[union-attr]
 
 
 def test_revision_resolution_rejects_ambiguous_current_stores() -> None:
