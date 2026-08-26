@@ -7,6 +7,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass
+from itertools import product
 
 from oms_hub.knowledge.ids import sha256_text
 from oms_hub.knowledge.models import EvidenceUnit, SourceRevisionState
@@ -204,18 +205,12 @@ class QuestionEvidencePacketBuilder:
 
         if not resolved:
             raise QuestionEvidenceError("no evidence is available for question generation")
-        candidates = _group_evidence(tuple(resolved.values()))
-        selected = _select_bounded(candidates, request.objectives)
-        selected_signatures = {candidate.claim_signature for candidate in selected}
-        omitted_ids = tuple(
-            sorted(
-                locator.evidence_id
-                for candidate in candidates
-                if candidate.claim_signature not in selected_signatures
-                for locator in candidate.locators
-            )
+        selected, omitted_ids = _select_bounded(
+            tuple(resolved.values()),
+            request.objectives,
         )
-        packet_evidence = tuple(selected)
+        packet_evidence = _group_evidence(selected)
+        self._revalidate_selected(selected, request.scope)
         return QuestionEvidencePacket(
             objectives=request.objectives,
             mode=request.mode,
@@ -240,6 +235,17 @@ class QuestionEvidencePacketBuilder:
             raise QuestionEvidenceError("retrieval provider returned an invalid result")
         if not isinstance(result.evidence, tuple):
             raise QuestionEvidenceError("retrieval evidence must be a tuple")
+        if len(result.evidence) > MAX_EVIDENCE_UNITS:
+            raise QuestionEvidenceError("retrieval result must contain at most 16 refs")
+        if type(result.insufficient_evidence) is not bool:
+            raise QuestionEvidenceError("retrieval insufficiency flag must be a bool")
+        if (
+            not isinstance(result.provider_request_id, str)
+            or not result.provider_request_id.strip()
+        ):
+            raise QuestionEvidenceError("retrieval provider request id must be nonblank")
+        for ref in result.evidence:
+            _validate_ref_shape(ref)
         return result
 
     def _merge_result(
@@ -301,9 +307,13 @@ class QuestionEvidencePacketBuilder:
                 "provider evidence locator does not match canonical locator"
             )
         expected_checksum = f"sha256:{unit.content_sha256}"
-        if ref.checksum != expected_checksum or sha256_text(ref.excerpt) != unit.content_sha256:
+        if (
+            ref.excerpt != unit.normalized_text
+            or ref.checksum != expected_checksum
+            or sha256_text(ref.excerpt) != unit.content_sha256
+        ):
             raise QuestionEvidenceError(
-                "provider evidence checksum does not match canonical content"
+                "provider evidence excerpt or checksum does not match canonical content"
             )
         if unit.authority_class is AuthorityClass.GENERATED_ARTIFACT:
             raise QuestionEvidenceError("generated artifact cannot provide question authority")
@@ -318,6 +328,28 @@ class QuestionEvidencePacketBuilder:
         if not _normalized_text(unit.normalized_text):
             raise QuestionEvidenceError("canonical evidence text must not be blank")
         return unit
+
+    def _revalidate_selected(
+        self,
+        selected: tuple[_ResolvedEvidence, ...],
+        scope: RetrievalScope,
+    ) -> None:
+        for item in selected:
+            unit = item.unit
+            current = self._resolve_ref(
+                EvidenceRef(
+                    evidence_id=unit.evidence_id,
+                    source_revision_id=unit.source_revision_id,
+                    authority_class=unit.authority_class,
+                    locator_kind=unit.locator.kind.value,
+                    locator_value=unit.locator.value,
+                    excerpt=unit.normalized_text,
+                    checksum=f"sha256:{unit.content_sha256}",
+                ),
+                scope,
+            )
+            if current != unit:
+                raise QuestionEvidenceError("canonical evidence changed during packet build")
 
 
 def _group_evidence(
@@ -380,60 +412,83 @@ def _group_evidence(
 
 
 def _select_bounded(
-    candidates: tuple[QuestionPacketEvidence, ...],
+    candidates: tuple[_ResolvedEvidence, ...],
     objectives: tuple[QuestionObjective, ...],
-) -> tuple[QuestionPacketEvidence, ...]:
-    selected: list[QuestionPacketEvidence] = []
-    selected_signatures: set[str] = set()
-    character_count = 0
-
-    def add_first(predicate: object, message: str) -> None:
-        nonlocal character_count
-        for candidate in candidates:
-            if candidate.claim_signature in selected_signatures:
-                if _matches(candidate, predicate):
-                    return
-                continue
-            if not _matches(candidate, predicate):
-                continue
-            if (
-                len(selected) < MAX_EVIDENCE_UNITS
-                and character_count + len(candidate.normalized_text)
-                <= MAX_EVIDENCE_CHARACTERS
-            ):
-                selected.append(candidate)
-                selected_signatures.add(candidate.claim_signature)
-                character_count += len(candidate.normalized_text)
-                return
-        raise QuestionEvidenceError(message)
-
-    add_first(
-        "correct-answer",
-        "bounded packet cannot retain correct-answer concept evidence",
+) -> tuple[tuple[_ResolvedEvidence, ...], tuple[str, ...]]:
+    ordered = tuple(sorted(candidates, key=_resolved_sort_key))
+    role_options = (
+        tuple(item for item in ordered if item.supports_correct_answer_concept),
+        *(tuple(item for item in ordered if objective.objective_id in item.objective_ids)
+          for objective in objectives),
     )
-    for objective in objectives:
-        add_first(
-            objective.objective_id,
-            f"bounded packet cannot retain evidence for objective {objective.objective_id!r}",
-        )
+    if any(not options for options in role_options):
+        raise QuestionEvidenceError("bounded packet lacks required evidence coverage")
 
-    for candidate in candidates:
-        if candidate.claim_signature in selected_signatures:
+    best: tuple[_ResolvedEvidence, ...] | None = None
+    best_key: tuple[int, int, tuple[str, ...]] | None = None
+    # ponytail: at most 16**5 combinations; replace with DP if the objective cap grows.
+    for choices in product(*role_options):
+        unique = {item.unit.evidence_id: item for item in choices}
+        required = tuple(sorted(unique.values(), key=_resolved_sort_key))
+        if _evidence_characters(required) > MAX_EVIDENCE_CHARACTERS:
+            continue
+        key = (
+            -sum(item.unit.source_priority for item in required),
+            len(required),
+            tuple(sorted(unique)),
+        )
+        if best_key is None or key < best_key:
+            best = required
+            best_key = key
+    if best is None:
+        raise QuestionEvidenceError("bounded packet cannot retain required evidence coverage")
+
+    selected = {item.unit.evidence_id: item for item in best}
+    selected_signatures = {
+        _claim_signature(item.unit.normalized_text) for item in selected.values()
+    }
+    character_count = _evidence_characters(tuple(selected.values()))
+    for item in ordered:
+        evidence_id = item.unit.evidence_id
+        if evidence_id in selected:
             continue
         if len(selected) >= MAX_EVIDENCE_UNITS:
+            break
+        signature = _claim_signature(item.unit.normalized_text)
+        added_characters = (
+            0
+            if signature in selected_signatures
+            else len(_normalized_text(item.unit.normalized_text))
+        )
+        if character_count + added_characters > MAX_EVIDENCE_CHARACTERS:
             continue
-        if character_count + len(candidate.normalized_text) > MAX_EVIDENCE_CHARACTERS:
-            continue
-        selected.append(candidate)
-        selected_signatures.add(candidate.claim_signature)
-        character_count += len(candidate.normalized_text)
-    return tuple(sorted(selected, key=_packet_sort_key))
+        selected[evidence_id] = item
+        selected_signatures.add(signature)
+        character_count += added_characters
+
+    selected_ids = set(selected)
+    omitted_ids = tuple(
+        sorted(
+            item.unit.evidence_id
+            for item in candidates
+            if item.unit.evidence_id not in selected_ids
+        )
+    )
+    return tuple(sorted(selected.values(), key=_resolved_sort_key)), omitted_ids
 
 
-def _matches(candidate: QuestionPacketEvidence, predicate: object) -> bool:
-    if predicate == "correct-answer":
-        return candidate.supports_correct_answer_concept
-    return isinstance(predicate, str) and predicate in candidate.objective_ids
+def _resolved_sort_key(item: _ResolvedEvidence) -> tuple[int, str]:
+    return (-item.unit.source_priority, item.unit.evidence_id)
+
+
+def _evidence_characters(items: tuple[_ResolvedEvidence, ...]) -> int:
+    by_signature = {
+        _claim_signature(item.unit.normalized_text): _normalized_text(
+            item.unit.normalized_text
+        )
+        for item in items
+    }
+    return sum(len(text) for text in by_signature.values())
 
 
 def _packet_sort_key(unit: QuestionPacketEvidence) -> tuple[int, str, str]:
@@ -457,8 +512,27 @@ def _source_snapshot_hash(evidence: tuple[QuestionPacketEvidence, ...]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+_OPERATOR_TRANSLATION = str.maketrans(
+    {
+        "≤": "<=",
+        "≦": "<=",
+        "≥": ">=",
+        "≧": ">=",
+        "±": "+/-",
+        "−": "-",
+        "‐": "-",
+        "‑": "-",
+        "‒": "-",
+        "–": "-",
+        "—": "-",
+    }
+)
+
+
 def _claim_signature(text: str) -> str:
-    normalized = re.sub(r"[^\w]+", " ", _normalized_text(text).casefold()).strip()
+    comparable = _normalized_text(text).casefold().translate(_OPERATOR_TRANSLATION)
+    tokens = re.findall(r"\d+\.\d+|\w+|<=|>=|[<>=+\-/%]", comparable)
+    normalized = " ".join(tokens)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
@@ -476,3 +550,20 @@ def _require_text_tuple(value: object, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a tuple")
     for item in value:
         _require_text(item, field_name)
+
+
+def _validate_ref_shape(ref: object) -> None:
+    if not isinstance(ref, EvidenceRef):
+        raise QuestionEvidenceError("retrieval returned an invalid evidence reference")
+    for value in (
+        ref.evidence_id,
+        ref.source_revision_id,
+        ref.locator_kind,
+        ref.locator_value,
+        ref.excerpt,
+        ref.checksum,
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise QuestionEvidenceError("retrieval evidence reference fields must be nonblank")
+    if not isinstance(ref.authority_class, AuthorityClass):
+        raise QuestionEvidenceError("retrieval evidence authority must be an AuthorityClass")
