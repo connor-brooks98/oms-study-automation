@@ -245,8 +245,17 @@ def test_evidence_remap_is_append_only_and_preserves_original_objective() -> Non
             reason="Source revision superseded after review.",
             created_at="2026-08-25T14:00:00+00:00",
         )
+        retry = repository.record_evidence_remap(
+            "obj-hit",
+            remap_id="remap-hit-v2",
+            source_revision_ids=(second_revision,),
+            evidence_ids=(second_unit,),
+            reason="Source revision superseded after review.",
+            created_at="2026-08-25T14:00:00+00:00",
+        )
 
         assert remap.objective_id == "obj-hit"
+        assert retry == remap
         assert remap.previous_evidence_ids == (first_unit,)
         assert remap.evidence_ids == (second_unit,)
         assert repository.evidence_remaps("obj-hit") == (remap,)

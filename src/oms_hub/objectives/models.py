@@ -54,9 +54,7 @@ def _utc_timestamp(value: object, field_name: str) -> str:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
-        raise ValueError(
-            f"{field_name} must be a timezone-aware UTC timestamp"
-        ) from error
+        raise ValueError(f"{field_name} must be a timezone-aware UTC timestamp") from error
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
         raise ValueError(f"{field_name} must be a timezone-aware UTC timestamp")
     return parsed.isoformat()
@@ -109,7 +107,9 @@ class LearningObjective:
             approved_at = approved_at or self.created_at
         if self.status is ObjectiveStatus.RETIRED:
             retired_at = retired_at or self.created_at
-        if self.status is ObjectiveStatus.PROPOSED and (approved_at or retired_at):
+        if self.status is not ObjectiveStatus.RETIRED and retired_at is not None:
+            raise ValueError("retired_at requires retired status")
+        if self.status is ObjectiveStatus.PROPOSED and approved_at:
             raise ValueError("proposed objectives cannot have approval or retirement timestamps")
         if approved_at is not None:
             approved_at = _utc_timestamp(approved_at, "approved_at")
@@ -151,4 +151,29 @@ class ObjectiveEvidenceLink:
     def __post_init__(self) -> None:
         for field_name in ("objective_id", "source_revision_id", "evidence_id"):
             object.__setattr__(self, field_name, _required(getattr(self, field_name), field_name))
+        object.__setattr__(self, "created_at", _utc_timestamp(self.created_at, "created_at"))
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectiveEvidenceRemap:
+    remap_id: str
+    objective_id: str
+    previous_evidence_ids: tuple[str, ...]
+    source_revision_ids: tuple[str, ...]
+    evidence_ids: tuple[str, ...]
+    reason: str
+    created_at: str = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        for field_name in ("remap_id", "objective_id", "reason"):
+            object.__setattr__(self, field_name, _required(getattr(self, field_name), field_name))
+        for field_name in (
+            "previous_evidence_ids",
+            "source_revision_ids",
+            "evidence_ids",
+        ):
+            values = _identifiers(getattr(self, field_name), field_name)
+            if not values:
+                raise ValueError(f"{field_name} must not be empty")
+            object.__setattr__(self, field_name, values)
         object.__setattr__(self, "created_at", _utc_timestamp(self.created_at, "created_at"))
