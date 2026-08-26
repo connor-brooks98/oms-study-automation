@@ -78,7 +78,9 @@ class QuestionFlagSubmission(BaseModel):
     ]
 
 
-@router.get("/quizzes/assets/player.js", include_in_schema=False)
+@router.api_route(
+    "/quizzes/assets/player.js", methods=["GET", "HEAD"], include_in_schema=False
+)
 def player_javascript() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz.js",
@@ -87,7 +89,9 @@ def player_javascript() -> FileResponse:
     )
 
 
-@router.get("/quizzes/assets/player.css", include_in_schema=False)
+@router.api_route(
+    "/quizzes/assets/player.css", methods=["GET", "HEAD"], include_in_schema=False
+)
 def player_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz.css",
@@ -96,7 +100,9 @@ def player_styles() -> FileResponse:
     )
 
 
-@router.get("/quizzes/assets/library.js", include_in_schema=False)
+@router.api_route(
+    "/quizzes/assets/library.js", methods=["GET", "HEAD"], include_in_schema=False
+)
 def library_javascript() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz_library.js",
@@ -105,7 +111,9 @@ def library_javascript() -> FileResponse:
     )
 
 
-@router.get("/quizzes/assets/library.css", include_in_schema=False)
+@router.api_route(
+    "/quizzes/assets/library.css", methods=["GET", "HEAD"], include_in_schema=False
+)
 def library_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz_library.css",
@@ -114,7 +122,9 @@ def library_styles() -> FileResponse:
     )
 
 
-@router.get("/quizzes/assets/tokens.css", include_in_schema=False)
+@router.api_route(
+    "/quizzes/assets/tokens.css", methods=["GET", "HEAD"], include_in_schema=False
+)
 def design_tokens() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "tokens.css",
@@ -123,7 +133,9 @@ def design_tokens() -> FileResponse:
     )
 
 
-@router.get("/quizzes/assets/reset.css", include_in_schema=False)
+@router.api_route(
+    "/quizzes/assets/reset.css", methods=["GET", "HEAD"], include_in_schema=False
+)
 def reset_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "reset.css",
@@ -132,7 +144,9 @@ def reset_styles() -> FileResponse:
     )
 
 
-@router.get("/quizzes/assets/study-hub.css", include_in_schema=False)
+@router.api_route(
+    "/quizzes/assets/study-hub.css", methods=["GET", "HEAD"], include_in_schema=False
+)
 def study_hub_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "study-hub.css",

@@ -564,6 +564,18 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
         reset = client.get("/public/quizzes/assets/reset.css")
         tokens = client.get("/public/quizzes/assets/tokens.css")
         shared = client.get("/public/quizzes/assets/study-hub.css")
+        head_responses = [
+            client.head(f"/public/quizzes/assets/{name}")
+            for name in (
+                "player.js",
+                "player.css",
+                "library.js",
+                "library.css",
+                "reset.css",
+                "tokens.css",
+                "study-hub.css",
+            )
+        ]
 
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
@@ -577,6 +589,7 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
     assert tokens.headers["content-type"].startswith("text/css")
     assert shared.status_code == 200
     assert shared.headers["content-type"].startswith("text/css")
+    assert all(response.status_code == 200 for response in head_responses)
 
 
 def test_public_quiz_player_markup_uses_content_versioned_assets(tmp_path):
