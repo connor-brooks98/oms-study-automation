@@ -331,7 +331,13 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     assert all("generation_config" not in body for body in query_bodies)
     assert query_bodies[0]["model"] == "gemini-3.7-flash"
     assert query_bodies[0]["store"] is False
-    assert query_bodies[0]["response_mime_type"] == "application/json"
+    assert set(query_bodies[0]) == {
+        "input",
+        "model",
+        "response_format",
+        "store",
+        "tools",
+    }
     assert query_bodies[0]["response_format"] == {
         "type": "text",
         "mime_type": "application/json",
