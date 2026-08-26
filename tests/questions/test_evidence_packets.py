@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text as sql_text
 
 from oms_hub.db import Database
 from oms_hub.knowledge.ids import sha256_text
@@ -21,6 +22,7 @@ from oms_hub.knowledge.repository import KnowledgeRepository
 from oms_hub.providers.contracts import (
     AuthorityClass,
     EvidenceRef,
+    ProviderHealth,
     RetrievalRequest,
     RetrievalResult,
     RetrievalScope,
@@ -28,6 +30,7 @@ from oms_hub.providers.contracts import (
 )
 from oms_hub.questions.evidence_packets import (
     QuestionEvidenceError,
+    QuestionEvidencePacket,
     QuestionEvidencePacketBuilder,
     QuestionGenerationRequest,
     QuestionObjective,
@@ -49,6 +52,14 @@ class FakeRetrievalProvider:
     async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
         self.requests.append(request)
         return self.by_query.get(request.query, self.default)
+
+    async def health(self) -> ProviderHealth:
+        return ProviderHealth(
+            provider="synthetic",
+            ready=True,
+            detail="offline fixture",
+            checked_at_iso="2026-08-25T12:00:00+00:00",
+        )
 
 
 @pytest.fixture
@@ -111,12 +122,17 @@ def _add_evidence(
     file_sha256 = sha256_text(f"file-{evidence_id}")
     revision_id = make_source_revision_id(source_document_id, file_sha256)
     repository.create_source(source_document_id, authority)
+    stored_state = (
+        SourceRevisionState.READY
+        if revision_state is SourceRevisionState.RETIRED
+        else revision_state
+    )
     repository.create_revision(
         SourceRevision(
             source_document_id=source_document_id,
             source_revision_id=revision_id,
             file_sha256=file_sha256,
-            state=revision_state,
+            state=stored_state,
         )
     )
     unit = EvidenceUnit(
@@ -133,6 +149,12 @@ def _add_evidence(
         retired_at=retired_at,
     )
     repository.put_evidence_units(revision_id, (unit,))
+    if revision_state is SourceRevisionState.RETIRED:
+        with repository.database.engine.begin() as connection:
+            connection.execute(
+                sql_text("UPDATE source_revisions SET state = 'retired' WHERE id = :id"),
+                {"id": revision_id},
+            )
     return EvidenceRef(
         evidence_id=evidence_id,
         source_revision_id=revision_id,
@@ -155,7 +177,7 @@ def _result(*refs: EvidenceRef, insufficient: bool = False) -> RetrievalResult:
 def _build(
     builder: QuestionEvidencePacketBuilder,
     request: QuestionGenerationRequest,
-):
+) -> QuestionEvidencePacket:
     return asyncio.run(builder.build(request))
 
 
@@ -238,7 +260,10 @@ def test_refuses_more_than_four_integrated_objectives(
     ref = _add_evidence(repository, evidence_id="ev-a")
     provider = FakeRetrievalProvider(_result(ref))
     request = _request(
-        objectives=tuple(QuestionObjective(f"obj-{index}", f"Objective {index}") for index in range(5)),
+        objectives=tuple(
+            QuestionObjective(f"obj-{index}", f"Objective {index}")
+            for index in range(5)
+        ),
         mode=QuestionMode.INTEGRATED_BOARD_STYLE,
     )
 
@@ -324,21 +349,31 @@ def test_refuses_unknown_evidence(repository: KnowledgeRepository) -> None:
 
 
 @pytest.mark.parametrize(
-    ("change", "message"),
+    ("field_name", "field_value", "message"),
     [
-        ({"checksum": "0" * 64}, "checksum"),
-        ({"checksum": f"sha256:{'0' * 64}"}, "checksum"),
-        ({"locator_value": "wrong-locator"}, "locator"),
-        ({"authority_class": AuthorityClass.PUBLISHED_JOURNAL}, "authority"),
+        ("checksum", "0" * 64, "checksum"),
+        ("checksum", f"sha256:{'0' * 64}", "checksum"),
+        ("locator_value", "wrong-locator", "locator"),
+        ("authority_class", AuthorityClass.PUBLISHED_JOURNAL, "authority"),
     ],
 )
 def test_refuses_provider_canonical_integrity_mismatch(
     repository: KnowledgeRepository,
-    change: dict[str, object],
+    field_name: str,
+    field_value: object,
     message: str,
 ) -> None:
     canonical = _add_evidence(repository, evidence_id="ev-course")
-    mismatched = replace(canonical, **change)
+    if field_name == "authority_class":
+        assert isinstance(field_value, AuthorityClass)
+        mismatched = replace(canonical, authority_class=field_value)
+    elif field_name == "locator_value":
+        assert isinstance(field_value, str)
+        mismatched = replace(canonical, locator_value=field_value)
+    else:
+        assert field_name == "checksum"
+        assert isinstance(field_value, str)
+        mismatched = replace(canonical, checksum=field_value)
 
     with pytest.raises(QuestionEvidenceError, match=message):
         _build(

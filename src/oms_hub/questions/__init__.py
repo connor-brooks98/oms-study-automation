@@ -1,5 +1,14 @@
 """Source-grounded board-question domain contracts."""
 
+from oms_hub.questions.evidence_packets import (
+    QuestionEvidenceError,
+    QuestionEvidenceLocator,
+    QuestionEvidencePacket,
+    QuestionEvidencePacketBuilder,
+    QuestionGenerationRequest,
+    QuestionObjective,
+    QuestionPacketEvidence,
+)
 from oms_hub.questions.models import (
     BoardQuestionDraft,
     QuestionClaim,
@@ -20,6 +29,13 @@ from oms_hub.questions.resolution import (
 
 __all__ = (
     "BoardQuestionDraft",
+    "QuestionEvidenceError",
+    "QuestionEvidenceLocator",
+    "QuestionEvidencePacket",
+    "QuestionEvidencePacketBuilder",
+    "QuestionGenerationRequest",
+    "QuestionObjective",
+    "QuestionPacketEvidence",
     "QuestionClaim",
     "QuestionClaimRole",
     "QuestionMode",
