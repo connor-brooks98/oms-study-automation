@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -155,15 +156,19 @@ class _SdkFiles:
 
 
 class _SdkOperations:
-    def __init__(self) -> None:
+    def __init__(self, *, error_status: int | None = None, delay: float = 0.0) -> None:
         self.calls: list[object] = []
+        self.error_status = error_status
+        self.delay = delay
 
     async def get(self, operation: object) -> object:
         self.calls.append(operation)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         return SimpleNamespace(
             name="operations/sdk-operation",
             done=True,
-            error=None,
+            error={"code": self.error_status} if self.error_status is not None else None,
             response=SimpleNamespace(
                 document_name="fileSearchStores/sdk-store/documents/sdk-document"
             ),
@@ -189,6 +194,13 @@ class _SdkModels:
                     ("exam_id", self.smoke.SYNTHETIC_EXAM_ID),
                     ("lecture_id", self.smoke.SYNTHETIC_LECTURE_ID),
                     ("source_revision_id", self.smoke.SYNTHETIC_REVISION_ID),
+                    ("authority_class", "course_material"),
+                    ("input_key", "pdf"),
+                    ("input_kind", "pdf"),
+                    (
+                        "input_sha256",
+                        hashlib.sha256(self.smoke.synthetic_pdf_bytes()).hexdigest(),
+                    ),
                 )
             ]
             chunks = [
@@ -214,10 +226,19 @@ class _SdkModels:
 
 
 class _SdkAio:
-    def __init__(self, smoke: ModuleType) -> None:
+    def __init__(
+        self,
+        smoke: ModuleType,
+        *,
+        operation_error_status: int | None = None,
+        operation_delay: float = 0.0,
+    ) -> None:
         self.file_search_stores = _SdkStores()
         self.files = _SdkFiles()
-        self.operations = _SdkOperations()
+        self.operations = _SdkOperations(
+            error_status=operation_error_status,
+            delay=operation_delay,
+        )
         self.models = _SdkModels(smoke)
         self.closed = 0
 
@@ -226,8 +247,18 @@ class _SdkAio:
 
 
 class _SdkClient:
-    def __init__(self, smoke: ModuleType) -> None:
-        self.aio = _SdkAio(smoke)
+    def __init__(
+        self,
+        smoke: ModuleType,
+        *,
+        operation_error_status: int | None = None,
+        operation_delay: float = 0.0,
+    ) -> None:
+        self.aio = _SdkAio(
+            smoke,
+            operation_error_status=operation_error_status,
+            operation_delay=operation_delay,
+        )
 
 
 class _FakeSecrets:
@@ -347,6 +378,55 @@ def test_authorized_entrypoint_fails_closed_when_stored_key_is_missing(
     assert secrets.calls == ["gemini-api-key"]
 
 
+def test_completed_operation_error_keeps_safe_provider_classification() -> None:
+    smoke = _load_smoke()
+
+    def sdk_factory(**kwargs: object) -> _SdkClient:
+        del kwargs
+        return _SdkClient(smoke, operation_error_status=429)
+
+    session = smoke.GoogleGenaiSmokeSession("synthetic-sdk-key", sdk_factory=sdk_factory)
+
+    with pytest.raises(smoke.GeminiProviderError) as raised:
+        asyncio.run(session.wait_for_import("operations/sdk-operation"))
+
+    assert type(raised.value).__name__ == "GeminiQuotaError"
+    assert "429" not in str(raised.value)
+
+
+def test_operation_poll_is_bounded_by_remaining_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _load_smoke()
+    ticks = iter((0.0, 899.999))
+    monkeypatch.setattr(smoke, "monotonic", lambda: next(ticks))
+
+    def sdk_factory(**kwargs: object) -> _SdkClient:
+        del kwargs
+        return _SdkClient(smoke, operation_delay=0.02)
+
+    session = smoke.GoogleGenaiSmokeSession("synthetic-sdk-key", sdk_factory=sdk_factory)
+
+    with pytest.raises(smoke.SmokeTemporaryFailure, match="timed out"):
+        asyncio.run(session.wait_for_import("operations/sdk-operation"))
+
+
+def test_primary_provider_failure_wins_when_cleanup_also_fails() -> None:
+    smoke = _load_smoke()
+
+    class BodyAndCleanupFailure(_FakeSession):
+        async def delete_file(self, file_name: str) -> None:
+            self.calls.append(("delete_file", file_name))
+            raise smoke.SmokeContractError("synthetic cleanup failure")
+
+    session = BodyAndCleanupFailure(smoke, fail_import=True)
+
+    with pytest.raises(smoke.SmokeTemporaryFailure, match="temporary"):
+        asyncio.run(smoke.run_contract_smoke(session))
+
+    assert [name for name, _ in session.calls][-2:] == ["delete_file", "delete_store"]
+
+
 def _clock() -> Iterator[float]:
     yield 100.0
     yield 101.25
@@ -364,7 +444,12 @@ def test_offline_fake_proves_full_smoke_sequence_and_redacted_record() -> None:
     assert record["document_types"] == ["pdf"]
     assert record["citation"]["page_number"] == 1
     assert record["negative_scope_retrieved"] is False
-    assert record["structured_output"] == {"answer": smoke.SYNTHETIC_FACT, "supported": True}
+    assert record["structured_output"] == {
+        "schema": "SmokeAnswer",
+        "validated": True,
+        "answer_sha256": hashlib.sha256(smoke.SYNTHETIC_FACT.encode("utf-8")).hexdigest(),
+    }
+    assert smoke.SYNTHETIC_FACT not in encoded
     assert record["thinking_configuration"] == "omitted"
     assert record["duration_ms"] == 1250
     assert record["usage"] == {
