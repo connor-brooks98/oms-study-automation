@@ -13,6 +13,7 @@ from oms_hub.objectives.models import (
     LearningObjective,
     ObjectiveEdge,
     ObjectiveEdgeType,
+    ObjectiveEvidenceLink,
     ObjectiveStatus,
 )
 from oms_hub.objectives.repository import ObjectiveRepository
@@ -97,7 +98,12 @@ def test_repository_round_trips_objective_and_immutable_evidence_links() -> None
         assert repository.create_objective(objective) == objective
         assert repository.get_objective(objective.objective_id) == objective
         assert repository.evidence_links(objective.objective_id) == (
-            objective.evidence_links[0],
+            ObjectiveEvidenceLink(
+                objective_id=objective.objective_id,
+                source_revision_id=revision_id,
+                evidence_id=unit_id,
+                created_at=objective.created_at,
+            ),
         )
         assert not hasattr(repository, "update_objective")
         assert not hasattr(repository, "delete_objective")
