@@ -16,6 +16,28 @@ from oms_hub.transcripts.prompt import ApprovedPrompt
 
 
 @respx.mock
+def test_gemini_connection_test_uses_model_metadata_instead_of_generation():
+    route = respx.get(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            headers={"x-goog-request-id": "gemini-connection"},
+            json={
+                "name": "models/gemini-3.6-flash",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+        )
+    )
+
+    result = GeminiProvider().test_connection("secret", "gemini-3.6-flash")
+
+    assert route.calls.last.request.url.params["key"] == "secret"
+    assert result.model == "gemini-3.6-flash"
+    assert result.request_id == "gemini-connection"
+
+
+@respx.mock
 def test_gemini_provider_sends_generate_content_request_and_parses_usage():
     route = respx.post(
         "https://generativelanguage.googleapis.com/v1beta/models/"

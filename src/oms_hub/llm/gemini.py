@@ -65,16 +65,21 @@ class GeminiProvider:
         api_key: str,
         model: str,
     ) -> ProviderConnection:
-        response = self._request(
-            api_key,
-            model,
-            "Return only the requested text.",
-            "Reply with exactly OK.",
-            max_output_tokens=16,
-            output_schema=None,
+        safe_model = quote(model, safe="-._")
+        response = get_provider_json(
+            self.http,
+            f"{self.base_url}/{safe_model}",
+            provider=self.name,
+            headers={},
+            params={"key": api_key},
         )
-        result = self._clean_result(response, model)
-        return ProviderConnection(self.name, result.model, result.request_id)
+        payload = response_object(response, self.name)
+        methods = payload.get("supportedGenerationMethods")
+        if payload.get("name") != f"models/{model}" or not isinstance(methods, list):
+            raise invalid_response(self.name, response)
+        if "generateContent" not in methods:
+            raise invalid_response(self.name, response)
+        return ProviderConnection(self.name, model, safe_request_id(response))
 
     def generate_text(
         self,
