@@ -1,10 +1,11 @@
 import pytest
 
 from oms_hub.db import Database
-from oms_hub.study_generation.domain import PromptKind
+from oms_hub.study_generation.domain import PromptKind, PromptSnapshot
 from oms_hub.study_generation.prompts import (
     PromptConfigurationError,
     PromptFileService,
+    outline_prompt,
 )
 from oms_hub.study_generation.repository import GenerationRepository
 
@@ -30,6 +31,23 @@ def test_prompt_snapshot_reads_latest_obsidian_content(tmp_path):
     assert second.content == "Create 20 questions"
     assert first.sha256 != second.sha256
     assert second.path == path
+
+
+def test_outline_prompt_preserves_snapshot_and_enforces_lecture_only_length():
+    original = PromptSnapshot(
+        path="Outline Prompt.md",
+        content="List the important facts.",
+        sha256="a" * 64,
+        modified_at="now",
+    )
+
+    bounded = outline_prompt(original)
+
+    assert bounded.path == original.path
+    assert bounded.sha256 == original.sha256
+    assert bounded.content.startswith(original.content)
+    assert "only the selected lecture slides and cleaned transcript" in bounded.content
+    assert "never exceed 5,500 characters" in bounded.content
 
 
 @pytest.mark.parametrize("content", ["", "   "])

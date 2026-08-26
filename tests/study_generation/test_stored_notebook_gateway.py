@@ -44,6 +44,7 @@ class FakeRemote:
 class FakeNotebooks:
     def __init__(self, notebooks):
         self.items = notebooks
+        self.deleted = []
 
     async def list(self):
         return list(self.items)
@@ -52,6 +53,10 @@ class FakeNotebooks:
         created = FakeRemote("nb-created", title)
         self.items.append(created)
         return created
+
+    async def delete(self, notebook_id):
+        self.deleted.append(notebook_id)
+        self.items = [item for item in self.items if item.id != notebook_id]
 
 
 class FakeSources:
@@ -635,6 +640,79 @@ def test_ask_ignores_other_lecture_sources(tmp_path):
 
     assert answer.text == "Selected lecture only"
     assert client.chat.calls[-1]["source_ids"] == ["pdf-2", "txt-2"]
+
+
+def test_generate_uses_disposable_lecture_notebook_without_touching_exam_chat(tmp_path):
+    events = []
+    repository = FakeRepository(events)
+    client = FakeClient([], events)
+    sources_by_notebook = {"nb-1": []}
+
+    class IsolatedSources:
+        async def list(self, notebook_id):
+            return list(sources_by_notebook.get(notebook_id, []))
+
+        async def add_file(self, notebook_id, path, *, wait, title):
+            assert Path(path).is_file()
+            assert wait is True
+            items = sources_by_notebook.setdefault(notebook_id, [])
+            remote = FakeRemote(f"{notebook_id}-source-{len(items) + 1}", title)
+            items.append(remote)
+            return remote
+
+        async def rename(self, notebook_id, source_id, new_title):
+            remote = next(
+                item for item in sources_by_notebook[notebook_id] if item.id == source_id
+            )
+            remote.title = new_title
+            return remote
+
+        async def delete(self, notebook_id, source_id):
+            sources_by_notebook[notebook_id] = [
+                item for item in sources_by_notebook[notebook_id] if item.id != source_id
+            ]
+
+    client.sources = IsolatedSources()
+    gateway = _gateway(tmp_path, client, repository)
+    pdf = _revision(
+        tmp_path / "Lecture 02 - Disease.pdf",
+        2,
+        10,
+        SourceKind.LECTURE_PDF,
+        b"pdf",
+    )
+    transcript = _revision(
+        tmp_path / "Lecture 02 - Disease - Transcript.txt",
+        2,
+        11,
+        SourceKind.CLEANED_TRANSCRIPT,
+        b"transcript",
+    )
+
+    generated = gateway.generate(
+        "Neuro",
+        1,
+        2,
+        pdf,
+        transcript,
+        PromptSnapshot(tmp_path / "Outline.md", "Make the outline", "c" * 64, "now"),
+    )
+
+    assert generated.notebook.id == "nb-1"
+    assert generated.sources.remote_ids == ["nb-1-source-1", "nb-1-source-2"]
+    assert client.chat.calls == [
+        {
+            "notebook_id": "nb-created",
+            "question": "Make the outline",
+            "source_ids": ["nb-created-source-1", "nb-created-source-2"],
+        }
+    ]
+    assert client.notebooks.deleted == ["nb-created"]
+    assert [notebook.id for notebook in client.notebooks.items] == ["nb-1"]
+    assert [source.id for source in sources_by_notebook["nb-1"]] == [
+        "nb-1-source-1",
+        "nb-1-source-2",
+    ]
 
 
 def test_ask_fails_closed_when_selected_remote_is_not_ready(tmp_path):

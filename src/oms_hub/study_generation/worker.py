@@ -29,6 +29,7 @@ from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookGatewayError,
 )
+from oms_hub.study_generation.prompts import outline_prompt
 
 
 class GenerationWorker:
@@ -170,7 +171,7 @@ class GenerationWorker:
             answer = NotebookAnswer(job.notebook_answer)
         else:
             notebook_prompt = (
-                prompt
+                outline_prompt(prompt)
                 if job.kind is GenerationKind.OUTLINE
                 else quiz_prompt(prompt, lecture.subject)
             )

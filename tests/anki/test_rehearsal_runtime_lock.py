@@ -62,10 +62,11 @@ def test_tracked_windows_runtime_lock_is_canonical_and_complete() -> None:
         "distributions_sha256"
     ]
     assert document["distributions_sha256"] == (
-        "efe8c28015f62650e6f9f549066c98773ade4ee4d2039a7b547b147be0fd0318"
+        "935918543673889a694b3a8fcc4cb299c6f3db7ad6de64d72008286c11508fe7"
     )
     locked = {item["name"].casefold(): item["version"] for item in document["distributions"]}
     assert locked["fastapi"] == "0.141.1"
+    assert locked["notebooklm-py"] == "0.8.1"
     assert locked["sqlalchemy"] == "2.0.52"
     assert locked["starlette"] == "1.6.0"
     assert locked["uvicorn"] == "0.52.3"

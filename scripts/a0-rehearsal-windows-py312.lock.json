@@ -38,7 +38,7 @@
     {"name": "msoffcrypto-tool", "version": "6.0.0"},
     {"name": "mypy", "version": "1.20.2"},
     {"name": "mypy_extensions", "version": "1.1.0"},
-    {"name": "notebooklm-py", "version": "0.7.3"},
+    {"name": "notebooklm-py", "version": "0.8.1"},
     {"name": "numpy", "version": "2.5.2"},
     {"name": "olefile", "version": "0.47"},
     {"name": "openpyxl", "version": "3.1.5"},
@@ -82,7 +82,7 @@
     {"name": "websockets", "version": "17.0.1"},
     {"name": "xlsxwriter", "version": "3.2.9"}
   ],
-  "distributions_sha256": "efe8c28015f62650e6f9f549066c98773ade4ee4d2039a7b547b147be0fd0318",
+  "distributions_sha256": "935918543673889a694b3a8fcc4cb299c6f3db7ad6de64d72008286c11508fe7",
   "implementation": "cpython",
   "python_version": "3.12.10",
   "schema_version": 1

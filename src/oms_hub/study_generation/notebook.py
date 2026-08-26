@@ -760,7 +760,48 @@ class StoredNotebookLMGateway:
                     pdf,
                     transcript,
                 )
-                answer = await self._ask(notebook, sources, prompt)
+                temporary_notebook: Any | None = None
+                try:
+                    temporary_notebook = await client.notebooks.create(
+                        f"Study Hub · {notebook.title} · Lecture {lecture_id} · {uuid4()}"
+                    )
+                    selected_ids = []
+                    for source in (pdf, transcript):
+                        uploaded = await client.sources.add_file(
+                            str(temporary_notebook.id),
+                            source.path,
+                            wait=True,
+                            title=source.path.stem,
+                        )
+                        if not _remote_ready(uploaded):
+                            raise SourceIsolationError(
+                                "NotebookLM source did not become ready"
+                            )
+                        selected_ids.append(str(uploaded.id))
+                    if len(set(selected_ids)) != 2:
+                        raise SourceIsolationError(
+                            "exactly two distinct lecture sources are required"
+                        )
+                    result = await client.chat.ask(
+                        str(temporary_notebook.id),
+                        prompt.content,
+                        source_ids=selected_ids,
+                    )
+                    text = getattr(result, "answer", None) or getattr(
+                        result, "text", None
+                    )
+                    if not isinstance(text, str) or not text.strip():
+                        raise RuntimeError("NotebookLM returned an empty answer")
+                    answer = NotebookAnswer(text.strip())
+                finally:
+                    if temporary_notebook is not None:
+                        try:
+                            await client.notebooks.delete(str(temporary_notebook.id))
+                        except Exception as error:  # noqa: BLE001 - cleanup is best effort
+                            logger.warning(
+                                "NotebookLM temporary notebook cleanup failed: %s",
+                                type(error).__name__,
+                            )
                 return NotebookGeneration(notebook, sources, answer)
             finally:
                 _active_client.reset(token)
