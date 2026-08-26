@@ -14,6 +14,11 @@ from oms_hub.objectives.models import ObjectiveEdgeType
 from oms_hub.providers.contracts import RetrievalScope, TruthMode
 
 OBJECTIVE_EXTRACTION_PROMPT_VERSION = "objective-extraction-v1"
+MAX_SOURCE_REVISIONS = 32
+MAX_EVIDENCE_UNITS = 2_000
+MAX_EVIDENCE_TEXT_CHARACTERS = 20_000
+MAX_MODEL_INPUT_CHARACTERS = 200_000
+MAX_PROPOSALS = 500
 
 _OBSERVABLE_VERBS = frozenset(
     {
@@ -37,19 +42,31 @@ _OBSERVABLE_VERBS = frozenset(
 _TOKEN = re.compile(r"[a-z0-9]+")
 
 
-def _required(value: object, field_name: str) -> str:
+def _required(value: object, field_name: str, maximum: int = 200) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must not be blank")
-    return value.strip()
+    normalized = value.strip()
+    if len(normalized) > maximum:
+        raise ValueError(f"{field_name} must contain at most {maximum} characters")
+    return normalized
 
 
-def _identifiers(values: object, field_name: str) -> tuple[str, ...]:
+def _identifiers(
+    values: object,
+    field_name: str,
+    *,
+    maximum: int = 256,
+) -> tuple[str, ...]:
     if not isinstance(values, (tuple, list)):
         raise ValueError(f"{field_name} must be a sequence of identifiers")
+    if len(values) > maximum:
+        raise ValueError(f"{field_name} must contain at most {maximum} identifiers")
     result: list[str] = []
+    seen: set[str] = set()
     for value in values:
         identifier = _required(value, field_name)
-        if identifier not in result:
+        if identifier not in seen:
+            seen.add(identifier)
             result.append(identifier)
     return tuple(result)
 
@@ -100,16 +117,27 @@ class ProposedObjective:
             raise ValueError("concept must be testable")
         object.__setattr__(self, "observable_verb", verb)
         object.__setattr__(self, "concept", concept)
-        object.__setattr__(self, "description", _required(self.description, "description"))
+        object.__setattr__(
+            self,
+            "description",
+            _required(self.description, "description", 1_000),
+        )
         object.__setattr__(self, "course_id", _required(self.course_id, "course_id"))
         if self.exam_id is not None:
             object.__setattr__(self, "exam_id", _required(self.exam_id, "exam_id"))
-        for field_name in ("lecture_ids", "source_revision_ids", "evidence_ids"):
-            values = _identifiers(getattr(self, field_name), field_name)
+        limits = {"lecture_ids": 64, "source_revision_ids": 32, "evidence_ids": 256}
+        for field_name, maximum in limits.items():
+            values = _identifiers(
+                getattr(self, field_name),
+                field_name,
+                maximum=maximum,
+            )
             if field_name in ("source_revision_ids", "evidence_ids") and not values:
                 raise ValueError(f"{field_name} must not be empty")
             object.__setattr__(self, field_name, values)
         links = tuple(self.suggested_links)
+        if len(links) > 32:
+            raise ValueError("suggested_links must contain at most 32 links")
         if not all(isinstance(link, SuggestedObjectiveLink) for link in links):
             raise ValueError("suggested_links must contain suggested link records")
         object.__setattr__(self, "suggested_links", tuple(dict.fromkeys(links)))
@@ -166,11 +194,16 @@ class ObjectiveExtractor:
         self.consolidator = consolidator
 
     def extract(self, source_revision_ids: tuple[str, ...]) -> tuple[ProposedObjective, ...]:
-        revision_ids = _identifiers(source_revision_ids, "source_revision_ids")
+        revision_ids = _identifiers(
+            source_revision_ids,
+            "source_revision_ids",
+            maximum=MAX_SOURCE_REVISIONS,
+        )
         if not revision_ids:
             raise ValueError("source_revision_ids must not be empty")
         units: dict[str, EvidenceUnit] = {}
         inputs: list[ObjectiveEvidenceInput] = []
+        input_characters = 0
         for revision_id in revision_ids:
             revision = self.knowledge.get_revision(revision_id)
             if revision is None:
@@ -180,6 +213,26 @@ class ObjectiveExtractor:
             for unit in self.knowledge.list_evidence(revision_id):
                 if not unit.supports_medical_claims or unit.retired_at is not None:
                     continue
+                if len(inputs) >= MAX_EVIDENCE_UNITS:
+                    raise ValueError(
+                        f"objective extraction accepts at most {MAX_EVIDENCE_UNITS} evidence units"
+                    )
+                if len(unit.normalized_text) > MAX_EVIDENCE_TEXT_CHARACTERS:
+                    raise ValueError(
+                        "objective extraction evidence text exceeds the per-unit limit"
+                    )
+                metadata = (
+                    unit.evidence_id,
+                    unit.source_revision_id,
+                    unit.course_id or "",
+                    unit.exam_id or "",
+                    unit.lecture_id or "",
+                )
+                if any(len(value) > 200 for value in metadata):
+                    raise ValueError("objective extraction evidence metadata exceeds its limit")
+                input_characters += len(unit.normalized_text) + sum(map(len, metadata))
+                if input_characters > MAX_MODEL_INPUT_CHARACTERS:
+                    raise ValueError("objective extraction model input exceeds its limit")
                 units[unit.evidence_id] = unit
                 inputs.append(
                     ObjectiveEvidenceInput(
@@ -198,6 +251,10 @@ class ObjectiveExtractor:
             OBJECTIVE_EXTRACTION_PROMPT_VERSION,
             tuple(inputs),
         )
+        if not isinstance(proposals, tuple):
+            raise ValueError("generator must return a tuple of proposed objectives")
+        if len(proposals) > MAX_PROPOSALS:
+            raise ValueError(f"generator must return at most {MAX_PROPOSALS} proposals")
         validated = tuple(
             self._validate_proposal(proposal, revision_ids, units)
             for proposal in proposals
@@ -243,15 +300,19 @@ class ObjectiveExtractor:
         self,
         proposals: tuple[ProposedObjective, ...],
     ) -> tuple[ProposedObjective, ...]:
-        result: list[ProposedObjective] = []
+        exact: list[ProposedObjective] = []
+        exact_indices: dict[tuple[object, ...], int] = {}
         for proposal in proposals:
-            exact = next(
-                (index for index, item in enumerate(result) if _key(item) == _key(proposal)),
-                None,
-            )
-            if exact is not None:
-                result[exact] = _combine(result[exact], proposal)
-                continue
+            key = _key(proposal)
+            index = exact_indices.get(key)
+            if index is None:
+                exact_indices[key] = len(exact)
+                exact.append(proposal)
+            else:
+                exact[index] = _combine(exact[index], proposal)
+
+        result: list[ProposedObjective] = []
+        for proposal in exact:
             ambiguous = next(
                 (
                     index

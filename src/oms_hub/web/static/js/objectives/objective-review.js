@@ -141,14 +141,38 @@
       host.innerHTML = payload.objectives.map(objectiveCard).join("");
     }
 
+    async function load() {
+      try {
+        await refresh();
+      } catch (error) {
+        host.innerHTML = '<div class="sh-validation" role="alert" aria-live="assertive">'
+          + `${escapeHTML(error.message)} `
+          + '<button class="sh-btn sh-btn--secondary" type="button" '
+          + "data-objective-retry>Retry</button></div>";
+      }
+    }
+
     host.addEventListener("click", async (event) => {
+      const retry = event.target.closest?.("[data-objective-retry]");
+      if (retry) {
+        await load();
+        return;
+      }
       const button = event.target.closest?.("[data-preview-evidence]");
       if (!button) return;
       const preview = button.closest("details")?.querySelector("[data-evidence-preview]");
-      const payload = await pending.run(`evidence:${button.dataset.previewEvidence}`, () => (
-        client.previewEvidence(button.dataset.previewEvidence)
-      ));
-      if (preview) preview.textContent = payload.excerpt || "Preview unavailable";
+      try {
+        const payload = await pending.run(`evidence:${button.dataset.previewEvidence}`, () => (
+          client.previewEvidence(button.dataset.previewEvidence)
+        ));
+        if (preview) preview.textContent = payload.excerpt || "Preview unavailable";
+      } catch (error) {
+        if (preview) {
+          preview.textContent = error.message;
+          preview.setAttribute("role", "alert");
+          preview.setAttribute("aria-live", "assertive");
+        }
+      }
     });
 
     host.addEventListener("submit", async (event) => {
@@ -177,8 +201,8 @@
       }
     });
 
-    refresh();
-    return { client, pending, refresh };
+    const ready = load();
+    return { client, pending, ready, refresh: load };
   }
 
   return {

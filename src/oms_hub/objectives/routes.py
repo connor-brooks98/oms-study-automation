@@ -8,17 +8,21 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from oms_hub.objectives.extraction import MAX_SOURCE_REVISIONS
 from oms_hub.objectives.service import ObjectiveProposalRecord
 
 __all__ = ["build_objective_router"]
 
 
 class ExtractRequest(BaseModel):
-    source_revision_ids: tuple[str, ...] = Field(min_length=1)
+    source_revision_ids: tuple[str, ...] = Field(
+        min_length=1,
+        max_length=MAX_SOURCE_REVISIONS,
+    )
 
 
 class MergeRequest(BaseModel):
-    target_objective_id: str = Field(min_length=1)
+    target_objective_id: str = Field(min_length=1, max_length=200)
 
 
 def build_objective_router(container: Any) -> APIRouter:

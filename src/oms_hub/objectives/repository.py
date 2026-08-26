@@ -242,42 +242,55 @@ class ObjectiveRepository:
         with self.database.engine.connect() as connection:
             connection.exec_driver_sql("BEGIN IMMEDIATE")
             try:
-                row = (
-                    connection.execute(
-                        text("SELECT * FROM learning_objectives WHERE id = :id"),
-                        {"id": objective_id},
-                    )
-                    .mappings()
-                    .first()
-                )
-                if row is None:
-                    raise KeyError(objective_id)
-                stored = _objective_from_row(row)
-                if stored.status is ObjectiveStatus.RETIRED:
-                    connection.commit()
-                    return stored
-                if stored.status is not ObjectiveStatus.APPROVED:
-                    raise ValueError("only approved objectives can be retired")
-                retired = replace(
-                    stored,
-                    status=ObjectiveStatus.RETIRED,
+                retired = self._retire_objective_in_transaction(
+                    connection,
+                    objective_id,
                     retired_at=retired_at,
-                )
-                connection.execute(
-                    text(
-                        "UPDATE learning_objectives SET status = :status, "
-                        "retired_at = :retired_at WHERE id = :id"
-                    ),
-                    {
-                        "id": objective_id,
-                        "status": ObjectiveStatus.RETIRED.value,
-                        "retired_at": retired.retired_at,
-                    },
                 )
                 connection.commit()
             except Exception:
                 connection.rollback()
                 raise
+        return retired
+
+    def _retire_objective_in_transaction(
+        self,
+        connection: Connection,
+        objective_id: str,
+        *,
+        retired_at: str,
+    ) -> LearningObjective:
+        row = (
+            connection.execute(
+                text("SELECT * FROM learning_objectives WHERE id = :id"),
+                {"id": objective_id},
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise KeyError(objective_id)
+        stored = _objective_from_row(row)
+        if stored.status is ObjectiveStatus.RETIRED:
+            return stored
+        if stored.status is not ObjectiveStatus.APPROVED:
+            raise ValueError("only approved objectives can be retired")
+        retired = replace(
+            stored,
+            status=ObjectiveStatus.RETIRED,
+            retired_at=retired_at,
+        )
+        connection.execute(
+            text(
+                "UPDATE learning_objectives SET status = :status, "
+                "retired_at = :retired_at WHERE id = :id"
+            ),
+            {
+                "id": objective_id,
+                "status": ObjectiveStatus.RETIRED.value,
+                "retired_at": retired.retired_at,
+            },
+        )
         return retired
 
     def record_evidence_remap(

@@ -38,11 +38,35 @@ class ObjectiveProposalRecord:
     merged_into_id: str | None = None
 
     def __post_init__(self) -> None:
+        disposition = ObjectiveProposalDisposition(self.disposition)
         object.__setattr__(
             self,
             "disposition",
-            ObjectiveProposalDisposition(self.disposition),
+            disposition,
         )
+        if not self.created_at or not self.updated_at:
+            raise ValueError("proposal review timestamps must not be blank")
+        if disposition is ObjectiveProposalDisposition.PENDING and (
+            self.approved_objective_id is not None or self.merged_into_id is not None
+        ):
+            raise ValueError("pending proposal links are invalid")
+        if disposition is ObjectiveProposalDisposition.APPROVED and (
+            self.approved_objective_id != self.proposal.proposal_id
+            or self.merged_into_id is not None
+        ):
+            raise ValueError("approved proposal must link its objective")
+        if disposition is ObjectiveProposalDisposition.MERGED and (
+            self.approved_objective_id is not None
+            or not self.merged_into_id
+            or self.merged_into_id == self.proposal.proposal_id
+        ):
+            raise ValueError("merged proposal must link a different target")
+        if disposition is ObjectiveProposalDisposition.RETIRED and (
+            self.merged_into_id is not None
+            or self.approved_objective_id
+            not in (None, self.proposal.proposal_id)
+        ):
+            raise ValueError("retired proposal links are invalid")
 
 
 class ObjectiveService:
@@ -74,7 +98,23 @@ class ObjectiveService:
                         FOREIGN KEY (approved_objective_id)
                             REFERENCES learning_objectives (id),
                         FOREIGN KEY (merged_into_id)
-                            REFERENCES objective_proposals (id)
+                            REFERENCES objective_proposals (id),
+                        CHECK (
+                            (disposition = 'pending'
+                                AND approved_objective_id IS NULL
+                                AND merged_into_id IS NULL)
+                            OR (disposition = 'approved'
+                                AND approved_objective_id = id
+                                AND merged_into_id IS NULL)
+                            OR (disposition = 'merged'
+                                AND approved_objective_id IS NULL
+                                AND merged_into_id IS NOT NULL
+                                AND merged_into_id <> id)
+                            OR (disposition = 'retired'
+                                AND merged_into_id IS NULL
+                                AND (approved_objective_id IS NULL
+                                    OR approved_objective_id = id))
+                        )
                     )
                     """
                 )
@@ -239,63 +279,36 @@ class ObjectiveService:
         return merged
 
     def retire(self, proposal_id: str) -> ObjectiveProposalRecord:
-        record = self.get_proposal(proposal_id)
-        if record.disposition is ObjectiveProposalDisposition.RETIRED:
-            return record
-        if record.disposition is ObjectiveProposalDisposition.MERGED:
-            raise ValueError("merged proposals cannot be retired independently")
-        if record.disposition is ObjectiveProposalDisposition.APPROVED:
-            assert record.approved_objective_id is not None
-            self.objectives.retire_objective(
-                record.approved_objective_id,
-                retired_at=self.clock(),
-            )
-            expected = ObjectiveProposalDisposition.APPROVED
-        else:
-            expected = ObjectiveProposalDisposition.PENDING
-        return self._transition(
-            proposal_id,
-            expected,
-            ObjectiveProposalDisposition.RETIRED,
-        )
-
-    def _transition(
-        self,
-        proposal_id: str,
-        expected: ObjectiveProposalDisposition,
-        disposition: ObjectiveProposalDisposition,
-        *,
-        approved_objective_id: str | None = None,
-    ) -> ObjectiveProposalRecord:
         now = self.clock()
         with self._write_connection() as connection:
-            updated = connection.execute(
+            record = _select_record(connection, proposal_id)
+            if record is None:
+                raise KeyError(proposal_id)
+            if record.disposition is ObjectiveProposalDisposition.RETIRED:
+                return record
+            if record.disposition is ObjectiveProposalDisposition.MERGED:
+                raise ValueError("merged proposals cannot be retired independently")
+            if record.disposition is ObjectiveProposalDisposition.APPROVED:
+                assert record.approved_objective_id is not None
+                self.objectives._retire_objective_in_transaction(
+                    connection,
+                    record.approved_objective_id,
+                    retired_at=now,
+                )
+            connection.execute(
                 text(
                     "UPDATE objective_proposals SET disposition = :disposition, "
-                    "approved_objective_id = COALESCE(:approved_objective_id, "
-                    "approved_objective_id), updated_at = :updated_at "
-                    "WHERE id = :id AND disposition = :expected"
+                    "updated_at = :updated_at WHERE id = :id"
                 ),
                 {
                     "id": proposal_id,
-                    "expected": expected.value,
-                    "disposition": disposition.value,
-                    "approved_objective_id": approved_objective_id,
+                    "disposition": ObjectiveProposalDisposition.RETIRED.value,
                     "updated_at": now,
                 },
             )
-            record = _select_record(connection, proposal_id)
-            if updated.rowcount != 1 and not (
-                record is not None
-                and record.disposition is disposition
-                and (
-                    approved_objective_id is None
-                    or record.approved_objective_id == approved_objective_id
-                )
-            ):
-                raise ValueError("proposal changed during review")
-            assert record is not None
-        return record
+            retired = _select_record(connection, proposal_id)
+            assert retired is not None
+        return retired
 
     @contextmanager
     def _write_connection(self) -> Iterator[Connection]:
