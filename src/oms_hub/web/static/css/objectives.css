@@ -1,0 +1,65 @@
+@import url("../tokens.css");
+
+.objective-review {
+  display: grid;
+  gap: var(--sp-4, 1rem);
+}
+
+.objective-review__card {
+  align-items: start;
+  display: grid;
+  gap: var(--sp-4, 1rem);
+}
+
+.objective-review__summary {
+  display: grid;
+  gap: var(--sp-2, 0.5rem);
+}
+
+.objective-review__summary h3,
+.objective-review__summary p {
+  margin: 0;
+}
+
+.objective-review__evidence {
+  border-block-start: 1px solid var(--border);
+  padding-block-start: var(--sp-3, 0.75rem);
+}
+
+.objective-review__evidence summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.objective-review__evidence[open] .sh-disclose {
+  transform: rotate(90deg);
+}
+
+.objective-review__evidence ul {
+  display: grid;
+  gap: var(--sp-2, 0.5rem);
+  list-style: none;
+  padding: 0;
+}
+
+.objective-review__evidence pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 0.4rem);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  padding: var(--sp-3, 0.75rem);
+  white-space: pre-wrap;
+}
+
+.objective-review__actions {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2, 0.5rem);
+}
+
+.objective-review__actions label {
+  display: grid;
+  gap: var(--sp-1, 0.25rem);
+}
