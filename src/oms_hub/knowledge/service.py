@@ -250,11 +250,11 @@ class KnowledgeService:
             raise KnowledgeIntegrityError("stored evidence does not match canonical source")
         _validate_asset_references(stored, parsed.assets)
         ordered_evidence = tuple(sorted(stored, key=_evidence_sort_key))
-        markdown = self._markdown_artifact(source_revision_id, ordered_evidence, pptx.path)
         assets = tuple(sorted(
             (self._asset(source_revision_id, asset, ordered_evidence) for asset in parsed.assets),
             key=lambda asset: asset.asset_id,
         ))
+        markdown = self._markdown_artifact(source_revision_id, ordered_evidence, pptx.path)
         return IndexInputView(
             source_document_id=revision.source_document_id,
             source_revision_id=source_revision_id,

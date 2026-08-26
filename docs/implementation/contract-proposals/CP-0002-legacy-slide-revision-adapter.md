@@ -1,7 +1,8 @@
 # CP-0002: Legacy slide revision adapter contract
 
-Status: proposed and unapplied. This document is not approval, activation, or
-authorization to implement Task 1.6.
+Status: version 1 was approved and implemented for Tasks 1.6-1.8. The version 2
+index-input amendment below is proposed for Sol-1 owner and Sol-2 consumer
+approval before Task 2.6 continues.
 
 ## Request
 
@@ -9,9 +10,9 @@ authorization to implement Task 1.6.
 - Required decider: Program Sol-0.
 - Required consuming review: Sol-2 under the contract-change protocol because
   this adapter produces the scope and source inputs used by provider indexing.
-- Consuming review status: **BLOCK**. Sol-2 requires StoreKey-safe scope IDs, a
-  knowledge-owned indexing input view, and durable supersession before approval.
-- Blocked tasks: 1.6, then 1.7 and Source Trust Gate 2A (1.8).
+- Version 1 consuming review status: **APPROVED** and verified by Gate 2A.
+- Version 2 consuming review status: **PENDING**.
+- Blocked task: 2.6 pending exact-commit owner and consumer review of version 2.
 
 Task 1.6 must adapt existing immutable slide revisions without changing or
 copying their canonical files. The current types expose enough data for a
@@ -196,6 +197,13 @@ conversion fixture before accepting citation previews.
 
 ### 7. Knowledge-owned indexing input view
 
+#### Version 2 amendment (2026-08-26)
+
+Version 2 adds a durable normalized-Markdown input and the minimum asset
+metadata needed for multimodal indexing. This is still an internal frozen
+Python view, not a web/wire schema. The amendment does not alter version 1
+identity, scope, authority, supersession, PPTX, PDF, or evidence semantics.
+
 Task 1.7 must expose this internal, read-only service boundary:
 
 ```python
@@ -218,17 +226,27 @@ exam_id: str
 lecture_id: str
 pptx: CanonicalInputArtifact
 pdf: CanonicalInputArtifact
+markdown: CanonicalInputArtifact
 evidence_units: tuple[EvidenceUnit, ...]
 assets: tuple[IndexAssetView, ...]
 ```
 
 Each frozen `CanonicalInputArtifact` contains opaque `artifact_id`, `role`,
 verified local `path`, `sha256`, and `media_type`. The identities are
-`{source_revision_id}:pptx` and `{source_revision_id}:pdf`; the PPTX checksum is
-the preserved `source_sha256`, and the PDF checksum is the legacy
-`derived_sha256`. Each frozen `IndexAssetView` contains the namespaced asset
-ID, verified path when one exists, media type, SHA-256, and canonical locator.
-Assets are sorted by namespaced asset ID.
+`{source_revision_id}:pptx`, `{source_revision_id}:pdf`, and
+`{source_revision_id}:normalized_markdown`; the PPTX checksum is the preserved
+`source_sha256`, and the PDF checksum is the legacy `derived_sha256`. The
+Markdown artifact is UTF-8 `text/markdown`, rendered deterministically from
+the sorted verified evidence, and atomically stored under the configured index
+input root. It is materialized only after every source, evidence, and asset
+validation succeeds.
+
+Each frozen `IndexAssetView` contains the namespaced asset ID, verified path
+when one exists, media type, SHA-256, canonical locator, optional width and
+height, the parser-provided `visual_semantic` flag, and the ordered IDs of
+evidence units that directly reference the asset. Missing parser metadata uses
+the conservative defaults `None`, `False`, and an empty tuple; the service does
+not infer visual meaning. Assets are sorted by namespaced asset ID.
 
 The service resolves the legacy crosswalk internally, obtains both artifacts
 through the existing authenticated/private artifact boundary, reparses the
@@ -470,15 +488,17 @@ adapter-owned `source_family` as well as authority and course/exam/lecture IDs.
    same ordered locators, evidence IDs, content hashes, and text.
 6. Slide text and speaker notes remain distinct; tables stay single evidence
    units; image-only slides add no generated medical claim text.
-7. Task 1.7 resolves both canonical files, hashes, revision state, course
-   authority, exact scope IDs, stored evidence units, and deterministic assets
-   through `resolve_index_input(source_revision_id)`; slide locator `3`
-   previews PDF page `3` on the existing conversion fixture.
+7. Task 1.7 resolves the canonical PPTX, PDF, and normalized Markdown inputs,
+   their hashes, revision state, course authority, exact scope IDs, stored
+   evidence units, and deterministic assets through
+   `resolve_index_input(source_revision_id)`; slide locator `3` previews PDF
+   page `3` on the existing conversion fixture.
 8. A Sol-2 consumer test receives only `IndexInputView`, successfully builds
    its StoreKey and provider input, and contains no import/call of ingestion or
    catalog repositories and no parsing of `legacy-study-revision:`.
 9. `resolve_index_input` fails closed on nonmatching files, hashes, evidence,
-   authority/scope, assets, or unsupported state and performs zero writes.
+   authority/scope, assets, or unsupported state and performs zero writes,
+   including no normalized-Markdown materialization.
 10. Before/after legacy revision fields and source/PDF file hashes are identical
    after real and dry-run adapter calls.
 11. Repeated backfill creates no duplicates and reports the second complete run
