@@ -144,6 +144,8 @@ def test_management_library_defers_structured_editor_payload_to_owner(tmp_path):
     assert "<fieldset data-payload-question" not in managed.text
     assert "data-add-question" in managed.text
     assert "Open to load this quiz’s questions." in managed.text
+    assert "/static/public_quiz_library.js?v=" in managed.text
+    assert 'src="/public/quizzes/assets/' not in managed.text
 
 
 def test_management_payload_endpoint_returns_answers_only_to_owner(tmp_path):

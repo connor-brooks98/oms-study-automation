@@ -192,6 +192,10 @@
     <p class="reset-message" data-reset-message aria-live="polite"></p>
   </main>
   {% if owner_navigation %}<script src="/static/study_hub_shell.js?v=20260825.12" defer></script>{% endif %}
+  {% if management_mode %}
+  <script src="/static/public_quiz_library.js?v={{ library_asset_version }}" defer></script>
+  {% else %}
   <script src="/public/quizzes/assets/{{ library_asset_version }}/library.js" defer></script>
+  {% endif %}
 </body>
 </html>
