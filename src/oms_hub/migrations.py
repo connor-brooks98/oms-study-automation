@@ -2446,6 +2446,22 @@ def _preflight_current_artifact_uniqueness(database: "Database") -> None:
         )
 
 
+def _has_reconciled_v29_schema(database: "Database") -> bool:
+    """Detect the two historical schema-29 variants before taking the read-only path."""
+    inspector = inspect(database.engine)
+    required_tables = {
+        "notebook_scope_leases",
+        "published_quiz_flags",
+        "studio_source_operations",
+    }
+    if not required_tables <= set(inspector.get_table_names()):
+        return False
+    studio_source_columns = {
+        column["name"] for column in inspector.get_columns("studio_sources")
+    }
+    return {"import_attach_to_notebook", "import_role"} <= studio_source_columns
+
+
 def migrate_database(database: "Database") -> None:
     # A populated current schema is an integrity check, not an opportunity to
     # rewrite persisted identities.  Keep this branch read-only.
@@ -2457,7 +2473,11 @@ def migrate_database(database: "Database") -> None:
             ).scalar_one_or_none()
         if version is not None and version >= 20:
             _validate_required_import_tables(database, version=version)
-        if version is not None and version >= LATEST_SCHEMA_VERSION:
+        if (
+            version is not None
+            and version >= LATEST_SCHEMA_VERSION
+            and _has_reconciled_v29_schema(database)
+        ):
             _validate_import_schema_structure(database, version=version)
             _validate_complete_existing_artifact_graph(database)
             _validate_current_artifact_indexes(database)

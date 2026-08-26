@@ -67,6 +67,35 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
     assert version == LATEST_SCHEMA_VERSION
 
 
+def test_reconciles_the_historical_schema_29_without_losing_its_version(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE notebook_scope_leases"))
+        connection.execute(text("DROP TABLE published_quiz_flags"))
+        connection.execute(text("DROP TABLE studio_source_operations"))
+        connection.execute(text("ALTER TABLE studio_sources DROP COLUMN import_role"))
+        connection.execute(
+            text("ALTER TABLE studio_sources DROP COLUMN import_attach_to_notebook")
+        )
+
+    database.migrate()
+    inspector = inspect(database.engine)
+
+    assert {
+        "notebook_scope_leases",
+        "published_quiz_flags",
+        "studio_source_operations",
+    } <= set(inspector.get_table_names())
+    assert {"import_attach_to_notebook", "import_role"} <= {
+        column["name"] for column in inspector.get_columns("studio_sources")
+    }
+    with database.engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version FROM schema_version WHERE id=1")
+        ).scalar_one() == LATEST_SCHEMA_VERSION
+
+
 def test_v23_adds_public_question_flags_from_v22_idempotently(tmp_path: Path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
