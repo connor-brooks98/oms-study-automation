@@ -727,7 +727,7 @@ async def run_contract_smoke(
         if (
             negative.citations
             or negative_answer.supported
-            or SYNTHETIC_MARKER in negative_answer.answer
+            or negative_answer.answer != ""
         ):
             raise SmokeContractError(
                 "wrong-lecture metadata filter returned supported source content",
