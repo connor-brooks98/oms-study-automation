@@ -2462,6 +2462,26 @@ def _has_reconciled_v29_schema(database: "Database") -> bool:
     return {"import_attach_to_notebook", "import_role"} <= studio_source_columns
 
 
+def _is_deployed_study_hub_v23_schema(database: "Database", version: int | None) -> bool:
+    """Identify the deployed non-Anki schema that independently used version 23."""
+    if version != 23:
+        return False
+    inspector = inspect(database.engine)
+    tables = set(inspector.get_table_names())
+    nuc_tables = {
+        "notebook_scope_leases",
+        "published_quiz_flags",
+        "studio_source_operations",
+    }
+    import_tables = {"existing_artifact_imports", "outline_replacement_reviews"}
+    if not nuc_tables <= tables or import_tables & tables:
+        return False
+    studio_source_columns = {
+        column["name"] for column in inspector.get_columns("studio_sources")
+    }
+    return {"import_attach_to_notebook", "import_role"} <= studio_source_columns
+
+
 def migrate_database(database: "Database") -> None:
     # A populated current schema is an integrity check, not an opportunity to
     # rewrite persisted identities.  Keep this branch read-only.
@@ -2471,7 +2491,10 @@ def migrate_database(database: "Database") -> None:
             version = connection.execute(
                 text("SELECT version FROM schema_version WHERE id=1")
             ).scalar_one_or_none()
-        if version is not None and version >= 20:
+        deployed_study_hub_v23 = _is_deployed_study_hub_v23_schema(
+            database, version
+        )
+        if version is not None and version >= 20 and not deployed_study_hub_v23:
             _validate_required_import_tables(database, version=version)
         if (
             version is not None
@@ -2499,7 +2522,7 @@ def migrate_database(database: "Database") -> None:
             _validate_existing_artifact_graph(database, version=version)
             _validate_current_artifact_indexes(database)
             _validate_outline_replacement_reviews(database)
-        if version == 23:
+        if version == 23 and not deployed_study_hub_v23:
             # A v23 database is already a complete, immutable import graph.
             # Validate it before create_schema can materialize any v24 table.
             _validate_import_schema_structure(database, version=version)

@@ -5,7 +5,8 @@ from sqlalchemy import inspect, text
 
 from oms_hub.db import Database
 from oms_hub.migrations import LATEST_SCHEMA_VERSION
-from oms_hub.models import PublishedQuizModel
+from oms_hub.models import LectureModel, PublishedQuizModel
+from oms_hub.repositories import CatalogRepository, LectureInput
 
 
 def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
@@ -92,6 +93,32 @@ def test_reconciles_the_historical_schema_29_without_losing_its_version(tmp_path
     }
     with database.engine.connect() as connection:
         assert connection.execute(
+            text("SELECT version FROM schema_version WHERE id=1")
+        ).scalar_one() == LATEST_SCHEMA_VERSION
+
+
+def test_reconciles_the_deployed_non_anki_schema_23_without_losing_data(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    lecture_id = CatalogRepository(database).upsert_lecture(
+        LectureInput("Neuro", 1, 7, "Brainstem", "", None)
+    )
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE outline_replacement_reviews"))
+        connection.execute(text("DROP TABLE existing_artifact_imports"))
+        connection.execute(text("UPDATE schema_version SET version=23 WHERE id=1"))
+
+    database.migrate()
+    inspector = inspect(database.engine)
+
+    assert {"existing_artifact_imports", "outline_replacement_reviews"} <= set(
+        inspector.get_table_names()
+    )
+    with database.session() as session:
+        lecture = session.get(LectureModel, lecture_id)
+        assert lecture is not None
+        assert lecture.topic == "Brainstem"
+        assert session.execute(
             text("SELECT version FROM schema_version WHERE id=1")
         ).scalar_one() == LATEST_SCHEMA_VERSION
 
