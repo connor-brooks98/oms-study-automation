@@ -1187,3 +1187,67 @@ def test_exact_pareto_frontier_has_bounded_dominance_work(
     assert dominance_calls <= 5_000
     assert packet.objective_ids == ("obj-a", "obj-b", "obj-c")
     assert sum(len(unit.evidence_ids) for unit in packet.evidence) <= 16
+
+
+def test_contract_maximum_pareto_frontier_avoids_per_insert_tuple_copying(
+    repository: KnowledgeRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    role_names = (
+        "Factor VIII deficiency",
+        "Objective A",
+        "Objective B",
+        "Objective C",
+        "Objective D",
+    )
+    weights = (1, 17, 211, 977, 1_100)
+    by_query: dict[str, RetrievalResult] = {}
+    for role_index, role_name in enumerate(role_names):
+        refs: list[EvidenceRef] = []
+        for variant in range(16):
+            prefix = f"Contract role {role_index} tradeoff {variant}."
+            target_length = 120 + weights[role_index] * variant
+            text = f"{prefix}{'!' * (target_length - len(prefix))}"
+            refs.append(
+                _add_evidence(
+                    repository,
+                    evidence_id=f"ev-contract-role-{role_index}-{variant:02d}",
+                    text=text,
+                    source_priority=target_length,
+                )
+            )
+        by_query[role_name] = _result(*refs)
+    provider = FakeRetrievalProvider(_result(), by_query=by_query)
+    tuple_frontier_elements = 0
+    original_insert = evidence_packets_module._insert_required_state
+
+    def counted_insert(frontier: Any, candidate: Any) -> Any:
+        nonlocal tuple_frontier_elements
+        if isinstance(frontier, tuple):
+            tuple_frontier_elements += len(frontier)
+            if tuple_frontier_elements > 20_000:
+                raise AssertionError(
+                    "contract-maximum Pareto selection copied too many tuple elements"
+                )
+        return original_insert(frontier, candidate)
+
+    monkeypatch.setattr(
+        evidence_packets_module,
+        "_insert_required_state",
+        counted_insert,
+    )
+
+    packet = _build(
+        QuestionEvidencePacketBuilder(provider, repository),
+        _request(
+            objectives=tuple(
+                QuestionObjective(f"obj-{suffix}", f"Objective {suffix.upper()}")
+                for suffix in ("a", "b", "c", "d")
+            ),
+            mode=QuestionMode.INTEGRATED_BOARD_STYLE,
+        ),
+    )
+
+    assert tuple_frontier_elements <= 20_000
+    assert packet.objective_ids == ("obj-a", "obj-b", "obj-c", "obj-d")
+    assert sum(len(unit.evidence_ids) for unit in packet.evidence) <= 16
