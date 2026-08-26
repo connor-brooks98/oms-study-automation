@@ -370,6 +370,9 @@
   };
 
   const initialize = (documentRef, storage) => {
+    const surface = documentRef.querySelector("[data-quiz-library]");
+    if (surface?.dataset.libraryInitialized) return;
+    if (surface) surface.dataset.libraryInitialized = "true";
     consumeReorderFailure(documentRef, browserStorage("sessionStorage"));
     documentRef.querySelectorAll(".disclosure").forEach((button) => {
       button.addEventListener("click", () => setExpanded(button, button.getAttribute("aria-expanded") !== "true"));

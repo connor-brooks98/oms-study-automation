@@ -214,6 +214,7 @@ class FakeLibraryDocument {
     libraryMoveButtons = [],
     orderMoveButtons = [],
     resetMessage,
+    libraryRoot,
   }) {
     this.disclosures = disclosures;
     this.rows = rows;
@@ -223,6 +224,7 @@ class FakeLibraryDocument {
     this.libraryMoveButtons = libraryMoveButtons;
     this.orderMoveButtons = orderMoveButtons;
     this.resetMessage = resetMessage || new FakeLibraryElement();
+    this.libraryRoot = libraryRoot || null;
   }
 
   querySelectorAll(selector) {
@@ -238,6 +240,7 @@ class FakeLibraryDocument {
 
   querySelector(selector) {
     if (selector === "[data-reset-message]") return this.resetMessage;
+    if (selector === "[data-quiz-library]") return this.libraryRoot;
     return null;
   }
 
@@ -265,6 +268,19 @@ test("an already-loaded library initializes immediately", () => {
   documentRef.readyState = "complete";
 
   library.bootstrap(documentRef, makeMemoryStorage());
+
+  assert.equal(disclosure._listeners.click.length, 1);
+});
+
+test("library initialization is idempotent", () => {
+  const disclosure = new FakeLibraryElement();
+  const documentRef = new FakeLibraryDocument({
+    disclosures: [disclosure],
+    libraryRoot: new FakeLibraryElement(),
+  });
+
+  library.initialize(documentRef, makeMemoryStorage());
+  library.initialize(documentRef, makeMemoryStorage());
 
   assert.equal(disclosure._listeners.click.length, 1);
 });
