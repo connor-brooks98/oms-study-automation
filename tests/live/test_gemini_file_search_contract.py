@@ -411,6 +411,23 @@ def test_interaction_citation_must_bind_to_uploaded_file() -> None:
         )
     assert raised.value.reason == "citation_wrong_file"
 
+    annotation = response.steps[0].content[0].annotations[0]
+    annotation.file_name = "task-2-8-synthetic.pdf"
+    annotation.custom_metadata["lecture_id"] = smoke.WRONG_LECTURE_ID
+    with pytest.raises(smoke.SmokeContractError, match="requested scope") as scope:
+        smoke._citations(
+            response,
+            "fileSearchStores/sdk-store",
+            smoke.SmokeScope(
+                smoke.SYNTHETIC_COURSE_ID,
+                smoke.SYNTHETIC_EXAM_ID,
+                smoke.SYNTHETIC_LECTURE_ID,
+            ),
+            "fileSearchStores/sdk-store/documents/sdk-document",
+            "task-2-8-synthetic.pdf",
+        )
+    assert scope.value.reason == "citation_scope_mismatch"
+
 
 def test_interaction_citation_rejects_conflicting_document_uri() -> None:
     smoke = _load_smoke()
@@ -443,7 +460,7 @@ def test_interaction_citation_rejects_conflicting_document_uri() -> None:
         ]
     )
 
-    with pytest.raises(smoke.SmokeContractError, match="wrong document"):
+    with pytest.raises(smoke.SmokeContractError, match="wrong document") as raised:
         smoke._citations(
             response,
             "fileSearchStores/sdk-store",
@@ -455,6 +472,7 @@ def test_interaction_citation_rejects_conflicting_document_uri() -> None:
             "fileSearchStores/sdk-store/documents/sdk-document",
             "task-2-8-synthetic.pdf",
         )
+    assert raised.value.reason == "citation_wrong_document"
 
 
 def test_contract_failure_record_retains_only_allowlisted_reason() -> None:
@@ -475,18 +493,36 @@ def test_contract_failure_record_retains_only_allowlisted_reason() -> None:
 def test_interaction_citation_metadata_and_excerpt_are_bounded() -> None:
     smoke = _load_smoke()
 
-    with pytest.raises(smoke.SmokeContractError, match="metadata was invalid"):
+    with pytest.raises(smoke.SmokeContractError, match="metadata was invalid") as metadata:
         smoke._string_metadata({f"key-{index}": "value" for index in range(17)})
-    with pytest.raises(smoke.SmokeContractError, match="excerpt was invalid"):
+    assert metadata.value.reason == "citation_metadata_invalid"
+    with pytest.raises(smoke.SmokeContractError, match="excerpt was invalid") as long_excerpt:
         smoke._citation_excerpt(
             SimpleNamespace(source="x" * 4097),
             smoke.SYNTHETIC_FACT,
         )
-    with pytest.raises(smoke.SmokeContractError, match="excerpt was invalid"):
+    assert long_excerpt.value.reason == "citation_excerpt_invalid"
+    with pytest.raises(smoke.SmokeContractError, match="excerpt was invalid") as line_break:
         smoke._citation_excerpt(
             SimpleNamespace(source="invalid\nexcerpt"),
             smoke.SYNTHETIC_FACT,
         )
+    assert line_break.value.reason == "citation_excerpt_invalid"
+
+
+def test_positive_query_parser_failures_have_fixed_redacted_reasons() -> None:
+    smoke = _load_smoke()
+
+    with pytest.raises(smoke.SmokeContractError) as missing_excerpt:
+        smoke._citation_excerpt(SimpleNamespace(), None)
+    with pytest.raises(smoke.SmokeContractError) as invalid_page:
+        smoke._optional_page("one")
+    with pytest.raises(smoke.SmokeContractError) as invalid_usage:
+        smoke._optional_count("one")
+
+    assert missing_excerpt.value.reason == "citation_excerpt_unavailable"
+    assert invalid_page.value.reason == "citation_page_invalid"
+    assert invalid_usage.value.reason == "usage_count_invalid"
 
 
 def test_authorized_entrypoint_reads_stored_key_once_without_retaining_it(
