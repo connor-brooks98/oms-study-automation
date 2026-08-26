@@ -111,6 +111,20 @@ def test_repository_round_trips_objective_and_immutable_evidence_links() -> None
         database.close()
 
 
+def test_exact_retry_preserves_objective_after_source_retirement() -> None:
+    database, knowledge, repository = _repositories()
+    try:
+        revision_id, unit_id = _seed_evidence(knowledge)
+        objective = _objective(revision_id, unit_id)
+        repository.create_objective(objective)
+        knowledge.retire_revision(revision_id)
+
+        assert repository.create_objective(objective) == objective
+        assert repository.get_objective(objective.objective_id) == objective
+    finally:
+        database.close()
+
+
 def test_normalized_concept_key_is_unique_within_course() -> None:
     database, knowledge, repository = _repositories()
     try:
