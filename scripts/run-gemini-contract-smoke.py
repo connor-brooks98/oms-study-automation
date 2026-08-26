@@ -847,6 +847,8 @@ def _failure_record(
     }
     if isinstance(error, SmokeContractError) and error.reason is not None:
         record["contract_reason"] = error.reason
+    if isinstance(error, GeminiProviderError) and error.diagnostic_code is not None:
+        record["provider_reason"] = error.diagnostic_code
     return record
 
 

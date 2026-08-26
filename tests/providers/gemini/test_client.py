@@ -5,8 +5,8 @@ import traceback
 from collections.abc import Coroutine
 from typing import Any
 
-import pytest
 import httpx
+import pytest
 from pydantic import SecretStr
 
 from oms_hub.providers.gemini.client import GeminiClientFactory, translate_gemini_error

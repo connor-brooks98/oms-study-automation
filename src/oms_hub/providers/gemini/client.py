@@ -7,6 +7,8 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
+import httpx
+
 from oms_hub.providers.gemini.errors import (
     GeminiAuthenticationError,
     GeminiContractError,
@@ -137,22 +139,32 @@ def translate_gemini_error(exc: Exception) -> GeminiProviderError:
             provider_status_code=status_code,
             provider_request_id=request_id,
         )
-    if isinstance(exc, TimeoutError):
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
         return GeminiTransientError(
             "Gemini operation timed out; resume from the persisted phase.",
             provider_status_code=status_code,
             provider_request_id=request_id,
+            diagnostic_code="timeout",
         )
-    if isinstance(exc, (AttributeError, TypeError, KeyError)):
+    if isinstance(exc, httpx.TransportError):
+        return GeminiTransientError(
+            "Gemini transport failed; retry the persisted phase.",
+            provider_status_code=status_code,
+            provider_request_id=request_id,
+            diagnostic_code="transport_error",
+        )
+    if isinstance(exc, (AttributeError, TypeError, KeyError, ValueError)):
         return GeminiContractError(
             "Gemini SDK response did not match the expected contract.",
             provider_status_code=status_code,
             provider_request_id=request_id,
+            diagnostic_code="sdk_contract",
         )
     return GeminiProviderError(
         "Gemini provider request failed.",
         provider_status_code=status_code,
         provider_request_id=request_id,
+        diagnostic_code="unknown_provider",
     )
 
 
