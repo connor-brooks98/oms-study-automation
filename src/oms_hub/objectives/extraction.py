@@ -132,6 +132,7 @@ class ProposedObjective:
                 field_name,
                 maximum=maximum,
             )
+            values = tuple(sorted(values)) if field_name == "lecture_ids" else values
             if field_name in ("source_revision_ids", "evidence_ids") and not values:
                 raise ValueError(f"{field_name} must not be empty")
             object.__setattr__(self, field_name, values)
