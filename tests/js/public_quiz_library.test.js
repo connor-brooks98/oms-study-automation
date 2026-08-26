@@ -206,6 +206,7 @@ class FakeTitleForm extends FakeLibraryElement {
 
 class FakeLibraryDocument {
   constructor({
+    disclosures = [],
     rows = [],
     resetButtons = [],
     removeButtons = [],
@@ -214,6 +215,7 @@ class FakeLibraryDocument {
     orderMoveButtons = [],
     resetMessage,
   }) {
+    this.disclosures = disclosures;
     this.rows = rows;
     this.resetButtons = resetButtons;
     this.removeButtons = removeButtons;
@@ -224,7 +226,7 @@ class FakeLibraryDocument {
   }
 
   querySelectorAll(selector) {
-    if (selector === ".disclosure") return [];
+    if (selector === ".disclosure") return this.disclosures;
     if (selector === "[data-quiz-row]") return this.rows;
     if (selector === "[data-reset-quiz]") return this.resetButtons;
     if (selector === "[data-remove-quiz]") return this.removeButtons;
@@ -256,6 +258,16 @@ const makeMemoryStorage = () => {
     },
   };
 };
+
+test("an already-loaded library initializes immediately", () => {
+  const disclosure = new FakeLibraryElement();
+  const documentRef = new FakeLibraryDocument({ disclosures: [disclosure] });
+  documentRef.readyState = "complete";
+
+  library.bootstrap(documentRef, makeMemoryStorage());
+
+  assert.equal(disclosure._listeners.click.length, 1);
+});
 
 test("per-quiz reset asks for confirmation and leaves progress untouched when cancelled", () => {
   const storage = makeMemoryStorage();

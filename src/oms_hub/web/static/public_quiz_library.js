@@ -35,6 +35,14 @@
 
   const resetProgress = (storage, token, version) => storage.removeItem(progressKey(token, version));
 
+  const browserStorage = (name) => {
+    try {
+      return root[name];
+    } catch (_error) {
+      return null;
+    }
+  };
+
   const tryResetProgress = (storage, token, version) => {
     try {
       resetProgress(storage, token, version);
@@ -262,7 +270,7 @@
     row,
     directions,
     fetchImpl = root.fetch,
-    sessionStorageRef = root.sessionStorage,
+    sessionStorageRef = browserStorage("sessionStorage"),
   ) => {
     if (!directions.length) return false;
     control.disabled = true;
@@ -362,7 +370,7 @@
   };
 
   const initialize = (documentRef, storage) => {
-    consumeReorderFailure(documentRef, root.sessionStorage);
+    consumeReorderFailure(documentRef, browserStorage("sessionStorage"));
     documentRef.querySelectorAll(".disclosure").forEach((button) => {
       button.addEventListener("click", () => setExpanded(button, button.getAttribute("aria-expanded") !== "true"));
     });
@@ -556,8 +564,16 @@
     refresh();
   };
 
+  const bootstrap = (documentRef, storage = browserStorage("localStorage")) => {
+    if (documentRef.readyState === "loading") {
+      documentRef.addEventListener("DOMContentLoaded", () => initialize(documentRef, storage), { once: true });
+    } else {
+      initialize(documentRef, storage);
+    }
+  };
+
   const api = {
-    initialize, progressKey, progressLabel, progressClass, readProgress, resetProgress,
+    initialize, bootstrap, progressKey, progressLabel, progressClass, readProgress, resetProgress,
     tryResetProgress,
     cookieValue, managementRequest, setExpanded, directionSequence, reorderRequest,
     bindPointerReorder,
@@ -566,5 +582,5 @@
     editorQuestion, loadPayloadEditor,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
-  if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document, root.localStorage), { once: true });
+  if (root.document) bootstrap(root.document);
 })(typeof globalThis === "undefined" ? this : globalThis);
