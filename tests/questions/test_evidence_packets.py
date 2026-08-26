@@ -140,7 +140,7 @@ def _add_evidence(
         locator_kind=unit.locator.kind.value,
         locator_value=unit.locator.value,
         excerpt=text,
-        checksum=unit.content_sha256,
+        checksum=f"sha256:{unit.content_sha256}",
     )
 
 
@@ -327,6 +327,7 @@ def test_refuses_unknown_evidence(repository: KnowledgeRepository) -> None:
     ("change", "message"),
     [
         ({"checksum": "0" * 64}, "checksum"),
+        ({"checksum": f"sha256:{'0' * 64}"}, "checksum"),
         ({"locator_value": "wrong-locator"}, "locator"),
         ({"authority_class": AuthorityClass.PUBLISHED_JOURNAL}, "authority"),
     ],
