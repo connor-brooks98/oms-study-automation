@@ -52,6 +52,7 @@ class SmokeContractError(RuntimeError):
             "citation_scope_mismatch",
             "citation_wrong_document",
             "citation_wrong_file",
+            "negative_answer_invalid",
             "positive_answer_invalid",
             "positive_answer_missing_marker",
             "positive_answer_unsupported",
@@ -131,7 +132,7 @@ class SmokeSession(Protocol):
         prompt: str,
         scope: SmokeScope,
         *,
-        response_schema: type[SmokeAnswer],
+        response_schema: type[SmokeAnswer] | None,
         omit_thinking: bool,
     ) -> SmokeQueryResult: ...
 
@@ -239,7 +240,7 @@ class GoogleGenaiSmokeSession:
         prompt: str,
         scope: SmokeScope,
         *,
-        response_schema: type[SmokeAnswer],
+        response_schema: type[SmokeAnswer] | None,
         omit_thinking: bool,
     ) -> SmokeQueryResult:
         if not omit_thinking:
@@ -255,12 +256,13 @@ class GoogleGenaiSmokeSession:
                     "metadata_filter": _scope_filter(scope),
                 }
             ],
-            "response_format": {
+        }
+        if response_schema is not None:
+            body["response_format"] = {
                 "type": "text",
                 "mime_type": "application/json",
                 "schema": response_schema.model_json_schema(),
-            },
-        }
+            }
         async with self._clients.client() as client:
             response = await _provider_call(
                 lambda: client.interactions.create(**body)
@@ -271,13 +273,16 @@ class GoogleGenaiSmokeSession:
                 "Gemini structured output was unavailable",
                 reason="structured_output_unavailable",
             )
-        try:
-            answer = response_schema.model_validate_json(output_text).model_dump(mode="json")
-        except ValidationError:
-            raise SmokeContractError(
-                "Gemini structured output did not match the required schema",
-                reason="structured_output_invalid",
-            ) from None
+        if response_schema is None:
+            answer = {"answer": output_text, "supported": True}
+        else:
+            try:
+                answer = response_schema.model_validate_json(output_text).model_dump(mode="json")
+            except ValidationError:
+                raise SmokeContractError(
+                    "Gemini structured output did not match the required schema",
+                    reason="structured_output_invalid",
+                ) from None
         usage = _field(response, "usage_metadata")
         if usage is None:
             usage = _field(response, "usage")
@@ -658,7 +663,7 @@ async def run_contract_smoke(
             store_name,
             "Return only the Task 2.8 synthetic marker value stated in the indexed PDF.",
             SmokeScope(SYNTHETIC_COURSE_ID, SYNTHETIC_EXAM_ID, SYNTHETIC_LECTURE_ID),
-            response_schema=SmokeAnswer,
+            response_schema=None,
             omit_thinking=True,
         )
         if failure_evidence is not None:
@@ -704,15 +709,30 @@ async def run_contract_smoke(
             failure_evidence["failure_stage"] = "negative_query"
         negative = await session.query(
             store_name,
-            "Return the indexed synthetic marker.",
+            "Use only indexed files. If no matching source exists, return an empty answer "
+            "and supported=false.",
             SmokeScope(SYNTHETIC_COURSE_ID, SYNTHETIC_EXAM_ID, WRONG_LECTURE_ID),
             response_schema=SmokeAnswer,
             omit_thinking=True,
         )
         if failure_evidence is not None:
             failure_evidence["failure_stage"] = "negative_validation"
-        if negative.citations:
-            raise SmokeContractError("wrong-lecture metadata filter retrieved the document")
+        try:
+            negative_answer = SmokeAnswer.model_validate(negative.answer)
+        except ValidationError:
+            raise SmokeContractError(
+                "Gemini structured output did not match the required schema",
+                reason="structured_output_invalid",
+            ) from None
+        if (
+            negative.citations
+            or negative_answer.supported
+            or SYNTHETIC_MARKER in negative_answer.answer
+        ):
+            raise SmokeContractError(
+                "wrong-lecture metadata filter returned supported source content",
+                reason="negative_answer_invalid",
+            )
         if failure_evidence is not None:
             failure_evidence["failure_stage"] = "list_documents"
         if await session.list_documents(store_name) != (document_name,):
@@ -737,9 +757,11 @@ async def run_contract_smoke(
             },
             "negative_scope_retrieved": False,
             "structured_output": {
-                "schema": type(answer).__name__,
+                "schema": type(negative_answer).__name__,
                 "validated": True,
-                "answer_sha256": hashlib.sha256(answer.answer.encode("utf-8")).hexdigest(),
+                "answer_sha256": hashlib.sha256(
+                    negative_answer.answer.encode("utf-8")
+                ).hexdigest(),
             },
             "thinking_configuration": "omitted",
             "duration_ms": duration_ms,

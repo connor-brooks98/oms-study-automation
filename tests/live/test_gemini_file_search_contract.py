@@ -924,7 +924,7 @@ def test_offline_fake_proves_full_smoke_sequence_and_redacted_record() -> None:
     assert record["structured_output"] == {
         "schema": "SmokeAnswer",
         "validated": True,
-        "answer_sha256": hashlib.sha256(smoke.SYNTHETIC_FACT.encode("utf-8")).hexdigest(),
+        "answer_sha256": hashlib.sha256(b"").hexdigest(),
     }
     assert smoke.SYNTHETIC_FACT not in encoded
     assert record["thinking_configuration"] == "omitted"
