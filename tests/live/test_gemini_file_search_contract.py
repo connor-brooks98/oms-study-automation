@@ -7,7 +7,7 @@ import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -104,6 +104,247 @@ class _FakeSession:
 
     async def delete_store(self, store_name: str) -> None:
         self.calls.append(("delete_store", store_name))
+
+
+class _SdkDocuments:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    async def list(self, *, parent: str) -> tuple[object, ...]:
+        self.calls.append(("list", parent))
+        return (SimpleNamespace(name="fileSearchStores/sdk-store/documents/sdk-document"),)
+
+    async def delete(self, *, name: str, config: object) -> None:
+        self.calls.append(("delete", (name, config)))
+
+
+class _SdkStores:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+        self.documents = _SdkDocuments()
+
+    async def create(self, *, config: object) -> object:
+        self.calls.append(("create", config))
+        return SimpleNamespace(name="fileSearchStores/sdk-store")
+
+    async def import_file(
+        self,
+        *,
+        file_search_store_name: str,
+        file_name: str,
+        config: object,
+    ) -> object:
+        self.calls.append(("import_file", (file_search_store_name, file_name, config)))
+        return SimpleNamespace(name="operations/sdk-operation")
+
+    async def delete(self, *, name: str, config: object) -> None:
+        self.calls.append(("delete", (name, config)))
+
+
+class _SdkFiles:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    async def upload(self, *, file: object, config: object) -> object:
+        content = file.read()
+        self.calls.append(("upload", (content, config)))
+        return SimpleNamespace(name="files/sdk-file")
+
+    async def delete(self, *, name: str) -> None:
+        self.calls.append(("delete", name))
+
+
+class _SdkOperations:
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+
+    async def get(self, operation: object) -> object:
+        self.calls.append(operation)
+        return SimpleNamespace(
+            name="operations/sdk-operation",
+            done=True,
+            error=None,
+            response=SimpleNamespace(
+                document_name="fileSearchStores/sdk-store/documents/sdk-document"
+            ),
+        )
+
+
+class _SdkModels:
+    def __init__(self, smoke: ModuleType) -> None:
+        self.smoke = smoke
+        self.calls: list[tuple[str, object, object]] = []
+
+    async def generate_content(self, *, model: str, contents: object, config: object) -> object:
+        self.calls.append((model, contents, config))
+        file_search = config["tools"][0]["file_search"]
+        if self.smoke.WRONG_LECTURE_ID in file_search["metadata_filter"]:
+            chunks: list[object] = []
+            parsed = self.smoke.SmokeAnswer(answer="", supported=False)
+        else:
+            metadata = [
+                SimpleNamespace(key=key, string_value=value)
+                for key, value in (
+                    ("course_id", self.smoke.SYNTHETIC_COURSE_ID),
+                    ("exam_id", self.smoke.SYNTHETIC_EXAM_ID),
+                    ("lecture_id", self.smoke.SYNTHETIC_LECTURE_ID),
+                    ("source_revision_id", self.smoke.SYNTHETIC_REVISION_ID),
+                )
+            ]
+            chunks = [
+                SimpleNamespace(
+                    retrieved_context=SimpleNamespace(
+                        text=self.smoke.SYNTHETIC_FACT,
+                        custom_metadata=metadata,
+                        file_search_store="fileSearchStores/sdk-store",
+                        page_number=1,
+                    )
+                )
+            ]
+            parsed = self.smoke.SmokeAnswer(answer=self.smoke.SYNTHETIC_FACT, supported=True)
+        return SimpleNamespace(
+            parsed=parsed,
+            candidates=[
+                SimpleNamespace(
+                    grounding_metadata=SimpleNamespace(grounding_chunks=chunks)
+                )
+            ],
+            usage_metadata=SimpleNamespace(prompt_token_count=13, candidates_token_count=8),
+        )
+
+
+class _SdkAio:
+    def __init__(self, smoke: ModuleType) -> None:
+        self.file_search_stores = _SdkStores()
+        self.files = _SdkFiles()
+        self.operations = _SdkOperations()
+        self.models = _SdkModels(smoke)
+        self.closed = 0
+
+    async def aclose(self) -> None:
+        self.closed += 1
+
+
+class _SdkClient:
+    def __init__(self, smoke: ModuleType) -> None:
+        self.aio = _SdkAio(smoke)
+
+
+class _FakeSecrets:
+    def __init__(self, value: str | None) -> None:
+        self.value = value
+        self.calls: list[str] = []
+
+    def get(self, key: str) -> str | None:
+        self.calls.append(key)
+        return self.value
+
+
+def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
+    smoke = _load_smoke()
+    clients: list[_SdkClient] = []
+
+    def sdk_factory(**kwargs: object) -> _SdkClient:
+        assert kwargs == {
+            "api_key": "synthetic-sdk-key",
+            "http_options": {"api_version": "v1beta"},
+        }
+        client = _SdkClient(smoke)
+        clients.append(client)
+        return client
+
+    session = smoke.GoogleGenaiSmokeSession("synthetic-sdk-key", sdk_factory=sdk_factory)
+    record = asyncio.run(smoke.run_contract_smoke(session, clock=lambda: 100.0))
+
+    assert record["status"] == "passed"
+    assert record["usage"] == {
+        "indexed_bytes": len(smoke.synthetic_pdf_bytes()),
+        "input_tokens": 13,
+        "output_tokens": 8,
+    }
+    all_aio = [client.aio for client in clients]
+    assert all(aio.closed == 1 for aio in all_aio)
+    assert all_aio[0].file_search_stores.calls == [
+        (
+            "create",
+            {
+                "display_name": "Study Hub Task 2.8 synthetic contract",
+                "embedding_model": "models/gemini-embedding-2",
+            },
+        )
+    ]
+    assert all_aio[1].files.calls[0][0] == "upload"
+    assert all_aio[1].files.calls[0][1][1] == {
+        "display_name": "task-2-8-synthetic.pdf",
+        "mime_type": "application/pdf",
+    }
+    metadata = all_aio[2].file_search_stores.calls[0][1][2]["custom_metadata"]
+    assert metadata[0] == {"key": "authority_class", "string_value": "course_material"}
+    query_configs = [aio.models.calls[0][2] for aio in all_aio if aio.models.calls]
+    assert len(query_configs) == 2
+    assert all("thinking_config" not in config for config in query_configs)
+    assert query_configs[0]["response_schema"] is smoke.SmokeAnswer
+    assert query_configs[0]["tools"] == [
+        {
+            "file_search": {
+                "file_search_store_names": ["fileSearchStores/sdk-store"],
+                "metadata_filter": (
+                    'course_id="task-2-8-synthetic-course" AND '
+                    'exam_id="task-2-8-synthetic-exam" AND '
+                    'lecture_id="task-2-8-synthetic-lecture"'
+                ),
+            }
+        }
+    ]
+    assert all_aio[-3].file_search_stores.documents.calls == [
+        (
+            "delete",
+            (
+                "fileSearchStores/sdk-store/documents/sdk-document",
+                {"force": True},
+            ),
+        )
+    ]
+    assert all_aio[-1].file_search_stores.calls == [
+        ("delete", ("fileSearchStores/sdk-store", {"force": True}))
+    ]
+
+
+def test_authorized_entrypoint_reads_stored_key_once_without_retaining_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _load_smoke()
+    secrets = _FakeSecrets("stored-synthetic-key")
+    created: list[str] = []
+
+    def session_factory(api_key: str) -> _FakeSession:
+        created.append(api_key)
+        return _FakeSession(smoke)
+
+    monkeypatch.setenv("RUN_LIVE_GEMINI_TESTS", "1")
+    record = asyncio.run(
+        smoke.run_authorized_live_smoke(
+            secret_store=secrets,
+            session_factory=session_factory,
+        )
+    )
+
+    assert secrets.calls == ["gemini-api-key"]
+    assert created == ["stored-synthetic-key"]
+    assert "stored-synthetic-key" not in json.dumps(record, sort_keys=True)
+
+
+def test_authorized_entrypoint_fails_closed_when_stored_key_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _load_smoke()
+    secrets = _FakeSecrets(None)
+    monkeypatch.setenv("RUN_LIVE_GEMINI_TESTS", "1")
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="stored Gemini credential is unavailable"):
+        asyncio.run(smoke.run_authorized_live_smoke(secret_store=secrets))
+
+    assert secrets.calls == ["gemini-api-key"]
 
 
 def _clock() -> Iterator[float]:
