@@ -454,7 +454,11 @@ def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> 
         "error_category": "provider",
         "provider_status_code": 400,
         "retryable": False,
-        "resources_created": {"document": True, "file": True, "store": True},
+        "resources_created": {
+            "document": "confirmed",
+            "file": "confirmed",
+            "store": "confirmed",
+        },
         "cleanup": {"attempted": 3, "status": "completed"},
     }
     encoded = json.dumps(record, sort_keys=True)
@@ -474,7 +478,11 @@ def test_live_cli_failure_prints_redacted_json_without_traceback(
         failure_evidence.update(
             {
                 "failure_stage": "positive_query",
-                "resources_created": {"document": True, "file": True, "store": True},
+                "resources_created": {
+                    "document": "confirmed",
+                    "file": "confirmed",
+                    "store": "confirmed",
+                },
                 "cleanup": {"attempted": 3, "status": "completed"},
             }
         )
@@ -490,6 +498,64 @@ def test_live_cli_failure_prints_redacted_json_without_traceback(
     assert record["failure_stage"] == "positive_query"
     assert record["provider_status_code"] == 400
     assert record["cleanup"] == {"attempted": 3, "status": "completed"}
+
+
+def test_malformed_structured_output_is_redacted_at_cli_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    smoke = _load_smoke()
+
+    class MalformedAnswer(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            return smoke.SmokeQueryResult(
+                answer={"private-provider-body": "must-not-escape"},
+                citations=(),
+            )
+
+    async def fail_live(*, failure_evidence: dict[str, object]) -> dict[str, object]:
+        return await smoke.run_contract_smoke(
+            MalformedAnswer(smoke),
+            failure_evidence=failure_evidence,
+        )
+
+    monkeypatch.setattr(smoke, "run_authorized_live_smoke", fail_live)
+
+    assert smoke.main(["--execute-live"]) == 1
+    output = capsys.readouterr()
+    assert json.loads(output.out)["error_category"] == "contract"
+    assert output.err == ""
+    assert "private-provider-body" not in output.out
+    assert "must-not-escape" not in output.out
+
+
+def test_response_loss_records_unknown_resource_and_cleanup_outcome() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class StoreResponseLoss(_FakeSession):
+        async def create_store(self, display_name: str, embedding_model: str) -> str:
+            del display_name, embedding_model
+            raise smoke.translate_gemini_error(TimeoutError("private response loss"))
+
+    with pytest.raises(smoke.GeminiProviderError):
+        asyncio.run(
+            smoke.run_contract_smoke(
+                StoreResponseLoss(smoke),
+                failure_evidence=evidence,
+            )
+        )
+
+    assert evidence == {
+        "failure_stage": "create_store",
+        "resources_created": {
+            "document": "not_started",
+            "file": "not_started",
+            "store": "unknown",
+        },
+        "cleanup": {"attempted": 0, "status": "unknown"},
+    }
 
 
 def _clock() -> Iterator[float]:
