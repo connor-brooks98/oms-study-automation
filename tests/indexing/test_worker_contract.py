@@ -7,6 +7,7 @@ from sqlalchemy import inspect, text
 
 from oms_hub.db import Database
 from oms_hub.indexing.models import IndexJob, IndexState, ProviderStore, StoreKey
+from oms_hub.indexing.models import ProviderDocument
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.runtime import WorkerSupervisor
 from oms_hub.workers import (
@@ -52,6 +53,70 @@ def test_migration_activates_index_job_lease_contract(tmp_path) -> None:
         column["name"] for column in inspect(legacy.engine).get_columns("index_jobs")
     }
     legacy.close()
+
+
+def test_migration_replaces_single_document_uniqueness_without_losing_rows(
+    tmp_path,
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'legacy-inputs.db'}")
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE provider_stores ("
+                "id VARCHAR(36) PRIMARY KEY, store_key VARCHAR(255) NOT NULL, "
+                "provider VARCHAR(50) NOT NULL, provider_store_name VARCHAR(500) NOT NULL, "
+                "embedding_model VARCHAR(200) NOT NULL, authority_namespace VARCHAR(100) NOT NULL, "
+                "course_id VARCHAR(100) NOT NULL, exam_id VARCHAR(100), state VARCHAR(30) NOT NULL, "
+                "generation INTEGER NOT NULL, is_current BOOLEAN NOT NULL, "
+                "created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE provider_documents ("
+                "id VARCHAR(36) PRIMARY KEY, store_id VARCHAR(36) NOT NULL, "
+                "provider VARCHAR(50) NOT NULL, provider_document_id VARCHAR(500), "
+                "source_revision_id VARCHAR(200) NOT NULL, provider_file_name VARCHAR(500), "
+                "provider_document_name VARCHAR(500), provider_operation_name VARCHAR(500), "
+                "input_byte_count INTEGER, metadata_json TEXT NOT NULL, state VARCHAR(30) NOT NULL, "
+                "retry_count INTEGER NOT NULL, last_error_category VARCHAR(100), "
+                "created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL, "
+                "CONSTRAINT uq_provider_documents_store_revision "
+                "UNIQUE (store_id, source_revision_id))"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO provider_stores VALUES ("
+                "'store-1','course:course-1:exam:exam-1','gemini','stores/1','model',"
+                "'course_material','course-1','exam-1','ready',1,1,'now','now')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO provider_documents VALUES ("
+                "'doc-1','store-1','gemini','documents/1','sr_1',NULL,NULL,NULL,NULL,"
+                "'{}','ready',0,NULL,'now','now')"
+            )
+        )
+
+    database.migrate()
+    repository = IndexRepository(database)
+    existing = repository.get_document_by_source_revision("store-1", "sr_1")
+    assert existing is not None and existing.input_key == "pptx"
+    repository.save_document(
+        ProviderDocument(
+            store_id="store-1",
+            provider="gemini",
+            provider_document_id="documents/2",
+            source_revision_id="sr_1",
+            input_key="normalized_markdown",
+            input_kind="markdown",
+            input_sha256="c" * 64,
+        )
+    )
+    assert len(repository.list_documents("store-1")) == 2
+    database.close()
 
 
 def test_index_job_claim_is_exclusive_and_expired_lease_is_reclaimable(tmp_path) -> None:
