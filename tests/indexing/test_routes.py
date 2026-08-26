@@ -10,6 +10,7 @@ from oms_hub.indexing.models import IndexJob, IndexState
 from oms_hub.indexing.reconciliation import (
     FindingKind,
     IndexHealth,
+    ReconciliationConflict,
     ReconciliationFinding,
     ReconciliationReport,
     RevisionIndexView,
@@ -157,3 +158,22 @@ def test_routes_reject_malformed_revision_and_store_ids_without_service_calls() 
     assert reconciler.reconcile_calls == []
     assert reconciler.rebuild_calls == []
 
+
+def test_routes_translate_declared_lookup_conflict_and_validation_errors() -> None:
+    class FailingReconciler(_Reconciler):
+        def revision_status(self, revision_id: str) -> RevisionIndexView:
+            raise KeyError(revision_id)
+
+        def rebuild_revision(self, revision_id: str) -> IndexJob:
+            raise ReconciliationConflict("ambiguous current store")
+
+        def delete_revision(self, revision_id: str) -> IndexJob:
+            raise ValueError("revision cannot be deleted")
+
+    client = _client(FailingReconciler())
+
+    assert client.get(f"/api/v1/indexing/revisions/{REVISION}").status_code == 404
+    assert client.post(f"/api/v1/indexing/revisions/{REVISION}/rebuild").status_code == 409
+    assert client.delete(f"/api/v1/indexing/revisions/{REVISION}").status_code == 422
+    assert client.post("/api/v1/indexing/revisions/not-a-revision/rebuild").status_code == 422
+    assert client.delete("/api/v1/indexing/revisions/not-a-revision").status_code == 422
