@@ -237,6 +237,23 @@ def test_evidence_remap_is_append_only_and_preserves_original_objective() -> Non
         third_revision, third_unit = _seed_evidence(knowledge, suffix="hit-v3")
         objective = _objective(first_revision, first_unit)
         repository.create_objective(objective)
+        for remap_id, created_at in (
+            ("remap-hit-v2-equal-objective", objective.created_at),
+            ("remap-hit-v2-before-objective", "2026-08-25T11:59:59+00:00"),
+        ):
+            with pytest.raises(ValueError, match="created_at must be newer"):
+                repository.record_evidence_remap(
+                    "obj-hit",
+                    remap_id=remap_id,
+                    source_revision_ids=(second_revision,),
+                    evidence_ids=(second_unit,),
+                    reason="Invalid backdated correction.",
+                    created_at=created_at,
+                )
+            assert repository.evidence_remaps("obj-hit") == ()
+            assert tuple(link.evidence_id for link in repository.evidence_links("obj-hit")) == (
+                first_unit,
+            )
 
         remap = repository.record_evidence_remap(
             "obj-hit",
@@ -264,7 +281,7 @@ def test_evidence_remap_is_append_only_and_preserves_original_objective() -> Non
             ("remap-hit-v3-equal", "2026-08-25T14:00:00+00:00"),
             ("remap-hit-v3-backdated", "2026-08-25T13:59:59+00:00"),
         ):
-            with pytest.raises(ValueError, match="newer than the previous remap"):
+            with pytest.raises(ValueError, match="created_at must be newer"):
                 repository.record_evidence_remap(
                     "obj-hit",
                     remap_id=remap_id,
