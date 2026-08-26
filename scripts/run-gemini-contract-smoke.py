@@ -44,6 +44,13 @@ WRONG_LECTURE_ID = "task-2-8-wrong-lecture"
 class SmokeContractError(RuntimeError):
     _SAFE_REASONS = frozenset(
         {
+            "citation_document_identity_unavailable",
+            "citation_excerpt_invalid",
+            "citation_excerpt_unavailable",
+            "citation_metadata_invalid",
+            "citation_page_invalid",
+            "citation_scope_mismatch",
+            "citation_wrong_document",
             "citation_wrong_file",
             "positive_answer_invalid",
             "positive_answer_missing_marker",
@@ -52,6 +59,7 @@ class SmokeContractError(RuntimeError):
             "positive_citation_unresolved",
             "structured_output_invalid",
             "structured_output_unavailable",
+            "usage_count_invalid",
         }
     )
 
@@ -407,11 +415,13 @@ def _citations(
                 actual = _string_metadata(_field(annotation, "custom_metadata"))
                 if any(actual.get(key) != value for key, value in expected.items()):
                     raise SmokeContractError(
-                        "Gemini citation metadata did not match the requested scope"
+                        "Gemini citation metadata did not match the requested scope",
+                        reason="citation_scope_mismatch",
                     )
                 if document_name is None:
                     raise SmokeContractError(
-                        "Gemini citation arrived before import identity was known"
+                        "Gemini citation arrived before import identity was known",
+                        reason="citation_document_identity_unavailable",
                     )
                 locator = _field(annotation, "document_uri")
                 if locator is not None and (
@@ -422,7 +432,8 @@ def _citations(
                     or locator != document_name
                 ):
                     raise SmokeContractError(
-                        "Gemini citation referenced the wrong document"
+                        "Gemini citation referenced the wrong document",
+                        reason="citation_wrong_document",
                     )
                 cited_file = _field(annotation, "file_name")
                 if (
@@ -458,14 +469,20 @@ def _string_metadata(value: object) -> dict[str, str]:
             and text.isprintable()
             for key, text in value.items()
         ):
-            raise SmokeContractError("Gemini citation metadata was invalid")
+            raise SmokeContractError(
+                "Gemini citation metadata was invalid",
+                reason="citation_metadata_invalid",
+            )
         return dict(value)
     if not isinstance(value, Iterable) or isinstance(value, (str, bytes)):
         return {}
     metadata: dict[str, str] = {}
     for item in value:
         if len(metadata) >= 16:
-            raise SmokeContractError("Gemini citation metadata was invalid")
+            raise SmokeContractError(
+                "Gemini citation metadata was invalid",
+                reason="citation_metadata_invalid",
+            )
         key = _field(item, "key")
         text = _field(item, "string_value")
         if (
@@ -477,7 +494,10 @@ def _string_metadata(value: object) -> dict[str, str]:
             or not text.isprintable()
             or key in metadata
         ):
-            raise SmokeContractError("Gemini citation metadata was invalid")
+            raise SmokeContractError(
+                "Gemini citation metadata was invalid",
+                reason="citation_metadata_invalid",
+            )
         metadata[key] = text
     return metadata
 
@@ -487,7 +507,10 @@ def _citation_excerpt(annotation: object, content_text: object) -> str:
     if isinstance(source, str) and source:
         return _bounded_excerpt(source)
     if not isinstance(content_text, str):
-        raise SmokeContractError("Gemini citation excerpt was unavailable")
+        raise SmokeContractError(
+            "Gemini citation excerpt was unavailable",
+            reason="citation_excerpt_unavailable",
+        )
     start = _field(annotation, "start_index")
     end = _field(annotation, "end_index")
     encoded = content_text.encode("utf-8")
@@ -498,16 +521,25 @@ def _citation_excerpt(annotation: object, content_text: object) -> str:
         or not isinstance(end, int)
         or not 0 <= start < end <= len(encoded)
     ):
-        raise SmokeContractError("Gemini citation excerpt was unavailable")
+        raise SmokeContractError(
+            "Gemini citation excerpt was unavailable",
+            reason="citation_excerpt_unavailable",
+        )
     try:
         return _bounded_excerpt(encoded[start:end].decode("utf-8"))
     except UnicodeDecodeError:
-        raise SmokeContractError("Gemini citation excerpt was invalid") from None
+        raise SmokeContractError(
+            "Gemini citation excerpt was invalid",
+            reason="citation_excerpt_invalid",
+        ) from None
 
 
 def _bounded_excerpt(value: str) -> str:
     if len(value) > 4096 or not value.isprintable():
-        raise SmokeContractError("Gemini citation excerpt was invalid")
+        raise SmokeContractError(
+            "Gemini citation excerpt was invalid",
+            reason="citation_excerpt_invalid",
+        )
     return value
 
 
@@ -519,7 +551,10 @@ def _optional_page(value: object) -> int | None:
         or not isinstance(value, int)
         or not 1 <= value <= 1_000_000
     ):
-        raise SmokeContractError("Gemini citation page number was invalid")
+        raise SmokeContractError(
+            "Gemini citation page number was invalid",
+            reason="citation_page_invalid",
+        )
     return value
 
 
@@ -527,7 +562,10 @@ def _optional_count(value: object) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise SmokeContractError("Gemini usage count was invalid")
+        raise SmokeContractError(
+            "Gemini usage count was invalid",
+            reason="usage_count_invalid",
+        )
     return value
 
 
