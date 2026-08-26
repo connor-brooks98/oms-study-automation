@@ -193,6 +193,19 @@ def test_plan_names_the_required_later_live_wiring_change() -> None:
     assert plan["reads_secrets"] is False
 
 
+def test_opt_in_block_names_the_required_later_live_wiring_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _load_smoke()
+    monkeypatch.setenv("RUN_LIVE_GEMINI_TESTS", "1")
+
+    with pytest.raises(smoke.LiveSmokeBlocked) as raised:
+        asyncio.run(smoke.run_authorized_live_smoke())
+
+    assert "separate later explicitly authorized Sol-2 change" in str(raised.value)
+    assert "run_authorized_live_smoke" in str(raised.value)
+
+
 def test_synthetic_pdf_is_deterministic_and_contains_no_private_source() -> None:
     smoke = _load_smoke()
 
