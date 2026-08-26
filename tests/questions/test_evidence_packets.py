@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import text as sql_text
@@ -427,8 +428,9 @@ def test_deduplicates_normalized_claim_but_retains_every_locator(
     }
 
 
-def test_truncates_deterministically_to_sixteen_units(
+def test_refuses_provider_result_over_sixteen_refs_before_repository_reads(
     repository: KnowledgeRepository,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     refs = tuple(
         _add_evidence(
@@ -439,17 +441,71 @@ def test_truncates_deterministically_to_sixteen_units(
         )
         for index in range(17)
     )
+    revision_reads = 0
+    original_get_revision = repository.get_revision
 
-    packet = _build(
-        QuestionEvidencePacketBuilder(
-            FakeRetrievalProvider(_result(*reversed(refs))), repository
-        ),
-        _request(),
+    def counted_get_revision(revision_id: str) -> SourceRevision | None:
+        nonlocal revision_reads
+        revision_reads += 1
+        return original_get_revision(revision_id)
+
+    monkeypatch.setattr(repository, "get_revision", counted_get_revision)
+
+    with pytest.raises(QuestionEvidenceError, match="at most 16"):
+        _build(
+            QuestionEvidencePacketBuilder(
+                FakeRetrievalProvider(_result(*reversed(refs))), repository
+            ),
+            _request(),
+        )
+    assert revision_reads == 0
+
+
+def test_canonical_evidence_ids_remain_bounded_after_claim_deduplication(
+    repository: KnowledgeRepository,
+) -> None:
+    concept_refs = tuple(
+        _add_evidence(
+            repository,
+            evidence_id=f"ev-concept-{priority:02d}",
+            text="Equivalent bounded claim.",
+            source_priority=priority,
+        )
+        for priority in range(16)
+    )
+    objective_refs = tuple(
+        _add_evidence(
+            repository,
+            evidence_id=f"ev-objective-{priority:02d}",
+            text=" equivalent BOUNDED claim ",
+            source_priority=priority,
+        )
+        for priority in range(16, 32)
+    )
+    provider = FakeRetrievalProvider(
+        _result(),
+        by_query={
+            "Factor VIII deficiency": _result(*reversed(concept_refs)),
+            "Objective A": _result(*reversed(objective_refs)),
+        },
     )
 
-    assert len(packet.evidence) == 16
-    assert packet.omitted_evidence_ids == ("ev-00",)
-    assert sum(len(unit.normalized_text) for unit in packet.evidence) < 18_000
+    packet = _build(QuestionEvidencePacketBuilder(provider, repository), _request())
+
+    retained_ids = {
+        evidence_id for unit in packet.evidence for evidence_id in unit.evidence_ids
+    }
+    assert len(retained_ids) == 16
+    assert "ev-concept-15" in retained_ids
+    assert retained_ids.issuperset(
+        {f"ev-objective-{priority:02d}" for priority in range(17, 32)}
+    )
+    assert packet.omitted_evidence_ids == tuple(
+        sorted(
+            {f"ev-concept-{priority:02d}" for priority in range(15)}
+            | {"ev-objective-16"}
+        )
+    )
 
 
 def test_character_limit_omits_whole_unit_without_slicing(
@@ -517,3 +573,221 @@ def test_forbidden_correct_answer_signature_is_refused_before_retrieval(
     with pytest.raises(QuestionEvidenceError, match="forbidden repeat"):
         _build(QuestionEvidencePacketBuilder(provider, repository), request)
     assert provider.requests == []
+
+
+@pytest.mark.parametrize(
+    ("first_text", "second_text"),
+    [
+        ("Sodium is < 135 mmol/L.", "Sodium is > 135 mmol/L."),
+        ("The finding is + 2.", "The finding is - 2."),
+        ("The finding is + 2.", "The finding is − 2."),
+        ("Sodium is ≤ 135 mmol/L.", "Sodium is ≥ 135 mmol/L."),
+    ],
+)
+def test_claim_signature_preserves_semantic_operator_differences(
+    repository: KnowledgeRepository,
+    first_text: str,
+    second_text: str,
+) -> None:
+    first = _add_evidence(repository, evidence_id="ev-first", text=first_text)
+    second = _add_evidence(repository, evidence_id="ev-second", text=second_text)
+
+    packet = _build(
+        QuestionEvidencePacketBuilder(
+            FakeRetrievalProvider(_result(first, second)), repository
+        ),
+        _request(),
+    )
+
+    assert len(packet.evidence) == 2
+
+
+@pytest.mark.parametrize(
+    ("first_text", "second_text"),
+    [
+        ("Sodium is ≤ 135 mmol/L.", " sodium IS <= 135 mmol/L "),
+        ("Sodium is ≥ 135 mmol/L.", "SODIUM is >= 135 mmol/L"),
+        ("The change is − 2.", " the CHANGE is - 2 "),
+    ],
+)
+def test_claim_signature_deduplicates_typographic_operator_equivalents(
+    repository: KnowledgeRepository,
+    first_text: str,
+    second_text: str,
+) -> None:
+    first = _add_evidence(repository, evidence_id="ev-first", text=first_text)
+    second = _add_evidence(repository, evidence_id="ev-second", text=second_text)
+
+    packet = _build(
+        QuestionEvidencePacketBuilder(
+            FakeRetrievalProvider(_result(first, second)), repository
+        ),
+        _request(),
+    )
+
+    assert len(packet.evidence) == 1
+    assert packet.evidence[0].evidence_ids == ("ev-first", "ev-second")
+
+
+@pytest.mark.parametrize("corruption", ["crlf_excerpt", "wrong_digest"])
+def test_provider_excerpt_and_digest_must_exactly_match_canonical_evidence(
+    repository: KnowledgeRepository,
+    corruption: str,
+) -> None:
+    canonical = _add_evidence(
+        repository,
+        evidence_id="ev-lines",
+        text="Line one.\nLine two.",
+    )
+    if corruption == "crlf_excerpt":
+        corrupted = replace(canonical, excerpt="Line one.\r\nLine two.")
+    else:
+        corrupted = replace(canonical, checksum=f"sha256:{sha256_text('corrupted')}")
+
+    with pytest.raises(QuestionEvidenceError, match="canonical"):
+        _build(
+            QuestionEvidencePacketBuilder(
+                FakeRetrievalProvider(_result(corrupted)), repository
+            ),
+            _request(),
+        )
+
+
+@pytest.mark.parametrize("mutation", ["stale_revision", "retired_evidence"])
+def test_final_packet_revalidation_catches_lifecycle_interleaving(
+    repository: KnowledgeRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    ref = _add_evidence(repository, evidence_id="ev-interleaved")
+    original_list_evidence = repository.list_evidence
+    list_calls = 0
+
+    def interleaving_list_evidence(revision_id: str) -> tuple[EvidenceUnit, ...]:
+        nonlocal list_calls
+        rows = original_list_evidence(revision_id)
+        list_calls += 1
+        if list_calls == 2:
+            with repository.database.engine.begin() as connection:
+                if mutation == "stale_revision":
+                    connection.execute(
+                        sql_text(
+                            "UPDATE source_revisions SET state = 'stale' WHERE id = :id"
+                        ),
+                        {"id": revision_id},
+                    )
+                else:
+                    connection.execute(
+                        sql_text(
+                            "UPDATE evidence_units SET retired_at = :retired_at "
+                            "WHERE id = :id"
+                        ),
+                        {
+                            "id": ref.evidence_id,
+                            "retired_at": "2026-08-25T13:00:00+00:00",
+                        },
+                    )
+        return rows
+
+    monkeypatch.setattr(repository, "list_evidence", interleaving_list_evidence)
+
+    with pytest.raises(QuestionEvidenceError, match="READY|retired"):
+        _build(
+            QuestionEvidencePacketBuilder(FakeRetrievalProvider(_result(ref)), repository),
+            _request(),
+        )
+
+
+def test_required_cover_finds_feasible_small_combination(
+    repository: KnowledgeRepository,
+) -> None:
+    oversized = _add_evidence(
+        repository,
+        evidence_id="ev-oversized-concept",
+        text=f"{'H' * 17_998}.",
+        source_priority=100,
+    )
+    compact_concept = _add_evidence(
+        repository,
+        evidence_id="ev-compact-concept",
+        text="Compact concept evidence.",
+        source_priority=1,
+    )
+    compact_objective = _add_evidence(
+        repository,
+        evidence_id="ev-compact-objective",
+        text="Compact objective evidence.",
+        source_priority=90,
+    )
+    provider = FakeRetrievalProvider(
+        _result(),
+        by_query={
+            "Factor VIII deficiency": _result(oversized, compact_concept),
+            "Objective A": _result(compact_objective),
+        },
+    )
+
+    packet = _build(QuestionEvidencePacketBuilder(provider, repository), _request())
+
+    assert {
+        evidence_id for unit in packet.evidence for evidence_id in unit.evidence_ids
+    } == {"ev-compact-concept", "ev-compact-objective"}
+    assert packet.omitted_evidence_ids == ("ev-oversized-concept",)
+
+
+@pytest.mark.parametrize(
+    ("invalid_field", "message"),
+    [
+        ("evidence_list", "tuple"),
+        ("non_bool_insufficiency", "bool"),
+        ("blank_request_id", "request id"),
+        ("non_string_request_id", "request id"),
+    ],
+)
+def test_retrieval_result_shape_is_validated_before_repository_reads(
+    repository: KnowledgeRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_field: str,
+    message: str,
+) -> None:
+    ref = _add_evidence(repository, evidence_id="ev-shape")
+    if invalid_field == "evidence_list":
+        result = RetrievalResult(
+            evidence=cast(Any, [ref]),
+            provider_request_id="synthetic-request",
+            insufficient_evidence=False,
+        )
+    elif invalid_field == "non_bool_insufficiency":
+        result = RetrievalResult(
+            evidence=(ref,),
+            provider_request_id="synthetic-request",
+            insufficient_evidence=cast(Any, 0),
+        )
+    elif invalid_field == "blank_request_id":
+        result = RetrievalResult(
+            evidence=(ref,),
+            provider_request_id=" ",
+            insufficient_evidence=False,
+        )
+    else:
+        result = RetrievalResult(
+            evidence=(ref,),
+            provider_request_id=cast(Any, None),
+            insufficient_evidence=False,
+        )
+    revision_reads = 0
+    original_get_revision = repository.get_revision
+
+    def counted_get_revision(revision_id: str) -> SourceRevision | None:
+        nonlocal revision_reads
+        revision_reads += 1
+        return original_get_revision(revision_id)
+
+    monkeypatch.setattr(repository, "get_revision", counted_get_revision)
+
+    with pytest.raises(QuestionEvidenceError, match=message):
+        _build(
+            QuestionEvidencePacketBuilder(FakeRetrievalProvider(result), repository),
+            _request(),
+        )
+    assert revision_reads == 0
