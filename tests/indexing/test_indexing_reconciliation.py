@@ -101,11 +101,26 @@ def _observation(document: ProviderDocument) -> RemoteDocumentObservation:
 
 
 class _Knowledge:
-    def __init__(self, states: dict[str, SourceRevisionState] | None = None) -> None:
+    def __init__(
+        self,
+        states: dict[str, SourceRevisionState] | None = None,
+        *,
+        accepted_scopes: set[tuple[str, str | None]] | None = None,
+    ) -> None:
         self.states = states or {REVISION: SourceRevisionState.READY}
+        self.accepted_scopes = accepted_scopes or {("course-1", "exam-1")}
 
     def get_revision_view(self, revision_id: str) -> object:
         return SimpleNamespace(revision_state=self.states[revision_id])
+
+    def get_scope_sources(self, scope: object) -> object:
+        accepted = (scope.course_id, scope.exam_id) in self.accepted_scopes  # type: ignore[attr-defined]
+        revisions = (
+            (SimpleNamespace(source_revision_id=REVISION),)
+            if accepted and REVISION in scope.source_revision_ids  # type: ignore[attr-defined]
+            else ()
+        )
+        return SimpleNamespace(revisions=revisions)
 
 
 class _SnapshotAdmin:
@@ -586,10 +601,39 @@ def test_revision_resolution_rejects_ambiguous_current_stores() -> None:
     )
     repository.save_document(_document(first, "pdf", "pdf", "a" * 64))
     repository.save_document(_document(second, "pdf", "pdf", "b" * 64))
-    reconciler = IndexReconciler(repository, _Knowledge(), _SnapshotAdmin())
+    reconciler = IndexReconciler(
+        repository,
+        _Knowledge(accepted_scopes={("course-1", "exam-1"), ("course-2", "exam-1")}),
+        _SnapshotAdmin(),
+    )
 
     with pytest.raises(ReconciliationConflict, match="current store"):
         reconciler.rebuild_revision(REVISION)
+
+
+@pytest.mark.parametrize("operation", ("revision_status", "rebuild_revision", "delete_revision"))
+def test_revision_routes_reject_a_local_store_outside_canonical_scope(operation: str) -> None:
+    database = _database()
+    repository = IndexRepository(database)
+    wrong_key = StoreKey.course("course-2", "exam-1")
+    wrong_store = repository.create_store(
+        ProviderStore(
+            store_key=wrong_key,
+            provider="gemini",
+            provider_store_name="fileSearchStores/wrong-scope",
+            embedding_model="models/gemini-embedding-2",
+            authority_namespace=wrong_key.authority_namespace,
+            course_id=wrong_key.course_id,
+            exam_id=wrong_key.exam_id,
+        )
+    )
+    repository.save_document(_document(wrong_store, "pdf", "pdf", "a" * 64))
+    reconciler = IndexReconciler(repository, _Knowledge(), _SnapshotAdmin())
+
+    with pytest.raises(ReconciliationConflict, match="accepted scope"):
+        getattr(reconciler, operation)(REVISION)
+
+    assert repository.get_job_by_revision(wrong_store.id, REVISION) is None
 
 
 def test_health_is_offline_redacted_and_reports_byte_only_usage() -> None:

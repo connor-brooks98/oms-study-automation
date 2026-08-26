@@ -89,6 +89,12 @@ class FakeAdmin:
         if self.delete_error is not None:
             raise self.delete_error
 
+    async def delete_document(self, provider_document_id: str) -> None:
+        self.delete_calls.append(provider_document_id)
+
+    async def delete_remote_document(self, provider_document_id: str) -> None:
+        await self.delete_document(provider_document_id)
+
 
 def run(awaitable: Any) -> Any:
     return asyncio.run(awaitable)
