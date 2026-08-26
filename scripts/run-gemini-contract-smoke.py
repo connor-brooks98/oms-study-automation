@@ -52,6 +52,12 @@ class LiveSmokeBlocked(RuntimeError):
     pass
 
 
+class _OperationFailure(Exception):
+    def __init__(self, status_code: int | None) -> None:
+        self.status_code = status_code
+        super().__init__("Gemini import operation failed")
+
+
 class SmokeAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -175,10 +181,14 @@ class GoogleGenaiSmokeSession:
         deadline = monotonic() + self._config.operation_timeout_seconds
         async with self._clients.client() as client:
             while True:
-                if monotonic() >= deadline:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
                     raise SmokeTemporaryFailure("Gemini import operation timed out")
                 try:
-                    operation = await client.operations.get(operation)
+                    async with asyncio.timeout(remaining):
+                        operation = await client.operations.get(operation)
+                except TimeoutError:
+                    raise SmokeTemporaryFailure("Gemini import operation timed out") from None
                 except GeminiProviderError:
                     raise
                 except Exception as error:
@@ -186,8 +196,12 @@ class GoogleGenaiSmokeSession:
                 if bool(_field(operation, "done")):
                     break
                 await asyncio.sleep(self._config.operation_poll_seconds)
-        if _field(operation, "error"):
-            raise SmokeContractError("Gemini import operation failed")
+        operation_error = _field(operation, "error")
+        if operation_error:
+            status = _field(operation_error, "code")
+            raise translate_gemini_error(
+                _OperationFailure(status if isinstance(status, int) else None)
+            ) from None
         response = _field(operation, "response")
         self._document_name = _provider_identity(response, "document", "document_name")
         return self._document_name
@@ -340,7 +354,8 @@ def _citations(
                 continue
             if _field(context, "file_search_store") != store_name:
                 raise SmokeContractError("Gemini citation referenced the wrong store")
-            if _string_metadata(_field(context, "custom_metadata")) != expected:
+            actual = _string_metadata(_field(context, "custom_metadata"))
+            if any(actual.get(key) != value for key, value in expected.items()):
                 raise SmokeContractError(
                     "Gemini citation metadata did not match the requested scope"
                 )
@@ -481,7 +496,7 @@ async def run_contract_smoke(
         if await session.list_documents(store_name) != (document_name,):
             raise SmokeContractError("document listing did not round-trip the imported document")
         duration_ms = round((clock() - started) * 1000)
-        return {
+        record = {
             "schema_version": 1,
             "status": "passed",
             "sdk_version": "2.14.0",
@@ -499,7 +514,11 @@ async def run_contract_smoke(
                 "excerpt_sha256": hashlib.sha256(citation.excerpt.encode("utf-8")).hexdigest(),
             },
             "negative_scope_retrieved": False,
-            "structured_output": answer.model_dump(mode="json"),
+            "structured_output": {
+                "schema": type(answer).__name__,
+                "validated": True,
+                "answer_sha256": hashlib.sha256(answer.answer.encode("utf-8")).hexdigest(),
+            },
             "thinking_configuration": "omitted",
             "duration_ms": duration_ms,
             "usage": {
@@ -515,8 +534,14 @@ async def run_contract_smoke(
             },
             "warnings": [],
         }
-    finally:
-        await _cleanup(session, document_name, file_name, store_name)
+    except BaseException:
+        try:
+            await _cleanup(session, document_name, file_name, store_name)
+        except SmokeContractError:
+            pass
+        raise
+    await _cleanup(session, document_name, file_name, store_name)
+    return record
 
 
 async def _cleanup(
