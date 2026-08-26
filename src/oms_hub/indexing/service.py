@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +35,18 @@ _MAX_IMAGE_EDGE = 4096
 
 class IndexingInputError(ValueError):
     """The canonical source cannot safely cross the provider boundary."""
+
+
+class IndexLeaseLost(RuntimeError):
+    """The worker no longer owns the source-revision mutation boundary."""
+
+
+@dataclass(frozen=True, slots=True)
+class IndexLease:
+    job_id: str
+    lease_token: str
+    lease_seconds: int
+    now: Callable[[], datetime]
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +107,8 @@ class IndexResult:
 
 
 class IndexingService:
+    supports_revision_lease = True
+
     def __init__(
         self,
         repository: IndexRepository,
@@ -104,7 +119,12 @@ class IndexingService:
         self.knowledge_service = knowledge_service
         self.admin = admin
 
-    async def index_revision(self, source_revision_id: str) -> IndexResult:
+    async def index_revision(
+        self,
+        source_revision_id: str,
+        *,
+        lease: IndexLease | None = None,
+    ) -> IndexResult:
         view = self.knowledge_service.resolve_index_input(source_revision_id)
         if view.source_revision_id != source_revision_id:
             raise IndexingInputError("resolved source revision does not match request")
@@ -143,7 +163,7 @@ class IndexingService:
                 for document in current:
                     assert document is not None
                     if (document.last_error_category or "").startswith(_CLEANUP_PREFIX):
-                        document, warning = await self._cleanup(document)
+                        document, warning = await self._cleanup(document, lease=lease)
                         cleanup_warning = cleanup_warning or warning
                     cleaned.append(document)
                 if cleaned[0].last_error_category is not None and not cleaned[
@@ -152,6 +172,7 @@ class IndexingService:
                     cleaned[0] = self._save(
                         cleaned[0],
                         state=IndexState.READY,
+                        lease=lease,
                         last_error_category=None,
                     )
                 return IndexResult(
@@ -166,6 +187,7 @@ class IndexingService:
             ):
                 return IndexResult(source_revision_id, IndexState.TERMINAL_FAILURE)
 
+        self._renew(lease)
         store = await self.admin.ensure_store(key)
         documents: list[ProviderDocument] = []
         cleanup_warning = None
@@ -176,16 +198,22 @@ class IndexingService:
                 source_revision_id,
                 item,
                 metadata,
+                lease=lease,
             )
             documents.append(document)
             if document.state in {
                 IndexState.RETRYABLE_FAILURE,
                 IndexState.TERMINAL_FAILURE,
             }:
-                self._mirror_anchor_error(store.id, source_revision_id, document)
+                self._mirror_anchor_error(
+                    store.id,
+                    source_revision_id,
+                    document,
+                    lease=lease,
+                )
                 return IndexResult(source_revision_id, document.state)
             if (document.last_error_category or "").startswith(_CLEANUP_PREFIX):
-                document, warning = await self._cleanup(document)
+                document, warning = await self._cleanup(document, lease=lease)
                 documents[-1] = document
                 cleanup_warning = cleanup_warning or warning
 
@@ -195,6 +223,7 @@ class IndexingService:
             documents[0] = self._save(
                 documents[0],
                 state=IndexState.READY,
+                lease=lease,
                 last_error_category=None,
             )
 
@@ -212,6 +241,8 @@ class IndexingService:
         source_revision_id: str,
         item: IndexManifestInput,
         metadata: list[dict[str, str]],
+        *,
+        lease: IndexLease | None,
     ) -> ProviderDocument:
         provider_metadata = [
             *metadata,
@@ -225,7 +256,7 @@ class IndexingService:
             input_key=item.input_key,
         )
         if document is None:
-            document = self.repository.upsert_document(
+            document = self._persist(
                 ProviderDocument(
                     store_id=store_id,
                     provider="gemini",
@@ -237,17 +268,19 @@ class IndexingService:
                     input_byte_count=item.path.stat().st_size,
                     metadata=provider_metadata,
                     state=IndexState.UPLOADING_FILE,
-                )
+                ),
+                lease,
             )
         elif document.state is IndexState.NOT_INDEXED:
-            document = self.repository.upsert_document(
+            document = self._persist(
                 replace(
                     document,
                     input_kind=item.input_kind,
                     input_sha256=item.sha256,
                     input_byte_count=item.path.stat().st_size,
                     metadata=provider_metadata,
-                )
+                ),
+                lease,
             )
         if document.state is IndexState.READY:
             return document
@@ -255,11 +288,17 @@ class IndexingService:
             return document
         try:
             if document.provider_file_name is None:
-                document = self._save(document, state=IndexState.UPLOADING_FILE)
+                document = self._save(
+                    document,
+                    state=IndexState.UPLOADING_FILE,
+                    lease=lease,
+                )
+                self._renew(lease)
                 uploaded = await self.admin.upload_file(item.path, item.path.name)
                 document = self._save(
                     document,
                     state=IndexState.FILE_UPLOADED,
+                    lease=lease,
                     provider_file_name=uploaded.name,
                 )
 
@@ -276,6 +315,7 @@ class IndexingService:
                     if item.input_key == "normalized_markdown"
                     else None
                 )
+                self._renew(lease)
                 operation = await self.admin.import_file(
                     provider_store_name,
                     file_name,
@@ -285,17 +325,20 @@ class IndexingService:
                 document = self._save(
                     document,
                     state=IndexState.IMPORTING,
+                    lease=lease,
                     provider_operation_name=operation.name,
                 )
             elif document.state is not IndexState.IMPORTING:
-                document = self._save(document, state=IndexState.IMPORTING)
+                document = self._save(document, state=IndexState.IMPORTING, lease=lease)
 
             operation_name = document.provider_operation_name
             assert operation_name is not None
+            self._renew(lease)
             completed = await self.admin.wait_for_operation(operation_name)
             document = self._save(
                 document,
                 state=IndexState.READY,
+                lease=lease,
                 provider_document_id=completed.document_name,
                 provider_document_name=completed.document_name,
                 last_error_category=f"{_CLEANUP_PREFIX}pending",
@@ -307,6 +350,7 @@ class IndexingService:
             document = self._save(
                 document,
                 state=failed_state,
+                lease=lease,
                 retry_count=document.retry_count + 1,
                 last_error_category=error.category,
             )
@@ -317,6 +361,8 @@ class IndexingService:
         store_id: str,
         source_revision_id: str,
         failed: ProviderDocument,
+        *,
+        lease: IndexLease | None,
     ) -> None:
         if failed.input_key == "pptx":
             return
@@ -325,16 +371,20 @@ class IndexingService:
             self._save(
                 anchor,
                 state=anchor.state,
+                lease=lease,
                 last_error_category=failed.last_error_category,
             )
 
     async def _cleanup(
         self,
         document: ProviderDocument,
+        *,
+        lease: IndexLease | None,
     ) -> tuple[ProviderDocument, str | None]:
         if document.provider_file_name is None:
             return document, None
         try:
+            self._renew(lease)
             await self.admin.delete_file(document.provider_file_name)
         except GeminiProviderError as error:
             category = error.category if error.category in _SAFE_ERROR_CATEGORIES else "provider"
@@ -342,11 +392,20 @@ class IndexingService:
                 self._save(
                     document,
                     state=IndexState.READY,
+                    lease=lease,
                     last_error_category=f"{_CLEANUP_PREFIX}{category}",
                 ),
                 category,
             )
-        return self._save(document, state=IndexState.READY, last_error_category=None), None
+        return (
+            self._save(
+                document,
+                state=IndexState.READY,
+                lease=lease,
+                last_error_category=None,
+            ),
+            None,
+        )
 
     def _provider_input(
         self,
@@ -388,18 +447,46 @@ class IndexingService:
         document: ProviderDocument,
         *,
         state: IndexState,
+        lease: IndexLease | None = None,
         **changes: Any,
     ) -> ProviderDocument:
         if state is not document.state:
             validate_transition(document.state, state)
-        return self.repository.upsert_document(
+        return self._persist(
             replace(
                 document,
                 state=state,
-                updated_at=datetime.now(UTC).isoformat(),
+                updated_at=(lease.now() if lease is not None else datetime.now(UTC)).isoformat(),
                 **changes,
-            )
+            ),
+            lease,
         )
+
+    def _persist(
+        self,
+        document: ProviderDocument,
+        lease: IndexLease | None,
+    ) -> ProviderDocument:
+        if lease is None:
+            return self.repository.upsert_document(document)
+        saved = self.repository.upsert_document_with_token(
+            document,
+            lease.job_id,
+            lease.lease_token,
+            lease.now(),
+        )
+        if saved is None:
+            raise IndexLeaseLost("index job lease was replaced")
+        return saved
+
+    def _renew(self, lease: IndexLease | None) -> None:
+        if lease is not None and not self.repository.renew_revision_lease(
+            lease.job_id,
+            lease.lease_token,
+            lease.now(),
+            lease.lease_seconds,
+        ):
+            raise IndexLeaseLost("index job lease expired")
 
 
 def build_index_manifest(view: IndexInputView) -> IndexManifest:

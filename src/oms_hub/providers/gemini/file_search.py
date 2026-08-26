@@ -443,12 +443,12 @@ def _observation_from_provider(
     provider_document_id = _provider_identity(value, "document")
     metadata = _json_metadata(_value(value, "custom_metadata", "customMetadata", "metadata"))
     try:
-        source_revision_id = _require_source_revision_id(metadata)
-        input_key = _metadata_value(metadata, "input_key")
-        input_kind = _metadata_value(metadata, "input_kind")
-        input_sha256 = _metadata_value(metadata, "input_sha256")
-        if input_key is None or input_kind is None or input_sha256 is None:
-            raise ValueError("missing per-input metadata")
+        source_revision_id = _unique_metadata_value(metadata, "source_revision_id")
+        if len(source_revision_id) > 200 or not source_revision_id.isprintable():
+            raise ValueError("invalid source revision metadata")
+        input_key = _unique_metadata_value(metadata, "input_key")
+        input_kind = _unique_metadata_value(metadata, "input_kind")
+        input_sha256 = _unique_metadata_value(metadata, "input_sha256")
         document = ProviderDocument(
             store_id=store.id,
             provider="gemini",
@@ -545,6 +545,32 @@ def _metadata_value(metadata: object, name: str) -> str | None:
             if found is not None:
                 return found
     return None
+
+
+def _unique_metadata_value(metadata: object, name: str) -> str:
+    values = _metadata_values(metadata, name)
+    if len(values) != 1:
+        raise ValueError(f"Gemini metadata requires exactly one {name}")
+    return values[0]
+
+
+def _metadata_values(metadata: object, name: str) -> list[str]:
+    values: list[str] = []
+    if isinstance(metadata, Mapping):
+        direct = metadata.get(name)
+        if isinstance(direct, str) and direct.strip():
+            values.append(direct.strip())
+        if metadata.get("key") == name:
+            for value_name in ("string_value", "stringValue", "numeric_value", "numericValue"):
+                item = metadata.get(value_name)
+                if isinstance(item, (str, int, float)) and str(item).strip():
+                    values.append(str(item).strip())
+        for nested in metadata.values():
+            values.extend(_metadata_values(nested, name))
+    elif isinstance(metadata, list):
+        for item in metadata:
+            values.extend(_metadata_values(item, name))
+    return values
 
 
 def _optional_text(value: object) -> str | None:

@@ -124,29 +124,32 @@ class IndexRepository:
 
     def upsert_document(self, document: ProviderDocument) -> ProviderDocument:
         with self.database.session() as session:
-            row = session.get(ProviderDocumentModel, document.id)
-            if row is None and document.provider_document_id is not None:
-                row = session.scalar(
-                    select(ProviderDocumentModel).where(
-                        ProviderDocumentModel.provider == document.provider,
-                        ProviderDocumentModel.provider_document_id
-                        == document.provider_document_id,
-                    )
+            document = self._upsert_document(session, document)
+            session.flush()
+        return document
+
+    def upsert_document_with_token(
+        self,
+        document: ProviderDocument,
+        job_id: str,
+        lease_token: str,
+        now: datetime,
+    ) -> ProviderDocument | None:
+        """Persist a provider document only while its revision lease is current."""
+
+        with self.database.session() as session:
+            fenced = session.execute(
+                update(IndexJobModel)
+                .where(
+                    IndexJobModel.id == job_id,
+                    IndexJobModel.lease_token == lease_token,
+                    IndexJobModel.lease_expires_at > now.isoformat(),
                 )
-            if row is None:
-                row = session.scalar(
-                    select(ProviderDocumentModel).where(
-                        ProviderDocumentModel.store_id == document.store_id,
-                        ProviderDocumentModel.source_revision_id == document.source_revision_id,
-                        ProviderDocumentModel.input_key == document.input_key,
-                    )
-                )
-            if row is None:
-                row = self._document_row(document)
-                session.add(row)
-            else:
-                self._copy_document(row, document)
-                document = self._document_from_row(row)
+                .values(updated_at=now.isoformat())
+            )
+            if cast(CursorResult[Any], fenced).rowcount != 1:
+                return None
+            document = self._upsert_document(session, document)
             session.flush()
         return document
 
@@ -317,18 +320,25 @@ class IndexRepository:
             ).all()
             return [self._job_from_row(row) for row in rows]
 
-    def save_claimed_job(self, job: IndexJob, lease_owner: str) -> IndexJob | None:
+    def save_claimed_job(
+        self,
+        job: IndexJob,
+        lease_owner: str,
+        *,
+        now: datetime | None = None,
+    ) -> IndexJob | None:
         if not lease_owner.strip() or len(lease_owner) > 100:
             raise ValueError("lease owner is blank or unbounded")
         with self.database.session() as session:
+            statement = update(IndexJobModel).where(
+                IndexJobModel.id == job.id,
+                IndexJobModel.lease_owner == lease_owner,
+                IndexJobModel.lease_token == job.lease_token,
+            )
+            if now is not None:
+                statement = statement.where(IndexJobModel.lease_expires_at > now.isoformat())
             changed = session.execute(
-                update(IndexJobModel)
-                .where(
-                    IndexJobModel.id == job.id,
-                    IndexJobModel.lease_owner == lease_owner,
-                    IndexJobModel.lease_token == job.lease_token,
-                )
-                .values(
+                statement.values(
                     store_id=job.store_id,
                     source_revision_id=job.source_revision_id,
                     operation_kind=job.operation_kind,
@@ -349,6 +359,29 @@ class IndexRepository:
             assert row is not None
             session.refresh(row)
             return self._job_from_row(row)
+
+    def _upsert_document(self, session: Any, document: ProviderDocument) -> ProviderDocument:
+        row = session.get(ProviderDocumentModel, document.id)
+        if row is None and document.provider_document_id is not None:
+            row = session.scalar(
+                select(ProviderDocumentModel).where(
+                    ProviderDocumentModel.provider == document.provider,
+                    ProviderDocumentModel.provider_document_id == document.provider_document_id,
+                )
+            )
+        if row is None:
+            row = session.scalar(
+                select(ProviderDocumentModel).where(
+                    ProviderDocumentModel.store_id == document.store_id,
+                    ProviderDocumentModel.source_revision_id == document.source_revision_id,
+                    ProviderDocumentModel.input_key == document.input_key,
+                )
+            )
+        if row is None:
+            session.add(self._document_row(document))
+            return document
+        self._copy_document(row, document)
+        return self._document_from_row(row)
 
     def claim_job(
         self,

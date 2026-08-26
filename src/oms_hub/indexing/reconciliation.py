@@ -240,6 +240,18 @@ class IndexReconciler:
             )
         local_missing: list[ProviderDocument] = []
         for key, document in local_by_key.items():
+            if (
+                document.state is IndexState.READY
+                and self._revision_state(document.source_revision_id)
+                in {SourceRevisionState.STALE, SourceRevisionState.RETIRED}
+            ):
+                findings.append(
+                    ReconciliationFinding(
+                        FindingKind.STALE_SOURCE,
+                        document.source_revision_id,
+                        document.input_key,
+                    )
+                )
             if key in duplicate_keys:
                 continue
             observations = valid_remote.get(key)
@@ -266,18 +278,6 @@ class IndexReconciler:
                             document.input_key,
                         )
                     )
-            if (
-                document.state is IndexState.READY
-                and self._revision_state(document.source_revision_id)
-                in {SourceRevisionState.STALE, SourceRevisionState.RETIRED}
-            ):
-                findings.append(
-                    ReconciliationFinding(
-                        FindingKind.STALE_SOURCE,
-                        document.source_revision_id,
-                        document.input_key,
-                    )
-                )
         for (revision_id, input_key), observations in valid_remote.items():
             if (revision_id, input_key) not in local_by_key and len(observations) == 1:
                 findings.append(

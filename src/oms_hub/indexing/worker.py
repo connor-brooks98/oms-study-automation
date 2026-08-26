@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from oms_hub.indexing.models import IndexJob, IndexState, validate_transition
 from oms_hub.indexing.repository import IndexRepository
-from oms_hub.indexing.service import IndexingInputError, IndexResult
+from oms_hub.indexing.service import IndexingInputError, IndexLease, IndexLeaseLost, IndexResult
 from oms_hub.ingestion.worker import IngestionWorker
 from oms_hub.providers.gemini.errors import GeminiProviderError
 from oms_hub.workers import RecoveryReport, WorkResult
@@ -117,6 +117,8 @@ class IndexWorker:
                 )
             except GeminiProviderError as error:
                 self._handle_provider_error(job, error, lease_owner=claim_token)
+            except IndexLeaseLost:
+                pass
             except Exception as error:  # noqa: BLE001 - durable job boundary
                 self._save_job(
                     job,
@@ -223,7 +225,22 @@ class IndexWorker:
         )
 
     def _run_indexing(self, job: IndexJob) -> IndexResult:
-        result = asyncio.run(self.service.index_revision(job.source_revision_id))
+        if getattr(self.service, "supports_revision_lease", False):
+            if job.lease_token is None:
+                raise _ClaimLost("index job lease token is missing")
+            result = asyncio.run(
+                self.service.index_revision(  # type: ignore[call-arg]
+                    job.source_revision_id,
+                    lease=IndexLease(
+                        job.id,
+                        job.lease_token,
+                        self.lease_seconds,
+                        self.now,
+                    ),
+                )
+            )
+        else:
+            result = asyncio.run(self.service.index_revision(job.source_revision_id))
         if not isinstance(result, IndexResult):
             raise TypeError("indexing service returned an invalid result")
         return result
@@ -407,15 +424,16 @@ class IndexWorker:
         lease_owner: str | None = None,
         **changes: Any,
     ) -> IndexJob:
+        now = self.now()
         candidate = replace(
             job,
             state=state,
-            updated_at=self.now().isoformat(),
+            updated_at=now.isoformat(),
             **changes,
         )
         if lease_owner is None:
             return self.repository.upsert_job(candidate)
-        saved = self.repository.save_claimed_job(candidate, lease_owner)
+        saved = self.repository.save_claimed_job(candidate, lease_owner, now=now)
         if saved is None:
             raise _ClaimLost("index job lease was replaced")
         return saved
