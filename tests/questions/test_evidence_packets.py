@@ -9,6 +9,7 @@ from typing import Any, cast
 import pytest
 from sqlalchemy import text as sql_text
 
+import oms_hub.questions.evidence_packets as evidence_packets_module
 from oms_hub.db import Database
 from oms_hub.knowledge.ids import sha256_text
 from oms_hub.knowledge.ids import source_revision_id as make_source_revision_id
@@ -791,3 +792,137 @@ def test_retrieval_result_shape_is_validated_before_repository_reads(
             _request(),
         )
     assert revision_reads == 0
+
+
+def test_nonintegrated_packet_refuses_more_than_four_objectives_before_retrieval(
+    repository: KnowledgeRepository,
+) -> None:
+    concept = _add_evidence(repository, evidence_id="ev-concept")
+    objectives = tuple(
+        QuestionObjective(f"obj-{index:02d}", f"Objective {index:02d}")
+        for index in range(16)
+    )
+    by_query = {
+        objective.display_name: _result(
+            _add_evidence(
+                repository,
+                evidence_id=f"ev-objective-{index:02d}",
+                text=f"Distinct objective evidence {index:02d}.",
+            )
+        )
+        for index, objective in enumerate(objectives)
+    }
+    provider = FakeRetrievalProvider(
+        _result(),
+        by_query={"Factor VIII deficiency": _result(concept), **by_query},
+    )
+
+    with pytest.raises(QuestionEvidenceError, match="at most 4"):
+        _build(
+            QuestionEvidencePacketBuilder(provider, repository),
+            _request(objectives=objectives),
+        )
+    assert provider.requests == []
+
+
+def test_character_budget_uses_emitted_highest_priority_representative(
+    repository: KnowledgeRepository,
+) -> None:
+    oversized = _add_evidence(
+        repository,
+        evidence_id="ev-oversized-representative",
+        text=f"Equivalent claim{'!' * 18_000}",
+        source_priority=100,
+    )
+    compact = _add_evidence(
+        repository,
+        evidence_id="ev-compact-representative",
+        text=" equivalent CLAIM ",
+        source_priority=1,
+    )
+
+    packet = _build(
+        QuestionEvidencePacketBuilder(
+            FakeRetrievalProvider(_result(oversized, compact)), repository
+        ),
+        _request(),
+    )
+
+    assert sum(len(unit.normalized_text) for unit in packet.evidence) <= 18_000
+    assert tuple(
+        evidence_id for unit in packet.evidence for evidence_id in unit.evidence_ids
+    ) == ("ev-compact-representative",)
+    assert packet.omitted_evidence_ids == ("ev-oversized-representative",)
+
+
+@pytest.mark.parametrize(
+    ("first_text", "second_text"),
+    [
+        ("Dose is 2 × 3 mg.", "Dose is 2 ÷ 3 mg."),
+        ("Value is ≠ 4.", "Value is ≈ 4."),
+        ("Devanagari कि", "Devanagari कु"),
+    ],
+)
+def test_claim_signature_preserves_unicode_symbols_and_combining_marks(
+    repository: KnowledgeRepository,
+    first_text: str,
+    second_text: str,
+) -> None:
+    first = _add_evidence(repository, evidence_id="ev-first", text=first_text)
+    second = _add_evidence(repository, evidence_id="ev-second", text=second_text)
+
+    packet = _build(
+        QuestionEvidencePacketBuilder(
+            FakeRetrievalProvider(_result(first, second)), repository
+        ),
+        _request(),
+    )
+
+    assert len(packet.evidence) == 2
+
+
+def test_required_cover_selection_has_bounded_accounting_work(
+    repository: KnowledgeRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refs = tuple(
+        _add_evidence(
+            repository,
+            evidence_id=f"ev-bounded-{index:02d}",
+            text=f"Bounded selection claim {index:02d}.",
+            source_priority=index,
+        )
+        for index in range(16)
+    )
+    objectives = tuple(
+        QuestionObjective(f"obj-{index}", f"Objective {index}") for index in range(4)
+    )
+    provider = FakeRetrievalProvider(_result(*refs))
+    accounting_calls = 0
+    original_evidence_characters = evidence_packets_module._evidence_characters
+
+    def counted_evidence_characters(
+        items: tuple[evidence_packets_module._ResolvedEvidence, ...],
+    ) -> int:
+        nonlocal accounting_calls
+        accounting_calls += 1
+        if accounting_calls > 128:
+            raise AssertionError("required-cover accounting exceeded its bounded budget")
+        return original_evidence_characters(items)
+
+    monkeypatch.setattr(
+        evidence_packets_module,
+        "_evidence_characters",
+        counted_evidence_characters,
+    )
+
+    packet = _build(
+        QuestionEvidencePacketBuilder(provider, repository),
+        _request(
+            objectives=objectives,
+            mode=QuestionMode.INTEGRATED_BOARD_STYLE,
+        ),
+    )
+
+    assert accounting_calls <= 128
+    assert sum(len(unit.evidence_ids) for unit in packet.evidence) <= 16
