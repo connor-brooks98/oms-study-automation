@@ -333,11 +333,10 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     assert set(query_bodies[0]) == {
         "input",
         "model",
-        "response_format",
         "store",
         "tools",
     }
-    assert query_bodies[0]["response_format"] == {
+    assert query_bodies[1]["response_format"] == {
         "type": "text",
         "mime_type": "application/json",
         "schema": smoke.SmokeAnswer.model_json_schema(),
@@ -818,6 +817,52 @@ def test_positive_query_does_not_disclose_the_expected_answer() -> None:
 
     assert smoke.SYNTHETIC_FACT not in session.prompts[0]
     assert "cobalt-otter-28" not in session.prompts[0]
+
+
+def test_positive_citation_and_negative_schema_use_separate_existing_queries() -> None:
+    smoke = _load_smoke()
+
+    class SchemaCapture(_FakeSession):
+        def __init__(self) -> None:
+            super().__init__(smoke)
+            self.schemas: list[object] = []
+
+        async def query(self, *args: object, **kwargs: object) -> object:
+            self.schemas.append(kwargs["response_schema"])
+            return await super().query(*args, **kwargs)
+
+    session = SchemaCapture()
+    asyncio.run(smoke.run_contract_smoke(session))
+
+    assert session.schemas == [None, smoke.SmokeAnswer]
+
+
+def test_negative_structured_answer_must_report_unsupported() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class SupportedNegative(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id == smoke.WRONG_LECTURE_ID:
+                return smoke.SmokeQueryResult(
+                    answer={"answer": "unsupported answer", "supported": True},
+                    citations=(),
+                )
+            return result
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        asyncio.run(
+            smoke.run_contract_smoke(
+                SupportedNegative(smoke),
+                failure_evidence=evidence,
+            )
+        )
+
+    assert smoke._failure_record(raised.value, evidence)["contract_reason"] == (
+        "negative_answer_invalid"
+    )
 
 
 def test_positive_validation_accepts_the_retrieved_marker_value() -> None:
