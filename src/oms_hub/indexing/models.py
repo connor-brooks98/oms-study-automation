@@ -482,6 +482,7 @@ class IndexJobModel(Base):
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "INDEX_OPERATION_KINDS",
     "IndexJob",
     "IndexJobModel",
     "IndexState",

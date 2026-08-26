@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
+from uuid import uuid4
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import exists, func, or_, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 
 from oms_hub.db import Database
@@ -80,6 +82,16 @@ class IndexRepository:
             ).all()
             return [self._store_from_row(row) for row in rows]
 
+    def list_stores(self, *, current_only: bool = False) -> list[ProviderStore]:
+        with self.database.session() as session:
+            statement = select(ProviderStoreModel)
+            if current_only:
+                statement = statement.where(ProviderStoreModel.is_current.is_(True))
+            rows = session.scalars(
+                statement.order_by(ProviderStoreModel.store_key, ProviderStoreModel.generation)
+            ).all()
+            return [self._store_from_row(row) for row in rows]
+
     def next_store_generation(self, store_key: StoreKey | str) -> int:
         key = _key_value(store_key)
         with self.database.session() as session:
@@ -112,29 +124,32 @@ class IndexRepository:
 
     def upsert_document(self, document: ProviderDocument) -> ProviderDocument:
         with self.database.session() as session:
-            row = session.get(ProviderDocumentModel, document.id)
-            if row is None and document.provider_document_id is not None:
-                row = session.scalar(
-                    select(ProviderDocumentModel).where(
-                        ProviderDocumentModel.provider == document.provider,
-                        ProviderDocumentModel.provider_document_id
-                        == document.provider_document_id,
-                    )
+            document = self._upsert_document(session, document)
+            session.flush()
+        return document
+
+    def upsert_document_with_token(
+        self,
+        document: ProviderDocument,
+        job_id: str,
+        lease_token: str,
+        now: datetime,
+    ) -> ProviderDocument | None:
+        """Persist a provider document only while its revision lease is current."""
+
+        with self.database.session() as session:
+            fenced = session.execute(
+                update(IndexJobModel)
+                .where(
+                    IndexJobModel.id == job_id,
+                    IndexJobModel.lease_token == lease_token,
+                    IndexJobModel.lease_expires_at > now.isoformat(),
                 )
-            if row is None:
-                row = session.scalar(
-                    select(ProviderDocumentModel).where(
-                        ProviderDocumentModel.store_id == document.store_id,
-                        ProviderDocumentModel.source_revision_id == document.source_revision_id,
-                        ProviderDocumentModel.input_key == document.input_key,
-                    )
-                )
-            if row is None:
-                row = self._document_row(document)
-                session.add(row)
-            else:
-                self._copy_document(row, document)
-                document = self._document_from_row(row)
+                .values(updated_at=now.isoformat())
+            )
+            if cast(CursorResult[Any], fenced).rowcount != 1:
+                return None
+            document = self._upsert_document(session, document)
             session.flush()
         return document
 
@@ -184,6 +199,30 @@ class IndexRepository:
                 .order_by(
                     ProviderDocumentModel.input_key.asc(),
                     ProviderDocumentModel.id.asc(),
+                )
+            ).all()
+            return [self._document_from_row(row) for row in rows]
+
+    def list_documents_by_revision(
+        self,
+        source_revision_id: str,
+        *,
+        current_stores_only: bool = False,
+    ) -> list[ProviderDocument]:
+        with self.database.session() as session:
+            statement = select(ProviderDocumentModel).where(
+                ProviderDocumentModel.source_revision_id == source_revision_id
+            )
+            if current_stores_only:
+                statement = statement.join(
+                    ProviderStoreModel,
+                    ProviderStoreModel.id == ProviderDocumentModel.store_id,
+                ).where(ProviderStoreModel.is_current.is_(True))
+            rows = session.scalars(
+                statement.order_by(
+                    ProviderDocumentModel.store_id,
+                    ProviderDocumentModel.input_key,
+                    ProviderDocumentModel.id,
                 )
             ).all()
             return [self._document_from_row(row) for row in rows]
@@ -246,6 +285,12 @@ class IndexRepository:
                 row = self._job_row(job)
                 session.add(row)
             else:
+                if (
+                    row.lease_owner is not None
+                    and row.lease_expires_at is not None
+                    and row.lease_expires_at > _utc_now()
+                ):
+                    raise RuntimeError("leased index jobs require a token-checked save")
                 self._copy_job(row, job)
                 job = self._job_from_row(row)
             session.flush()
@@ -254,6 +299,16 @@ class IndexRepository:
     def get_job(self, job_id: str) -> IndexJob | None:
         with self.database.session() as session:
             row = session.get(IndexJobModel, job_id)
+            return self._job_from_row(row) if row is not None else None
+
+    def get_job_by_revision(self, store_id: str, source_revision_id: str) -> IndexJob | None:
+        with self.database.session() as session:
+            row = session.scalar(
+                select(IndexJobModel).where(
+                    IndexJobModel.store_id == store_id,
+                    IndexJobModel.source_revision_id == source_revision_id,
+                )
+            )
             return self._job_from_row(row) if row is not None else None
 
     def list_jobs(self) -> list[IndexJob]:
@@ -265,17 +320,25 @@ class IndexRepository:
             ).all()
             return [self._job_from_row(row) for row in rows]
 
-    def save_claimed_job(self, job: IndexJob, lease_owner: str) -> IndexJob | None:
+    def save_claimed_job(
+        self,
+        job: IndexJob,
+        lease_owner: str,
+        *,
+        now: datetime | None = None,
+    ) -> IndexJob | None:
         if not lease_owner.strip() or len(lease_owner) > 100:
             raise ValueError("lease owner is blank or unbounded")
         with self.database.session() as session:
+            statement = update(IndexJobModel).where(
+                IndexJobModel.id == job.id,
+                IndexJobModel.lease_owner == lease_owner,
+                IndexJobModel.lease_token == job.lease_token,
+            )
+            if now is not None:
+                statement = statement.where(IndexJobModel.lease_expires_at > now.isoformat())
             changed = session.execute(
-                update(IndexJobModel)
-                .where(
-                    IndexJobModel.id == job.id,
-                    IndexJobModel.lease_owner == lease_owner,
-                )
-                .values(
+                statement.values(
                     store_id=job.store_id,
                     source_revision_id=job.source_revision_id,
                     operation_kind=job.operation_kind,
@@ -297,6 +360,29 @@ class IndexRepository:
             session.refresh(row)
             return self._job_from_row(row)
 
+    def _upsert_document(self, session: Any, document: ProviderDocument) -> ProviderDocument:
+        row = session.get(ProviderDocumentModel, document.id)
+        if row is None and document.provider_document_id is not None:
+            row = session.scalar(
+                select(ProviderDocumentModel).where(
+                    ProviderDocumentModel.provider == document.provider,
+                    ProviderDocumentModel.provider_document_id == document.provider_document_id,
+                )
+            )
+        if row is None:
+            row = session.scalar(
+                select(ProviderDocumentModel).where(
+                    ProviderDocumentModel.store_id == document.store_id,
+                    ProviderDocumentModel.source_revision_id == document.source_revision_id,
+                    ProviderDocumentModel.input_key == document.input_key,
+                )
+            )
+        if row is None:
+            session.add(self._document_row(document))
+            return document
+        self._copy_document(row, document)
+        return self._document_from_row(row)
+
     def claim_job(
         self,
         job_id: str,
@@ -311,6 +397,7 @@ class IndexRepository:
             raise ValueError("lease seconds must be positive")
         now_value = now.isoformat()
         expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        lease_token = str(uuid4())
         with self.database.session() as session:
             claimed = session.execute(
                 update(IndexJobModel)
@@ -322,7 +409,11 @@ class IndexRepository:
                         IndexJobModel.lease_expires_at <= now_value,
                     ),
                 )
-                .values(lease_owner=worker_id, lease_expires_at=expires)
+                .values(
+                    lease_owner=worker_id,
+                    lease_token=lease_token,
+                    lease_expires_at=expires,
+                )
             )
             if cast(CursorResult[Any], claimed).rowcount != 1:
                 return None
@@ -344,6 +435,7 @@ class IndexRepository:
             raise ValueError("lease seconds must be positive")
         now_value = now.isoformat()
         expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        lease_token = str(uuid4())
         terminal = {
             IndexState.READY.value,
             IndexState.TERMINAL_FAILURE.value,
@@ -379,7 +471,11 @@ class IndexRepository:
                         IndexJobModel.lease_expires_at <= now_value,
                     ),
                 )
-                .values(lease_owner=worker_id, lease_expires_at=expires)
+                .values(
+                    lease_owner=worker_id,
+                    lease_token=lease_token,
+                    lease_expires_at=expires,
+                )
             )
             if cast(CursorResult[Any], claimed).rowcount != 1:
                 return None
@@ -387,15 +483,21 @@ class IndexRepository:
             session.refresh(row)
             return self._job_from_row(row)
 
-    def release_job_lease(self, job_id: str, worker_id: str) -> bool:
+    def release_job_lease(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_token: str | None = None,
+    ) -> bool:
         with self.database.session() as session:
+            statement = update(IndexJobModel).where(
+                IndexJobModel.id == job_id,
+                IndexJobModel.lease_owner == worker_id,
+            )
+            if lease_token is not None:
+                statement = statement.where(IndexJobModel.lease_token == lease_token)
             released = session.execute(
-                update(IndexJobModel)
-                .where(
-                    IndexJobModel.id == job_id,
-                    IndexJobModel.lease_owner == worker_id,
-                )
-                .values(lease_owner=None, lease_expires_at=None)
+                statement.values(lease_owner=None, lease_token=None, lease_expires_at=None)
             )
             return cast(CursorResult[Any], released).rowcount == 1
 
@@ -407,9 +509,310 @@ class IndexRepository:
                     IndexJobModel.lease_owner.is_not(None),
                     IndexJobModel.lease_expires_at <= now.isoformat(),
                 )
-                .values(lease_owner=None, lease_expires_at=None)
+                .values(lease_owner=None, lease_token=None, lease_expires_at=None)
             )
             return cast(CursorResult[Any], reclaimed).rowcount
+
+    def claim_revision_operation(
+        self,
+        store_id: str,
+        source_revision_id: str,
+        operation_kind: str,
+        worker_id: str,
+        now: datetime,
+        *,
+        lease_seconds: int,
+    ) -> IndexJob | None:
+        if operation_kind not in {"delete", "rebuild"}:
+            raise ValueError("revision operation must be delete or rebuild")
+        if not worker_id.strip() or len(worker_id) > 100:
+            raise ValueError("worker id is blank or unbounded")
+        if lease_seconds <= 0:
+            raise ValueError("lease seconds must be positive")
+        token = str(uuid4())
+        now_value = now.isoformat()
+        expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        job_id = str(uuid4())
+        with self.database.session() as session:
+            session.execute(
+                sqlite_insert(IndexJobModel)
+                .values(
+                    id=job_id,
+                    store_id=store_id,
+                    source_revision_id=source_revision_id,
+                    operation_kind=operation_kind,
+                    lease_token=token,
+                    state=IndexState.DELETING.value,
+                    retry_count=0,
+                    lease_owner=worker_id,
+                    lease_expires_at=expires,
+                    created_at=now_value,
+                    updated_at=now_value,
+                )
+                .on_conflict_do_nothing(index_elements=["store_id", "source_revision_id"])
+            )
+            row = session.scalar(
+                select(IndexJobModel).where(
+                    IndexJobModel.store_id == store_id,
+                    IndexJobModel.source_revision_id == source_revision_id,
+                )
+            )
+            assert row is not None
+            if row.lease_token == token:
+                session.flush()
+                return self._job_from_row(row)
+            if (
+                row.lease_owner is not None
+                and row.lease_expires_at is not None
+                and row.lease_expires_at > now_value
+            ):
+                return None
+            if row.state == IndexState.DELETING.value and row.operation_kind != operation_kind:
+                return None
+            claimed = session.execute(
+                update(IndexJobModel)
+                .where(
+                    IndexJobModel.id == row.id,
+                    or_(
+                        IndexJobModel.lease_owner.is_(None),
+                        IndexJobModel.lease_expires_at.is_(None),
+                        IndexJobModel.lease_expires_at <= now_value,
+                    ),
+                )
+                .values(
+                    operation_kind=operation_kind,
+                    lease_owner=worker_id,
+                    lease_token=token,
+                    lease_expires_at=expires,
+                    state=IndexState.DELETING.value,
+                    retry_count=0,
+                    last_error_category=None,
+                    last_error_message=None,
+                    next_attempt_at=None,
+                    updated_at=now_value,
+                )
+            )
+            if cast(CursorResult[Any], claimed).rowcount != 1:
+                return None
+            session.refresh(row)
+            return self._job_from_row(row)
+
+    def renew_revision_lease(
+        self,
+        job_id: str,
+        lease_token: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool:
+        if lease_seconds <= 0:
+            raise ValueError("lease seconds must be positive")
+        with self.database.session() as session:
+            renewed = session.execute(
+                update(IndexJobModel)
+                .where(
+                    IndexJobModel.id == job_id,
+                    IndexJobModel.lease_token == lease_token,
+                    IndexJobModel.lease_expires_at > now.isoformat(),
+                )
+                .values(
+                    lease_expires_at=(now + timedelta(seconds=lease_seconds)).isoformat(),
+                    updated_at=now.isoformat(),
+                )
+            )
+            return cast(CursorResult[Any], renewed).rowcount == 1
+
+    def mark_document_deleting_with_token(
+        self,
+        document_id: str,
+        job_id: str,
+        lease_token: str,
+        now: datetime,
+    ) -> bool:
+        valid_lease = exists().where(
+            IndexJobModel.id == job_id,
+            IndexJobModel.lease_token == lease_token,
+            IndexJobModel.lease_expires_at > now.isoformat(),
+        )
+        with self.database.session() as session:
+            changed = session.execute(
+                update(ProviderDocumentModel)
+                .where(
+                    ProviderDocumentModel.id == document_id,
+                    ProviderDocumentModel.state.in_(
+                        {
+                            IndexState.READY.value,
+                            IndexState.STALE.value,
+                            IndexState.RETRYABLE_FAILURE.value,
+                            IndexState.TERMINAL_FAILURE.value,
+                            IndexState.DELETING.value,
+                        }
+                    ),
+                    valid_lease,
+                )
+                .values(state=IndexState.DELETING.value, updated_at=now.isoformat())
+            )
+            return cast(CursorResult[Any], changed).rowcount == 1
+
+    def mark_document_deleted_with_token(
+        self,
+        document_id: str,
+        job_id: str,
+        lease_token: str,
+        now: datetime,
+    ) -> bool:
+        valid_lease = exists().where(
+            IndexJobModel.id == job_id,
+            IndexJobModel.lease_token == lease_token,
+            IndexJobModel.lease_expires_at > now.isoformat(),
+        )
+        with self.database.session() as session:
+            changed = session.execute(
+                update(ProviderDocumentModel)
+                .where(
+                    ProviderDocumentModel.id == document_id,
+                    ProviderDocumentModel.state == IndexState.DELETING.value,
+                    valid_lease,
+                )
+                .values(state=IndexState.DELETED.value, updated_at=now.isoformat())
+            )
+            return cast(CursorResult[Any], changed).rowcount == 1
+
+    def reset_deleted_revision_for_rebuild(
+        self,
+        job_id: str,
+        lease_token: str,
+        now: datetime,
+    ) -> bool:
+        with self.database.session() as session:
+            job = session.scalar(
+                select(IndexJobModel).where(
+                    IndexJobModel.id == job_id,
+                    IndexJobModel.operation_kind == "rebuild",
+                    IndexJobModel.lease_token == lease_token,
+                    IndexJobModel.lease_expires_at > now.isoformat(),
+                )
+            )
+            if job is None:
+                return False
+            documents = session.scalars(
+                select(ProviderDocumentModel).where(
+                    ProviderDocumentModel.store_id == job.store_id,
+                    ProviderDocumentModel.source_revision_id == job.source_revision_id,
+                )
+            ).all()
+            if any(item.state != IndexState.DELETED.value for item in documents):
+                return False
+            for document in documents:
+                document.provider_document_id = None
+                document.provider_document_name = None
+                document.provider_file_name = None
+                document.provider_operation_name = None
+                document.retry_count = 0
+                document.last_error_category = None
+                document.metadata_json = "{}"
+                document.state = IndexState.NOT_INDEXED.value
+                document.updated_at = now.isoformat()
+            job.operation_kind = "index"
+            job.lease_owner = None
+            job.lease_token = None
+            job.lease_expires_at = None
+            job.provider_document_id = None
+            job.provider_operation_name = None
+            job.retry_count = 0
+            job.last_error_category = None
+            job.last_error_message = None
+            job.next_attempt_at = None
+            job.state = IndexState.NOT_INDEXED.value
+            job.updated_at = now.isoformat()
+            session.flush()
+            return True
+
+    def reset_missing_remote_input(
+        self,
+        document_id: str,
+        now: datetime,
+        *,
+        lease_seconds: int,
+    ) -> bool:
+        token = str(uuid4())
+        owner = f"reconcile:{token}"[:100]
+        now_value = now.isoformat()
+        expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        with self.database.session() as session:
+            document = session.get(ProviderDocumentModel, document_id)
+            if document is None or document.state != IndexState.READY.value:
+                return False
+            session.execute(
+                sqlite_insert(IndexJobModel)
+                .values(
+                    id=str(uuid4()),
+                    store_id=document.store_id,
+                    source_revision_id=document.source_revision_id,
+                    operation_kind="index",
+                    lease_token=token,
+                    state=IndexState.READY.value,
+                    retry_count=0,
+                    lease_owner=owner,
+                    lease_expires_at=expires,
+                    created_at=now_value,
+                    updated_at=now_value,
+                )
+                .on_conflict_do_nothing(index_elements=["store_id", "source_revision_id"])
+            )
+            job = session.scalar(
+                select(IndexJobModel).where(
+                    IndexJobModel.store_id == document.store_id,
+                    IndexJobModel.source_revision_id == document.source_revision_id,
+                )
+            )
+            assert job is not None
+            if job.lease_token != token:
+                if (
+                    job.lease_owner is not None
+                    and job.lease_expires_at is not None
+                    and job.lease_expires_at > now_value
+                ):
+                    return False
+                claimed = session.execute(
+                    update(IndexJobModel)
+                    .where(
+                        IndexJobModel.id == job.id,
+                        or_(
+                            IndexJobModel.lease_owner.is_(None),
+                            IndexJobModel.lease_expires_at.is_(None),
+                            IndexJobModel.lease_expires_at <= now_value,
+                        ),
+                    )
+                    .values(
+                        lease_owner=owner,
+                        lease_token=token,
+                        lease_expires_at=expires,
+                    )
+                )
+                if cast(CursorResult[Any], claimed).rowcount != 1:
+                    return False
+            document.provider_document_id = None
+            document.provider_document_name = None
+            document.provider_file_name = None
+            document.provider_operation_name = None
+            document.retry_count = 0
+            document.last_error_category = None
+            document.state = IndexState.NOT_INDEXED.value
+            document.updated_at = now_value
+            job.operation_kind = "index"
+            job.lease_owner = None
+            job.lease_token = None
+            job.lease_expires_at = None
+            job.provider_document_id = None
+            job.provider_operation_name = None
+            job.retry_count = 0
+            job.last_error_category = None
+            job.last_error_message = None
+            job.next_attempt_at = None
+            job.state = IndexState.NOT_INDEXED.value
+            job.updated_at = now_value
+            session.flush()
+            return True
 
     @staticmethod
     def _store_row(store: ProviderStore) -> ProviderStoreModel:

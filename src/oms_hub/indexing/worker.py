@@ -9,9 +9,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import uuid4
 
-from oms_hub.indexing.models import IndexJob, IndexState, validate_transition
+from oms_hub.indexing.models import IndexJob, IndexState, ProviderDocument, validate_transition
 from oms_hub.indexing.repository import IndexRepository
-from oms_hub.indexing.service import IndexingInputError, IndexResult
+from oms_hub.indexing.service import IndexingInputError, IndexLease, IndexLeaseLost, IndexResult
 from oms_hub.ingestion.worker import IngestionWorker
 from oms_hub.providers.gemini.errors import GeminiProviderError
 from oms_hub.workers import RecoveryReport, WorkResult
@@ -85,9 +85,11 @@ class IndexWorker:
             return WorkResult(worked=False)
         try:
             try:
-                if job.state is IndexState.DELETING:
-                    self._delete_document(job)
-                    self._save_job(job, state=IndexState.DELETED, lease_owner=claim_token)
+                if job.state is IndexState.DELETING or job.operation_kind in {
+                    "delete",
+                    "rebuild",
+                }:
+                    self._delete_revision(job, lease_owner=claim_token)
                 else:
                     result = self._run_indexing(job)
                     self._apply_result(job, result, lease_owner=claim_token)
@@ -100,7 +102,7 @@ class IndexWorker:
                     )
                     else "contract"
                 )
-                self._save_job(
+                saved = self._save_job(
                     job,
                     state=IndexState.TERMINAL_FAILURE,
                     last_error_category=category,
@@ -108,11 +110,13 @@ class IndexWorker:
                     lease_owner=claim_token,
                 )
                 self._terminalize_document(
-                    job,
+                    saved,
                     last_error_category=category,
                 )
             except GeminiProviderError as error:
                 self._handle_provider_error(job, error, lease_owner=claim_token)
+            except IndexLeaseLost:
+                pass
             except Exception as error:  # noqa: BLE001 - durable job boundary
                 self._save_job(
                     job,
@@ -124,7 +128,7 @@ class IndexWorker:
         except _ClaimLost:
             pass
         finally:
-            self.repository.release_job_lease(job.id, claim_token)
+            self.repository.release_job_lease(job.id, claim_token, job.lease_token)
         return WorkResult(worked=True, job_id=job.id)
 
     def recover_interrupted(self) -> RecoveryReport:
@@ -197,21 +201,22 @@ class IndexWorker:
                     )
                 if job.state is IndexState.IMPORTING and operation_name is None:
                     validate_transition(job.state, IndexState.FILE_UPLOADED)
-                    self._save_job(
+                    job = self._save_job(
                         job,
                         state=IndexState.FILE_UPLOADED,
                         lease_owner=claim_token,
                     )
                     if document is not None and document.state is not IndexState.FILE_UPLOADED:
                         validate_transition(document.state, IndexState.FILE_UPLOADED)
-                        self.repository.upsert_document(
-                            replace(document, state=IndexState.FILE_UPLOADED)
+                        self._save_document(
+                            job,
+                            replace(document, state=IndexState.FILE_UPLOADED),
                         )
                 resumed += 1
             except _ClaimLost:
                 pass
             finally:
-                self.repository.release_job_lease(job.id, claim_token)
+                self.repository.release_job_lease(job.id, claim_token, job.lease_token)
         return RecoveryReport(
             reclaimed_leases=reclaimed,
             resumed_jobs=resumed,
@@ -219,15 +224,76 @@ class IndexWorker:
         )
 
     def _run_indexing(self, job: IndexJob) -> IndexResult:
-        result = asyncio.run(self.service.index_revision(job.source_revision_id))
+        if getattr(self.service, "supports_revision_lease", False):
+            if job.lease_token is None:
+                raise _ClaimLost("index job lease token is missing")
+            result = asyncio.run(
+                self.service.index_revision(  # type: ignore[call-arg]
+                    job.source_revision_id,
+                    lease=IndexLease(
+                        job.id,
+                        job.lease_token,
+                        self.lease_seconds,
+                        self.now,
+                    ),
+                )
+            )
+        else:
+            result = asyncio.run(self.service.index_revision(job.source_revision_id))
         if not isinstance(result, IndexResult):
             raise TypeError("indexing service returned an invalid result")
         return result
 
-    def _delete_document(self, job: IndexJob) -> None:
-        if self.admin is None or job.provider_document_id is None:
-            raise ValueError("deleting job is missing its provider document admin input")
-        asyncio.run(self.admin.delete_document(job.provider_document_id))
+    def _delete_revision(self, job: IndexJob, *, lease_owner: str) -> None:
+        if self.admin is None or job.lease_token is None:
+            raise ValueError("deleting job is missing its provider admin or lease token")
+        documents = self.repository.list_documents(job.store_id)
+        for document in documents:
+            if document.source_revision_id != job.source_revision_id:
+                continue
+            if document.state is IndexState.DELETED:
+                continue
+            now = self.now()
+            if not self.repository.renew_revision_lease(
+                job.id,
+                job.lease_token,
+                now,
+                self.lease_seconds,
+            ):
+                raise _ClaimLost("index job lease expired")
+            if not self.repository.mark_document_deleting_with_token(
+                document.id,
+                job.id,
+                job.lease_token,
+                now,
+            ):
+                raise _ClaimLost("index job lease was replaced")
+            if document.provider_document_id is not None:
+                delete_remote = getattr(self.admin, "delete_remote_document", None)
+                if delete_remote is None:
+                    delete_remote = self.admin.delete_document
+                asyncio.run(delete_remote(document.provider_document_id))
+            if not self.repository.mark_document_deleted_with_token(
+                document.id,
+                job.id,
+                job.lease_token,
+                self.now(),
+            ):
+                raise _ClaimLost("index job lease was replaced")
+        if job.operation_kind == "rebuild":
+            if not self.repository.reset_deleted_revision_for_rebuild(
+                job.id,
+                job.lease_token,
+                self.now(),
+            ):
+                raise _ClaimLost("index job lease was replaced")
+            return
+        self._save_job(
+            job,
+            state=IndexState.DELETED,
+            operation_kind="delete",
+            lease_owner=lease_owner,
+        )
 
     def _apply_result(
         self,
@@ -269,14 +335,14 @@ class IndexWorker:
                 if document is not None and document.last_error_category
                 else "provider"
             )
-            self._save_job(
+            saved = self._save_job(
                 job,
                 state=IndexState.TERMINAL_FAILURE,
                 last_error_category=category,
                 lease_owner=lease_owner,
                 **identity_changes,
             )
-            self._terminalize_document(job, last_error_category=category)
+            self._terminalize_document(saved, last_error_category=category)
         else:
             self._save_job(
                 job,
@@ -306,14 +372,14 @@ class IndexWorker:
                 lease_owner=lease_owner,
             )
             return
-        self._save_job(
+        saved = self._save_job(
             job,
             state=IndexState.TERMINAL_FAILURE,
             last_error_category=error.category,
             last_error_message=error.category,
             lease_owner=lease_owner,
         )
-        self._terminalize_document(job, last_error_category=error.category)
+        self._terminalize_document(saved, last_error_category=error.category)
 
     def _save_retry_or_terminal(
         self,
@@ -357,15 +423,16 @@ class IndexWorker:
         lease_owner: str | None = None,
         **changes: Any,
     ) -> IndexJob:
+        now = self.now()
         candidate = replace(
             job,
             state=state,
-            updated_at=self.now().isoformat(),
+            updated_at=now.isoformat(),
             **changes,
         )
         if lease_owner is None:
             return self.repository.upsert_job(candidate)
-        saved = self.repository.save_claimed_job(candidate, lease_owner)
+        saved = self.repository.save_claimed_job(candidate, lease_owner, now=now)
         if saved is None:
             raise _ClaimLost("index job lease was replaced")
         return saved
@@ -385,14 +452,32 @@ class IndexWorker:
             IndexState.DELETED,
         }:
             category = document.last_error_category or last_error_category or "provider"
-            self.repository.upsert_document(
+            self._save_document(
+                job,
                 replace(
                     document,
                     state=IndexState.TERMINAL_FAILURE,
                     retry_count=max(document.retry_count, job.retry_count),
                     last_error_category=category,
-                )
+                ),
             )
+
+    def _save_document(
+        self,
+        job: IndexJob,
+        document: ProviderDocument,
+    ) -> ProviderDocument:
+        if job.lease_token is None:
+            raise _ClaimLost("index job lease token is missing")
+        saved = self.repository.upsert_document_with_token(
+            document,
+            job.id,
+            job.lease_token,
+            self.now(),
+        )
+        if saved is None:
+            raise _ClaimLost("index job lease was replaced")
+        return saved
 
     def _claim_token(self) -> str:
         return f"{self.worker_id[:67]}:{uuid4().hex}"

@@ -4,7 +4,7 @@ import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -111,6 +111,40 @@ class FakeAdmin:
 
     async def delete_document(self, provider_document_id: str) -> None:
         self.delete_document_calls.append(provider_document_id)
+
+
+class _ReplacingRepository(IndexRepository):
+    def __init__(
+        self,
+        database: Database,
+        successor: IndexRepository,
+        clock: list[datetime],
+        replace_state: IndexState,
+    ) -> None:
+        super().__init__(database)
+        self.successor = successor
+        self.clock = clock
+        self.replace_state = replace_state
+        self.replacement: IndexJob | None = None
+
+    def save_claimed_job(
+        self,
+        job: IndexJob,
+        lease_owner: str,
+        *,
+        now: datetime | None = None,
+    ) -> IndexJob | None:
+        saved = super().save_claimed_job(job, lease_owner, now=now)
+        if saved is not None and job.state is self.replace_state and self.replacement is None:
+            self.clock[0] += timedelta(seconds=2)
+            self.replacement = self.successor.claim_job(
+                job.id,
+                "worker-b",
+                self.clock[0],
+                lease_seconds=60,
+            )
+            assert self.replacement is not None
+        return saved
 
 
 def _worker(
@@ -457,3 +491,95 @@ def test_stale_lease_cannot_overwrite_or_release_new_claim(tmp_path: Path) -> No
     assert stored is not None
     assert stored.state is IndexState.NOT_INDEXED
     assert stored.lease_owner == "worker:claim-2"
+
+
+def test_replaced_terminal_worker_cannot_terminalize_provider_document(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'terminal-fence.db'}"
+    bootstrap = _open_database(url)
+    bootstrap.migrate()
+    successor = IndexRepository(_open_database(url))
+    clock = [NOW]
+    repository = _ReplacingRepository(
+        _open_database(url),
+        successor,
+        clock,
+        IndexState.TERMINAL_FAILURE,
+    )
+    job = _queued_job(repository)
+    repository.save_document(
+        ProviderDocument(
+            store_id=job.store_id,
+            provider="gemini",
+            provider_document_id=None,
+            source_revision_id=job.source_revision_id,
+            state=IndexState.UPLOADING_FILE,
+        )
+    )
+    worker = IndexWorker(
+        repository,
+        FakeIndexingService(result_state=IndexState.TERMINAL_FAILURE),
+        worker_id="worker-a",
+        lease_seconds=1,
+        now=lambda: clock[0],
+    )
+
+    worker.run_once()
+
+    document = successor.get_document_by_source_revision(job.store_id, job.source_revision_id)
+    stored_job = successor.get_job(job.id)
+    assert repository.replacement is not None
+    assert document is not None and document.state is IndexState.UPLOADING_FILE
+    assert stored_job is not None and stored_job.lease_owner == "worker-b"
+
+
+def test_replaced_recovery_worker_cannot_rewind_provider_document(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'recovery-fence.db'}"
+    bootstrap = _open_database(url)
+    bootstrap.migrate()
+    successor = IndexRepository(_open_database(url))
+    clock = [NOW]
+    repository = _ReplacingRepository(
+        _open_database(url),
+        successor,
+        clock,
+        IndexState.FILE_UPLOADED,
+    )
+    store = repository.create_store(_store())
+    job = repository.save_job(
+        IndexJob(
+            store_id=store.id,
+            source_revision_id="sr_recovery_fence",
+            state=IndexState.IMPORTING,
+        )
+    )
+    repository.save_document(
+        ProviderDocument(
+            store_id=store.id,
+            provider="gemini",
+            provider_document_id=None,
+            source_revision_id=job.source_revision_id,
+            state=IndexState.IMPORTING,
+        )
+    )
+    expired = repository.claim_job(
+        job.id,
+        "crashed-worker",
+        NOW - timedelta(seconds=2),
+        lease_seconds=1,
+    )
+    assert expired is not None
+    worker = IndexWorker(
+        repository,
+        FakeIndexingService(),
+        worker_id="worker-a",
+        lease_seconds=1,
+        now=lambda: clock[0],
+    )
+
+    worker.recover_interrupted()
+
+    document = successor.get_document_by_source_revision(store.id, job.source_revision_id)
+    stored_job = successor.get_job(job.id)
+    assert repository.replacement is not None
+    assert document is not None and document.state is IndexState.IMPORTING
+    assert stored_job is not None and stored_job.lease_owner == "worker-b"
