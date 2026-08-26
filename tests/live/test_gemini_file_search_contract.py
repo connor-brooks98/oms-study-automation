@@ -489,6 +489,13 @@ def test_contract_failure_record_retains_only_allowlisted_reason() -> None:
     assert record["contract_reason"] == "structured_output_invalid"
     assert "raw provider response" not in json.dumps(record, sort_keys=True)
 
+    provider = smoke.GeminiProviderError(
+        "fixed redacted message",
+        diagnostic_code="transport_error",
+    )
+    provider_record = smoke._failure_record(provider, {"failure_stage": "positive_query"})
+    assert provider_record["provider_reason"] == "transport_error"
+
 
 def test_interaction_citation_metadata_and_excerpt_are_bounded() -> None:
     smoke = _load_smoke()

@@ -6,6 +6,7 @@ from collections.abc import Coroutine
 from typing import Any
 
 import pytest
+import httpx
 from pydantic import SecretStr
 
 from oms_hub.providers.gemini.client import GeminiClientFactory, translate_gemini_error
@@ -590,6 +591,18 @@ def test_timeout_error_is_retryable_transient() -> None:
     assert translated.redacted_message == (
         "Gemini operation timed out; resume from the persisted phase."
     )
+    assert translated.diagnostic_code == "timeout"
+    assert "raw-secret" not in str(translated)
+
+
+def test_transport_error_is_retryable_with_fixed_diagnostic() -> None:
+    translated = translate_gemini_error(
+        httpx.RemoteProtocolError("raw-secret transport payload")
+    )
+
+    assert isinstance(translated, GeminiTransientError)
+    assert translated.retryable
+    assert translated.diagnostic_code == "transport_error"
     assert "raw-secret" not in str(translated)
 
 
@@ -599,6 +612,7 @@ def test_timeout_error_is_retryable_transient() -> None:
         AttributeError("private payload"),
         TypeError("private payload"),
         KeyError("private payload"),
+        ValueError("private payload"),
     ),
 )
 def test_sdk_shape_errors_are_non_retryable_contract_errors(error: Exception) -> None:
@@ -609,6 +623,7 @@ def test_sdk_shape_errors_are_non_retryable_contract_errors(error: Exception) ->
     assert translated.redacted_message == (
         "Gemini SDK response did not match the expected contract."
     )
+    assert translated.diagnostic_code == "sdk_contract"
     assert "private payload" not in str(translated)
 
 
@@ -624,13 +639,14 @@ def test_existing_provider_error_is_returned_unchanged() -> None:
 
 def test_unknown_error_uses_fixed_redacted_message() -> None:
     translated = translate_gemini_error(
-        ValueError("raw-secret and private response body")
+        RuntimeError("raw-secret and private response body")
     )
 
     assert type(translated) is GeminiProviderError
     assert translated.redacted_message == "Gemini provider request failed."
     assert translated.provider_status_code is None
     assert translated.provider_request_id is None
+    assert translated.diagnostic_code == "unknown_provider"
     assert "raw-secret" not in str(translated)
     assert "private response body" not in str(translated)
 
