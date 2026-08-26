@@ -112,6 +112,17 @@ def library_javascript() -> FileResponse:
 
 
 @router.api_route(
+    "/quizzes/assets/{asset_version}/library.js",
+    methods=["GET", "HEAD"],
+    include_in_schema=False,
+)
+def versioned_library_javascript(asset_version: str) -> FileResponse:
+    if asset_version != _library_asset_version():
+        raise HTTPException(404, "quiz library asset was not found")
+    return library_javascript()
+
+
+@router.api_route(
     "/quizzes/assets/library.css", methods=["GET", "HEAD"], include_in_schema=False
 )
 def library_styles() -> FileResponse:

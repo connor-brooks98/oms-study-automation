@@ -555,11 +555,15 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
 
 def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
     app, _ = _published_app(tmp_path)
+    library_version = public_quiz_routes._library_asset_version()
 
     with TestClient(app) as client:
         script = client.get("/public/quizzes/assets/player.js")
         styles = client.get("/public/quizzes/assets/player.css")
         library_script = client.get("/public/quizzes/assets/library.js")
+        versioned_library_script = client.get(
+            f"/public/quizzes/assets/{library_version}/library.js"
+        )
         library_styles = client.get("/public/quizzes/assets/library.css")
         reset = client.get("/public/quizzes/assets/reset.css")
         tokens = client.get("/public/quizzes/assets/tokens.css")
@@ -582,6 +586,8 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
     assert styles.status_code == 200
     assert styles.headers["content-type"].startswith("text/css")
     assert library_script.status_code == 200
+    assert versioned_library_script.status_code == 200
+    assert versioned_library_script.content == library_script.content
     assert library_styles.status_code == 200
     assert reset.status_code == 200
     assert reset.headers["content-type"].startswith("text/css")
@@ -623,9 +629,9 @@ def test_public_quiz_library_markup_uses_content_versioned_assets(
         practice = client.get("/public/practice-questions")
 
         assert f"/library.css?v={current_version}" in quizzes.text
-        assert f"/library.js?v={current_version}" in quizzes.text
+        assert f"/assets/{current_version}/library.js" in quizzes.text
         assert f"/library.css?v={current_version}" in practice.text
-        assert f"/library.js?v={current_version}" in practice.text
+        assert f"/assets/{current_version}/library.js" in practice.text
         for page in (quizzes.text, practice.text):
             assert f"/reset.css?v={current_version}" in page
             assert f"/tokens.css?v={current_version}" in page
@@ -641,7 +647,7 @@ def test_public_quiz_library_markup_uses_content_versioned_assets(
 
     assert changed_version != current_version
     assert f"/library.css?v={changed_version}" in changed.text
-    assert f"/library.js?v={changed_version}" in changed.text
+    assert f"/assets/{changed_version}/library.js" in changed.text
 
 
 def test_answer_feedback_is_limited_to_the_requested_question(tmp_path):
