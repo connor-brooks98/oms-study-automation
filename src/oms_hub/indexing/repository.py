@@ -252,6 +252,15 @@ class IndexRepository:
             row = session.get(IndexJobModel, job_id)
             return self._job_from_row(row) if row is not None else None
 
+    def list_jobs(self) -> list[IndexJob]:
+        with self.database.session() as session:
+            rows = session.scalars(
+                select(IndexJobModel).order_by(
+                    IndexJobModel.created_at, IndexJobModel.id
+                )
+            ).all()
+            return [self._job_from_row(row) for row in rows]
+
     def claim_next_job(
         self,
         worker_id: str,
