@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
+import importlib.metadata
 import importlib.util
 import json
 import os
+import stat
 import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import httpx
 import pytest
+from google import genai
+from google.genai import interactions
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "run-gemini-contract-smoke.py"
@@ -186,7 +192,7 @@ class _SdkInteractions:
         assert isinstance(tools, list)
         file_search = tools[0]
         if self.smoke.WRONG_LECTURE_ID in file_search["metadata_filter"]:
-            annotations: list[object] = []
+            annotations: list[interactions.FileCitation] = []
             answer = self.smoke.SmokeAnswer(answer="", supported=False)
         else:
             metadata = {
@@ -206,9 +212,11 @@ class _SdkInteractions:
                 )
             }
             annotations = [
-                SimpleNamespace(
-                    type="file_citation",
+                interactions.FileCitation(
                     custom_metadata=metadata,
+                    document_uri=(
+                        "fileSearchStores/sdk-store/documents/sdk-document"
+                    ),
                     file_name="task-2-8-synthetic.pdf",
                     page_number=1,
                     source=self.smoke.SYNTHETIC_FACT,
@@ -219,21 +227,21 @@ class _SdkInteractions:
                 supported=True,
             )
         output_text = answer.model_dump_json()
-        return SimpleNamespace(
+        return interactions.Interaction(
+            status="completed",
             output_text=output_text,
             steps=[
-                SimpleNamespace(
-                    type="model_output",
+                interactions.FileSearchResultStep(call_id="sdk-file-search-call"),
+                interactions.ModelOutputStep(
                     content=[
-                        SimpleNamespace(
-                            type="text",
+                        interactions.TextContent(
                             text=output_text,
                             annotations=annotations,
                         )
                     ],
                 )
             ],
-            usage=SimpleNamespace(total_input_tokens=13, total_output_tokens=8),
+            usage=interactions.Usage(total_input_tokens=13, total_output_tokens=8),
         )
 
 
@@ -281,6 +289,53 @@ class _FakeSecrets:
     def get(self, key: str) -> str | None:
         self.calls.append(key)
         return self.value
+
+
+def _real_citation(smoke: ModuleType, **overrides: object) -> interactions.FileCitation:
+    values: dict[str, object] = {
+        "custom_metadata": {
+            "course_id": smoke.SYNTHETIC_COURSE_ID,
+            "exam_id": smoke.SYNTHETIC_EXAM_ID,
+            "lecture_id": smoke.SYNTHETIC_LECTURE_ID,
+            "source_revision_id": smoke.SYNTHETIC_REVISION_ID,
+        },
+        "document_uri": "fileSearchStores/sdk-store/documents/sdk-document",
+        "file_name": "task-2-8-synthetic.pdf",
+        "page_number": 1,
+        "source": smoke.SYNTHETIC_FACT,
+    }
+    values.update(overrides)
+    return interactions.FileCitation(**values)
+
+
+def _real_interaction(
+    smoke: ModuleType,
+    *,
+    citation: interactions.FileCitation | None = None,
+    steps: list[object] | None = None,
+    usage: interactions.Usage | None = None,
+) -> interactions.Interaction:
+    if steps is None:
+        steps = [
+            interactions.FileSearchResultStep(call_id="sdk-file-search-call"),
+            interactions.ModelOutputStep(
+                content=[
+                    interactions.TextContent(
+                        text=smoke.SYNTHETIC_FACT,
+                        annotations=[citation or _real_citation(smoke)],
+                    )
+                ]
+            ),
+        ]
+    return interactions.Interaction(
+        status="completed",
+        output_text=smoke.SYNTHETIC_FACT,
+        steps=steps,
+        usage=usage or interactions.Usage(
+            total_input_tokens=13,
+            total_output_tokens=8,
+        ),
+    )
 
 
 def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
@@ -1012,6 +1067,493 @@ def test_temporary_failure_fixture_persists_retry_state_then_resumes() -> None:
         "backoff_seconds": 5,
         "resumed_state": "ready",
         "service_calls": 2,
+    }
+
+
+def test_locked_environment_exposes_exact_google_genai_models() -> None:
+    assert importlib.metadata.version("google-genai") == "2.14.0"
+    assert interactions.Interaction.model_fields["steps"].default is None
+    assert interactions.ModelOutputStep.model_fields["content"].default is None
+    assert interactions.TextContent.model_fields["annotations"].default is None
+    assert set(interactions.FileCitation.model_fields) >= {
+        "custom_metadata",
+        "document_uri",
+        "file_name",
+        "page_number",
+        "source",
+        "start_index",
+        "end_index",
+        "type",
+    }
+    assert interactions.FileCitation(type="file_citation").type == "file_citation"
+    assert set(interactions.Usage.model_fields) >= {
+        "total_input_tokens",
+        "total_output_tokens",
+    }
+
+
+@pytest.mark.parametrize(
+    ("response", "check", "diagnosis"),
+    [
+        (
+            interactions.Interaction(status="completed", steps=None),
+            "citation_presence",
+            "citation_steps_absent",
+        ),
+        (
+            interactions.Interaction(
+                status="completed",
+                steps=[interactions.ModelOutputStep(content=None)],
+            ),
+            "citation_presence",
+            "citation_content_absent",
+        ),
+        (
+            interactions.Interaction(
+                status="completed",
+                steps=[
+                    interactions.ModelOutputStep(
+                        content=[
+                            interactions.TextContent(text="synthetic", annotations=None)
+                        ]
+                    )
+                ],
+            ),
+            "citation_presence",
+            "citation_annotations_absent",
+        ),
+        (
+            interactions.Interaction(
+                status="completed",
+                steps=[
+                    interactions.ModelOutputStep(
+                        content=[
+                            interactions.TextContent(
+                                text="synthetic",
+                                annotations=[
+                                    interactions.FileCitation(type="file_citation")
+                                ],
+                            )
+                        ]
+                    )
+                ],
+            ),
+            "citation_scope_binding",
+            "citation_metadata_absent",
+        ),
+    ],
+)
+def test_real_sdk_optional_citation_containers_have_distinct_diagnoses(
+    response: interactions.Interaction,
+    check: str,
+    diagnosis: str,
+) -> None:
+    smoke = _load_smoke()
+
+    audit = smoke._audit_citations(
+        response,
+        smoke.SmokeScope(
+            smoke.SYNTHETIC_COURSE_ID,
+            smoke.SYNTHETIC_EXAM_ID,
+            smoke.SYNTHETIC_LECTURE_ID,
+        ),
+        "fileSearchStores/sdk-store/documents/sdk-document",
+        "task-2-8-synthetic.pdf",
+    )
+
+    assert audit.checks[check] == diagnosis
+
+
+@pytest.mark.parametrize(
+    ("field", "check", "diagnosis"),
+    [
+        ("document_uri", "citation_document_binding", "citation_document_uri_absent"),
+        ("file_name", "citation_file_binding", "citation_file_absent"),
+        ("page_number", "citation_page_binding", "citation_page_absent"),
+        ("source", "citation_excerpt_binding", "citation_excerpt_absent"),
+    ],
+)
+def test_real_file_citation_optional_none_is_not_a_scope_mismatch(
+    field: str,
+    check: str,
+    diagnosis: str,
+) -> None:
+    smoke = _load_smoke()
+    values: dict[str, object] = {field: None}
+    if field == "source":
+        values.update(start_index=None, end_index=None)
+    response = _real_interaction(smoke, citation=_real_citation(smoke, **values))
+
+    audit = smoke._audit_citations(
+        response,
+        smoke.SmokeScope(
+            smoke.SYNTHETIC_COURSE_ID,
+            smoke.SYNTHETIC_EXAM_ID,
+            smoke.SYNTHETIC_LECTURE_ID,
+        ),
+        "fileSearchStores/sdk-store/documents/sdk-document",
+        "task-2-8-synthetic.pdf",
+    )
+
+    assert audit.checks[check] == diagnosis
+
+
+def test_real_sdk_usage_uses_current_names_and_preserves_zero() -> None:
+    smoke = _load_smoke()
+
+    audit = smoke._audit_usage(
+        interactions.Usage(total_input_tokens=0, total_output_tokens=0)
+    )
+
+    assert audit.input_tokens == 0
+    assert audit.output_tokens == 0
+    assert audit.checks == {"usage_input": "passed", "usage_output": "passed"}
+
+    missing = smoke._audit_usage(interactions.Usage())
+    assert missing.checks == {
+        "usage_input": "usage_input_absent",
+        "usage_output": "usage_output_absent",
+    }
+
+    malformed = smoke._audit_usage(
+        interactions.Usage.model_construct(
+            total_input_tokens="legacy",
+            total_output_tokens=-1,
+        )
+    )
+    assert malformed.checks == {
+        "usage_input": "usage_input_invalid",
+        "usage_output": "usage_output_invalid",
+    }
+
+
+def test_real_sdk_optional_values_distinguish_absent_malformed_and_mismatch() -> None:
+    smoke = _load_smoke()
+    scope = smoke.SmokeScope(
+        smoke.SYNTHETIC_COURSE_ID,
+        smoke.SYNTHETIC_EXAM_ID,
+        smoke.SYNTHETIC_LECTURE_ID,
+    )
+
+    malformed = _real_citation(smoke)
+    malformed = interactions.FileCitation.model_construct(
+        **{
+            **malformed.model_dump(),
+            "custom_metadata": "malformed",
+        }
+    )
+    malformed_audit = smoke._audit_citations(
+        _real_interaction(smoke, citation=malformed),
+        scope,
+        "fileSearchStores/sdk-store/documents/sdk-document",
+        "task-2-8-synthetic.pdf",
+    )
+    assert (
+        malformed_audit.checks["citation_scope_binding"]
+        == "citation_metadata_invalid"
+    )
+
+    mismatched = _real_citation(
+        smoke,
+        custom_metadata={
+            "course_id": smoke.SYNTHETIC_COURSE_ID,
+            "exam_id": smoke.SYNTHETIC_EXAM_ID,
+            "lecture_id": smoke.WRONG_LECTURE_ID,
+            "source_revision_id": smoke.SYNTHETIC_REVISION_ID,
+        },
+    )
+    mismatch_audit = smoke._audit_citations(
+        _real_interaction(smoke, citation=mismatched),
+        scope,
+        "fileSearchStores/sdk-store/documents/sdk-document",
+        "task-2-8-synthetic.pdf",
+    )
+    assert (
+        mismatch_audit.checks["citation_scope_binding"]
+        == "citation_scope_mismatch"
+    )
+
+    with pytest.raises(smoke.SmokeContractError) as absent:
+        smoke._interaction_output(interactions.Interaction(status="completed"))
+    assert absent.value.reason == "structured_output_absent"
+
+    malformed_output = interactions.Interaction.model_construct(
+        status="completed",
+        output_text=7,
+    )
+    with pytest.raises(smoke.SmokeContractError) as invalid:
+        smoke._interaction_output(malformed_output)
+    assert invalid.value.reason == "structured_output_invalid"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("course_id", "private-course"),
+        ("exam_id", "private-exam"),
+        ("lecture_id", "Lecture-13"),
+        ("source_revision_id", "sr_private"),
+        ("fixture_sha256", "0" * 64),
+    ],
+)
+def test_synthetic_diagnostic_mismatch_blocks_before_secret_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    smoke = _load_smoke()
+    secrets = _FakeSecrets("must-not-be-read")
+    request = dataclasses.replace(
+        smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json"),
+        **{field: value},
+    )
+    monkeypatch.setenv("RUN_LIVE_GEMINI_TESTS", "1")
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="diagnostic scope mismatch"):
+        asyncio.run(
+            smoke.run_authorized_live_smoke(
+                secret_store=secrets,
+                diagnostic_request=request,
+            )
+        )
+
+    assert secrets.calls == []
+    assert not request.output_path.exists()
+
+
+def test_synthetic_diagnostic_sink_is_atomic_private_redacted_and_deletable(
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
+    sink = smoke._SyntheticDiagnosticSink.open(request)
+    sink.add_secret("synthetic-secret-value")
+    sink.capture(
+        "provider_response",
+        {
+            "status": 400,
+            "message": "full synthetic provider message",
+            "body": {"synthetic": "full body"},
+            "api_key": "synthetic-secret-value",
+            "headers": {
+                "Authorization": "Bearer synthetic-secret-value",
+                "Cookie": "session=synthetic-secret-value",
+                "X-Synthetic": "retained",
+            },
+        },
+    )
+    try:
+        raise RuntimeError("full synthetic exception message")
+    except RuntimeError as error:
+        sink.capture_exception("provider_exception", error)
+    sink.close()
+
+    assert stat.S_IMODE(request.output_path.stat().st_mode) == 0o600
+    payload = json.loads(request.output_path.read_text(encoding="utf-8"))
+    encoded = json.dumps(payload, sort_keys=True)
+    assert "full synthetic provider message" in encoded
+    assert "full body" in encoded
+    assert "full synthetic exception message" in encoded
+    assert "Traceback" in encoded
+    assert "retained" in encoded
+    assert "synthetic-secret-value" not in encoded
+    sink.delete()
+    assert not request.output_path.exists()
+
+
+def test_synthetic_diagnostic_path_inside_git_blocks_before_secret_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _load_smoke()
+    secrets = _FakeSecrets("must-not-be-read")
+    request = smoke._synthetic_diagnostic_request(ROOT / "diagnostic.json")
+    monkeypatch.setenv("RUN_LIVE_GEMINI_TESTS", "1")
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="outside the repository"):
+        asyncio.run(
+            smoke.run_authorized_live_smoke(
+                secret_store=secrets,
+                diagnostic_request=request,
+            )
+        )
+
+    assert secrets.calls == []
+
+
+def test_synthetic_diagnostic_overflow_leaves_no_partial_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    monkeypatch.setattr(smoke, "_MAX_DIAGNOSTIC_BYTES", 64)
+    request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
+    sink = smoke._SyntheticDiagnosticSink.open(request)
+    sink.capture("provider_response", {"body": "x" * 100})
+
+    with pytest.raises(smoke.SmokeContractError, match="diagnostic overflow"):
+        sink.close()
+
+    assert not request.output_path.exists()
+
+
+def test_check_matrix_continues_after_independent_positive_failures() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class IndependentFailures(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id == smoke.SYNTHETIC_LECTURE_ID:
+                return smoke.SmokeQueryResult(
+                    answer={"answer": "wrong", "supported": True},
+                    citations=(),
+                )
+            return result
+
+    session = IndependentFailures(smoke)
+    with pytest.raises(smoke.SmokeContractError):
+        asyncio.run(smoke.run_contract_smoke(session, failure_evidence=evidence))
+
+    checks = evidence["checks"]
+    assert checks["positive_answer"] == "positive_answer_missing_marker"
+    assert checks["citation_presence"] == "positive_citation_missing"
+    assert checks["negative_structured_output"] == "passed"
+    assert checks["wrong_lecture_filtering"] == "passed"
+    assert checks["document_listing"] == "passed"
+    assert checks["cleanup_document"] == "passed"
+    assert checks["cleanup_file"] == "passed"
+    assert checks["cleanup_store"] == "passed"
+    assert [name for name, _ in session.calls][-5:] == [
+        "query",
+        "list_documents",
+        "delete_document",
+        "delete_file",
+        "delete_store",
+    ]
+
+
+def test_cleanup_diagnostics_distinguish_request_from_context_close() -> None:
+    smoke = _load_smoke()
+
+    class Capture:
+        def __init__(self) -> None:
+            self.events: list[str] = []
+
+        def capture(self, label: str, value: object) -> None:
+            del value
+            self.events.append(label)
+
+        def capture_exception(self, label: str, error: BaseException) -> None:
+            del error
+            self.events.append(label)
+
+    class DeleteDocuments:
+        def __init__(self, *, fail_request: bool) -> None:
+            self.fail_request = fail_request
+
+        async def delete(self, **kwargs: object) -> None:
+            del kwargs
+            if self.fail_request:
+                raise RuntimeError("synthetic delete request failure")
+
+    class DeleteAio:
+        def __init__(self, *, fail_request: bool, fail_close: bool) -> None:
+            self.file_search_stores = SimpleNamespace(
+                documents=DeleteDocuments(fail_request=fail_request)
+            )
+            self.fail_close = fail_close
+
+        async def aclose(self) -> None:
+            if self.fail_close:
+                raise RuntimeError("synthetic context close failure")
+
+    for fail_request, fail_close, expected in (
+        (True, False, "cleanup.document.delete_request_failed"),
+        (False, True, "cleanup.document.context_close_failed"),
+    ):
+        capture = Capture()
+
+        def sdk_factory(
+            *,
+            request_failure: bool = fail_request,
+            close_failure: bool = fail_close,
+            **kwargs: object,
+        ) -> object:
+            del kwargs
+            return SimpleNamespace(
+                aio=DeleteAio(
+                    fail_request=request_failure,
+                    fail_close=close_failure,
+                )
+            )
+
+        session = smoke.GoogleGenaiSmokeSession(
+            "synthetic-sdk-key",
+            sdk_factory=sdk_factory,
+            diagnostic_sink=capture,
+        )
+        with pytest.raises(smoke.GeminiProviderError):
+            asyncio.run(session.delete_document("documents/synthetic"))
+        assert expected in capture.events
+
+
+def test_google_genai_serializes_exact_interactions_wire_body() -> None:
+    captured: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"status": "completed", "output_text": "{}", "steps": []},
+            request=request,
+        )
+
+    async def send() -> None:
+        client = genai.Client(
+            api_key="synthetic-sdk-key",
+            http_options={
+                "api_version": "v1beta",
+                "async_client_args": {"transport": httpx.MockTransport(handler)},
+            },
+        )
+        try:
+            await client.aio.interactions.create(
+                model="gemini-3.7-flash",
+                input="synthetic",
+                store=False,
+                tools=[
+                    {
+                        "type": "file_search",
+                        "file_search_store_names": ["fileSearchStores/synthetic"],
+                        "metadata_filter": 'course_id="synthetic"',
+                    }
+                ],
+                response_format={
+                    "type": "text",
+                    "mime_type": "application/json",
+                    "schema": {"type": "object"},
+                },
+            )
+        finally:
+            await client.aio.aclose()
+
+    asyncio.run(send())
+
+    assert len(captured) == 1
+    assert set(captured[0]) == {
+        "input",
+        "model",
+        "response_format",
+        "store",
+        "tools",
+    }
+    assert "response_mime_type" not in captured[0]
+    assert captured[0]["response_format"] == {
+        "type": "text",
+        "mime_type": "application/json",
+        "schema": {"type": "object"},
     }
 
 
