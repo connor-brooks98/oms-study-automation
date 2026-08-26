@@ -62,7 +62,7 @@ packages = ["src/oms_hub", "src/oms_anki_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --import-mode=importlib"
 filterwarnings = ["error"]
 markers = [
   "performance: deterministic local performance characterization",
