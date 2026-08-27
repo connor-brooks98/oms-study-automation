@@ -869,6 +869,23 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 ),
             ),
         )
+    specific_xlp = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement=(
+                    "X-linked lymphoproliferative disease is an inborn error of "
+                    "immunity caused by mutations in SH2D1A."
+                ),
+                primary_entity="X-linked lymphoproliferative disease",
+                depth="surface",
+                emphasis_flag=False,
+                importance="low",
+            ),
+        ),
+    )
+    assert specific_xlp.concepts[0].primary_entity.startswith("X-linked")
     with pytest.raises(ValueError, match="placeholders"):
         CardConceptLedger(
             lecture_entity_count=1,
