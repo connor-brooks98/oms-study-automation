@@ -2,7 +2,7 @@
 
 Date: 2026-08-27  
 Branch: `codex/anki-v3-recovery`  
-Current candidate: `5cdb06904f1a6584de4b51c7b78f5ee0e3859164`  
+Current candidate: `27ae7870570eb70b5f4822f70f88a08cbbf9a975`
 Environment: isolated NUC staging on loopback port 8788; production port 8765 was not restarted or changed
 
 ## Requested decision
@@ -127,8 +127,11 @@ keys remain application-computed after the merged ledger validates.
 - Missing depth entity: add only the missing concept at the required depth.
 - More than five facts: return a continuation addition with a new sequential ID.
 
-No Lecture-101 medical content is hard-coded into production code; the repair is
-driven by validator errors and bounded source evidence.
+The current shared validator contains an explicit Lecture-101 Jeffrey Modell
+item checklist. This is a deliberate acceptance-specific exception, not a
+general checklist framework. The targeted repair remains driven by validator
+errors and bounded source evidence. Generalizing checklist extraction is outside
+this correction unless a second lecture demonstrates the same need.
 
 ### 5. Deterministic tests before another provider call
 
@@ -157,3 +160,91 @@ to finish. Do not apply cards. Do not restart or deploy production port 8765.
 2. Should invalid JSON remain an immediate failure, or may it use the old complete-ledger repair?
 3. Is one targeted repair call sufficient, or should any failed merge stop the job immediately?
 4. Are any additional invariants required before implementation?
+
+## Revision after reviewer block
+
+The reviewer returned `VERDICT: BLOCK` on the first targeted-repair draft. This
+revision adopts all eight approval conditions.
+
+### Prerequisites completed
+
+1. The actual corrected Lecture 101 payload is recorded in
+   `anki-lecture-101-depth-control-evidence-2026-08-27.md`. It contains slide 47
+   and transcript 36. Slide 47 alone includes all ten signs and thresholds.
+2. The fixed two-passage cap remains because the selected slide is complete; the
+   matcher now uses required token inclusion instead of a brittle contiguous
+   phrase. A future named checklist must add its own source-completeness proof
+   before it may use this repair path.
+3. Multiple molecule/location pairs now reject both `X is expressed on A, Y is
+   expressed on B` and the compact `X is expressed on A and Y on B` shape.
+4. Jeffrey completeness is keyed from the concept entity/aliases/canonical/fact
+   corpus, so renaming the fact to `Ten warning signs...` cannot evade validation.
+
+### Complete layered defect collection
+
+Before a targeted repair request, parse the sanitized primary JSON exactly once.
+Unparseable or truncated JSON fails immediately and receives no repair call.
+
+For parseable JSON:
+
+- Preserve the raw parsed concept array and map each array index to its explicit
+  `concept_id`.
+- A missing, malformed, or duplicate `concept_id`, a malformed concept object, or
+  malformed top-level ledger routing fields is not safely targetable and fails
+  immediately.
+- Refactor the existing concept, ledger, and source-depth checks into pure defect
+  collectors used by both normal validation and repair targeting. Collect every
+  defect in one pass rather than stopping at the first Pydantic layer.
+- Concept-level defects name the raw array index and resolved `concept_id`.
+  Ledger-wide duplicate-fact defects name every involved concept. Missing depth
+  entities are additions and carry their required entity and depth.
+- The repair request includes the full collected defect set, affected raw concept
+  objects only, and bounded matching lecture passages only.
+
+This refactor must not duplicate validation rules: the same collectors remain the
+single authority for ordinary ledger validation and repair eligibility.
+
+### Targeted repair merge invariants
+
+- The repair schema permits replacements and additions only. It cannot delete a
+  concept.
+- Every replacement must name one existing defective `concept_id`; every named
+  defect must receive exactly one replacement or authorized addition.
+- Existing concepts retain their order and IDs. Additions use the next sequential
+  IDs and append after existing concepts; no renumbering is allowed.
+- Unmodified concepts remain the same parsed objects. Their canonical JSON byte
+  hashes before and after merge must be identical; the original provider bytes
+  remain preserved separately in the attempt record.
+- Repair scope is capped at `min(3, max(2, ceil(20% * existing concept count)))`
+  affected replacements/additions. A primary exceeding that ceiling is not a
+  localized defect and fails without a repair call.
+- There is exactly one targeted repair call. Unknown IDs, duplicate repair IDs,
+  omissions, excess scope, changed unrelated concepts, or an invalid merged ledger
+  stop the job immediately. There is no complete-ledger fallback and no second
+  repair.
+- Stable fact keys are computed only after the merged full ledger passes every
+  concept, ledger, and source-depth validator.
+
+### Audit additions
+
+Persist a merge manifest containing the primary response hash, full collected
+defect list, index-to-ID mapping, replacement IDs, addition IDs, unchanged-concept
+hashes, bounded evidence IDs, repair response hash, and final ledger hash. Review
+diagnostics show the count and identities of repaired concepts.
+
+### Required deterministic tests
+
+In addition to the earlier tests, prove:
+
+- the actual Lecture 101 evidence matcher returns slide 47 with all ten signs;
+- compact `X on A and Y on B` facts fail atomicity;
+- a Jeffrey concept whose fact omits the literal name still cannot evade
+  completeness;
+- all validation layers contribute defects to one request;
+- malformed or duplicate concept IDs and invalid JSON receive no repair call;
+- the repair schema cannot delete, reorder, or renumber concepts;
+- untouched concepts retain identical canonical byte hashes;
+- additions use only the next sequential IDs;
+- the repair-scope ceiling fails closed;
+- any invalid or incomplete merge stops after one repair call; and
+- the merge manifest reproduces the final ledger and stable-key map.
