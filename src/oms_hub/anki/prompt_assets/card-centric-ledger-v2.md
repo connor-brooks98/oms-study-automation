@@ -1,6 +1,6 @@
 ---
 id: card-centric-ledger-v2
-version: 2.1.1
+version: 2.1.2
 max_tokens: 7000
 response_format: json
 schema: lcl_v2
@@ -40,6 +40,18 @@ more than five distinct facts, emit a continuation concept with the same
 `primary_entity` and the next sequential concept ID; never rebundle the extra
 facts into composite statements. Do not repeat or recombine a fact across
 continuation concepts.
+
+Surface depth still requires one or two concrete identification propositions:
+name the actual gene/defect, characteristic exposure, or clinical recognition
+pattern supported by the source. Never emit phrases such as "covered at a basic
+level," "associated gene and clinical features," or another promise to teach
+details that the fact itself omits.
+
+A lecturer-emphasized named checklist or warning-sign list is one recognition
+fact, but its `fact_description` must preserve the concrete source-listed items
+and thresholds. Do not replace the list with a generic statement that criteria
+exist. The gap-card stage can split that one grounded list fact into a small
+ordered card set.
 
 Create a standalone diagnostic-workflow concept only when a supplied passage
 teaches that workflow as a workflow. Tests mentioned separately inside disease

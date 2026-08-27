@@ -460,8 +460,10 @@ class CardConceptLedger(CardCentricContract):
         if len(set(stable_keys.values())) != len(stable_keys):
             raise ValueError("ledger facts must be distinct after normalization")
         control_only = re.compile(
-            r"\b(?:received|receives|was given|were given)\s+"
-            r"(?:deep|medium|surface)\s+(?:lecture\s+)?coverage\b",
+            r"\b(?:(?:received|receives|was given|were given)\s+"
+            r"(?:deep|medium|surface)\s+(?:lecture\s+)?coverage|"
+            r"(?:covered|taught|explained|reviewed)\b[^.]{0,160}\b"
+            r"(?:basic|deep|medium|surface)\s+(?:level|depth|coverage))\b",
             re.IGNORECASE,
         )
         if any(
