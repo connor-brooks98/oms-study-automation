@@ -2228,6 +2228,7 @@ def test_private_shadow_requires_opt_in_before_projection_or_secret(
                 schema_version=29,
                 artifacts=SimpleNamespace(),
                 materialization_root=tmp_path,
+                approved_preflight={},
                 secret_store=secrets,
             )
         )
@@ -2245,14 +2246,8 @@ def test_private_shadow_mismatch_fails_before_secret_and_provider(
     secrets = _FakeSecrets("stored-private-key")
     monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
     monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
-    original = smoke._private_shadow_preflight_from_view
-
-    def mismatched(projected: object) -> dict[str, object]:
-        record = original(projected)
-        record["page_count"] = 2
-        return record
-
-    monkeypatch.setattr(smoke, "_private_shadow_preflight_from_view", mismatched)
+    approved = smoke._private_shadow_preflight_from_view(view)
+    approved["page_count"] = 2
 
     with pytest.raises(smoke.LiveSmokeBlocked, match="preflight mismatch"):
         asyncio.run(
@@ -2261,6 +2256,7 @@ def test_private_shadow_mismatch_fails_before_secret_and_provider(
                 schema_version=29,
                 artifacts=SimpleNamespace(),
                 materialization_root=tmp_path,
+                approved_preflight=approved,
                 secret_store=secrets,
                 session_factory=lambda key: pytest.fail(f"provider received {key}"),
             )
@@ -2279,6 +2275,7 @@ def test_private_shadow_indexes_every_input_queries_and_returns_only_aggregates(
     session = _PrivateShadowSession(smoke)
     monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
     monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
 
     record = asyncio.run(
         smoke.run_authorized_private_shadow(
@@ -2286,6 +2283,7 @@ def test_private_shadow_indexes_every_input_queries_and_returns_only_aggregates(
             schema_version=29,
             artifacts=SimpleNamespace(),
             materialization_root=tmp_path,
+            approved_preflight=approved,
             secret_store=secrets,
             session_factory=lambda key: session if key == "stored-private-key" else None,
             clock=iter((100.0, 100.25)).__next__,
@@ -2332,6 +2330,7 @@ def test_private_shadow_cleanup_failure_still_attempts_every_delete(
     session = _PrivateShadowSession(smoke, fail_cleanup=True)
     monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
     monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
 
     with pytest.raises(smoke.SmokeContractError, match="cleanup failed") as raised:
         asyncio.run(
@@ -2340,6 +2339,7 @@ def test_private_shadow_cleanup_failure_still_attempts_every_delete(
                 schema_version=29,
                 artifacts=SimpleNamespace(),
                 materialization_root=tmp_path,
+                approved_preflight=approved,
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
             )
