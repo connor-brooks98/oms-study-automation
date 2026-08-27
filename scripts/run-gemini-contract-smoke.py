@@ -23,6 +23,7 @@ from io import BytesIO
 from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
@@ -109,6 +110,7 @@ class SmokeContractError(RuntimeError):
             "positive_citation_unresolved",
             "private_cleanup_failed",
             "private_citation_unresolved",
+            "private_reconciliation_failed",
             "private_usage_invalid",
             "private_wrong_scope_retrieved",
             "structured_output_invalid",
@@ -557,6 +559,8 @@ class PrivateShadowSession(Protocol):
         chunking: object | None,
     ) -> str: ...
 
+    async def find_files(self, display_names: tuple[str, ...]) -> tuple[str, ...]: ...
+
     async def wait_for_import(self, operation_name: str) -> str: ...
 
     async def query_private(
@@ -692,6 +696,35 @@ class GoogleGenaiSmokeSession:
                 )
             )
         return _provider_identity(operation, "operation")
+
+    async def find_files(self, display_names: tuple[str, ...]) -> tuple[str, ...]:
+        expected = frozenset(display_names)
+        if not expected or len(expected) != len(display_names):
+            raise SmokeContractError(
+                "private shadow reconciliation scope was invalid",
+                reason="private_reconciliation_failed",
+            )
+        matched: list[str] = []
+        inspected = 0
+        async with self._clients.client() as client:
+            listed = await _provider_call(
+                lambda: client.files.list(config={"page_size": 100})
+            )
+            if not isinstance(listed, AsyncIterable):
+                raise SmokeContractError(
+                    "private shadow file reconciliation was unavailable",
+                    reason="private_reconciliation_failed",
+                )
+            async for item in listed:
+                inspected += 1
+                if inspected > 1000:
+                    raise SmokeContractError(
+                        "private shadow file reconciliation exceeded its bound",
+                        reason="private_reconciliation_failed",
+                    )
+                if _field(item, "display_name") in expected:
+                    matched.append(_provider_identity(item, "file"))
+        return tuple(sorted(set(matched)))
 
     async def wait_for_import(self, operation_name: str) -> str:
         try:
@@ -2154,16 +2187,24 @@ async def _run_private_shadow_sequence(
     cleanup_failed = False
     positive: PrivateShadowQueryAudit | None = None
     negative: PrivateShadowQueryAudit | None = None
+    run_token = uuid4().hex
+    display_names = tuple(
+        f"task-2-8-private-{run_token}-{ordinal:03d}"
+        for ordinal, _ in enumerate(manifest.inputs, start=1)
+    )
     started = clock()
+    if await session.find_files(display_names):
+        raise LiveSmokeBlocked("private shadow prior operator state mismatch")
+    states.append("prior_operator_state_empty")
     try:
         store_name = await session.create_store(
             "Study Hub Task 2.8 private shadow",
             PRIVATE_SHADOW_MODEL_CONTRACT[2],
         )
         states.append("store_created")
-        for item in manifest.inputs:
+        for item, display_name in zip(manifest.inputs, display_names, strict=True):
             file_name = await session.upload_input(
-                item.path.name,
+                display_name,
                 item.path,
                 item.media_type,
             )
@@ -2214,8 +2255,8 @@ async def _run_private_shadow_sequence(
         negative = await session.query_private(
             store_name,
             (
-                "Using only the requested lecture scope, return one supported statement "
-                "with a citation."
+                "Use only files matching the requested lecture scope. If none match, "
+                "return an empty answer and supported=false."
             ),
             SmokeScope(view.course_id, view.exam_id, PRIVATE_SHADOW_WRONG_LECTURE_ID),
             source_revision_id=view.source_revision_id,
@@ -2242,12 +2283,30 @@ async def _run_private_shadow_sequence(
             except BaseException:
                 cleanup_failed = True
         states.append(f"documents_deleted:{len(documents)}")
+        try:
+            discovered = await session.find_files(display_names)
+        except BaseException:
+            cleanup_failed = True
+        else:
+            known = {file_name for file_name, _ in files}
+            files.extend(
+                (file_name, "reconciled")
+                for file_name in discovered
+                if file_name not in known
+            )
         for file_name, _ in reversed(files):
             try:
                 await session.delete_file(file_name)
             except BaseException:
                 cleanup_failed = True
         states.append(f"files_deleted:{len(files)}")
+        try:
+            if await session.find_files(display_names):
+                cleanup_failed = True
+            else:
+                states.append("file_reconciliation_empty")
+        except BaseException:
+            cleanup_failed = True
         if store_name is not None:
             try:
                 await session.delete_store(store_name)

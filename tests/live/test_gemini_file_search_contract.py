@@ -155,6 +155,7 @@ class _SdkStores:
 class _SdkFiles:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
+        self.listed_files: tuple[object, ...] = ()
 
     async def upload(self, *, file: object, config: object) -> object:
         content = file.read_bytes() if isinstance(file, Path) else file.read()
@@ -163,6 +164,15 @@ class _SdkFiles:
 
     async def delete(self, *, name: str) -> None:
         self.calls.append(("delete", name))
+
+    async def list(self, *, config: object) -> object:
+        self.calls.append(("list", config))
+
+        async def entries() -> object:
+            for item in self.listed_files:
+                yield item
+
+        return entries()
 
 
 class _SdkOperations:
@@ -492,6 +502,10 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
         assert kwargs["api_key"] == "synthetic-sdk-key"
         client = _SdkClient(smoke)
         client.aio.interactions = interactions
+        client.aio.files.listed_files = (
+            SimpleNamespace(name="files/reconciled", display_name="task-private-upload"),
+            SimpleNamespace(name="files/ignored", display_name="other-run"),
+        )
         clients.append(client)
         return client
 
@@ -513,6 +527,7 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
             },
         )
     )
+    reconciled = asyncio.run(session.find_files(("task-private-upload",)))
     positive = asyncio.run(
         session.query_private(
             "fileSearchStores/private-store",
@@ -542,6 +557,7 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
     assert positive == smoke.PrivateShadowQueryAudit(1, 1, 19, 6, None, None)
     assert negative == smoke.PrivateShadowQueryAudit(0, 0, 19, 6, False, True)
     assert operation == "operations/sdk-operation"
+    assert reconciled == ("files/reconciled",)
     upload_call = next(client.aio.files.calls[0] for client in clients if client.aio.files.calls)
     assert upload_call == (
         "upload",
