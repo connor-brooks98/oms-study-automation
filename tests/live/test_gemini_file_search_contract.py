@@ -1504,12 +1504,30 @@ def test_windows_synthetic_diagnostic_requires_verified_current_user_dacl(
     calls: list[list[str]] = []
 
     def run(command: list[str], **kwargs: object) -> object:
-        del kwargs
         calls.append(command)
         if command[0] == "whoami":
             return SimpleNamespace(
                 returncode=0,
                 stdout='"HOST\\synthetic-user","S-1-5-21-1000"\n',
+                stderr="",
+            )
+        if command[0] == "powershell.exe":
+            assert kwargs["env"]["OMS_TASK28_DIAGNOSTIC_PATH"]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "Protected": True,
+                        "Rules": [
+                            {
+                                "Sid": "S-1-5-21-1000",
+                                "Allow": True,
+                                "FullControl": True,
+                                "Inherited": False,
+                            }
+                        ],
+                    }
+                ),
                 stderr="",
             )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -1525,6 +1543,7 @@ def test_windows_synthetic_diagnostic_requires_verified_current_user_dacl(
     assert "/inheritance:r" in calls[1]
     assert "*S-1-5-21-1000:(F)" in calls[1]
     assert calls[2][-1] == "/verify"
+    assert calls[3][0] == "powershell.exe"
     assert request.output_path.exists()
     sink.delete()
 
@@ -1543,6 +1562,59 @@ def test_windows_synthetic_diagnostic_fails_closed_without_verified_dacl(
 
     monkeypatch.setattr(smoke, "_IS_WINDOWS", True)
     monkeypatch.setattr(smoke.subprocess, "run", fail)
+    sink.capture("synthetic", {"status": "ready"})
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        sink.close()
+
+    assert raised.value.reason == "diagnostic_permissions_unavailable"
+    assert not request.output_path.exists()
+
+
+def test_windows_synthetic_diagnostic_rejects_any_additional_ace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
+    sink = smoke._SyntheticDiagnosticSink.open(request)
+
+    def run(command: list[str], **kwargs: object) -> object:
+        del kwargs
+        if command[0] == "whoami":
+            return SimpleNamespace(
+                returncode=0,
+                stdout='"HOST\\synthetic-user","S-1-5-21-1000"\n',
+                stderr="",
+            )
+        if command[0] == "powershell.exe":
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "Protected": True,
+                        "Rules": [
+                            {
+                                "Sid": "S-1-5-21-1000",
+                                "Allow": True,
+                                "FullControl": True,
+                                "Inherited": False,
+                            },
+                            {
+                                "Sid": "S-1-1-0",
+                                "Allow": True,
+                                "FullControl": False,
+                                "Inherited": False,
+                            },
+                        ],
+                    }
+                ),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(smoke, "_IS_WINDOWS", True)
+    monkeypatch.setattr(smoke.subprocess, "run", run)
     sink.capture("synthetic", {"status": "ready"})
 
     with pytest.raises(smoke.SmokeContractError) as raised:
