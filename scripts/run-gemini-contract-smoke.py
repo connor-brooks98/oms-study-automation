@@ -34,9 +34,12 @@ from oms_hub.providers.gemini.client import (
 )
 from oms_hub.providers.gemini.errors import GeminiProviderError
 from oms_hub.providers.gemini.models import GeminiConfig
+from oms_hub.source_trust_schema29 import project_schema29_index_input
 
 if TYPE_CHECKING:
+    from oms_hub.artifacts import ArtifactService
     from oms_hub.indexing.service import IndexResult
+    from oms_hub.knowledge.service import IndexInputView
     from oms_hub.security.secret_store import SecretStore
 
 SYNTHETIC_COURSE_ID = "task-2-8-synthetic-course"
@@ -115,6 +118,25 @@ class SmokeTemporaryFailure(RuntimeError):
 
 class LiveSmokeBlocked(RuntimeError):
     pass
+
+
+def prepare_private_shadow_index_input(
+    slide_revision_id: str,
+    *,
+    schema_version: int,
+    artifacts: ArtifactService,
+    materialization_root: Path,
+    parser: Any | None = None,
+) -> IndexInputView:
+    return project_schema29_index_input(
+        slide_revision_id,
+        schema_version=schema_version,
+        ingestion=artifacts.repository,
+        catalog=artifacts.catalog,
+        artifacts=artifacts,
+        materialization_root=materialization_root,
+        parser=parser,
+    )
 
 
 class _OperationFailure(Exception):
