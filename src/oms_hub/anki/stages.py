@@ -5210,6 +5210,26 @@ def _coverage_suppresses_recovery(value: Mapping[str, Any]) -> bool:
         raise PinnedInputChanged("card-centric coverage entry is malformed")
     if status == "uncovered":
         return False
+    facts = value.get("facts")
+    if facts is not None:
+        if not isinstance(facts, dict) or not facts:
+            raise PinnedInputChanged("card-centric fact coverage is malformed")
+        for fact in facts.values():
+            if not isinstance(fact, dict) or fact.get("status") not in {
+                "covered",
+                "uncovered",
+            }:
+                raise PinnedInputChanged("card-centric fact coverage is malformed")
+            fact_evidence = fact.get("evidence")
+            if not isinstance(fact_evidence, list) or any(
+                not isinstance(item, dict) for item in fact_evidence
+            ):
+                raise PinnedInputChanged("card-centric fact coverage is malformed")
+            if fact["status"] == "uncovered" or not any(
+                item.get("evidence_quality") != "fast_pass" for item in fact_evidence
+            ):
+                return False
+        return True
     if any(not isinstance(item, dict) for item in evidence):
         raise PinnedInputChanged("covered card-centric concept has malformed evidence")
     if not evidence:

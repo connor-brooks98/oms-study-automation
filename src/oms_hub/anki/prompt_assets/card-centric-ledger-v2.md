@@ -1,6 +1,6 @@
 ---
 id: card-centric-ledger-v2
-version: 2.1.0
+version: 2.1.1
 max_tokens: 7000
 response_format: json
 schema: lcl_v2
@@ -31,7 +31,11 @@ source IDs or material absent from the lecture.
 
 Every `fact_description` must be one independently testable medical proposition.
 Never emit a fact that merely describes lecture depth, coverage, emphasis, or
-pedagogy. Keep depth only in the concept's `depth` field. When one entity requires
+pedagogy. A coverage-control sentence that names diseases or topics is still an
+inclusion instruction: emit at least one concrete medical concept for every name
+at its stated depth, even though the control sentence itself is not a fact. Do not
+lose a named entity when replacing a depth summary. Keep depth only in the
+concept's `depth` field. When one entity requires
 more than five distinct facts, emit a continuation concept with the same
 `primary_entity` and the next sequential concept ID; never rebundle the extra
 facts into composite statements. Do not repeat or recombine a fact across

@@ -1,6 +1,6 @@
 ---
 id: card-centric-gap-v2
-version: 2.0.3
+version: 2.0.4
 model: claude-sonnet-4-6
 temperature: 0.2
 max_tokens: 8000
@@ -38,3 +38,11 @@ Use only the `forbidden_cloze_targets_by_fact` row matching the card's
 `fact_id`. Never flatten, union, or globalize targets belonging to unrelated
 facts. When `is_mechanism` is true, test the causal chain atomically. Generated
 cards must be valid Cloze notes with concise, source-grounded Extra fields.
+
+Every forbidden target must remain visible outside all cloze markup. If a
+forbidden target would be the most obvious answer, cloze a different phrase
+that still tests the requested fact. For a location fact, leave the named
+molecule visible and cloze its location. For a comparison, leave the named
+diseases and organism visible and cloze the presence, absence, or risk
+relationship. Return unresolved only when no grounded alternative can test the
+fact without hiding a forbidden target.

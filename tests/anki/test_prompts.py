@@ -165,8 +165,8 @@ def test_rendered_card_centric_v2_gap_prompt_is_complete_and_fact_scoped() -> No
     assets = Path(__file__).parents[2] / "src" / "oms_hub" / "anki" / "prompt_assets"
     prompt = AnkiPromptLibrary(assets).load("card-centric-gap-v2")
 
-    assert prompt.metadata.version == "2.0.3"
-    assert prompt.prompt_hash == "00a5387c909e"
+    assert prompt.metadata.version == "2.0.4"
+    assert prompt.prompt_hash == "c5a11baeb234"
     assert prompt.prompt_hash == hashlib.sha256(prompt.content.encode()).hexdigest()[:12]
     assert "Return every requested fact ID M1 through MN." in prompt.content
     assert "one unresolved row" in prompt.content
@@ -203,13 +203,13 @@ def test_card_centric_v2_ledger_prompt_preserves_quality_first_sizing_policy() -
     assets = Path(__file__).parents[2] / "src" / "oms_hub" / "anki" / "prompt_assets"
     prompt = AnkiPromptLibrary(assets).load("card-centric-ledger-v2")
 
-    assert prompt.metadata.version == "2.1.0"
+    assert prompt.metadata.version == "2.1.1"
     assert prompt.metadata.model is None
     assert prompt.metadata.temperature is None
     assert prompt.content_sha256 == (
-        "6d7648bc486490222ea2e20603a656556d3bd5746180100d3b6e223f07b4c632"
+        "975431801f7bba17f9bbdd7f669c6493c98d9dd65321ef990ee0aace0d49ba54"
     )
-    assert prompt.prompt_hash == "6d7648bc4864"
+    assert prompt.prompt_hash == "975431801f7b"
     assert "smallest set of the best-supported, highest-yield," in prompt.content
     assert (
         "60 as a warning floor, 65 as the ordinary target,\nand 70 as a soft cap"

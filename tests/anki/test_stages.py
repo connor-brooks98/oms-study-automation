@@ -1586,6 +1586,46 @@ def test_card_residual_targets_every_concept_only_for_unconditional_mode() -> No
     ] == ["C01", "C02"]
 
 
+def test_v2_partial_fact_coverage_cannot_suppress_gap_recovery() -> None:
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="Two independently testable facts.",
+                primary_entity="Fixture",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+                suggested_fact_count=2,
+                fact_descriptions=("First fact.", "Second fact."),
+            ),
+        ),
+    )
+    coverage = {
+        "C01": {
+            "status": "covered",
+            "evidence": [{"note_id": 1, "evidence_quality": "primary_source"}],
+            "facts": {
+                "C01-M1": {
+                    "status": "covered",
+                    "evidence": [
+                        {"note_id": 1, "evidence_quality": "primary_source"}
+                    ],
+                },
+                "C01-M2": {"status": "uncovered", "evidence": []},
+            },
+        }
+    }
+
+    assert _card_residual_targets(ledger, coverage, "gaps_only") == ledger.concepts
+    coverage["C01"]["facts"]["C01-M2"] = {
+        "status": "covered",
+        "evidence": [{"note_id": 2, "evidence_quality": "summary_grounded"}],
+    }
+    assert _card_residual_targets(ledger, coverage, "gaps_only") == ()
+
+
 def test_v2_s4c_replaces_needs_review_and_s6_materializes_residual_candidates() -> None:
     passage = SourcePassage.create(
         revision_id=7,

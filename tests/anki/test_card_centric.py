@@ -1068,7 +1068,7 @@ def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
 def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     prompt = Path("src/oms_hub/anki/prompt_assets/card-centric-ledger-v2.md").read_text()
 
-    assert "version: 2.1.0" in prompt
+    assert "version: 2.1.1" in prompt
     assert "temperature:" not in prompt.split("---", 2)[1]
     assert "model:" not in prompt.split("---", 2)[1]
     assert (
@@ -1081,7 +1081,7 @@ def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     )
     assert "`low` **if and only if** `emphasis_flag` is `false` and `depth` is `surface`." in prompt
     observed_hash = hashlib.sha256(prompt.encode()).hexdigest()
-    assert observed_hash == "b0d36a31f51327f455c0f2296da235239cdea47650f10cb529479c260bd0d920"
+    assert observed_hash == "a5da4353021ff1563538690bd79fa993349f9689f9b929a7c71c44b9627140a5"
     assert observed_hash != "1561da45dd05048dcf9d92fc709ce117f994bc0f38eb075a81bf2937bd1e2580"
 
 
