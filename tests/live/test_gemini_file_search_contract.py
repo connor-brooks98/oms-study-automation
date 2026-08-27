@@ -1467,6 +1467,33 @@ def test_synthetic_diagnostic_overflow_leaves_no_partial_file(
     assert not request.output_path.exists()
 
 
+def test_synthetic_diagnostic_permissions_fall_back_without_fchmod(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
+    sink = smoke._SyntheticDiagnosticSink.open(request)
+    chmod_calls: list[tuple[object, int]] = []
+    real_chmod = smoke.os.chmod
+
+    def chmod(path: object, mode: int) -> None:
+        chmod_calls.append((path, mode))
+        real_chmod(path, mode)
+
+    monkeypatch.delattr(smoke.os, "fchmod")
+    monkeypatch.setattr(smoke.os, "chmod", chmod)
+
+    sink.capture("synthetic", {"status": "ready"})
+    sink.close()
+
+    assert len(chmod_calls) == 1
+    assert Path(chmod_calls[0][0]).parent == request.output_path.parent
+    assert chmod_calls[0][1] == 0o600
+    assert request.output_path.exists()
+    sink.delete()
+
+
 def test_check_matrix_continues_after_independent_positive_failures() -> None:
     smoke = _load_smoke()
     evidence: dict[str, object] = {}
