@@ -303,7 +303,7 @@ def _real_citation(smoke: ModuleType, **overrides: object) -> object:
             "lecture_id": smoke.SYNTHETIC_LECTURE_ID,
             "source_revision_id": smoke.SYNTHETIC_REVISION_ID,
         },
-        "document_uri": "fileSearchStores/sdk-store/documents/sdk-document",
+        "document_uri": "fileSearchStores/sdk-store",
         "file_name": "task-2-8-synthetic.pdf",
         "page_number": 1,
         "source": smoke.SYNTHETIC_FACT,

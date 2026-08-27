@@ -413,8 +413,9 @@ class GoogleGenaiSmokeSession:
         self._config = GeminiConfig(api_key=SecretStr(api_key))
         self._clients = GeminiClientFactory(self._config, sdk_factory=sdk_factory)
         self._diagnostic_sink = diagnostic_sink
+        self._store_name: str | None = None
         self._document_name: str | None = None
-        self._file_display_name: str | None = None
+        self._file_name: str | None = None
 
     async def create_store(self, display_name: str, embedding_model: str) -> str:
         async with self._clients.client() as client:
@@ -428,7 +429,8 @@ class GoogleGenaiSmokeSession:
                 diagnostic_sink=self._diagnostic_sink,
                 label="create_store",
             )
-        return _provider_identity(created, "store")
+        self._store_name = _provider_identity(created, "store")
+        return self._store_name
 
     async def upload_pdf(self, display_name: str, content: bytes) -> str:
         async with self._clients.client() as client:
@@ -444,7 +446,7 @@ class GoogleGenaiSmokeSession:
                 label="upload_pdf",
             )
         file_name = _provider_identity(uploaded, "file")
-        self._file_display_name = display_name
+        self._file_name = file_name
         return file_name
 
     async def import_file(
@@ -513,7 +515,16 @@ class GoogleGenaiSmokeSession:
                 _OperationFailure(status if isinstance(status, int) else None)
             ) from None
         response = _field(operation, "response")
-        self._document_name = _provider_identity(response, "document", "document_name")
+        document_name = _provider_identity(response, "document", "document_name")
+        if "/" not in document_name and self._store_name is not None:
+            parent = _field(response, "parent")
+            if parent is not None and (
+                not isinstance(parent, str)
+                or not _resource_identity_matches(parent, self._store_name)
+            ):
+                raise SmokeContractError("Gemini document parent did not match the store")
+            document_name = f"{self._store_name}/documents/{document_name}"
+        self._document_name = document_name
         return self._document_name
 
     async def query(
@@ -569,7 +580,7 @@ class GoogleGenaiSmokeSession:
             response,
             scope,
             self._document_name,
-            self._file_display_name,
+            self._file_name,
         )
         return SmokeQueryResult(
             answer=answer,
@@ -689,6 +700,10 @@ def _provider_identity(value: object, label: str, field: str = "name") -> str:
     if len(normalized) > 500 or not normalized.isprintable():
         raise SmokeContractError(f"Gemini {label} identity was invalid")
     return normalized
+
+
+def _resource_identity_matches(actual: str, expected: str) -> bool:
+    return actual == expected or ("/" not in actual and expected.endswith(f"/{actual}"))
 
 
 def _field(value: object, name: str) -> object | None:
@@ -841,7 +856,7 @@ def _audit_citations(
     response: object,
     scope: SmokeScope,
     document_name: str | None,
-    file_display_name: str | None,
+    file_name: str | None,
 ) -> CitationAudit:
     steps = _field(response, "steps")
     blocked = {name: "blocked_by_citation_presence" for name in _CITATION_CHECKS}
@@ -859,6 +874,11 @@ def _audit_citations(
         "lecture_id": scope.lecture_id,
         "source_revision_id": SYNTHETIC_REVISION_ID,
     }
+    store_name = None
+    if document_name is not None:
+        candidate, separator, suffix = document_name.partition("/documents/")
+        if separator and candidate and suffix and "/" not in suffix:
+            store_name = candidate
     saw_model_output = False
     saw_content = False
     saw_annotations = False
@@ -913,12 +933,12 @@ def _audit_citations(
                             if all(actual.get(key) == value for key, value in expected.items())
                             else "citation_scope_mismatch"
                         )
-                if document_name is None:
+                if document_name is None or store_name is None:
                     current["citation_document_binding"] = (
                         "citation_document_identity_unavailable"
                     )
                 locator = _field(annotation, "document_uri")
-                if document_name is not None:
+                if document_name is not None and store_name is not None:
                     if locator is None:
                         current["citation_document_binding"] = (
                             "citation_document_uri_absent"
@@ -934,7 +954,7 @@ def _audit_citations(
                         )
                     else:
                         current["citation_document_binding"] = (
-                            "passed" if locator == document_name else "citation_wrong_document"
+                            "passed" if locator == store_name else "citation_wrong_document"
                         )
                 cited_file = _field(annotation, "file_name")
                 if cited_file is None:
@@ -948,7 +968,10 @@ def _audit_citations(
                     current["citation_file_binding"] = "citation_file_invalid"
                 else:
                     current["citation_file_binding"] = (
-                        "passed" if cited_file == file_display_name else "citation_wrong_file"
+                        "passed"
+                        if file_name is not None
+                        and _resource_identity_matches(cited_file, file_name)
+                        else "citation_wrong_file"
                     )
                 page_value = _field(annotation, "page_number")
                 if page_value is None:
@@ -1129,12 +1152,17 @@ def _citation_excerpt(annotation: object, content_text: object) -> str:
 
 
 def _bounded_excerpt(value: str) -> str:
-    if len(value) > 4096 or not value.isprintable():
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(value) > 4096
+        or any(not character.isprintable() and character not in "\r\n\t" for character in value)
+    ):
         raise SmokeContractError(
             "Gemini citation excerpt was invalid",
             reason="citation_excerpt_invalid",
         )
-    return value
+    return normalized
 
 
 def _optional_page(value: object) -> int | None:
