@@ -2276,9 +2276,18 @@ def _private_shadow_view(smoke: ModuleType, tmp_path: Path) -> object:
 
 
 class _PrivateShadowSession:
-    def __init__(self, smoke: ModuleType, *, fail_cleanup: bool = False) -> None:
+    def __init__(
+        self,
+        smoke: ModuleType,
+        *,
+        fail_cleanup: bool = False,
+        fail_positive: bool = False,
+        invalid_negative: bool = False,
+    ) -> None:
         self.smoke = smoke
         self.fail_cleanup = fail_cleanup
+        self.fail_positive = fail_positive
+        self.invalid_negative = invalid_negative
         self.calls: list[tuple[str, object]] = []
         self.model_contract = smoke.PRIVATE_SHADOW_MODEL_CONTRACT
 
@@ -2318,12 +2327,27 @@ class _PrivateShadowSession:
         source_revision_id: str,
         manifest: object,
         file_bindings: tuple[tuple[str, str], ...],
+        require_structured_no_result: bool = False,
     ) -> object:
         del prompt, source_revision_id, manifest, file_bindings
         self.calls.append(("query_private", (store_name, scope)))
         if scope.lecture_id == "lecture-private":
-            return self.smoke.PrivateShadowQueryAudit(2, 2, 17, 9)
-        return self.smoke.PrivateShadowQueryAudit(0, 0, 11, 4)
+            if self.fail_positive:
+                raise self.smoke.SmokeContractError(
+                    "primary private query failed",
+                    reason="private_citation_unresolved",
+                )
+            assert require_structured_no_result is False
+            return self.smoke.PrivateShadowQueryAudit(2, 2, 17, 9, None, None)
+        assert require_structured_no_result is True
+        return self.smoke.PrivateShadowQueryAudit(
+            0,
+            0,
+            11,
+            4,
+            True if self.invalid_negative else False,
+            False if self.invalid_negative else True,
+        )
 
     async def delete_document(self, document_name: str) -> None:
         self.calls.append(("delete_document", document_name))
@@ -2481,6 +2505,63 @@ def test_private_shadow_cleanup_failure_still_attempts_every_delete(
         )
 
     assert raised.value.reason == "private_cleanup_failed"
+    assert len([call for call in session.calls if call[0] == "delete_document"]) == 4
+    assert len([call for call in session.calls if call[0] == "delete_file"]) == 4
+    assert len([call for call in session.calls if call[0] == "delete_store"]) == 1
+
+
+def test_private_shadow_rejects_uncited_but_supported_wrong_scope_answer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    session = _PrivateShadowSession(smoke, invalid_negative=True)
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: session,
+            )
+        )
+
+    assert raised.value.reason == "private_wrong_scope_retrieved"
+
+
+def test_private_shadow_primary_failure_precedes_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    session = _PrivateShadowSession(smoke, fail_cleanup=True, fail_positive=True)
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: session,
+            )
+        )
+
+    assert raised.value.reason == "private_citation_unresolved"
     assert len([call for call in session.calls if call[0] == "delete_document"]) == 4
     assert len([call for call in session.calls if call[0] == "delete_file"]) == 4
     assert len([call for call in session.calls if call[0] == "delete_store"]) == 1
