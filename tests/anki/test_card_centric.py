@@ -852,6 +852,34 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 ),
             ),
         )
+    with pytest.raises(ValueError, match="placeholders"):
+        CardConceptLedger(
+            lecture_entity_count=1,
+            concepts=(
+                CardConcept(
+                    concept_id="C01",
+                    canonical_statement=(
+                        "The named clinical checklist is used to recognize disease."
+                    ),
+                    primary_entity="Warning signs",
+                    depth="medium",
+                    emphasis_flag=False,
+                    importance="medium",
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="semicolon"):
+        CardConcept(
+            concept_id="C01",
+            canonical_statement="Two facts.",
+            primary_entity="CD40",
+            depth="deep",
+            emphasis_flag=False,
+            importance="high",
+            fact_descriptions=(
+                "CD40L is on T cells; CD40 is on B cells.",
+            ),
+        )
     with pytest.raises(ValueError, match="depth metadata"):
         CardConceptLedger(
             lecture_entity_count=1,
@@ -1082,7 +1110,7 @@ def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
 def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     prompt = Path("src/oms_hub/anki/prompt_assets/card-centric-ledger-v2.md").read_text()
 
-    assert "version: 2.1.2" in prompt
+    assert "version: 2.1.3" in prompt
     assert "temperature:" not in prompt.split("---", 2)[1]
     assert "model:" not in prompt.split("---", 2)[1]
     assert (
@@ -1095,7 +1123,7 @@ def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     )
     assert "`low` **if and only if** `emphasis_flag` is `false` and `depth` is `surface`." in prompt
     observed_hash = hashlib.sha256(prompt.encode()).hexdigest()
-    assert observed_hash == "f83457a38045e54e85ac0808049dcb1ba99dcf15eb802de7405469e16a129598"
+    assert observed_hash == "9e587aa5ddb0cc03b8b9cfa8ac37477eee1966d2c041bfd002469831b8c745c8"
     assert observed_hash != "1561da45dd05048dcf9d92fc709ce117f994bc0f38eb075a81bf2937bd1e2580"
 
 

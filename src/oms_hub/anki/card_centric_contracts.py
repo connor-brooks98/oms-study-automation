@@ -420,6 +420,8 @@ class CardConcept(CardCentricContract):
             not value for value in descriptions
         ):
             raise ValueError("fact_descriptions length must equal suggested_fact_count")
+        if any(";" in value for value in descriptions):
+            raise ValueError("atomic fact descriptions cannot bundle semicolon clauses")
         by_fact = tuple(
             tuple(value.strip() for value in targets)
             for targets in self.forbidden_cloze_targets_by_fact
@@ -466,12 +468,22 @@ class CardConceptLedger(CardCentricContract):
             r"(?:basic|deep|medium|surface)\s+(?:level|depth|coverage))\b",
             re.IGNORECASE,
         )
+        placeholder_only = re.compile(
+            r"\b(?:as (?:noted|described) in the lecture|"
+            r"(?:named )?(?:clinical )?(?:checklist|criteria) (?:is |are )?"
+            r"(?:used|that helps) to (?:identify|recognize)|"
+            r"(?:basic|characteristic)[^.]{0,80}(?:gene|defect)"
+            r"[^.]{0,100}clinical (?:features|presentation))\b",
+            re.IGNORECASE,
+        )
         if any(
-            control_only.search(statement)
+            control_only.search(statement) or placeholder_only.search(statement)
             for concept in self.concepts
             for statement in concept.fact_descriptions
         ):
-            raise ValueError("lecture depth metadata cannot be a card-generating fact")
+            raise ValueError(
+                "lecture depth metadata or placeholders cannot be card-generating facts"
+            )
         return self
 
     @property

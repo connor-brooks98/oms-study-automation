@@ -1,6 +1,6 @@
 ---
 id: card-centric-ledger-v2
-version: 2.1.2
+version: 2.1.3
 max_tokens: 7000
 response_format: json
 schema: lcl_v2
@@ -30,6 +30,8 @@ the legacy top-level `forbidden_cloze_targets` for compatibility. Never invent
 source IDs or material absent from the lecture.
 
 Every `fact_description` must be one independently testable medical proposition.
+Do not join independently testable clauses with a semicolon; emit separate facts
+instead. An explicit comparison emphasized by the lecturer may remain one fact.
 Never emit a fact that merely describes lecture depth, coverage, emphasis, or
 pedagogy. A coverage-control sentence that names diseases or topics is still an
 inclusion instruction: emit at least one concrete medical concept for every name
@@ -52,6 +54,11 @@ fact, but its `fact_description` must preserve the concrete source-listed items
 and thresholds. Do not replace the list with a generic statement that criteria
 exist. The gap-card stage can split that one grounded list fact into a small
 ordered card set.
+
+Placeholder statements are invalid. Do not say only that a checklist is used to
+recognize disease, or that an entity has a characteristic gene and presentation
+as noted in the lecture. Name the concrete checklist items, gene/defect, exposure,
+and clinical pattern in the fact itself.
 
 Create a standalone diagnostic-workflow concept only when a supplied passage
 teaches that workflow as a workflow. Tests mentioned separately inside disease
