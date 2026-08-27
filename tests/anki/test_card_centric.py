@@ -868,7 +868,7 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 ),
             ),
         )
-    with pytest.raises(ValueError, match="Jeffrey Modell"):
+    with pytest.raises(ValueError, match="missing: ear infections, sinus infections"):
         CardConceptLedger(
             lecture_entity_count=1,
             concepts=(

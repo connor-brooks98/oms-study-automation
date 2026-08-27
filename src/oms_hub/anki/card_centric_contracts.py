@@ -490,19 +490,25 @@ class CardConceptLedger(CardCentricContract):
             if control_only.search(statement) or placeholder_only.search(statement)
         ]
         jeffrey_modell_items = (
-            r"ear infections?",
-            r"sinus infections?",
-            r"\bantibiotics?\b",
-            r"\bpneumonias?\b",
-            r"(?:gain weight|grow normally|failure to thrive)",
-            r"abscess",
-            r"thrush",
-            r"(?:intravenous|\bIV\b)",
-            r"deep-seated infections?",
-            r"family history",
+            ("ear infections", r"ear infections?"),
+            ("sinus infections", r"sinus infections?"),
+            ("prolonged ineffective antibiotics", r"\bantibiotics?\b"),
+            ("pneumonias", r"\bpneumonias?\b"),
+            ("failure to gain weight or grow", r"(?:gain weight|grow normally|failure to thrive)"),
+            ("deep skin or organ abscesses", r"abscess"),
+            ("persistent thrush after age one", r"thrush"),
+            ("intravenous antibiotics", r"(?:intravenous|\bIV\b)"),
+            ("deep-seated infections", r"deep-seated infections?"),
+            ("family history of PID", r"family history"),
         )
         invalid_placeholders.extend(
-            f"{fact_id}: {statement}"
+            f"{fact_id}: {statement} [missing: "
+            + ", ".join(
+                label
+                for label, pattern in jeffrey_modell_items
+                if re.search(pattern, statement, re.IGNORECASE) is None
+            )
+            + "]"
             for concept in self.concepts
             for fact_id, statement in zip(
                 concept.fact_ids, concept.fact_descriptions, strict=True
@@ -510,7 +516,7 @@ class CardConceptLedger(CardCentricContract):
             if "jeffrey modell" in statement.casefold()
             and any(
                 re.search(pattern, statement, re.IGNORECASE) is None
-                for pattern in jeffrey_modell_items
+                for _, pattern in jeffrey_modell_items
             )
         )
         if invalid_placeholders:
