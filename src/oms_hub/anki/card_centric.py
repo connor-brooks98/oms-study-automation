@@ -204,7 +204,9 @@ class CardCentricLedgerService:
                 raise error from None
             repair_instruction = _ledger_repair_instruction(self.instruction)
             repair_input = json.dumps(
-                _repair_request_document(repair_context, depth_control_evidence),
+                _repair_request_document(
+                    repair_context, source_index, depth_control_evidence
+                ),
                 sort_keys=True,
                 separators=(",", ":"),
             )
@@ -668,6 +670,7 @@ def _ledger_repair_context(
 
 def _repair_request_document(
     context: _LedgerRepairContext,
+    source_index: CardCentricSourceIndex,
     depth_control_evidence: list[dict[str, str]],
 ) -> dict[str, object]:
     return {
@@ -677,6 +680,9 @@ def _repair_request_document(
                 "concept_id": concept_id,
                 "messages": list(context.defects_by_id[concept_id]),
                 "raw_concept": context.raw_concepts[index],
+                "supporting_passages": _repair_supporting_passages(
+                    context.raw_concepts[index], source_index
+                ),
             }
             for index, concept_id in context.index_to_id.items()
             if concept_id in context.defects_by_id
@@ -694,6 +700,44 @@ def _repair_request_document(
             "scope_limit": context.scope_limit,
         },
     }
+
+
+def _repair_supporting_passages(
+    raw_concept: Mapping[str, object],
+    source_index: CardCentricSourceIndex,
+) -> list[dict[str, str]]:
+    aliases = raw_concept.get("aliases", ())
+    if not isinstance(aliases, (list, tuple)):
+        aliases = ()
+    terms = {
+        _normalized_entity_text(str(value))
+        for value in (
+            raw_concept.get("primary_entity", ""),
+            *aliases,
+        )
+        if _normalized_entity_text(str(value))
+    }
+    matches = sorted(
+        (
+            passage
+            for passage in source_index.passages
+            if passage.authority != "summary"
+            and any(
+                set(term.split())
+                <= set(_normalized_entity_text(passage.text).split())
+                for term in terms
+            )
+        ),
+        key=lambda passage: (passage.authority != "slide", passage.passage_id),
+    )[:4]
+    return [
+        {
+            "passage_id": passage.passage_id,
+            "authority": passage.authority,
+            "text": passage.text,
+        }
+        for passage in matches
+    ]
 
 
 def _repair_result_error(
@@ -855,7 +899,9 @@ def _ledger_repair_instruction(instruction: str) -> str:
         "schema and cannot be edited. Never emit lecture-depth commentary or "
         "semicolon-bundled facts, and split distinct expression locations into separate "
         "facts. State the exact gene or defect and phenotype; never say only 'basic "
-        "gene defect,' 'characteristic presentation,' or 'noted in lecture.' Apply "
+        "gene defect,' 'characteristic presentation,' or 'noted in lecture.' Use each "
+        "defect's supporting_passages to replace placeholders with source-entailed "
+        "facts. Apply "
         "depth_control_evidence using the base instruction's lecture-depth "
         "rule for named lists. Every entity in constraints.awareness_only_entities must "
         "have exactly one compact recognition fact with no enumerated items or thresholds. "

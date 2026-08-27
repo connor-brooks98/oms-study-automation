@@ -1469,6 +1469,9 @@ def test_card_ledger_invalid_primary_gets_one_targeted_repair() -> None:
     repair_document = json.loads(repair_input)
     assert repair_document["constraints"]["replacement_ids"] == ["C01"]
     assert "importance conflicts" in repair_document["defects"][0]["messages"][0]
+    assert repair_document["defects"][0]["supporting_passages"][0]["text"] == (
+        "fact has exact supporting detail."
+    )
     assert "concepts" not in repair_document
     assert attempts[0].invalid_response_sha256 == hashlib.sha256(invalid.encode()).hexdigest()
     assert result.request_ids == ("request-1", "request-2")
@@ -1878,7 +1881,8 @@ def _ledger_source():
                 text="summary-only phrase",
                 source_id="SUM:12:CORE:01",
                 summary_section="core",
-            )
+            ),
+            _passage(SourceKind.SLIDE, "slide:1", "fact has exact supporting detail."),
         ],
         snapshot_id="snapshot-1",
         source_revision_hashes={7: "a" * 64},
