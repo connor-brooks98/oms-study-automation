@@ -628,7 +628,9 @@ def _diagnostic_value(value: object, secrets: tuple[str, ...]) -> object:
         for key, item in value.items():
             name = str(key)
             normalized = name.casefold().replace("_", "-")
-            if (
+            if normalized == "headers":
+                cleaned[name] = "[REDACTED]"
+            elif (
                 normalized in {
                     "api-key",
                     "authorization",
@@ -647,7 +649,13 @@ def _diagnostic_value(value: object, secrets: tuple[str, ...]) -> object:
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_diagnostic_value(item, secrets) for item in value]
     if isinstance(value, bytes):
-        return {"base64": base64.b64encode(value).decode("ascii")}
+        cleaned_bytes = value
+        for secret in secrets:
+            cleaned_bytes = cleaned_bytes.replace(
+                secret.encode("utf-8"),
+                b"[REDACTED]",
+            )
+        return {"base64": base64.b64encode(cleaned_bytes).decode("ascii")}
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
@@ -865,6 +873,10 @@ def _audit_citations(
                     results[name].append(outcome)
                 if document_name is not None and all(
                     current.get(name) == "passed"
+                    or (
+                        name == "citation_document_binding"
+                        and current.get(name) == "citation_document_uri_absent"
+                    )
                     for name in _CITATION_CHECKS
                     if name != "citation_presence"
                 ):
@@ -914,7 +926,11 @@ def _citations(
         "citation_excerpt_binding",
     ):
         reason = audit.checks[name]
-        if reason not in {"passed", "blocked_by_citation_presence"}:
+        if reason not in {
+            "passed",
+            "blocked_by_citation_presence",
+            "citation_document_uri_absent",
+        }:
             messages = {
                 "citation_scope_binding": (
                     "Gemini citation metadata did not match the requested scope"
@@ -1265,7 +1281,11 @@ async def run_contract_smoke(
                 checks.update(citation_checks)
                 for name in _CITATION_CHECKS:
                     diagnosis = checks[name]
-                    if diagnosis not in {"passed", "blocked_by_citation_presence"}:
+                    if diagnosis not in {
+                        "passed",
+                        "blocked_by_citation_presence",
+                        "citation_document_uri_absent",
+                    }:
                         contract_error = SmokeContractError(
                             "positive citation did not satisfy the contract",
                             reason=diagnosis,
@@ -1598,6 +1618,10 @@ async def run_authorized_live_smoke(
     diagnostic_sink: _SyntheticDiagnosticSink | None = None
     if diagnostic_request is not None:
         _validate_diagnostic_request(diagnostic_request)
+        if session_factory is not None:
+            raise LiveSmokeBlocked(
+                "synthetic diagnostics require the default synthetic session"
+            )
     if os.getenv("RUN_LIVE_GEMINI_TESTS") != "1":
         raise LiveSmokeBlocked("RUN_LIVE_GEMINI_TESTS=1 is required for a live smoke")
     if diagnostic_request is not None:
