@@ -1182,7 +1182,7 @@ def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
 def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     prompt = Path("src/oms_hub/anki/prompt_assets/card-centric-ledger-v2.md").read_text()
 
-    assert "version: 2.1.5" in prompt
+    assert "version: 2.1.6" in prompt
     assert "temperature:" not in prompt.split("---", 2)[1]
     assert "model:" not in prompt.split("---", 2)[1]
     assert (
@@ -1195,7 +1195,7 @@ def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     )
     assert "`low` **if and only if** `emphasis_flag` is `false` and `depth` is `surface`." in prompt
     observed_hash = hashlib.sha256(prompt.encode()).hexdigest()
-    assert observed_hash == "cfb08ce276fbe2f9905bf524a4a3c98e2659d1a173896a5a0b0437bd13b2d50f"
+    assert observed_hash == "5e74976fac216ee07bbf49bc93d7532dd157a90fd25ea0e6b1f8acfea71b40cf"
     assert observed_hash != "1561da45dd05048dcf9d92fc709ce117f994bc0f38eb075a81bf2937bd1e2580"
 
 
@@ -1470,6 +1470,92 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
     assert json.loads(generator.calls[1][1])["depth_control_evidence"] == json.loads(
         generator.calls[0][1]
     )["depth_control_evidence"]
+
+
+def test_card_ledger_repairs_enumerated_awareness_only_list() -> None:
+    source = build_source_index(
+        [
+            SourcePassage.create(
+                revision_id=9,
+                lecture_id=12,
+                artifact_id="outline:9",
+                source_kind=SourceKind.SUMMARY,
+                locator="summary:depth:1",
+                text="Jeffrey Modell Warning Signs: MEDIUM.",
+                source_id="SUM:12:DEPTH:D1",
+                summary_section="depth",
+            ),
+            _passage(
+                SourceKind.SLIDE,
+                "slide:47",
+                "The Jeffrey Modell Foundation's 10 warning signs include 8 ear "
+                "infections, 2 sinus infections, 2 months of antibiotics, 2 "
+                "pneumonias, poor growth, abscesses, thrush, IV antibiotics, 2 "
+                "deep infections, and family history.",
+            ),
+            _passage(
+                SourceKind.TRANSCRIPT,
+                "transcript:36",
+                "The Jeffrey Modell Foundation has ten warning signs. Keep these in mind.",
+            ),
+        ],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    enumerated = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement=(
+                    "The Jeffrey Modell warning signs include ear infections, sinus "
+                    "infections, prolonged antibiotics, pneumonias, poor growth, "
+                    "abscesses, thrush, IV antibiotics, deep infections, and family "
+                    "history."
+                ),
+                primary_entity="Jeffrey Modell Warning Signs",
+                depth="medium",
+                emphasis_flag=False,
+                importance="medium",
+            ),
+        ),
+    )
+    awareness = enumerated.concepts[0].model_copy(
+        update={
+            "canonical_statement": (
+                "The Jeffrey Modell Foundation's 10 warning signs are a pediatric "
+                "screening aid for recognizing when to consider an inborn error of "
+                "immunity."
+            ),
+            "fact_descriptions": (
+                "The Jeffrey Modell Foundation's 10 warning signs are a pediatric "
+                "screening aid for recognizing when to consider an inborn error of "
+                "immunity.",
+            ),
+        }
+    )
+    generator = _LedgerSequenceGenerator(
+        [
+            enumerated.model_dump_json(),
+            CardConceptRepairBatch(replacements=(awareness,)).model_dump_json(),
+        ]
+    )
+
+    result = CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+        source_index=source,
+        provider=ProviderName.OPENAI,
+        model="gpt-5.6-luna",
+    )
+
+    assert result.ledger.concepts == (awareness,)
+    assert len(generator.calls) == 2
+    repair_document = json.loads(generator.calls[1][1])
+    assert repair_document["constraints"]["awareness_only_entities"] == [
+        "Jeffrey Modell Warning Signs"
+    ]
+    assert repair_document["depth_control_evidence"][0]["representation"] == (
+        "awareness_only"
+    )
 
 
 def test_captured_lecture_101_checklist_payload_supports_awareness_fact() -> None:

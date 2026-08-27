@@ -203,13 +203,13 @@ def test_card_centric_v2_ledger_prompt_preserves_quality_first_sizing_policy() -
     assets = Path(__file__).parents[2] / "src" / "oms_hub" / "anki" / "prompt_assets"
     prompt = AnkiPromptLibrary(assets).load("card-centric-ledger-v2")
 
-    assert prompt.metadata.version == "2.1.5"
+    assert prompt.metadata.version == "2.1.6"
     assert prompt.metadata.model is None
     assert prompt.metadata.temperature is None
     assert prompt.content_sha256 == (
-        "bf045fca03965ab34644622fdfe8e315b876f10ffc4e8b0f722a8d55ce8c539c"
+        "4dd4cc8b5b83fd4b8c217f0a2ff9ffc1dc08fb33189c2f1cce873e4a2d7f6fa6"
     )
-    assert prompt.prompt_hash == "bf045fca0396"
+    assert prompt.prompt_hash == "4dd4cc8b5b83"
     assert "smallest set of the best-supported, highest-yield," in prompt.content
     assert (
         "60 as a warning floor, 65 as the ordinary target,\nand 70 as a soft cap"

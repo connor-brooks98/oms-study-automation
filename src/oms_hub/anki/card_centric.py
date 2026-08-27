@@ -195,7 +195,11 @@ class CardCentricLedgerService:
                 error=error,
             )
             try:
-                repair_context = _ledger_repair_context(error.raw_text, source_index)
+                repair_context = _ledger_repair_context(
+                    error.raw_text,
+                    source_index,
+                    depth_control_evidence,
+                )
             except CardCentricValidationError:
                 raise error from None
             repair_instruction = _ledger_repair_instruction(self.instruction)
@@ -315,6 +319,12 @@ _DEPTH_CONTROL = re.compile(
     r"^\s*(?P<entities>[^:\n]+):\s*(?P<depth>DEEP|MEDIUM|SURFACE)\b",
     re.IGNORECASE,
 )
+_AWARENESS_SIGNAL = re.compile(
+    r"\b(?:keep (?:these|them|it) in mind|"
+    r"know (?:that )?(?:they|these|it) exist)\b",
+    re.IGNORECASE,
+)
+_LIST_THRESHOLD = re.compile(r"(?:\bat least\b|≥)\s*\d+", re.IGNORECASE)
 
 
 def _validate_ledger_depth_controls(
@@ -323,9 +333,17 @@ def _validate_ledger_depth_controls(
 ) -> None:
     """Require every entity named by summary depth controls at that depth."""
     missing = _missing_ledger_depth_controls(result.value, source_index)
-    if not missing:
+    awareness_defects = _ledger_awareness_defects(
+        result.value,
+        _depth_control_evidence(source_index),
+    )
+    if not missing and not awareness_defects:
         return
-    message = "ledger omitted named depth-control entities: " + ", ".join(missing)
+    messages = []
+    if missing:
+        messages.append("ledger omitted named depth-control entities: " + ", ".join(missing))
+    messages.extend(awareness_defects)
+    message = "; ".join(messages)
     raise StructuredOutputError(
         message,
         raw_text=result.raw_text,
@@ -375,12 +393,18 @@ def _depth_control_evidence(
             ),
             key=lambda passage: (passage.authority != "slide", passage.passage_id),
         )[:2]
+        representation = (
+            "awareness_only"
+            if any(_AWARENESS_SIGNAL.search(passage.text) for passage in matches)
+            else "item_recall"
+        )
         evidence.extend(
             {
                 "required_entity": entity,
                 "depth": depth,
                 "passage_id": passage.passage_id,
                 "text": passage.text,
+                "representation": representation,
             }
             for passage in matches
         )
@@ -389,6 +413,63 @@ def _depth_control_evidence(
 
 def _normalized_entity_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def _awareness_only_entities(
+    depth_control_evidence: Sequence[Mapping[str, str]],
+) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            item["required_entity"]
+            for item in depth_control_evidence
+            if item.get("representation") == "awareness_only"
+        )
+    )
+
+
+def _awareness_concept_defects(
+    *,
+    concept_id: str,
+    corpus: str,
+    fact_descriptions: tuple[str, ...],
+    depth_control_evidence: Sequence[Mapping[str, str]],
+) -> tuple[str, ...]:
+    for entity in _awareness_only_entities(depth_control_evidence):
+        if _normalized_entity_text(entity) not in _normalized_entity_text(corpus):
+            continue
+        enumerated = any(
+            len(_LIST_THRESHOLD.findall(fact)) >= 2 or fact.count(",") >= 4
+            for fact in fact_descriptions
+        )
+        if len(fact_descriptions) != 1 or enumerated:
+            return (
+                f"{concept_id}: awareness-only list must be one compact recognition "
+                "fact without enumerated items or thresholds",
+            )
+    return ()
+
+
+def _ledger_awareness_defects(
+    ledger: CardConceptLedger,
+    depth_control_evidence: Sequence[Mapping[str, str]],
+) -> tuple[str, ...]:
+    return tuple(
+        defect
+        for concept in ledger.concepts
+        for defect in _awareness_concept_defects(
+            concept_id=concept.concept_id,
+            corpus=" ".join(
+                (
+                    concept.primary_entity,
+                    *concept.aliases,
+                    concept.canonical_statement,
+                    *concept.fact_descriptions,
+                )
+            ),
+            fact_descriptions=concept.fact_descriptions,
+            depth_control_evidence=depth_control_evidence,
+        )
+    )
 
 
 def _missing_ledger_depth_controls(
@@ -490,6 +571,7 @@ def _raw_fact_descriptions(raw: Mapping[str, object]) -> tuple[str, ...]:
 def _ledger_repair_context(
     raw_text: str,
     source_index: CardCentricSourceIndex,
+    depth_control_evidence: list[dict[str, str]],
 ) -> _LedgerRepairContext:
     document, raw_concepts = _parse_targetable_ledger(raw_text)
     index_to_id = {}
@@ -512,6 +594,14 @@ def _ledger_repair_context(
             card_ledger_concept_defects(
                 concept_id=concept_id,
                 fact_descriptions=descriptions,
+            )
+        )
+        defects.setdefault(concept_id, []).extend(
+            _awareness_concept_defects(
+                concept_id=concept_id,
+                corpus=_raw_concept_corpus(raw),
+                fact_descriptions=descriptions,
+                depth_control_evidence=depth_control_evidence,
             )
         )
     stable_key_owners: dict[str, list[str]] = {}
@@ -596,6 +686,9 @@ def _repair_request_document(
         "depth_control_evidence": depth_control_evidence,
         "constraints": {
             "replacement_ids": list(context.defects_by_id),
+            "awareness_only_entities": list(
+                _awareness_only_entities(depth_control_evidence)
+            ),
             "no_deletions": True,
             "one_repair_call": True,
             "scope_limit": context.scope_limit,
@@ -718,6 +811,13 @@ def _merge_targeted_ledger_repair(
             + ", ".join(missing),
             repair,
         )
+    awareness_defects = _ledger_awareness_defects(ledger, depth_control_evidence)
+    if awareness_defects:
+        raise _repair_result_error(
+            "targeted ledger merge retained invalid awareness-list depth: "
+            + "; ".join(awareness_defects),
+            repair,
+        )
     manifest = {
         "primary_response_sha256": context.primary_response_sha256,
         "index_to_concept_id": {
@@ -755,7 +855,8 @@ def _ledger_repair_instruction(instruction: str) -> str:
         "schema and cannot be edited. Never emit lecture-depth commentary or "
         "semicolon-bundled facts, and split distinct expression locations into separate "
         "facts. Apply depth_control_evidence using the base instruction's lecture-depth "
-        "rule for named lists; do not expand an awareness-only list into item-recall facts. "
+        "rule for named lists. Every entity in constraints.awareness_only_entities must "
+        "have exactly one compact recognition fact with no enumerated items or thresholds. "
         "Return JSON only."
     )
 

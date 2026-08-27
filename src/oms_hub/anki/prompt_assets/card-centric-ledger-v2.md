@@ -1,6 +1,6 @@
 ---
 id: card-centric-ledger-v2
-version: 2.1.5
+version: 2.1.6
 max_tokens: 7000
 response_format: json
 schema: lcl_v2
@@ -35,7 +35,8 @@ the summary depth map. Match the lecturer's demonstrated depth: preserve every
 source-listed item and threshold only when the lecture teaches the list for
 recall. Awareness language such as "know these exist" or "keep these in mind"
 requires one concrete recognition fact naming the list and its clinical purpose,
-not item-by-item recall.
+not item-by-item recall. An evidence item marked `representation` =
+`awareness_only` makes this one-fact, no-enumeration rule mandatory.
 
 Every `fact_description` must be one independently testable medical proposition.
 Do not join independently testable clauses with a semicolon; emit separate facts
