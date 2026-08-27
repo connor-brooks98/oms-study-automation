@@ -1944,6 +1944,16 @@ def test_private_preflight_flow_emits_only_allowlisted_schema29_evidence(
         normalized_text="Offline evidence.",
         content_sha256=hashlib.sha256(b"Offline evidence.").hexdigest(),
     )
+    second_block = dataclasses.replace(
+        evidence,
+        evidence_id="ev_schema29_second_block",
+        locator=EvidenceLocator(EvidenceLocatorKind.SLIDE, "1:2"),
+    )
+    next_slide = dataclasses.replace(
+        evidence,
+        evidence_id="ev_schema29_next_slide",
+        locator=EvidenceLocator(EvidenceLocatorKind.SLIDE, "slide 2:1"),
+    )
     view = IndexInputView(
         source_document_id="legacy-study-revision:29",
         source_revision_id="sr_schema29",
@@ -1974,7 +1984,7 @@ def test_private_preflight_flow_emits_only_allowlisted_schema29_evidence(
             sha256_file(markdown),
             "text/markdown",
         ),
-        evidence_units=(evidence,),
+        evidence_units=(evidence, second_block, next_slide),
         assets=(),
     )
     monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
@@ -1999,12 +2009,48 @@ def test_private_preflight_flow_emits_only_allowlisted_schema29_evidence(
     assert record["status"] == "ready"
     assert record["document_types"] == ["markdown", "pdf", "pptx"]
     assert record["page_count"] == 1
-    assert record["slide_count"] == 1
+    assert record["slide_count"] == 2
     assert record["provider_operation_states"] == ["private_preflight_ready"]
     assert record["warnings"] == []
     script_source = SCRIPT.read_text(encoding="utf-8")
     assert "source_revisions" not in script_source
     assert "KnowledgeRepository" not in script_source
+
+
+@pytest.mark.parametrize(
+    ("locator", "expected"),
+    (("1", 1), ("1:9", 1), ("slide 2", 2), ("slide 2:7", 2)),
+)
+def test_private_preflight_extracts_canonical_slide_number(
+    locator: str,
+    expected: int,
+) -> None:
+    smoke = _load_smoke()
+
+    assert smoke._canonical_slide_number(locator) == expected
+
+
+@pytest.mark.parametrize(
+    "locator",
+    (
+        "",
+        "0",
+        "01",
+        "1:0",
+        "1:02",
+        "slide 1 notes",
+        "page 1",
+        "1:2:3",
+        "1-2",
+        " 1",
+        "1 ",
+    ),
+)
+def test_private_preflight_rejects_noncanonical_slide_locator(locator: str) -> None:
+    smoke = _load_smoke()
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="invalid slide evidence"):
+        smoke._canonical_slide_number(locator)
 
 
 def test_opt_in_without_stored_credential_fails_before_provider(
