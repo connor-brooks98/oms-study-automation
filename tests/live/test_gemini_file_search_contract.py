@@ -157,7 +157,7 @@ class _SdkFiles:
         self.calls: list[tuple[str, object]] = []
 
     async def upload(self, *, file: object, config: object) -> object:
-        content = file.read()
+        content = file.read_bytes() if isinstance(file, Path) else file.read()
         self.calls.append(("upload", (content, config)))
         return SimpleNamespace(name="files/sdk-file")
 
@@ -246,6 +246,54 @@ class _SdkInteractions:
                 )
             ],
             usage=sdk.Usage(total_input_tokens=13, total_output_tokens=8),
+        )
+
+
+class _PrivateSdkInteractions:
+    def __init__(self, smoke: ModuleType, view: object, manifest: object) -> None:
+        self.smoke = smoke
+        self.view = view
+        self.manifest = manifest
+        self.calls: list[dict[str, object]] = []
+
+    async def create(self, **body: object) -> object:
+        sdk = _sdk_interactions()
+        self.calls.append(body)
+        tools = body["tools"]
+        assert isinstance(tools, list)
+        file_search = tools[0]
+        if self.smoke.PRIVATE_SHADOW_WRONG_LECTURE_ID in file_search["metadata_filter"]:
+            annotations: list[object] = []
+        else:
+            pdf = next(item for item in self.manifest.inputs if item.input_key == "pdf")
+            annotations = [
+                sdk.FileCitation(
+                    custom_metadata={
+                        "course_id": self.view.course_id,
+                        "exam_id": self.view.exam_id,
+                        "lecture_id": self.view.lecture_id,
+                        "source_revision_id": self.view.source_revision_id,
+                        "input_key": pdf.input_key,
+                        "input_kind": pdf.input_kind,
+                        "input_sha256": pdf.sha256,
+                    },
+                    document_uri="fileSearchStores/private-store",
+                    file_name="sdk-file",
+                    page_number=1,
+                    source=self.view.evidence_units[0].normalized_text,
+                )
+            ]
+        output_text = "private response discarded by adapter"
+        return sdk.Interaction(
+            status="completed",
+            output_text=output_text,
+            steps=[
+                sdk.FileSearchResultStep(call_id="private-search"),
+                sdk.ModelOutputStep(
+                    content=[sdk.TextContent(text=output_text, annotations=annotations)]
+                ),
+            ],
+            usage=sdk.Usage(total_input_tokens=19, total_output_tokens=6),
         )
 
 
@@ -425,6 +473,93 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     assert all_aio[-1].file_search_stores.calls == [
         ("delete", ("fileSearchStores/sdk-store", {"force": True}))
     ]
+
+
+def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    manifest = smoke._private_shadow_manifest(view)
+    interactions = _PrivateSdkInteractions(smoke, view, manifest)
+    clients: list[_SdkClient] = []
+
+    def sdk_factory(**kwargs: object) -> _SdkClient:
+        assert kwargs["api_key"] == "synthetic-sdk-key"
+        client = _SdkClient(smoke)
+        client.aio.interactions = interactions
+        clients.append(client)
+        return client
+
+    session = smoke.GoogleGenaiSmokeSession(
+        "synthetic-sdk-key",
+        sdk_factory=sdk_factory,
+    )
+    uploaded = asyncio.run(session.upload_input("lecture.pdf", view.pdf.path, "application/pdf"))
+    operation = asyncio.run(
+        session.import_input(
+            "fileSearchStores/private-store",
+            uploaded,
+            (("input_key", "normalized_markdown"),),
+            {
+                "white_space_config": {
+                    "max_tokens_per_chunk": 700,
+                    "max_overlap_tokens": 100,
+                }
+            },
+        )
+    )
+    positive = asyncio.run(
+        session.query_private(
+            "fileSearchStores/private-store",
+            "safe private query",
+            smoke.SmokeScope(view.course_id, view.exam_id, view.lecture_id),
+            source_revision_id=view.source_revision_id,
+            manifest=manifest,
+            file_bindings=(("files/sdk-file", "pdf"),),
+        )
+    )
+    negative = asyncio.run(
+        session.query_private(
+            "fileSearchStores/private-store",
+            "safe negative query",
+            smoke.SmokeScope(
+                view.course_id,
+                view.exam_id,
+                smoke.PRIVATE_SHADOW_WRONG_LECTURE_ID,
+            ),
+            source_revision_id=view.source_revision_id,
+            manifest=manifest,
+            file_bindings=(("files/sdk-file", "pdf"),),
+        )
+    )
+
+    assert positive == smoke.PrivateShadowQueryAudit(1, 1, 19, 6)
+    assert negative == smoke.PrivateShadowQueryAudit(0, 0, 19, 6)
+    assert operation == "operations/sdk-operation"
+    upload_call = next(client.aio.files.calls[0] for client in clients if client.aio.files.calls)
+    assert upload_call == (
+        "upload",
+        (
+            view.pdf.path.read_bytes(),
+            {"display_name": "lecture.pdf", "mime_type": "application/pdf"},
+        ),
+    )
+    import_call = next(
+        client.aio.file_search_stores.calls[0]
+        for client in clients
+        if client.aio.file_search_stores.calls
+    )
+    assert import_call[0] == "import_file"
+    assert import_call[1][2]["chunking_config"] == {
+        "white_space_config": {
+            "max_tokens_per_chunk": 700,
+            "max_overlap_tokens": 100,
+        }
+    }
+    assert all(set(body) == {"input", "model", "store", "tools"} for body in interactions.calls)
+    assert all(body["model"] == "gemini-3.7-flash" for body in interactions.calls)
+    assert all(body["store"] is False for body in interactions.calls)
 
 
 def test_interaction_citation_must_bind_to_uploaded_file() -> None:

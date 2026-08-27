@@ -2254,6 +2254,7 @@ async def run_authorized_private_shadow(
     schema_version: int,
     artifacts: ArtifactService,
     materialization_root: Path,
+    approved_preflight: Mapping[str, object],
     secret_store: SecretStore | None = None,
     session_factory: Callable[[str], PrivateShadowSession] | None = None,
     parser: Any | None = None,
@@ -2269,6 +2270,14 @@ async def run_authorized_private_shadow(
         raise LiveSmokeBlocked("private shadow model contract mismatch") from None
     if sdk_version != PRIVATE_SHADOW_MODEL_CONTRACT[0]:
         raise LiveSmokeBlocked("private shadow model contract mismatch")
+    config_probe = GeminiConfig(api_key=SecretStr("private-shadow-contract-probe"))
+    if (
+        config_probe.sdk_version,
+        config_probe.file_search_model,
+        config_probe.embedding_model,
+        config_probe.api_version,
+    ) != PRIVATE_SHADOW_MODEL_CONTRACT:
+        raise LiveSmokeBlocked("private shadow model contract mismatch")
     view = prepare_private_shadow_index_input(
         slide_revision_id,
         schema_version=schema_version,
@@ -2278,7 +2287,7 @@ async def run_authorized_private_shadow(
     )
     preflight = _private_shadow_preflight_from_view(view)
     expected = _expected_private_shadow_preflight(view, _private_shadow_manifest(view))
-    if preflight != expected:
+    if preflight != expected or dict(approved_preflight) != expected:
         raise LiveSmokeBlocked("private shadow preflight mismatch")
     if secret_store is None:
         from oms_hub.security.secret_store import KeyringSecretStore
