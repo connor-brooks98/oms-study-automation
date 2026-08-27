@@ -61,7 +61,7 @@ _CITATION_CHECKS = (
     "citation_excerpt_binding",
 )
 _PRIVATE_SLIDE_COORDINATE = re.compile(
-    r"(?:slide\s+)?([1-9][0-9]*)(?::[1-9][0-9]*)?\Z"
+    r"(?:slide )?([1-9][0-9]*)(?::[1-9][0-9]*)?\Z"
 )
 
 
