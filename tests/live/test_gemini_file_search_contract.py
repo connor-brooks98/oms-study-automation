@@ -2300,12 +2300,15 @@ class _PrivateShadowSession:
         fail_cleanup: bool = False,
         fail_positive: bool = False,
         invalid_negative: bool = False,
+        uncertain_upload: bool = False,
     ) -> None:
         self.smoke = smoke
         self.fail_cleanup = fail_cleanup
         self.fail_positive = fail_positive
         self.invalid_negative = invalid_negative
+        self.uncertain_upload = uncertain_upload
         self.calls: list[tuple[str, object]] = []
+        self.live_files: dict[str, str] = {}
         self.model_contract = smoke.PRIVATE_SHADOW_MODEL_CONTRACT
 
     async def create_store(self, display_name: str, embedding_model: str) -> str:
@@ -2319,7 +2322,20 @@ class _PrivateShadowSession:
         media_type: str,
     ) -> str:
         self.calls.append(("upload_input", (display_name, path.name, media_type)))
-        return f"files/{display_name}"
+        file_name = f"files/{display_name}"
+        self.live_files[file_name] = display_name
+        if self.uncertain_upload:
+            self.uncertain_upload = False
+            raise self.smoke.SmokeContractError("uncertain upload response")
+        return file_name
+
+    async def find_files(self, display_names: tuple[str, ...]) -> tuple[str, ...]:
+        self.calls.append(("find_files", display_names))
+        return tuple(
+            name
+            for name, display_name in self.live_files.items()
+            if display_name in display_names
+        )
 
     async def import_input(
         self,
@@ -2346,8 +2362,8 @@ class _PrivateShadowSession:
         file_bindings: tuple[tuple[str, str], ...],
         require_structured_no_result: bool = False,
     ) -> object:
-        del prompt, source_revision_id, manifest, file_bindings
-        self.calls.append(("query_private", (store_name, scope)))
+        del source_revision_id, manifest, file_bindings
+        self.calls.append(("query_private", (store_name, prompt, scope)))
         if scope.lecture_id == "lecture-private":
             if self.fail_positive:
                 raise self.smoke.SmokeContractError(
@@ -2375,6 +2391,7 @@ class _PrivateShadowSession:
 
     async def delete_file(self, file_name: str) -> None:
         self.calls.append(("delete_file", file_name))
+        self.live_files.pop(file_name, None)
 
     async def delete_store(self, store_name: str) -> None:
         self.calls.append(("delete_store", store_name))
@@ -2489,6 +2506,11 @@ def test_private_shadow_indexes_every_input_queries_and_returns_only_aggregates(
     assert len([call for call in session.calls if call[0] == "upload_input"]) == 4
     assert len([call for call in session.calls if call[0] == "import_input"]) == 4
     assert len([call for call in session.calls if call[0] == "query_private"]) == 2
+    negative_prompt = [call for call in session.calls if call[0] == "query_private"][1][1][1]
+    assert negative_prompt == (
+        "Use only files matching the requested lecture scope. If none match, return an "
+        'empty answer and supported=false.'
+    )
     assert len([call for call in session.calls if call[0] == "delete_document"]) == 4
     assert len([call for call in session.calls if call[0] == "delete_file"]) == 4
     assert session.calls[-1] == ("delete_store", "fileSearchStores/private-store")
@@ -2582,6 +2604,35 @@ def test_private_shadow_primary_failure_precedes_cleanup_failure(
     assert len([call for call in session.calls if call[0] == "delete_document"]) == 4
     assert len([call for call in session.calls if call[0] == "delete_file"]) == 4
     assert len([call for call in session.calls if call[0] == "delete_store"]) == 1
+
+
+def test_private_shadow_reconciles_uncertain_upload_before_primary_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    session = _PrivateShadowSession(smoke, uncertain_upload=True)
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.SmokeContractError, match="uncertain upload response"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: session,
+            )
+        )
+
+    assert len([call for call in session.calls if call[0] == "delete_file"]) == 1
+    assert session.live_files == {}
+    assert len([call for call in session.calls if call[0] == "find_files"]) >= 3
 
 
 def test_opt_in_without_stored_credential_fails_before_provider(
