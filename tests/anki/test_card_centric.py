@@ -876,6 +876,23 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 CardConcept(
                     concept_id="C01",
                     canonical_statement=(
+                        "X-linked lymphoproliferative disease is associated with an "
+                        "X-linked genetic defect."
+                    ),
+                    primary_entity="X-linked lymphoproliferative disease",
+                    depth="surface",
+                    emphasis_flag=False,
+                    importance="low",
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="placeholders"):
+        CardConceptLedger(
+            lecture_entity_count=1,
+            concepts=(
+                CardConcept(
+                    concept_id="C01",
+                    canonical_statement=(
                         "Wiskott-Aldrich syndrome is associated with a basic gene "
                         "defect noted in the lecture."
                     ),
@@ -1414,6 +1431,7 @@ def test_card_ledger_invalid_primary_gets_one_targeted_repair() -> None:
     repair_instruction, repair_input, _ = generator.calls[1]
     assert "Correct only the reported validation defects" in repair_instruction
     assert "depth_control_evidence" in repair_instruction
+    assert "State the exact gene or defect and phenotype" in repair_instruction
     repair_document = json.loads(repair_input)
     assert repair_document["constraints"]["replacement_ids"] == ["C01"]
     assert "importance conflicts" in repair_document["defects"][0]["messages"][0]

@@ -376,6 +376,8 @@ _PLACEHOLDER_ONLY = re.compile(
     r"(?:named )?(?:clinical )?(?:checklist|criteria) (?:is |are )?"
     r"(?:used|that helps) to (?:identify|recognize)|"
     r"(?:basic|characteristic)[^.]{0,80}(?:gene|defect)|"
+    r"(?:associated with|has|involves) (?:an? )?(?:x-linked )?"
+    r"(?:genetic|gene) defect|"
     r"(?:characteristic|clinical)[^.]{0,80}(?:features|presentation))\b",
     re.IGNORECASE,
 )
