@@ -395,7 +395,11 @@ def _ledger_repair_instruction(instruction: str) -> str:
         "The prior response and the exact validator error are in the user input. "
         "Correct only the reported validation defects. Return a complete replacement "
         "ledger that satisfies the same schema; do not omit valid concepts or "
-        "silently change unrelated content. Return JSON only."
+        "silently change unrelated content. Never emit lecture-depth commentary or "
+        "semicolon-bundled facts, and split distinct expression locations into separate "
+        "facts. If the validator names missing checklist items, preserve every item and "
+        "threshold from depth_control_evidence rather than summarizing the checklist. "
+        "Return JSON only."
     )
 
 

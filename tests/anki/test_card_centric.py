@@ -1155,7 +1155,7 @@ def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
 def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     prompt = Path("src/oms_hub/anki/prompt_assets/card-centric-ledger-v2.md").read_text()
 
-    assert "version: 2.1.3" in prompt
+    assert "version: 2.1.4" in prompt
     assert "temperature:" not in prompt.split("---", 2)[1]
     assert "model:" not in prompt.split("---", 2)[1]
     assert (
@@ -1168,7 +1168,7 @@ def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     )
     assert "`low` **if and only if** `emphasis_flag` is `false` and `depth` is `surface`." in prompt
     observed_hash = hashlib.sha256(prompt.encode()).hexdigest()
-    assert observed_hash == "9e587aa5ddb0cc03b8b9cfa8ac37477eee1966d2c041bfd002469831b8c745c8"
+    assert observed_hash == "50d6d89186aa1a7ac1ac9616455f0a5efeea2d8fab363dc10f05df620ddf93e0"
     assert observed_hash != "1561da45dd05048dcf9d92fc709ce117f994bc0f38eb075a81bf2937bd1e2580"
 
 
@@ -1358,6 +1358,7 @@ def test_card_ledger_invalid_primary_gets_one_complete_repair_and_replaces_outpu
     assert [attempt.outcome for attempt in attempts] == ["validation_failed", "accepted"]
     repair_instruction, repair_input, _ = generator.calls[1]
     assert "Correct only the reported validation defects" in repair_instruction
+    assert "depth_control_evidence" in repair_instruction
     assert json.loads(repair_input)["invalid_response"] == invalid
     assert "importance conflicts" in json.loads(repair_input)["validation_error"]
     assert attempts[0].invalid_response_sha256 == hashlib.sha256(invalid.encode()).hexdigest()

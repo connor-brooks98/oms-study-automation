@@ -1,6 +1,6 @@
 ---
 id: card-centric-ledger-v2
-version: 2.1.3
+version: 2.1.4
 max_tokens: 7000
 response_format: json
 schema: lcl_v2
@@ -28,6 +28,12 @@ array per fact in `forbidden_cloze_targets_by_fact`, and `is_mechanism`.
 `canonical_statement` remains the single canonical concept statement. Preserve
 the legacy top-level `forbidden_cloze_targets` for compatibility. Never invent
 source IDs or material absent from the lecture.
+
+The user input may include `depth_control_evidence`. These are bounded lecture
+passages supplied only to substantiate named checklists or warning signs from
+the summary depth map. Preserve every source-listed checklist item and threshold
+in the fact description; do not replace them with a statement that criteria
+exist.
 
 Every `fact_description` must be one independently testable medical proposition.
 Do not join independently testable clauses with a semicolon; emit separate facts
