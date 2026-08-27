@@ -343,6 +343,10 @@
     destination_exam_number: Number(destinationExam.value),
   });
 
+  const importRowIsIncluded = (row) => (
+    row.querySelector("[data-import-row-included]")?.checked !== false
+  );
+
   const buildImportRunPayload = (
     form,
     course,
@@ -357,7 +361,7 @@
     destination_subject: destinationCourse.value,
     destination_exam_number: Number(destinationExam.value),
     content_kind: "practice_questions",
-    sources: Array.from(rows, (row) => ({
+    sources: Array.from(rows).filter(importRowIsIncluded).map((row) => ({
       source_id: row.dataset.sourceId,
       role: row.querySelector("[data-import-row-role]")?.value || row.dataset.role,
       attach_to_notebook: (() => {
@@ -374,8 +378,26 @@
     row.dataset.importSourceRow = "true";
     row.dataset.sourceId = source.id;
     row.dataset.role = role;
-    const title = documentRef.createElement("span");
-    title.textContent = source.title || source.id;
+    const sourceTitle = source.title || source.id;
+    const included = documentRef.createElement("input");
+    included.type = "checkbox";
+    included.id = `import-source-included-${source.id}`;
+    included.dataset.importRowIncluded = "true";
+    included.checked = true;
+    included.setAttribute("aria-label", `Use ${sourceTitle} for this run`);
+    const title = documentRef.createElement("strong");
+    title.className = "studio-import-source-title";
+    title.textContent = sourceTitle;
+    const useText = documentRef.createElement("span");
+    useText.className = "studio-import-source-use";
+    useText.textContent = "Use for this run";
+    const sourceCopy = documentRef.createElement("span");
+    sourceCopy.className = "studio-import-source-copy";
+    sourceCopy.append(title, useText);
+    const sourceChoice = documentRef.createElement("label");
+    sourceChoice.className = "sh-check studio-import-source-choice";
+    sourceChoice.htmlFor = included.id;
+    sourceChoice.append(included, sourceCopy);
     const select = documentRef.createElement("select");
     select.id = `import-source-role-${source.id}`;
     select.dataset.importRowRole = "true";
@@ -383,7 +405,7 @@
     const roleLabel = documentRef.createElement("label");
     roleLabel.htmlFor = select.id;
     roleLabel.textContent = "Role";
-    roleLabel.className = "sh-field-label";
+    roleLabel.className = "sh-field-label studio-import-row-role";
     [
       ["questions", "Questions"], ["answer_key", "Answer key"],
       ["supporting_reference", "Supporting reference"],
@@ -393,6 +415,7 @@
       option.value = value; option.textContent = label; option.selected = value === role;
       select.append(option);
     });
+    roleLabel.append(select);
     const notebook = documentRef.createElement("input");
     notebook.type = "checkbox";
     notebook.dataset.importRowNotebook = "true";
@@ -408,7 +431,7 @@
       notebook.disabled = !importRoleAllowsNotebook(select.value);
       if (notebook.disabled) notebook.checked = false;
     });
-    row.append(title, roleLabel, select, notebookLabel, remove);
+    row.append(sourceChoice, roleLabel, notebookLabel, remove);
     list.append(row);
   };
 
@@ -912,8 +935,9 @@
       event.preventDefault();
       const message = importRunForm.querySelector("[data-import-run-message]");
       const rows = importSourceList.querySelectorAll("[data-import-source-row]");
-      if (!course.value || !exam.value || !importDestinationCourse.value || !importDestinationExam.value || !rows.length) {
-        message.textContent = "Select source and publication course/exam, then add at least one source.";
+      const includedRows = Array.from(rows).filter(importRowIsIncluded);
+      if (!course.value || !exam.value || !importDestinationCourse.value || !importDestinationExam.value || !includedRows.length) {
+        message.textContent = "Select source and publication course/exam, then check at least one source for this run.";
         return;
       }
       const token = csrf(documentRef);

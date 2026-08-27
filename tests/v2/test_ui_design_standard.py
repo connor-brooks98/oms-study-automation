@@ -542,7 +542,8 @@ def test_import_checks_and_image_rows_escape_late_legacy_cascade() -> None:
     app_css = (STATIC / "app.css").read_text(encoding="utf-8")
 
     assert ".studio-import-intake label:not(.sh-check)" in app_css
-    assert ".studio-import-intake [data-import-source-row] label:not(.sh-check)" in app_css
+    assert ".studio-import-intake [data-import-source-row] .studio-import-source-choice" in app_css
+    assert ".studio-import-intake [data-import-source-row] .studio-import-row-role" in app_css
     assert (
         '.studio-import-intake [data-import-source-row] .sh-check '
         'input[type="checkbox"] { width: 16px; min-width: 16px; }'
@@ -554,6 +555,17 @@ def test_import_checks_and_image_rows_escape_late_legacy_cascade() -> None:
     assert ".studio-image-question-list li.is-overridden:not(.sh-row)" in app_css
     assert ".studio-image-question-list li {" not in app_css
     assert ".studio-image-question-list li.is-overridden {" not in app_css
+
+
+def test_quiz_review_candidate_media_cannot_expand_its_card() -> None:
+    app_css = (STATIC / "app.css").read_text(encoding="utf-8")
+
+    assert ".studio-review-candidate { display: grid; min-width: 0; overflow: hidden;" in app_css
+    assert ".studio-review-candidate img { display: block; width: 100%; max-width: 100%;" in app_css
+    assert (
+        ".studio-review-candidate figcaption { min-width: 0; max-width: 100%; "
+        "overflow-wrap: anywhere;"
+    ) in app_css
 
 
 def test_targeted_visual_acceptance_layouts_are_scoped_and_responsive() -> None:

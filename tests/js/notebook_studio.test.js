@@ -118,15 +118,44 @@ test("dynamic imported-source role select has a visible associated label", () =>
   studio.appendImportSource(documentRef, list, { id: "source-42", title: "Exam PDF" }, "questions", false);
 
   const row = list.children[0];
+  const sourceChoice = row.children[0];
   const roleLabel = row.children[1];
-  const roleSelect = row.children[2];
+  const roleSelect = roleLabel.children[0];
+  assert.equal(sourceChoice.children[0].checked, true);
+  assert.equal(sourceChoice.children[0].dataset.importRowIncluded, "true");
+  assert.equal(sourceChoice.children[1].children[0].textContent, "Exam PDF");
+  assert.equal(sourceChoice.children[1].children[1].textContent, "Use for this run");
   assert.equal(roleLabel.tagName, "label");
   assert.equal(roleLabel.textContent, "Role");
   assert.equal(roleLabel.htmlFor, roleSelect.id);
   assert.equal(roleSelect.id, "import-source-role-source-42");
   assert.match(roleSelect.className, /sh-select/);
-  assert.match(row.children[3].className, /sh-check/);
-  assert.match(row.children[4].className, /sh-btn--danger/);
+  assert.match(row.children[2].className, /sh-check/);
+  assert.match(row.children[3].className, /sh-btn--danger/);
+});
+
+test("import payload includes only sources checked for the current run", () => {
+  const row = (id, included) => ({
+    dataset: { sourceId: id, role: "questions" },
+    querySelector: (selector) => {
+      if (selector === "[data-import-row-included]") return { checked: included };
+      if (selector === "[data-import-row-role]") return { value: "questions" };
+      return null;
+    },
+  });
+  const rows = [row("questions-id", true), row("unused-id", false)];
+  const form = {
+    elements: { label: { value: "Imported set" } },
+    ownerDocument: { querySelectorAll: () => rows },
+  };
+
+  const payload = studio.buildImportRunPayload(
+    form, { value: "Neuro" }, { value: "1" }, { value: "Neuro" }, { value: "1" }, rows,
+  );
+
+  assert.deepEqual(payload.sources, [
+    { source_id: "questions-id", role: "questions", attach_to_notebook: false },
+  ]);
 });
 
 test("role changes clear and disable NotebookLM use for question and answer-key sources", () => {
@@ -322,8 +351,9 @@ test("ready local-import rows hydrate on refresh and deduplicate by source id", 
   assert.equal(list.querySelectorAll("[data-import-source-row]").length, 1);
   const row = list.children[0];
   assert.equal(row.dataset.sourceId, "source-42");
-  assert.equal(row.children[2].children.find((option) => option.selected).value, "supporting_reference");
-  assert.equal(row.children[3].children[0].checked, true);
+  assert.equal(row.children[0].children[0].checked, true);
+  assert.equal(row.children[1].children[0].children.find((option) => option.selected).value, "supporting_reference");
+  assert.equal(row.children[2].children[0].checked, true);
 });
 
 test("initialize restores durable URL scope and fresh-page import rows", async () => {
@@ -431,9 +461,10 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
   ]);
   const row = elements["[data-import-source-list]"].children[0];
   assert.equal(row.dataset.sourceId, "source-1");
-  assert.equal(row.children[2].value, "questions");
-  assert.equal(row.children[3].children[0].checked, false);
-  assert.equal(row.children[3].children[0].disabled, true);
+  assert.equal(row.children[0].children[0].checked, true);
+  assert.equal(row.children[1].children[0].value, "questions");
+  assert.equal(row.children[2].children[0].checked, false);
+  assert.equal(row.children[2].children[0].disabled, true);
   assert.match(replacedUrls.at(-1), /subject=neuro&exam=1&workflow=import/);
 
   course.value = "Cardio";
