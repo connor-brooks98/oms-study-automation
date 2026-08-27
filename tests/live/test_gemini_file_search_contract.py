@@ -133,6 +133,7 @@ class _SdkStores:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
         self.documents = _SdkDocuments()
+        self.listed_stores: tuple[object, ...] = ()
 
     async def create(self, *, config: object) -> object:
         self.calls.append(("create", config))
@@ -150,6 +151,15 @@ class _SdkStores:
 
     async def delete(self, *, name: str, config: object) -> None:
         self.calls.append(("delete", (name, config)))
+
+    async def list(self, *, config: object) -> object:
+        self.calls.append(("list", config))
+
+        async def entries() -> object:
+            for item in self.listed_stores:
+                yield item
+
+        return entries()
 
 
 class _SdkFiles:
@@ -502,6 +512,13 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
         assert kwargs["api_key"] == "synthetic-sdk-key"
         client = _SdkClient(smoke)
         client.aio.interactions = interactions
+        client.aio.file_search_stores.listed_stores = (
+            SimpleNamespace(
+                name="fileSearchStores/reconciled",
+                display_name="task-private-store",
+            ),
+            SimpleNamespace(name="fileSearchStores/ignored", display_name="other-run"),
+        )
         client.aio.files.listed_files = (
             SimpleNamespace(name="files/reconciled", display_name="task-private-upload"),
             SimpleNamespace(name="files/ignored", display_name="other-run"),
@@ -528,6 +545,7 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
         )
     )
     reconciled = asyncio.run(session.find_files(("task-private-upload",)))
+    reconciled_stores = asyncio.run(session.find_stores("task-private-store"))
     positive = asyncio.run(
         session.query_private(
             "fileSearchStores/private-store",
@@ -558,6 +576,7 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
     assert negative == smoke.PrivateShadowQueryAudit(0, 0, 19, 6, False, True)
     assert operation == "operations/sdk-operation"
     assert reconciled == ("files/reconciled",)
+    assert reconciled_stores == ("fileSearchStores/reconciled",)
     upload_call = next(client.aio.files.calls[0] for client in clients if client.aio.files.calls)
     assert upload_call == (
         "upload",

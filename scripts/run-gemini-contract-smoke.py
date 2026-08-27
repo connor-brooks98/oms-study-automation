@@ -544,6 +544,8 @@ class PrivateShadowSession(Protocol):
 
     async def create_store(self, display_name: str, embedding_model: str) -> str: ...
 
+    async def find_stores(self, display_name: str) -> tuple[str, ...]: ...
+
     async def upload_input(
         self,
         display_name: str,
@@ -619,6 +621,29 @@ class GoogleGenaiSmokeSession:
             )
         self._store_name = _provider_identity(created, "store")
         return self._store_name
+
+    async def find_stores(self, display_name: str) -> tuple[str, ...]:
+        async with self._clients.client() as client:
+            listed = await _provider_call(
+                lambda: client.file_search_stores.list(config={"page_size": 100})
+            )
+            if not isinstance(listed, AsyncIterable):
+                raise SmokeContractError(
+                    "private shadow store reconciliation was unavailable",
+                    reason="private_reconciliation_failed",
+                )
+            matched: list[str] = []
+            inspected = 0
+            async for item in listed:
+                inspected += 1
+                if inspected > 1000:
+                    raise SmokeContractError(
+                        "private shadow store reconciliation exceeded its bound",
+                        reason="private_reconciliation_failed",
+                    )
+                if _field(item, "display_name") == display_name:
+                    matched.append(_provider_identity(item, "store"))
+        return tuple(sorted(set(matched)))
 
     async def upload_pdf(self, display_name: str, content: bytes) -> str:
         async with self._clients.client() as client:
@@ -2180,6 +2205,7 @@ async def _run_private_shadow_sequence(
         raise LiveSmokeBlocked("private shadow model contract mismatch")
     manifest = _private_shadow_manifest(view)
     store_name: str | None = None
+    stores: list[str] = []
     files: list[tuple[str, str]] = []
     documents: list[str] = []
     states: list[str] = []
@@ -2192,15 +2218,19 @@ async def _run_private_shadow_sequence(
         f"task-2-8-private-{run_token}-{ordinal:03d}"
         for ordinal, _ in enumerate(manifest.inputs, start=1)
     )
+    store_display_name = f"task-2-8-private-{run_token}"
     started = clock()
-    if await session.find_files(display_names):
+    if await session.find_stores(store_display_name) or await session.find_files(
+        display_names
+    ):
         raise LiveSmokeBlocked("private shadow prior operator state mismatch")
     states.append("prior_operator_state_empty")
     try:
         store_name = await session.create_store(
-            "Study Hub Task 2.8 private shadow",
+            store_display_name,
             PRIVATE_SHADOW_MODEL_CONTRACT[2],
         )
+        stores.append(store_name)
         states.append("store_created")
         for item, display_name in zip(manifest.inputs, display_names, strict=True):
             file_name = await session.upload_input(
@@ -2307,12 +2337,28 @@ async def _run_private_shadow_sequence(
                 states.append("file_reconciliation_empty")
         except BaseException:
             cleanup_failed = True
-        if store_name is not None:
+        try:
+            discovered_stores = await session.find_stores(store_display_name)
+        except BaseException:
+            cleanup_failed = True
+        else:
+            known_stores = set(stores)
+            stores.extend(
+                name for name in discovered_stores if name not in known_stores
+            )
+        for current_store in reversed(stores):
             try:
-                await session.delete_store(store_name)
+                await session.delete_store(current_store)
             except BaseException:
                 cleanup_failed = True
-            states.append("store_deleted")
+        states.append(f"stores_deleted:{len(stores)}")
+        try:
+            if await session.find_stores(store_display_name):
+                cleanup_failed = True
+            else:
+                states.append("store_reconciliation_empty")
+        except BaseException:
+            cleanup_failed = True
     if failure is not None:
         raise failure
     if cleanup_failed:
