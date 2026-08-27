@@ -179,7 +179,8 @@ class _SdkOperations:
             done=True,
             error={"code": self.error_status} if self.error_status is not None else None,
             response=SimpleNamespace(
-                document_name="fileSearchStores/sdk-store/documents/sdk-document"
+                parent="sdk-store",
+                document_name="sdk-document",
             ),
         )
 
@@ -218,12 +219,10 @@ class _SdkInteractions:
             annotations = [
                 sdk.FileCitation(
                     custom_metadata=metadata,
-                    document_uri=(
-                        "fileSearchStores/sdk-store/documents/sdk-document"
-                    ),
-                    file_name="task-2-8-synthetic.pdf",
+                    document_uri="fileSearchStores/sdk-store",
+                    file_name="sdk-file",
                     page_number=1,
-                    source=self.smoke.SYNTHETIC_FACT,
+                    source=f"\n{self.smoke.SYNTHETIC_FACT}\n",
                 )
             ]
             answer = self.smoke.SmokeAnswer(
@@ -569,12 +568,16 @@ def test_interaction_citation_metadata_and_excerpt_are_bounded() -> None:
             smoke.SYNTHETIC_FACT,
         )
     assert long_excerpt.value.reason == "citation_excerpt_invalid"
-    with pytest.raises(smoke.SmokeContractError, match="excerpt was invalid") as line_break:
+    assert (
         smoke._citation_excerpt(
-            SimpleNamespace(source="invalid\nexcerpt"),
+            SimpleNamespace(source=f"\n{smoke.SYNTHETIC_FACT}\n"),
             smoke.SYNTHETIC_FACT,
         )
-    assert line_break.value.reason == "citation_excerpt_invalid"
+        == smoke.SYNTHETIC_FACT
+    )
+    with pytest.raises(smoke.SmokeContractError, match="excerpt was invalid") as control:
+        smoke._citation_excerpt(SimpleNamespace(source="invalid\x00excerpt"), "")
+    assert control.value.reason == "citation_excerpt_invalid"
 
 
 def test_positive_query_parser_failures_have_fixed_redacted_reasons() -> None:
