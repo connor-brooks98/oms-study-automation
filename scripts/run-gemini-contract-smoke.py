@@ -310,6 +310,56 @@ def _restrict_diagnostic_file(file_descriptor: int, path: Path) -> None:
         )
         if secured.returncode != 0 or verified.returncode != 0:
             raise ValueError
+        inspection_environment = dict(os.environ)
+        inspection_environment["OMS_TASK28_DIAGNOSTIC_PATH"] = str(path)
+        inspected = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    "$acl=Get-Acl -LiteralPath $env:OMS_TASK28_DIAGNOSTIC_PATH;"
+                    "$rules=@($acl.GetAccessRules($true,$false,"
+                    "[System.Security.Principal.SecurityIdentifier]));"
+                    "$items=@($rules|ForEach-Object{[pscustomobject]@{"
+                    "Sid=$_.IdentityReference.Value;"
+                    "Allow=($_.AccessControlType -eq "
+                    "[System.Security.AccessControl.AccessControlType]::Allow);"
+                    "FullControl=(($_.FileSystemRights -band "
+                    "[System.Security.AccessControl.FileSystemRights]::FullControl) "
+                    "-eq [System.Security.AccessControl.FileSystemRights]::FullControl);"
+                    "Inherited=$_.IsInherited}});"
+                    "[pscustomobject]@{Protected=$acl.AreAccessRulesProtected;"
+                    "Rules=$items}|ConvertTo-Json -Compress -Depth 4"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            env=inspection_environment,
+        )
+        inspection = json.loads(inspected.stdout)
+        rules = inspection.get("Rules") if isinstance(inspection, Mapping) else None
+        if isinstance(rules, Mapping):
+            rule_list = [rules]
+        elif isinstance(rules, list):
+            rule_list = rules
+        else:
+            rule_list = []
+        rule = rule_list[0] if len(rule_list) == 1 else None
+        if (
+            inspected.returncode != 0
+            or not isinstance(inspection, Mapping)
+            or inspection.get("Protected") is not True
+            or not isinstance(rule, Mapping)
+            or rule.get("Sid") != sid
+            or rule.get("Allow") is not True
+            or rule.get("FullControl") is not True
+            or rule.get("Inherited") is not False
+        ):
+            raise ValueError
     except (OSError, StopIteration, subprocess.SubprocessError, ValueError):
         raise SmokeContractError(
             "synthetic diagnostic permissions were unavailable",
