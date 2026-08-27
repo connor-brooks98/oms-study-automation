@@ -17,7 +17,7 @@ from pydantic import Field
 from oms_hub.anki.ankiconnect import AnkiConnectError
 from oms_hub.anki.apply import ApplyCoordinator, ApplyGateway, ApplyResult
 from oms_hub.anki.card_centric import CardCentricValidationError, resolve_card_centric_scope
-from oms_hub.anki.card_centric_contracts import CardConceptLedger
+from oms_hub.anki.card_centric_contracts import deserialize_card_centric_ledger
 from oms_hub.anki.card_centric_fixture import FixtureUnavailable
 from oms_hub.anki.card_centric_fixture_service import fixture_for, validate_fixture
 from oms_hub.anki.card_centric_review import V3ReviewSnapshot
@@ -1723,7 +1723,7 @@ def _card_ledger_concept_ids(request: Request, job_id: UUID) -> tuple[str, ...]:
     if artifact is None:
         return ()
     try:
-        ledger = CardConceptLedger.model_validate(artifacts.read(artifact).get("ledger"))
+        ledger = deserialize_card_centric_ledger(artifacts.read(artifact).get("ledger"))
     except (OSError, TypeError, ValueError):
         return ()
     return tuple(concept.concept_id for concept in ledger.concepts)

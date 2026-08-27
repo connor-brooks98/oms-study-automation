@@ -50,6 +50,7 @@ from oms_hub.anki.card_centric_contracts import (
     SemanticPreFilterResult,
     SnapshotCensus,
     TagScopeResult,
+    deserialize_card_centric_ledger,
     serialize_card_centric_ledger,
 )
 from oms_hub.anki.card_centric_hybrid import CardCentricHybridRetriever, query_variants
@@ -5341,7 +5342,7 @@ def _card_classifier_usage(classified: ClassifierResult) -> StageUsage | None:
 
 def _card_ledger(context: StageContext) -> CardConceptLedger:
     try:
-        return CardConceptLedger.model_validate(
+        return deserialize_card_centric_ledger(
             _payload(context, CurationStage.CARD_LEDGER)["ledger"]
         )
     except (KeyError, TypeError, ValueError) as exc:

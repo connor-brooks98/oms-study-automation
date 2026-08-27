@@ -892,6 +892,10 @@ def test_fact_ceiling_requires_a_continuation_concept() -> None:
         ),
     )
     assert len(set(ledger.fact_stable_keys.values())) == 6
+    assert "fact_stable_keys" not in CardConceptLedger.model_json_schema()["properties"]
+    assert serialize_card_centric_ledger(
+        ledger, pipeline_contract_version="card_centric_v2"
+    )["fact_stable_keys"] == ledger.fact_stable_keys
 
 
 def test_classifier_uses_cached_prefix_and_restores_parallel_batch_order() -> None:

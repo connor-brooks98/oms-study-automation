@@ -436,7 +436,6 @@ class CardConceptLedger(CardCentricContract):
     concepts: tuple[CardConcept, ...] = Field(min_length=1)
     lecture_entity_count: int = Field(ge=1)
     forbidden_cloze_targets: tuple[str, ...] = ()
-    fact_stable_keys: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def unique_concept_ids(self) -> "CardConceptLedger":
@@ -460,7 +459,6 @@ class CardConceptLedger(CardCentricContract):
             raise ValueError("ledger fact IDs must be unique")
         if len(set(stable_keys.values())) != len(stable_keys):
             raise ValueError("ledger facts must be distinct after normalization")
-        object.__setattr__(self, "fact_stable_keys", dict(sorted(stable_keys.items())))
         control_only = re.compile(
             r"\b(?:received|receives|was given|were given)\s+"
             r"(?:deep|medium|surface)\s+(?:lecture\s+)?coverage\b",
@@ -473,6 +471,20 @@ class CardConceptLedger(CardCentricContract):
         ):
             raise ValueError("lecture depth metadata cannot be a card-generating fact")
         return self
+
+    @property
+    def fact_stable_keys(self) -> dict[str, str]:
+        return dict(
+            sorted(
+                (
+                    (fact_id, stable_key)
+                    for concept in self.concepts
+                    for fact_id, stable_key in zip(
+                        concept.fact_ids, concept.stable_fact_keys, strict=True
+                    )
+                )
+            )
+        )
 
     @property
     def all_forbidden_targets(self) -> tuple[str, ...]:
@@ -513,7 +525,21 @@ def serialize_card_centric_ledger(
             "lecture_entity_count": ledger.lecture_entity_count,
             "forbidden_cloze_targets": list(ledger.forbidden_cloze_targets),
         }
-    return ledger.model_dump(mode="json")
+    document = ledger.model_dump(mode="json")
+    document["fact_stable_keys"] = ledger.fact_stable_keys
+    return document
+
+
+def deserialize_card_centric_ledger(value: object) -> CardConceptLedger:
+    """Validate a persisted ledger without exposing app-computed keys to the model."""
+    if not isinstance(value, dict):
+        return CardConceptLedger.model_validate(value)
+    document = dict(value)
+    persisted_stable_keys = document.pop("fact_stable_keys", None)
+    ledger = CardConceptLedger.model_validate(document)
+    if persisted_stable_keys is not None and persisted_stable_keys != ledger.fact_stable_keys:
+        raise ValueError("ledger stable fact keys do not match its medical facts")
+    return ledger
 
 
 _FACT_IDENTITY_SPACE = re.compile(r"\s+")
