@@ -167,3 +167,30 @@ def test_projection_rejects_non_schema29_before_reading_sources(tmp_path: Path) 
         )
 
     assert list(scratch.iterdir()) == []
+
+
+def test_projection_rejects_descendant_symlink_before_materializing(
+    tmp_path: Path,
+) -> None:
+    revision, catalog, parser, artifacts = _source(tmp_path)
+    scratch = tmp_path / "scratch"
+    outside = tmp_path / "outside"
+    scratch.mkdir()
+    outside.mkdir()
+    try:
+        (scratch / "index-inputs").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable on this host")
+
+    with pytest.raises(ValueError, match="link or reparse"):
+        project_schema29_index_input(
+            "29",
+            schema_version=29,
+            ingestion=_Ingestion(revision),
+            catalog=catalog,
+            artifacts=artifacts,
+            materialization_root=scratch,
+            parser=parser,
+        )
+
+    assert list(outside.iterdir()) == []
