@@ -2,7 +2,7 @@
 
 Date: 2026-08-27  
 Branch: `codex/anki-v3-recovery`  
-Current candidate: `27ae7870570eb70b5f4822f70f88a08cbbf9a975`
+Current candidate: `dc197d77536bbcef0b9f8b00bb62e72af72461e4`
 Environment: isolated NUC staging on loopback port 8788; production port 8765 was not restarted or changed
 
 ## Requested decision
@@ -176,7 +176,9 @@ revision adopts all eight approval conditions.
    phrase. A future named checklist must add its own source-completeness proof
    before it may use this repair path.
 3. Multiple molecule/location pairs now reject both `X is expressed on A, Y is
-   expressed on B` and the compact `X is expressed on A and Y on B` shape.
+   expressed on B` and the compact `X is expressed on A and Y on B` shape. The
+   first clause is anchored to literal expression wording, and tests prove that
+   ordinary BTK and ATM `acts on ... and ...` mechanism facts remain valid.
 4. Jeffrey completeness is keyed from the concept entity/aliases/canonical/fact
    corpus, so renaming the fact to `Ten warning signs...` cannot evade validation.
 
