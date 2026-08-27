@@ -5455,7 +5455,9 @@ def _dedupe_terminal_resolutions(
 
     A post-retry semantic review is deliberately non-terminal.  Omit its full
     fact until manual review resolves it, rather than recording an incomplete
-    split set as generated or silently declaring it unique.
+    split set as generated or silently declaring it unique.  When semantic
+    dedupe removes only part of a valid split set, the surviving generated
+    cards remain the fact's canonical generated resolution.
     """
     _validate_semantic_dedupe_reviews(semantic_dedupe_reviews, generated)
     reviewed_fact_ids = {review.fact_id for review in semantic_dedupe_reviews}
@@ -5469,7 +5471,22 @@ def _dedupe_terminal_resolutions(
         rows = rows_by_fact[fact_id]
         statuses = {row.status for row in rows}
         if len(statuses) != 1:
-            raise PinnedInputChanged("dedupe fact has conflicting terminal states")
+            ordered = sorted(
+                rows,
+                key=lambda row: (
+                    row.split_index is None,
+                    row.split_index if row.split_index is not None else 0,
+                    row.card_id,
+                ),
+            )
+            if (
+                statuses != {"generated", "duplicate_of_existing"}
+                or any(not row.split or row.split_index is None for row in ordered)
+                or [row.split_index for row in ordered]
+                != list(range(1, len(ordered) + 1))
+            ):
+                raise PinnedInputChanged("dedupe fact has conflicting terminal states")
+            rows = [row for row in ordered if row.status == "generated"]
         status = rows[0].status
         if status == "generated":
             resolutions.append(

@@ -633,6 +633,32 @@ def test_dedupe_terminal_resolutions_aggregate_split_cards_per_fact() -> None:
     assert resolution.generated_card_ids == ("G01", "G02")
 
 
+def test_dedupe_terminal_resolutions_keep_unique_survivor_from_mixed_split() -> None:
+    _, _, passage_id = _dedupe_stage_fixture(_DedupeEmbedder([]))
+    survivor = _generated_dedupe_row(
+        "G01", "C01-M1", "unique split", passage_id
+    ).model_copy(update={"split": True, "split_index": 1})
+    duplicate = _generated_dedupe_row(
+        "G02", "C01-M1", "covered split", passage_id
+    ).model_copy(
+        update={
+            "split": True,
+            "split_index": 2,
+            "status": "duplicate_of_existing",
+            "duplicate_of_existing_note_id": 41,
+            "reason": "semantic duplicate",
+        }
+    )
+
+    terminal = stages_module._dedupe_terminal_resolutions((survivor, duplicate))
+
+    assert len(terminal) == 1
+    resolution = GeneratedFactResolution.model_validate(terminal[0])
+    assert resolution.fact_id == "C01-M1"
+    assert resolution.kind == "generated"
+    assert resolution.generated_card_ids == ("G01",)
+
+
 def test_dedupe_terminal_resolutions_reject_mixed_fact_states() -> None:
     _, _, passage_id = _dedupe_stage_fixture(_DedupeEmbedder([]))
     generated = _generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id)
