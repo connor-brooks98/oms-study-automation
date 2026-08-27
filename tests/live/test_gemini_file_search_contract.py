@@ -1872,6 +1872,45 @@ def test_plan_names_the_required_later_live_wiring_change() -> None:
     assert plan["reads_secrets"] is False
 
 
+def test_private_preflight_consumes_schema29_projection_without_source_trust_repository(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    ingestion = object()
+    catalog = object()
+    artifacts = SimpleNamespace(repository=ingestion, catalog=catalog)
+    parser = object()
+    projected = object()
+    captured: dict[str, object] = {}
+
+    def project(slide_revision_id: str, **dependencies: object) -> object:
+        captured["slide_revision_id"] = slide_revision_id
+        captured.update(dependencies)
+        return projected
+
+    monkeypatch.setattr(smoke, "project_schema29_index_input", project, raising=False)
+
+    result = smoke.prepare_private_shadow_index_input(
+        "29",
+        schema_version=29,
+        artifacts=artifacts,
+        materialization_root=tmp_path,
+        parser=parser,
+    )
+
+    assert result is projected
+    assert captured == {
+        "slide_revision_id": "29",
+        "schema_version": 29,
+        "ingestion": ingestion,
+        "catalog": catalog,
+        "artifacts": artifacts,
+        "materialization_root": tmp_path,
+        "parser": parser,
+    }
+
+
 def test_opt_in_without_stored_credential_fails_before_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
