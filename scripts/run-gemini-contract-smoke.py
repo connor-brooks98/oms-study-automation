@@ -516,14 +516,18 @@ class GoogleGenaiSmokeSession:
             ) from None
         response = _field(operation, "response")
         document_name = _provider_identity(response, "document", "document_name")
-        if "/" not in document_name and self._store_name is not None:
+        if self._store_name is not None:
             parent = _field(response, "parent")
             if parent is not None and (
                 not isinstance(parent, str)
                 or not _resource_identity_matches(parent, self._store_name)
             ):
                 raise SmokeContractError("Gemini document parent did not match the store")
-            document_name = f"{self._store_name}/documents/{document_name}"
+            prefix = f"{self._store_name}/documents/"
+            if "/" not in document_name:
+                document_name = f"{prefix}{document_name}"
+            elif not document_name.startswith(prefix) or "/" in document_name[len(prefix) :]:
+                raise SmokeContractError("Gemini document identity did not match the store")
         self._document_name = document_name
         return self._document_name
 
@@ -954,7 +958,9 @@ def _audit_citations(
                         )
                     else:
                         current["citation_document_binding"] = (
-                            "passed" if locator == store_name else "citation_wrong_document"
+                            "passed"
+                            if locator in {store_name, document_name}
+                            else "citation_wrong_document"
                         )
                 cited_file = _field(annotation, "file_name")
                 if cited_file is None:
