@@ -692,7 +692,7 @@ def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> 
         asyncio.run(smoke.run_contract_smoke(session, failure_evidence=evidence))
 
     record = smoke._failure_record(raised.value, evidence)
-    assert record == {
+    assert {key: record[key] for key in record if key != "checks"} == {
         "schema_version": 1,
         "status": "failed",
         "failure_stage": "positive_query",
@@ -706,6 +706,9 @@ def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> 
         },
         "cleanup": {"attempted": 3, "status": "completed"},
     }
+    assert record["checks"]["positive_answer"] == "positive_query_failed"
+    assert record["checks"]["negative_structured_output"] == "negative_query_failed"
+    assert record["checks"]["document_listing"] == "passed"
     encoded = json.dumps(record, sort_keys=True)
     assert "private-query-payload" not in encoded
     assert smoke.SYNTHETIC_FACT not in encoded
@@ -792,7 +795,7 @@ def test_response_loss_records_unknown_resource_and_cleanup_outcome() -> None:
             )
         )
 
-    assert evidence == {
+    assert {key: evidence[key] for key in evidence if key != "checks"} == {
         "failure_stage": "create_store",
         "resources_created": {
             "document": "not_started",
@@ -801,6 +804,8 @@ def test_response_loss_records_unknown_resource_and_cleanup_outcome() -> None:
         },
         "cleanup": {"attempted": 0, "status": "unknown"},
     }
+    assert evidence["checks"]["create_store"] == "create_store_failed"
+    assert evidence["checks"]["cleanup_store"] == "not_available"
 
 
 def _clock() -> Iterator[float]:
