@@ -2974,6 +2974,12 @@ class CurationServicesRunner:
         output: list[GeneratedCardResolution] = []
         evidence_records: list[SourceEvidence] = []
         passages_by_id = {passage.passage_id: passage for passage in source.passages}
+        admissible_passage_ids = set(passages_by_id)
+        nonempty_passage_ids = {
+            passage_id
+            for passage_id, passage in passages_by_id.items()
+            if passage.text.strip()
+        }
         usages: list[StageUsage] = []
         for concept_index, concept in enumerate(ledger.concepts):
             if _coverage_suppresses_recovery(coverage[concept.concept_id]):
@@ -3052,6 +3058,8 @@ class CurationServicesRunner:
                         result.value,
                         expected,
                         forbidden_by_fact.targets_by_fact_id,
+                        admissible_passage_ids,
+                        nonempty_passage_ids,
                     )
                 else:
                     returned = {item.fact_id for item in result.value.resolutions}
@@ -3096,6 +3104,8 @@ class CurationServicesRunner:
                         result.value,
                         expected,
                         forbidden_by_fact.targets_by_fact_id,
+                        admissible_passage_ids,
+                        nonempty_passage_ids,
                     )
                 except PinnedInputChanged as repair_error:
                     emit_provider_event(
@@ -6063,6 +6073,8 @@ def _validate_card_gap_batch_v2(
     batch: CardGapBatch,
     expected_fact_ids: set[str],
     forbidden_cloze_targets_by_fact: Mapping[str, tuple[str, ...]],
+    admissible_passage_ids: set[str],
+    nonempty_passage_ids: set[str],
 ) -> None:
     """Enforce strict new S7 terminal structures before stage persistence."""
     returned_fact_ids = {item.fact_id for item in batch.resolutions}
@@ -6081,6 +6093,15 @@ def _validate_card_gap_batch_v2(
         if not generated:
             raise PinnedInputChanged(f"Fact {fact_id}: resolution is missing")
         for card in generated:
+            cited_passage_ids = set(card.source_passage_ids)
+            if not cited_passage_ids <= admissible_passage_ids:
+                raise PinnedInputChanged(
+                    f"Fact {fact_id}: generated card must cite admissible lecture evidence"
+                )
+            if not cited_passage_ids <= nonempty_passage_ids:
+                raise PinnedInputChanged(
+                    f"Fact {fact_id}: generated card must cite nonempty grounded lecture evidence"
+                )
             try:
                 validate_gap_card_fields(card.text.strip(), card.extra.strip())
             except GapValidationError as exc:
