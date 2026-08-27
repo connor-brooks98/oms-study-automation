@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 from oms_hub.document_processing.shadow import LegacyPptxProcessor
 from oms_hub.knowledge.backfill import SlideRevisionBackfill
 from oms_hub.knowledge.models import EvidenceUnit, SourceRevision, SourceRevisionState
-from oms_hub.knowledge.repository import KnowledgeRepository
 from oms_hub.knowledge.service import IndexInputView, KnowledgeService
 from oms_hub.providers.contracts import AuthorityClass
 
@@ -41,6 +41,42 @@ class _ScratchArtifacts:
         return self._artifacts.resolve(revision_id, role)
 
 
+class _ReadOnlySlidePreparation(SlideRevisionBackfill):
+    def __init__(self, ingestion: Any, catalog: Any, parser: Any) -> None:
+        self.ingestion = ingestion
+        self.catalog = catalog
+        self.parser = parser
+
+    def prepare(self, slide_revision_id: str) -> Any:
+        return self._prepare(slide_revision_id)
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except FileNotFoundError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _prepare_descendant(root: Path, relative: Path) -> Path:
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if _is_link_or_reparse(current):
+            raise ValueError("materialization path contains a link or reparse point")
+        current.mkdir(mode=0o700, exist_ok=True)
+        if _is_link_or_reparse(current) or not current.is_dir():
+            raise ValueError("materialization path contains a link or reparse point")
+        try:
+            current.resolve().relative_to(root)
+        except ValueError:
+            raise ValueError("materialization path escapes the scratch root") from None
+    return current
+
+
 def project_schema29_index_input(
     slide_revision_id: str,
     *,
@@ -58,15 +94,18 @@ def project_schema29_index_input(
     root = Path(materialization_root)
     if not root.is_absolute() or not root.is_dir() or root.resolve() != root:
         raise ValueError("materialization root must be an existing canonical directory")
+    _prepare_descendant(root, Path("index-inputs"))
 
     resolved_parser = parser or LegacyPptxProcessor()
-    backfill = SlideRevisionBackfill(
-        ingestion,
-        catalog,
-        cast(KnowledgeRepository, None),
-        parser=resolved_parser,
+    candidate = _ReadOnlySlidePreparation(
+        ingestion, catalog, resolved_parser
+    ).prepare(slide_revision_id)
+    markdown_parent = _prepare_descendant(
+        root,
+        Path("index-inputs") / candidate.source_revision_id,
     )
-    candidate = backfill._prepare(slide_revision_id)
+    if _is_link_or_reparse(markdown_parent / "normalized.md"):
+        raise ValueError("materialization path contains a link or reparse point")
     projection = _ProjectedKnowledge(
         SourceRevision(
             source_document_id=candidate.source_document_id,
