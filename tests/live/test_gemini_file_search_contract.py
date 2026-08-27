@@ -1494,6 +1494,64 @@ def test_synthetic_diagnostic_permissions_fall_back_without_fchmod(
     sink.delete()
 
 
+def test_windows_synthetic_diagnostic_requires_verified_current_user_dacl(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
+    sink = smoke._SyntheticDiagnosticSink.open(request)
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: object) -> object:
+        del kwargs
+        calls.append(command)
+        if command[0] == "whoami":
+            return SimpleNamespace(
+                returncode=0,
+                stdout='"HOST\\synthetic-user","S-1-5-21-1000"\n',
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(smoke, "_IS_WINDOWS", True)
+    monkeypatch.setattr(smoke.subprocess, "run", run)
+
+    sink.capture("synthetic", {"status": "ready"})
+    sink.close()
+
+    assert calls[0][:2] == ["whoami", "/user"]
+    assert calls[1][0] == "icacls"
+    assert "/inheritance:r" in calls[1]
+    assert "*S-1-5-21-1000:(F)" in calls[1]
+    assert calls[2][-1] == "/verify"
+    assert request.output_path.exists()
+    sink.delete()
+
+
+def test_windows_synthetic_diagnostic_fails_closed_without_verified_dacl(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
+    sink = smoke._SyntheticDiagnosticSink.open(request)
+
+    def fail(command: list[str], **kwargs: object) -> object:
+        del command, kwargs
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(smoke, "_IS_WINDOWS", True)
+    monkeypatch.setattr(smoke.subprocess, "run", fail)
+    sink.capture("synthetic", {"status": "ready"})
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        sink.close()
+
+    assert raised.value.reason == "diagnostic_permissions_unavailable"
+    assert not request.output_path.exists()
+
+
 def test_check_matrix_continues_after_independent_positive_failures() -> None:
     smoke = _load_smoke()
     evidence: dict[str, object] = {}
