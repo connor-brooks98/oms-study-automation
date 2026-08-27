@@ -1,0 +1,288 @@
+from __future__ import annotations
+
+import asyncio
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from types import ModuleType
+
+import pytest
+from google.genai import types
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "run-gemini-reconciliation.py"
+
+
+def _load_operator() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("gemini_reconciliation", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class _FakeSession:
+    model_contract = (
+        "2.14.0",
+        "gemini-3.7-flash",
+        "models/gemini-embedding-2",
+        "v1beta",
+    )
+
+    def __init__(
+        self,
+        *,
+        stores: list[types.FileSearchStore],
+        files: list[types.File],
+        documents: dict[str, list[types.Document]],
+        delete_document: bool = True,
+        fail_document_relist: bool = False,
+    ) -> None:
+        self.stores = stores
+        self.files = files
+        self.documents = documents
+        self.delete_document_enabled = delete_document
+        self.fail_document_relist = fail_document_relist
+        self.document_lists = 0
+        self.calls: list[tuple[str, str]] = []
+
+    async def list_stores(self) -> tuple[types.FileSearchStore, ...]:
+        return tuple(self.stores)
+
+    async def list_files(self) -> tuple[types.File, ...]:
+        return tuple(self.files)
+
+    async def list_documents(self, store_name: str) -> tuple[types.Document, ...]:
+        self.document_lists += 1
+        if self.fail_document_relist and self.document_lists == 2:
+            raise RuntimeError("synthetic relist failure")
+        return tuple(self.documents.get(store_name, ()))
+
+    async def delete_document(self, name: str) -> None:
+        self.calls.append(("delete_document", name))
+        if self.delete_document_enabled:
+            for items in self.documents.values():
+                items[:] = [item for item in items if item.name != name]
+
+    async def delete_file(self, name: str) -> None:
+        self.calls.append(("delete_file", name))
+        self.files[:] = [item for item in self.files if item.name != name]
+
+    async def delete_store(self, name: str) -> None:
+        self.calls.append(("delete_store", name))
+        self.stores[:] = [item for item in self.stores if item.name != name]
+
+
+def _owned_session(
+    *,
+    delete_document: bool = True,
+    fail_document_relist: bool = False,
+) -> _FakeSession:
+    token = "a" * 32
+    store_name = "fileSearchStores/owned"
+    return _FakeSession(
+        stores=[
+            types.FileSearchStore(
+                name=store_name,
+                display_name=f"task-2-8-private-{token}",
+            ),
+            types.FileSearchStore(
+                name="fileSearchStores/foreign",
+                display_name=f"task-2-8-private-{token}-extra",
+            ),
+        ],
+        files=[
+            types.File(
+                name="files/owned",
+                display_name=f"task-2-8-private-{token}-001",
+            ),
+            types.File(
+                name="files/foreign",
+                display_name=f"task-2-8-private-{token}-x01",
+            ),
+        ],
+        documents={store_name: [types.Document(name=f"{store_name}/documents/owned")]},
+        delete_document=delete_document,
+        fail_document_relist=fail_document_relist,
+    )
+
+
+def test_reconciliation_deletes_only_exact_disposable_sdk_resources() -> None:
+    operator = _load_operator()
+    session = _owned_session()
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    assert record == {
+        "schema_version": 1,
+        "status": "passed",
+        "provider_operation_states": [
+            "inventory_complete",
+            "deletes_attempted",
+            "reconciliation_empty",
+        ],
+        "inspected_counts": {"stores": 2, "files": 2, "documents": 1},
+        "matched_counts": {"stores": 1, "files": 1, "documents": 1},
+        "delete_attempt_counts": {"stores": 1, "files": 1, "documents": 1},
+        "remaining_counts": {
+            "stores": 0,
+            "files": 0,
+            "documents": 0,
+            "stores_inspected": 1,
+            "files_inspected": 1,
+            "documents_inspected": 0,
+        },
+        "provider_cleanup_complete": True,
+        "warnings": [],
+    }
+    assert [item.name for item in session.stores] == ["fileSearchStores/foreign"]
+    assert [item.name for item in session.files] == ["files/foreign"]
+    assert "owned" not in json.dumps(record, sort_keys=True)
+
+
+def test_document_noop_blocks_before_force_store_deletion_can_hide_it() -> None:
+    operator = _load_operator()
+    session = _owned_session(delete_document=False)
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    assert record["status"] == "blocked"
+    assert record["remaining_counts"]["documents"] == 1
+    assert record["provider_cleanup_complete"] is False
+    assert [name for action, name in session.calls if action == "delete_store"] == [
+        "fileSearchStores/owned"
+    ]
+
+
+def test_document_relist_failure_still_attempts_known_file_and_store_cleanup() -> None:
+    operator = _load_operator()
+    session = _owned_session(fail_document_relist=True)
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    assert record["status"] == "blocked"
+    assert record["warnings"] == ["provider_reconciliation_incomplete"]
+    assert ("delete_file", "files/owned") in session.calls
+    assert ("delete_store", "fileSearchStores/owned") in session.calls
+
+
+def test_scope_cap_fails_before_any_mutation() -> None:
+    operator = _load_operator()
+    stores = [
+        types.FileSearchStore(
+            name=f"fileSearchStores/owned-{index}",
+            display_name=f"task-2-8-private-{index:032x}",
+        )
+        for index in range(33)
+    ]
+    session = _FakeSession(stores=stores, files=[], documents={})
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    assert record["status"] == "blocked"
+    assert record["warnings"] == ["provider_reconciliation_scope_exceeded"]
+    assert session.calls == []
+
+
+@pytest.mark.parametrize("kind", ["store", "file", "document"])
+def test_optional_sdk_identity_none_blocks_before_mutation(kind: str) -> None:
+    operator = _load_operator()
+    session = _owned_session()
+    if kind == "store":
+        session.stores[0].name = None
+    elif kind == "file":
+        session.files[0].name = None
+    else:
+        session.documents["fileSearchStores/owned"][0].name = None
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    assert record["status"] == "blocked"
+    assert record["warnings"] == ["provider_reconciliation_contract_invalid"]
+    assert session.calls == []
+
+
+def test_optional_display_name_none_is_ignored_as_foreign() -> None:
+    operator = _load_operator()
+    session = _FakeSession(
+        stores=[types.FileSearchStore(name="fileSearchStores/foreign", display_name=None)],
+        files=[types.File(name="files/foreign", display_name=None)],
+        documents={},
+    )
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    assert record["status"] == "passed"
+    assert record["matched_counts"] == {"stores": 0, "files": 0, "documents": 0}
+    assert session.calls == []
+
+
+class _FakeSecrets:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def get(self, key: str) -> str:
+        self.calls.append(key)
+        return "synthetic-reconciliation-key"
+
+
+def test_authorized_boundary_reads_the_stored_key_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    secrets = _FakeSecrets()
+    session = _FakeSession(stores=[], files=[], documents={})
+    received: list[str] = []
+    monkeypatch.setenv("RUN_GEMINI_RECONCILIATION", "1")
+    monkeypatch.setattr(operator.importlib.metadata, "version", lambda name: "2.14.0")
+
+    record = asyncio.run(
+        operator.run_authorized_reconciliation(
+            secret_store=secrets,
+            session_factory=lambda key: (received.append(key), session)[1],
+        )
+    )
+
+    assert record["status"] == "passed"
+    assert secrets.calls == ["gemini-api-key"]
+    assert received == ["synthetic-reconciliation-key"]
+
+
+def test_missing_opt_in_fails_before_key_or_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    secrets = _FakeSecrets()
+    monkeypatch.delenv("RUN_GEMINI_RECONCILIATION", raising=False)
+
+    record = asyncio.run(
+        operator.run_authorized_reconciliation(
+            secret_store=secrets,
+            session_factory=lambda key: pytest.fail("provider boundary crossed"),
+        )
+    )
+
+    assert record == {
+        "schema_version": 1,
+        "status": "blocked",
+        "provider_operation_states": ["reconciliation_failed"],
+        "warnings": ["provider_reconciliation_not_authorized"],
+    }
+    assert secrets.calls == []
+
+
+def test_committed_operator_has_no_private_source_or_creation_path() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    for forbidden in (
+        "source_trust_schema29",
+        "run_authorized_private_shadow",
+        "upload_input",
+        "import_input",
+        "query_private",
+        "create_store",
+        "Lecture 13",
+    ):
+        assert forbidden not in source
