@@ -2252,25 +2252,28 @@ class CurationServicesRunner:
             model=stage_model.model,
             record_attempt=context.record_card_ledger_attempt,
         )
+        payload = {
+            "ledger": serialize_card_centric_ledger(
+                result.ledger,
+                pipeline_contract_version=version.value,
+            ),
+            "source_sha256": source.source_sha256,
+            "provenance": {
+                "provider": stage_model.provider,
+                "model": stage_model.model,
+                "request_id": result.request_id,
+                "request_ids": list(result.request_ids),
+                "cache_prefix_sha256": result.cache_prefix_sha256,
+            },
+            "generation_parameters": result.generation_parameters,
+            "generation_parameters_sha256": result.generation_parameters_sha256,
+            "request_ids": list(result.request_ids),
+        }
+        if result.repair_manifest is not None:
+            payload["repair_manifest"] = result.repair_manifest
         return StageProduct(
             kind="card_centric_ledger",
-            payload={
-                "ledger": serialize_card_centric_ledger(
-                    result.ledger,
-                    pipeline_contract_version=version.value,
-                ),
-                "source_sha256": source.source_sha256,
-                "provenance": {
-                    "provider": stage_model.provider,
-                    "model": stage_model.model,
-                    "request_id": result.request_id,
-                    "request_ids": list(result.request_ids),
-                    "cache_prefix_sha256": result.cache_prefix_sha256,
-                },
-                "generation_parameters": result.generation_parameters,
-                "generation_parameters_sha256": result.generation_parameters_sha256,
-                "request_ids": list(result.request_ids),
-            },
+            payload=payload,
             usage=StageUsage(
                 result.request_id, result.input_tokens, result.output_tokens, result.cost_microusd
             ),

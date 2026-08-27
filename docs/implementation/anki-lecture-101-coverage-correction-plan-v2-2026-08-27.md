@@ -11,6 +11,10 @@ Status: approved by the independent reviewer in the
 Independent verdict: `APPROVE` (2026-08-27). The reviewer found no remaining
 blockers and confirmed that all eight prior approval conditions pass.
 
+Amendment: the Jeffrey Modell split-list requirement is superseded by
+`anki-lecture-101-jeffrey-modell-depth-addendum-2026-08-27.md`; one grounded
+awareness card is sufficient for this lecture.
+
 ## 1. Goal and non-goals
 
 Correct the remaining Lecture 101 coverage errors while preserving the pipeline's

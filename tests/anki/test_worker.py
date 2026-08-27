@@ -803,8 +803,12 @@ def test_s2_invalid_primary_then_valid_repair_commits_one_causal_stage_attempt(
             '"forbidden_cloze_targets_by_fact":[[]]}]}'
         )
         invalid = valid.replace('"importance":"high"', '"importance":"low"')
+        repair = json.dumps(
+            {"replacements": [json.loads(valid)["concepts"][0]], "additions": []},
+            separators=(",", ":"),
+        )
         pipeline.runner = LedgerServiceRunner(
-            [invalid, valid],
+            [invalid, repair],
             request_ids=["primary-request-id", "repair-request-id"],
             response_model="claude-sonnet-5-2026-08-01",
         )

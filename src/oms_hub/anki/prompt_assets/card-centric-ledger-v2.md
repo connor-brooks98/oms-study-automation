@@ -1,6 +1,6 @@
 ---
 id: card-centric-ledger-v2
-version: 2.1.4
+version: 2.1.5
 max_tokens: 7000
 response_format: json
 schema: lcl_v2
@@ -31,9 +31,11 @@ source IDs or material absent from the lecture.
 
 The user input may include `depth_control_evidence`. These are bounded lecture
 passages supplied only to substantiate named checklists or warning signs from
-the summary depth map. Preserve every source-listed checklist item and threshold
-in the fact description; do not replace them with a statement that criteria
-exist.
+the summary depth map. Match the lecturer's demonstrated depth: preserve every
+source-listed item and threshold only when the lecture teaches the list for
+recall. Awareness language such as "know these exist" or "keep these in mind"
+requires one concrete recognition fact naming the list and its clinical purpose,
+not item-by-item recall.
 
 Every `fact_description` must be one independently testable medical proposition.
 Do not join independently testable clauses with a semicolon; emit separate facts
@@ -55,11 +57,11 @@ pattern supported by the source. Never emit phrases such as "covered at a basic
 level," "associated gene and clinical features," or another promise to teach
 details that the fact itself omits.
 
-A lecturer-emphasized named checklist or warning-sign list is one recognition
-fact, but its `fact_description` must preserve the concrete source-listed items
-and thresholds. Do not replace the list with a generic statement that criteria
-exist. The gap-card stage can split that one grounded list fact into a small
-ordered card set.
+A named checklist or warning-sign list taught for recall is one recognition fact
+whose `fact_description` preserves the concrete source-listed items and
+thresholds. The gap-card stage can split that grounded list fact into a small
+ordered card set. When the lecturer teaches only awareness, emit one fact naming
+the specific list and what clinical decision it supports; do not enumerate it.
 
 Placeholder statements are invalid. Do not say only that a checklist is used to
 recognize disease, or that an entity has a characteristic gene and presentation

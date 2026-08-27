@@ -3,10 +3,13 @@
 import asyncio
 import hashlib
 import json
+import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
+
+from pydantic import ValidationError
 
 from oms_hub.anki.card_centric_contracts import (
     CardCentricPassage,
@@ -15,6 +18,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardClassificationBatchOutput,
     CardConcept,
     CardConceptLedger,
+    CardConceptRepairBatch,
     CardRecord,
     CensusTrust,
     ClassifierBatchAudit,
@@ -25,6 +29,8 @@ from oms_hub.anki.card_centric_contracts import (
     QualitySelectionResult,
     SnapshotCensus,
     TagScopeResult,
+    card_fact_structure_defects,
+    card_ledger_concept_defects,
 )
 from oms_hub.anki.correction_contracts import (
     CanonicalJsonObject,
@@ -68,6 +74,20 @@ class CardCentricLedgerResult:
     generation_parameters: dict[str, object]
     generation_parameters_sha256: str
     request_ids: tuple[str, ...]
+    repair_manifest: dict[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _LedgerRepairContext:
+    document: dict[str, object]
+    raw_concepts: tuple[dict[str, object], ...]
+    index_to_id: dict[int, str]
+    defects_by_id: dict[str, tuple[str, ...]]
+    required_additions: tuple[dict[str, str], ...]
+    available_addition_ids: tuple[str, ...]
+    unchanged_hashes: dict[str, str]
+    scope_limit: int
+    primary_response_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +166,7 @@ class CardCentricLedgerService:
         parameters = s2_generation_parameters(provider, model)
         parameters_sha256 = _canonical_sha256(parameters)
         request_ids: tuple[str, ...]
+        repair_manifest = None
         try:
             with provider_call_scope(batch_index=0, subcall_ordinal=0):
                 result = self.structured.generate_json(
@@ -159,6 +180,7 @@ class CardCentricLedgerService:
                     options=options,
                 )
                 _validate_ledger_depth_controls(result, source_index)
+                ledger = result.value
         except StructuredOutputError as error:
             _record_ledger_attempt(
                 record_attempt,
@@ -172,27 +194,32 @@ class CardCentricLedgerService:
                 parameters_sha256=parameters_sha256,
                 error=error,
             )
+            try:
+                repair_context = _ledger_repair_context(error.raw_text, source_index)
+            except CardCentricValidationError:
+                raise error from None
             repair_instruction = _ledger_repair_instruction(self.instruction)
             repair_input = json.dumps(
-                {
-                    "invalid_response": error.raw_text,
-                    "validation_error": str(error),
-                    "depth_control_evidence": depth_control_evidence,
-                },
+                _repair_request_document(repair_context, depth_control_evidence),
                 sort_keys=True,
                 separators=(",", ":"),
             )
             try:
                 with provider_call_scope(batch_index=0, kind="repair", subcall_ordinal=0):
-                    result = self.structured.generate_json(
+                    repair_result = self.structured.generate_json(
                         repair_instruction,
                         repair_input,
-                        output_model=CardConceptLedger,
+                        output_model=CardConceptRepairBatch,
                         provider=provider,
                         model=model,
                         options=options,
                     )
-                    _validate_ledger_depth_controls(result, source_index)
+                    ledger, repair_manifest = _merge_targeted_ledger_repair(
+                        repair_context,
+                        repair_result,
+                        source_index,
+                        depth_control_evidence,
+                    )
             except StructuredOutputError as repair_error:
                 _record_ledger_attempt(
                     record_attempt,
@@ -231,13 +258,13 @@ class CardCentricLedgerService:
                 instruction=repair_instruction,
                 parameters=parameters,
                 parameters_sha256=parameters_sha256,
-                result=result,
+                result=repair_result,
             )
-            request_ids = (error.generation.request_id, result.request_id)
+            request_ids = (error.generation.request_id, repair_result.request_id)
             request_id = _combined_request_id(request_ids)
-            input_tokens = error.generation.input_tokens + result.input_tokens
-            output_tokens = error.generation.output_tokens + result.output_tokens
-            cost_microusd = error.generation.cost_microusd + result.cost_microusd
+            input_tokens = error.generation.input_tokens + repair_result.input_tokens
+            output_tokens = error.generation.output_tokens + repair_result.output_tokens
+            cost_microusd = error.generation.cost_microusd + repair_result.cost_microusd
         except Exception as primary_error:
             _record_ledger_attempt(
                 record_attempt,
@@ -271,7 +298,7 @@ class CardCentricLedgerService:
             output_tokens = result.output_tokens
             cost_microusd = result.cost_microusd
         return CardCentricLedgerResult(
-            ledger=result.value,
+            ledger=ledger,
             request_id=request_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -280,6 +307,7 @@ class CardCentricLedgerService:
             generation_parameters=parameters,
             generation_parameters_sha256=parameters_sha256,
             request_ids=request_ids,
+            repair_manifest=repair_manifest,
         )
 
 
@@ -294,27 +322,7 @@ def _validate_ledger_depth_controls(
     source_index: CardCentricSourceIndex,
 ) -> None:
     """Require every entity named by summary depth controls at that depth."""
-    required = _depth_controls(source_index)
-    missing = []
-    for entity, depth in required:
-        needle = _normalized_entity_text(entity)
-        if any(
-            concept.depth == depth
-            and needle
-            in _normalized_entity_text(
-                " ".join(
-                    (
-                        concept.primary_entity,
-                        *concept.aliases,
-                        concept.canonical_statement,
-                        *concept.fact_descriptions,
-                    )
-                )
-            )
-            for concept in result.value.concepts
-        ):
-            continue
-        missing.append(f"{entity} ({depth})")
+    missing = _missing_ledger_depth_controls(result.value, source_index)
     if not missing:
         return
     message = "ledger omitted named depth-control entities: " + ", ".join(missing)
@@ -383,6 +391,354 @@ def _normalized_entity_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
+def _missing_ledger_depth_controls(
+    ledger: CardConceptLedger,
+    source_index: CardCentricSourceIndex,
+) -> tuple[str, ...]:
+    return tuple(
+        f"{entity} ({depth})"
+        for entity, depth in _depth_controls(source_index)
+        if not any(
+            concept.depth == depth
+            and _normalized_entity_text(entity)
+            in _normalized_entity_text(
+                " ".join(
+                    (
+                        concept.primary_entity,
+                        *concept.aliases,
+                        concept.canonical_statement,
+                        *concept.fact_descriptions,
+                    )
+                )
+            )
+            for concept in ledger.concepts
+        )
+    )
+
+
+_RAW_JSON_FENCE = re.compile(
+    r"^\s*```(?:json)?\s*(?P<body>.*?)\s*```\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_CONCEPT_ID = re.compile(r"^C[0-9]{2,4}$")
+
+
+def _canonical_object_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _raw_concept_corpus(raw: Mapping[str, object]) -> str:
+    values = []
+    for name in ("primary_entity", "canonical_statement"):
+        value = raw.get(name)
+        if isinstance(value, str):
+            values.append(value)
+    for name in ("aliases", "fact_descriptions"):
+        value = raw.get(name)
+        if isinstance(value, list):
+            values.extend(item for item in value if isinstance(item, str))
+    return _normalized_entity_text(" ".join(values))
+
+
+def _parse_targetable_ledger(
+    raw_text: str,
+) -> tuple[dict[str, object], tuple[dict[str, object], ...]]:
+    match = _RAW_JSON_FENCE.fullmatch(raw_text)
+    text = match.group("body") if match is not None else raw_text
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise CardCentricValidationError("invalid JSON cannot be targeted for repair") from exc
+    if not isinstance(document, dict) or set(document) - {
+        "contract_version",
+        "concepts",
+        "lecture_entity_count",
+        "forbidden_cloze_targets",
+    }:
+        raise CardCentricValidationError("ledger routing fields are not safely targetable")
+    concepts = document.get("concepts")
+    count = document.get("lecture_entity_count")
+    targets = document.get("forbidden_cloze_targets", [])
+    if (
+        not isinstance(concepts, list)
+        or not concepts
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 1
+        or not isinstance(targets, list)
+        or any(not isinstance(value, str) or not value.strip() for value in targets)
+        or len({value.casefold() for value in targets}) != len(targets)
+        or document.get("contract_version", 1) != 1
+        or any(not isinstance(concept, dict) for concept in concepts)
+    ):
+        raise CardCentricValidationError("ledger routing fields are not safely targetable")
+    return document, tuple(concepts)
+
+
+def _raw_fact_descriptions(raw: Mapping[str, object]) -> tuple[str, ...]:
+    value = raw.get("fact_descriptions")
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return tuple(value)
+    canonical = raw.get("canonical_statement")
+    if value is None and isinstance(canonical, str):
+        return (canonical,)
+    return ()
+
+
+def _ledger_repair_context(
+    raw_text: str,
+    source_index: CardCentricSourceIndex,
+) -> _LedgerRepairContext:
+    document, raw_concepts = _parse_targetable_ledger(raw_text)
+    index_to_id = {}
+    defects: dict[str, list[str]] = {}
+    valid_concepts: dict[str, CardConcept] = {}
+    for index, raw in enumerate(raw_concepts):
+        concept_id = raw.get("concept_id")
+        if not isinstance(concept_id, str) or _CONCEPT_ID.fullmatch(concept_id) is None:
+            raise CardCentricValidationError("malformed concept IDs cannot be targeted")
+        if concept_id in index_to_id.values():
+            raise CardCentricValidationError("duplicate concept IDs cannot be targeted")
+        index_to_id[index] = concept_id
+        try:
+            valid_concepts[concept_id] = CardConcept.model_validate(raw)
+        except ValidationError as exc:
+            defects.setdefault(concept_id, []).append(str(exc)[:2_000])
+        descriptions = _raw_fact_descriptions(raw)
+        defects.setdefault(concept_id, []).extend(card_fact_structure_defects(descriptions))
+        defects.setdefault(concept_id, []).extend(
+            card_ledger_concept_defects(
+                concept_id=concept_id,
+                fact_descriptions=descriptions,
+            )
+        )
+    stable_key_owners: dict[str, list[str]] = {}
+    for concept_id, concept in valid_concepts.items():
+        for stable_key in concept.stable_fact_keys:
+            stable_key_owners.setdefault(stable_key, []).append(concept_id)
+    for owners in stable_key_owners.values():
+        if len(owners) > 1:
+            for concept_id in owners:
+                defects.setdefault(concept_id, []).append(
+                    "ledger facts must be distinct after normalization"
+                )
+    defects = {
+        concept_id: list(dict.fromkeys(messages))
+        for concept_id, messages in defects.items()
+        if messages
+    }
+    missing_controls = [
+        (entity, depth)
+        for entity, depth in _depth_controls(source_index)
+        if not any(
+            raw.get("depth") == depth
+            and _normalized_entity_text(entity) in _raw_concept_corpus(raw)
+            for raw in raw_concepts
+        )
+    ]
+    next_number = max(int(concept_id[1:]) for concept_id in index_to_id.values()) + 1
+    required_additions = tuple(
+        {
+            "concept_id": f"C{next_number + offset:02d}",
+            "primary_entity": entity,
+            "depth": depth,
+        }
+        for offset, (entity, depth) in enumerate(missing_controls)
+    )
+    if any(int(item["concept_id"][1:]) > 9_999 for item in required_additions):
+        raise CardCentricValidationError("ledger has no safe sequential concept ID")
+    scope_limit = min(3, max(2, math.ceil(len(raw_concepts) * 0.20)))
+    if not defects and not required_additions:
+        raise CardCentricValidationError("ledger failure has no targetable concept defect")
+    if len(defects) + len(required_additions) > scope_limit:
+        raise CardCentricValidationError("ledger repair scope exceeds the localized-damage cap")
+    available_addition_ids = tuple(
+        f"C{next_number + offset:02d}"
+        for offset in range(scope_limit - len(defects))
+    )
+    unchanged_hashes = {
+        concept_id: _canonical_object_sha256(raw_concepts[index])
+        for index, concept_id in index_to_id.items()
+        if concept_id not in defects
+    }
+    return _LedgerRepairContext(
+        document=document,
+        raw_concepts=raw_concepts,
+        index_to_id=index_to_id,
+        defects_by_id={key: tuple(value) for key, value in sorted(defects.items())},
+        required_additions=required_additions,
+        available_addition_ids=available_addition_ids,
+        unchanged_hashes=unchanged_hashes,
+        scope_limit=scope_limit,
+        primary_response_sha256=hashlib.sha256(raw_text.encode()).hexdigest(),
+    )
+
+
+def _repair_request_document(
+    context: _LedgerRepairContext,
+    depth_control_evidence: list[dict[str, str]],
+) -> dict[str, object]:
+    return {
+        "defects": [
+            {
+                "array_index": index,
+                "concept_id": concept_id,
+                "messages": list(context.defects_by_id[concept_id]),
+                "raw_concept": context.raw_concepts[index],
+            }
+            for index, concept_id in context.index_to_id.items()
+            if concept_id in context.defects_by_id
+        ],
+        "required_additions": list(context.required_additions),
+        "available_addition_ids": list(context.available_addition_ids),
+        "depth_control_evidence": depth_control_evidence,
+        "constraints": {
+            "replacement_ids": list(context.defects_by_id),
+            "no_deletions": True,
+            "one_repair_call": True,
+            "scope_limit": context.scope_limit,
+        },
+    }
+
+
+def _repair_result_error(
+    message: str,
+    result: StructuredJSONResult[CardConceptRepairBatch],
+) -> StructuredOutputError:
+    return StructuredOutputError(
+        message,
+        raw_text=result.raw_text,
+        generation=GeneratedText(
+            text=result.raw_text,
+            provider=result.provider,
+            model=result.model,
+            request_id=result.request_id,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cost_microusd=result.cost_microusd,
+            cache_creation_input_tokens=result.cache_creation_input_tokens,
+            cache_read_input_tokens=result.cache_read_input_tokens,
+        ),
+        attempt_handle=result.attempt_handle,
+    )
+
+
+def _merge_targeted_ledger_repair(
+    context: _LedgerRepairContext,
+    repair: StructuredJSONResult[CardConceptRepairBatch],
+    source_index: CardCentricSourceIndex,
+    depth_control_evidence: list[dict[str, str]],
+) -> tuple[CardConceptLedger, dict[str, object]]:
+    replacements = {item.concept_id: item for item in repair.value.replacements}
+    additions = tuple(repair.value.additions)
+    if set(replacements) != set(context.defects_by_id):
+        raise _repair_result_error(
+            "targeted ledger repair must replace every and only defective concept",
+            repair,
+        )
+    addition_ids = tuple(item.concept_id for item in additions)
+    if addition_ids != context.available_addition_ids[: len(additions)]:
+        raise _repair_result_error(
+            "targeted ledger additions must use the next sequential concept IDs",
+            repair,
+        )
+    required_by_id = {
+        item["concept_id"]: item for item in context.required_additions
+    }
+    if not set(required_by_id) <= set(addition_ids):
+        raise _repair_result_error(
+            "targeted ledger repair omitted a required depth-control addition",
+            repair,
+        )
+    replacement_entities = {
+        _normalized_entity_text(concept.primary_entity)
+        for concept in replacements.values()
+    }
+    for addition in additions:
+        required = required_by_id.get(addition.concept_id)
+        corpus = _normalized_entity_text(
+            " ".join(
+                (
+                    addition.primary_entity,
+                    *addition.aliases,
+                    addition.canonical_statement,
+                    *addition.fact_descriptions,
+                )
+            )
+        )
+        if required is not None:
+            if (
+                addition.depth != required["depth"]
+                or _normalized_entity_text(required["primary_entity"]) not in corpus
+            ):
+                raise _repair_result_error(
+                    "targeted ledger addition does not satisfy its required entity/depth",
+                    repair,
+                )
+        elif _normalized_entity_text(addition.primary_entity) not in replacement_entities:
+            raise _repair_result_error(
+                "targeted ledger continuation does not match a repaired entity",
+                repair,
+            )
+    merged_concepts = []
+    for index, raw in enumerate(context.raw_concepts):
+        concept_id = context.index_to_id[index]
+        merged_concepts.append(
+            replacements[concept_id].model_dump(mode="json")
+            if concept_id in replacements
+            else raw
+        )
+    merged_concepts.extend(item.model_dump(mode="json") for item in additions)
+    for index, concept_id in context.index_to_id.items():
+        if concept_id in replacements:
+            continue
+        if _canonical_object_sha256(merged_concepts[index]) != context.unchanged_hashes[concept_id]:
+            raise _repair_result_error(
+                "targeted ledger repair changed an unrelated concept",
+                repair,
+            )
+    document = dict(context.document)
+    document["concepts"] = merged_concepts
+    document["lecture_entity_count"] = int(document["lecture_entity_count"]) + len(
+        context.required_additions
+    )
+    try:
+        ledger = CardConceptLedger.model_validate(document)
+    except ValidationError as exc:
+        raise _repair_result_error(
+            "targeted ledger merge failed full validation: " + str(exc),
+            repair,
+        ) from exc
+    missing = _missing_ledger_depth_controls(ledger, source_index)
+    if missing:
+        raise _repair_result_error(
+            "targeted ledger merge omitted named depth-control entities: "
+            + ", ".join(missing),
+            repair,
+        )
+    manifest = {
+        "primary_response_sha256": context.primary_response_sha256,
+        "index_to_concept_id": {
+            str(index): concept_id for index, concept_id in context.index_to_id.items()
+        },
+        "defects": {
+            concept_id: list(messages)
+            for concept_id, messages in context.defects_by_id.items()
+        },
+        "replacement_ids": sorted(replacements),
+        "addition_ids": list(addition_ids),
+        "unchanged_concept_sha256": dict(sorted(context.unchanged_hashes.items())),
+        "evidence_passage_ids": [item["passage_id"] for item in depth_control_evidence],
+        "repair_response_sha256": hashlib.sha256(repair.raw_text.encode()).hexdigest(),
+        "final_ledger_sha256": _canonical_object_sha256(ledger.model_dump(mode="json")),
+        "repaired_concept_count": len(replacements) + len(additions),
+        "repair_scope_limit": context.scope_limit,
+    }
+    return ledger, manifest
+
+
 def _combined_request_id(request_ids: tuple[str, ...]) -> str:
     """Make repaired S2 usage identifiable without pretending it is one request."""
     document = json.dumps(request_ids, separators=(",", ":"))
@@ -394,12 +750,12 @@ def _ledger_repair_instruction(instruction: str) -> str:
         instruction
         + "\n\n# Validation repair\n"
         "The prior response and the exact validator error are in the user input. "
-        "Correct only the reported validation defects. Return a complete replacement "
-        "ledger that satisfies the same schema; do not omit valid concepts or "
-        "silently change unrelated content. Never emit lecture-depth commentary or "
+        "Correct only the reported validation defects. Return only the requested "
+        "concept replacements and additions; unchanged concepts are not in the output "
+        "schema and cannot be edited. Never emit lecture-depth commentary or "
         "semicolon-bundled facts, and split distinct expression locations into separate "
-        "facts. If the validator names missing checklist items, preserve every item and "
-        "threshold from depth_control_evidence rather than summarizing the checklist. "
+        "facts. Apply depth_control_evidence using the base instruction's lecture-depth "
+        "rule for named lists; do not expand an awareness-only list into item-recall facts. "
         "Return JSON only."
     )
 
@@ -415,7 +771,11 @@ def _record_ledger_attempt(
     instruction: str,
     parameters: dict[str, object],
     parameters_sha256: str,
-    result: StructuredJSONResult[CardConceptLedger] | None = None,
+    result: (
+        StructuredJSONResult[CardConceptLedger]
+        | StructuredJSONResult[CardConceptRepairBatch]
+        | None
+    ) = None,
     error: StructuredOutputError | None = None,
     transport_error: Exception | None = None,
 ) -> None:

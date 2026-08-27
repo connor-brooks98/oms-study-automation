@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -26,6 +25,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardClassificationBatchOutput,
     CardConcept,
     CardConceptLedger,
+    CardConceptRepairBatch,
     CardFieldReview,
     CardRecord,
     CensusTrust,
@@ -869,23 +869,24 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 ),
             ),
         )
-    with pytest.raises(ValueError, match="missing: ear infections, sinus infections"):
-        CardConceptLedger(
-            lecture_entity_count=1,
-            concepts=(
-                CardConcept(
-                    concept_id="C01",
-                    canonical_statement=(
-                        "The Jeffrey Modell Warning Signs are clinical criteria used "
-                        "to recognize primary immunodeficiency."
-                    ),
-                    primary_entity="Jeffrey Modell Warning Signs",
-                    depth="medium",
-                    emphasis_flag=False,
-                    importance="medium",
+    awareness = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement=(
+                    "The Jeffrey Modell Foundation's 10 warning signs are a pediatric "
+                    "screening aid for recognizing when to consider an inborn error "
+                    "of immunity."
                 ),
+                primary_entity="Jeffrey Modell Warning Signs",
+                depth="medium",
+                emphasis_flag=False,
+                importance="medium",
             ),
-        )
+        ),
+    )
+    assert awareness.concepts[0].suggested_fact_count == 1
     with pytest.raises(ValueError, match="C01-M1: SCID pathogenesis"):
         CardConceptLedger(
             lecture_entity_count=1,
@@ -962,22 +963,6 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                     depth="surface",
                     emphasis_flag=False,
                     importance="low",
-                ),
-            ),
-        )
-    with pytest.raises(ValueError, match="missing: sinus infections"):
-        CardConceptLedger(
-            lecture_entity_count=1,
-            concepts=(
-                CardConcept(
-                    concept_id="C01",
-                    canonical_statement=(
-                        "Ten warning signs of primary immunodeficiency include ear infections."
-                    ),
-                    primary_entity="Jeffrey Modell Warning Signs",
-                    depth="medium",
-                    emphasis_flag=False,
-                    importance="medium",
                 ),
             ),
         )
@@ -1197,7 +1182,7 @@ def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
 def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     prompt = Path("src/oms_hub/anki/prompt_assets/card-centric-ledger-v2.md").read_text()
 
-    assert "version: 2.1.4" in prompt
+    assert "version: 2.1.5" in prompt
     assert "temperature:" not in prompt.split("---", 2)[1]
     assert "model:" not in prompt.split("---", 2)[1]
     assert (
@@ -1210,7 +1195,7 @@ def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     )
     assert "`low` **if and only if** `emphasis_flag` is `false` and `depth` is `surface`." in prompt
     observed_hash = hashlib.sha256(prompt.encode()).hexdigest()
-    assert observed_hash == "50d6d89186aa1a7ac1ac9616455f0a5efeea2d8fab363dc10f05df620ddf93e0"
+    assert observed_hash == "cfb08ce276fbe2f9905bf524a4a3c98e2659d1a173896a5a0b0437bd13b2d50f"
     assert observed_hash != "1561da45dd05048dcf9d92fc709ce117f994bc0f38eb075a81bf2937bd1e2580"
 
 
@@ -1360,7 +1345,7 @@ def test_card_ledger_records_complete_truthful_s2_identity_for_each_route(
 ) -> None:
     attempts = []
     invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
-    generator = _LedgerSequenceGenerator([invalid, _valid_ledger_text()])
+    generator = _LedgerSequenceGenerator([invalid, _valid_repair_text()])
 
     CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
         source_index=_ledger_source(),
@@ -1382,11 +1367,11 @@ def test_card_ledger_records_complete_truthful_s2_identity_for_each_route(
     assert all(call[2].temperature == 0 and call[2].max_tokens == 7000 for call in generator.calls)
 
 
-def test_card_ledger_invalid_primary_gets_one_complete_repair_and_replaces_output() -> None:
+def test_card_ledger_invalid_primary_gets_one_targeted_repair() -> None:
     source = _ledger_source()
     invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
     attempts = []
-    generator = _LedgerSequenceGenerator([invalid, _valid_ledger_text()])
+    generator = _LedgerSequenceGenerator([invalid, _valid_repair_text()])
 
     result = CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
         source_index=source,
@@ -1401,12 +1386,15 @@ def test_card_ledger_invalid_primary_gets_one_complete_repair_and_replaces_outpu
     repair_instruction, repair_input, _ = generator.calls[1]
     assert "Correct only the reported validation defects" in repair_instruction
     assert "depth_control_evidence" in repair_instruction
-    assert json.loads(repair_input)["invalid_response"] == invalid
-    assert "importance conflicts" in json.loads(repair_input)["validation_error"]
+    repair_document = json.loads(repair_input)
+    assert repair_document["constraints"]["replacement_ids"] == ["C01"]
+    assert "importance conflicts" in repair_document["defects"][0]["messages"][0]
+    assert "concepts" not in repair_document
     assert attempts[0].invalid_response_sha256 == hashlib.sha256(invalid.encode()).hexdigest()
     assert result.request_ids == ("request-1", "request-2")
     assert result.request_id.startswith("card_ledger:")
     assert (result.input_tokens, result.output_tokens, result.cost_microusd) == (20, 10, 2)
+    assert result.repair_manifest["replacement_ids"] == ["C01"]
 
 
 def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
@@ -1441,11 +1429,8 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
         importance="medium",
     )
     jeffrey_modell = (
-        "The Jeffrey Modell Warning Signs are 8 ear infections in one year, 2 serious "
-        "sinus infections in one year, 2 months of antibiotics with little effect, 2 "
-        "pneumonias in one year, failure to gain weight or grow normally, recurrent deep "
-        "skin or organ abscesses, persistent thrush after age one, need for intravenous "
-        "antibiotics, 2 deep-seated infections, and family history of PID."
+        "The Jeffrey Modell Foundation's 10 warning signs are a pediatric screening "
+        "aid for recognizing when to consider an inborn error of immunity."
     )
     repaired = CardConceptLedger(
         lecture_entity_count=2,
@@ -1465,7 +1450,7 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
     generator = _LedgerSequenceGenerator(
         [
             CardConceptLedger(lecture_entity_count=1, concepts=(scid,)).model_dump_json(),
-            repaired.model_dump_json(),
+            CardConceptRepairBatch(additions=(repaired.concepts[1],)).model_dump_json(),
         ]
     )
 
@@ -1487,21 +1472,24 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
     )["depth_control_evidence"]
 
 
-def test_captured_lecture_101_checklist_payload_is_complete() -> None:
+def test_captured_lecture_101_checklist_payload_supports_awareness_fact() -> None:
     captured = Path(
         "docs/implementation/anki-lecture-101-depth-control-evidence-2026-08-27.md"
     ).read_text()
     slide = captured.split("### Item 1", 1)[1].split("### Item 2", 1)[0]
-    statement = " ".join(re.findall(r"^\d+\. `(.+)`$", slide, re.MULTILINE))
-
     assert "SLD:101:0047:P:8d42edb6595fedde" in captured
     assert "TRX:101:0036:P:9e3d09c9cf22e5e9" in captured
+    assert "10 warning signs of immune deficiency" in slide
     CardConceptLedger(
         lecture_entity_count=1,
         concepts=(
             CardConcept(
                 concept_id="C01",
-                canonical_statement=statement,
+                canonical_statement=(
+                    "The Jeffrey Modell Foundation's 10 warning signs are a pediatric "
+                    "screening aid for recognizing when to consider an inborn error "
+                    "of immunity."
+                ),
                 primary_entity="Jeffrey Modell Warning Signs",
                 depth="medium",
                 emphasis_flag=False,
@@ -1519,7 +1507,7 @@ def test_card_ledger_attempts_keep_requested_route_when_response_model_is_aliase
     requested_model = "claude-sonnet-5"
     invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
     generator = _LedgerSequenceGenerator(
-        [invalid, _valid_ledger_text()] if invalid_primary else [_valid_ledger_text()],
+        [invalid, _valid_repair_text()] if invalid_primary else [_valid_ledger_text()],
         response_provider=ProviderName.OPENAI,
         response_model="gpt-5.2-2026-08-01",
     )
@@ -1586,14 +1574,15 @@ def test_card_ledger_invalid_response_redacts_structured_failure_and_hashes_stor
     payload["concepts"][0]["importance"] = "low"
     invalid = json.dumps(payload, separators=(",", ":"))
     attempts = []
-    generator = _LedgerSequenceGenerator([invalid, _valid_ledger_text()])
+    generator = _LedgerSequenceGenerator([invalid])
 
-    CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
-        source_index=source,
-        provider=ProviderName.ANTHROPIC,
-        model="claude-sonnet-5",
-        record_attempt=attempts.append,
-    )
+    with pytest.raises(StructuredOutputError):
+        CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+            source_index=source,
+            provider=ProviderName.ANTHROPIC,
+            model="claude-sonnet-5",
+            record_attempt=attempts.append,
+        )
 
     stored = attempts[0].invalid_response
     assert stored is not None
@@ -1616,10 +1605,14 @@ def test_card_ledger_bad_repair_fails_closed_after_two_calls(repair_kind) -> Non
     source = _ledger_source()
     invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
     attempts = []
+    invalid_replacement = json.loads(invalid)["concepts"][0]
     repair = (
-        '{"concepts":'
+        '{"replacements":'
         if repair_kind == "malformed"
-        else _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
+        else json.dumps(
+            {"replacements": [invalid_replacement], "additions": []},
+            separators=(",", ":"),
+        )
     )
     generator = _LedgerSequenceGenerator([invalid, repair])
 
@@ -1740,6 +1733,11 @@ def _valid_ledger_text() -> str:
             ),
         ),
     ).model_dump_json()
+
+
+def _valid_repair_text() -> str:
+    ledger = CardConceptLedger.model_validate_json(_valid_ledger_text())
+    return CardConceptRepairBatch(replacements=ledger.concepts).model_dump_json()
 
 
 class _LedgerSequenceGenerator:

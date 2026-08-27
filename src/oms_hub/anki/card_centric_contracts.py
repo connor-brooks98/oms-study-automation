@@ -352,6 +352,54 @@ class ClassifierResult(CardCentricContract):
     telemetry: ClassifierTelemetry
 
 
+_MULTIPLE_EXPRESSION_LOCATIONS = re.compile(
+    r"\b[\w+.-]+\s+is\s+expressed\s+on\b.+"
+    r"\band\s+[\w+.-]+\s+(?:is\s+expressed\s+)?on\b",
+    re.IGNORECASE,
+)
+_CONTROL_ONLY = re.compile(
+    r"\b(?:(?:received|receives|was given|were given)\s+"
+    r"(?:deep|medium|surface)\s+(?:lecture\s+)?coverage|"
+    r"(?:covered|taught|explained|reviewed)\b[^.]{0,160}\b"
+    r"(?:basic|deep|medium|surface)\s+(?:level|depth|coverage))\b",
+    re.IGNORECASE,
+)
+_PLACEHOLDER_ONLY = re.compile(
+    r"\b(?:as (?:noted|described) in the lecture|"
+    r"(?:covered|explained|taught|reviewed)\b[^.]{0,160}\b"
+    r"(?:in (?:the )?lecture|with (?:clinical|molecular)|in molecular detail)|"
+    r"lecture (?:noted|covered|explained|taught)\b|"
+    r"(?:named )?(?:clinical )?(?:checklist|criteria) (?:is |are )?"
+    r"(?:used|that helps) to (?:identify|recognize)|"
+    r"(?:basic|characteristic)[^.]{0,80}(?:gene|defect)"
+    r"[^.]{0,100}clinical (?:features|presentation))\b",
+    re.IGNORECASE,
+)
+def card_fact_structure_defects(descriptions: tuple[str, ...]) -> tuple[str, ...]:
+    defects = []
+    if any(";" in value for value in descriptions):
+        defects.append("atomic fact descriptions cannot bundle semicolon clauses")
+    if any(
+        value.casefold().count(" is expressed on ") > 1
+        or _MULTIPLE_EXPRESSION_LOCATIONS.search(value)
+        for value in descriptions
+    ):
+        defects.append("atomic fact descriptions cannot bundle multiple locations")
+    return tuple(defects)
+
+
+def card_ledger_concept_defects(
+    *,
+    concept_id: str,
+    fact_descriptions: tuple[str, ...],
+) -> tuple[str, ...]:
+    return tuple(
+        f"{concept_id}-M{index}: {statement}"
+        for index, statement in enumerate(fact_descriptions, start=1)
+        if _CONTROL_ONLY.search(statement) or _PLACEHOLDER_ONLY.search(statement)
+    )
+
+
 # S2--S10 are deliberately separate from the retrieval-v4 concepts.  In
 # particular, this ledger is a coverage checklist and never contains search
 # paraphrases or retrieval scores.
@@ -420,19 +468,9 @@ class CardConcept(CardCentricContract):
             not value for value in descriptions
         ):
             raise ValueError("fact_descriptions length must equal suggested_fact_count")
-        if any(";" in value for value in descriptions):
-            raise ValueError("atomic fact descriptions cannot bundle semicolon clauses")
-        multiple_locations = re.compile(
-            r"\b[\w+.-]+\s+is\s+expressed\s+on\b.+"
-            r"\band\s+[\w+.-]+\s+(?:is\s+expressed\s+)?on\b",
-            re.IGNORECASE,
-        )
-        if any(
-            value.casefold().count(" is expressed on ") > 1
-            or multiple_locations.search(value)
-            for value in descriptions
-        ):
-            raise ValueError("atomic fact descriptions cannot bundle multiple locations")
+        structure_defects = card_fact_structure_defects(descriptions)
+        if structure_defects:
+            raise ValueError("; ".join(structure_defects))
         by_fact = tuple(
             tuple(value.strip() for value in targets)
             for targets in self.forbidden_cloze_targets_by_fact
@@ -472,70 +510,14 @@ class CardConceptLedger(CardCentricContract):
             raise ValueError("ledger fact IDs must be unique")
         if len(set(stable_keys.values())) != len(stable_keys):
             raise ValueError("ledger facts must be distinct after normalization")
-        control_only = re.compile(
-            r"\b(?:(?:received|receives|was given|were given)\s+"
-            r"(?:deep|medium|surface)\s+(?:lecture\s+)?coverage|"
-            r"(?:covered|taught|explained|reviewed)\b[^.]{0,160}\b"
-            r"(?:basic|deep|medium|surface)\s+(?:level|depth|coverage))\b",
-            re.IGNORECASE,
-        )
-        placeholder_only = re.compile(
-            r"\b(?:as (?:noted|described) in the lecture|"
-            r"(?:covered|explained|taught|reviewed)\b[^.]{0,160}\b"
-            r"(?:in (?:the )?lecture|with (?:clinical|molecular)|in molecular detail)|"
-            r"lecture (?:noted|covered|explained|taught)\b|"
-            r"(?:named )?(?:clinical )?(?:checklist|criteria) (?:is |are )?"
-            r"(?:used|that helps) to (?:identify|recognize)|"
-            r"(?:basic|characteristic)[^.]{0,80}(?:gene|defect)"
-            r"[^.]{0,100}clinical (?:features|presentation))\b",
-            re.IGNORECASE,
-        )
         invalid_placeholders = [
-            f"{fact_id}: {statement}"
+            defect
             for concept in self.concepts
-            for fact_id, statement in zip(
-                concept.fact_ids, concept.fact_descriptions, strict=True
+            for defect in card_ledger_concept_defects(
+                concept_id=concept.concept_id,
+                fact_descriptions=concept.fact_descriptions,
             )
-            if control_only.search(statement) or placeholder_only.search(statement)
         ]
-        jeffrey_modell_items = (
-            ("ear infections", r"ear infections?"),
-            ("sinus infections", r"sinus infections?"),
-            ("prolonged ineffective antibiotics", r"\bantibiotics?\b"),
-            ("pneumonias", r"\bpneumonias?\b"),
-            ("failure to gain weight or grow", r"(?:gain weight|grow normally|failure to thrive)"),
-            ("deep skin or organ abscesses", r"abscess"),
-            ("persistent thrush after age one", r"thrush"),
-            ("intravenous antibiotics", r"(?:intravenous|\bIV\b)"),
-            ("deep-seated infections", r"deep-seated infections?"),
-            ("family history of PID", r"family history"),
-        )
-        invalid_placeholders.extend(
-            f"{fact_id}: {statement} [missing: "
-            + ", ".join(
-                label
-                for label, pattern in jeffrey_modell_items
-                if re.search(pattern, statement, re.IGNORECASE) is None
-            )
-            + "]"
-            for concept in self.concepts
-            for fact_id, statement in zip(
-                concept.fact_ids, concept.fact_descriptions, strict=True
-            )
-            if "jeffrey modell"
-            in " ".join(
-                (
-                    concept.primary_entity,
-                    *concept.aliases,
-                    concept.canonical_statement,
-                    *concept.fact_descriptions,
-                )
-            ).casefold()
-            and any(
-                re.search(pattern, statement, re.IGNORECASE) is None
-                for _, pattern in jeffrey_modell_items
-            )
-        )
         if invalid_placeholders:
             raise ValueError(
                 "lecture depth metadata or placeholders cannot be card-generating facts: "
@@ -564,6 +546,25 @@ class CardConceptLedger(CardCentricContract):
             for targets in concept.forbidden_cloze_targets_by_fact:
                 values.update(targets)
         return tuple(sorted(values, key=str.casefold))
+
+
+class CardConceptRepairBatch(CardCentricContract):
+    replacements: tuple[CardConcept, ...] = ()
+    additions: tuple[CardConcept, ...] = ()
+
+    @model_validator(mode="after")
+    def unique_repair_ids(self) -> "CardConceptRepairBatch":
+        replacement_ids = [concept.concept_id for concept in self.replacements]
+        addition_ids = [concept.concept_id for concept in self.additions]
+        if not replacement_ids and not addition_ids:
+            raise ValueError("targeted ledger repair cannot be empty")
+        if len(replacement_ids) != len(set(replacement_ids)) or len(addition_ids) != len(
+            set(addition_ids)
+        ):
+            raise ValueError("targeted ledger repair repeats concept IDs")
+        if set(replacement_ids) & set(addition_ids):
+            raise ValueError("targeted ledger repair IDs must be disjoint")
+        return self
 
 
 def serialize_card_centric_ledger(

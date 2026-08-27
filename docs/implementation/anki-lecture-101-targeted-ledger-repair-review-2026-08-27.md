@@ -5,6 +5,11 @@ Branch: `codex/anki-v3-recovery`
 Current candidate: `dc197d77536bbcef0b9f8b00bb62e72af72461e4`
 Environment: isolated NUC staging on loopback port 8788; production port 8765 was not restarted or changed
 
+Amendment: all Jeffrey Modell ten-item completeness requirements below are
+superseded by `anki-lecture-101-jeffrey-modell-depth-addendum-2026-08-27.md`,
+which was independently approved after the user clarified the lecture's
+awareness-only depth.
+
 ## Requested decision
 
 Review the acceptance evidence below and return `APPROVE` or `BLOCK` for the
