@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import csv
 import hashlib
 import json
 import os
+import re
+import subprocess
 import tempfile
 import traceback
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable, Mapping
@@ -45,6 +48,7 @@ SYNTHETIC_FACT = f"The Task 2.8 synthetic marker is {SYNTHETIC_MARKER}."
 WRONG_LECTURE_ID = "task-2-8-wrong-lecture"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _MAX_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
+_IS_WINDOWS = os.name == "nt"
 _CITATION_CHECKS = (
     "citation_presence",
     "citation_document_binding",
@@ -82,6 +86,7 @@ class SmokeContractError(RuntimeError):
             "citation_wrong_document",
             "citation_wrong_file",
             "diagnostic_overflow",
+            "diagnostic_permissions_unavailable",
             "negative_answer_invalid",
             "positive_answer_invalid",
             "positive_answer_missing_marker",
@@ -243,11 +248,11 @@ class _SyntheticDiagnosticSink:
         )
         temporary = Path(temporary_name)
         try:
-            fchmod = getattr(os, "fchmod", None)
-            if callable(fchmod):
-                fchmod(file_descriptor, 0o600)
-            else:
-                os.chmod(temporary, 0o600)
+            try:
+                _restrict_diagnostic_file(file_descriptor, temporary)
+            except BaseException:
+                os.close(file_descriptor)
+                raise
             with os.fdopen(file_descriptor, "wb") as handle:
                 handle.write(payload)
                 handle.flush()
@@ -261,6 +266,55 @@ class _SyntheticDiagnosticSink:
         self.request.output_path.unlink(missing_ok=True)
         self.events.clear()
         self.secrets.clear()
+
+
+def _restrict_diagnostic_file(file_descriptor: int, path: Path) -> None:
+    if not _IS_WINDOWS:
+        fchmod = getattr(os, "fchmod", None)
+        if callable(fchmod):
+            fchmod(file_descriptor, 0o600)
+        else:
+            os.chmod(path, 0o600)
+        return
+    try:
+        identity = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        row = next(csv.reader([identity.stdout.strip()]))
+        sid = row[1].strip() if len(row) == 2 else ""
+        if identity.returncode != 0 or re.fullmatch(r"S-1(?:-\d+)+", sid) is None:
+            raise ValueError
+        secured = subprocess.run(
+            [
+                "icacls",
+                str(path),
+                "/inheritance:r",
+                "/grant:r",
+                f"*{sid}:(F)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        verified = subprocess.run(
+            ["icacls", str(path), "/verify"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if secured.returncode != 0 or verified.returncode != 0:
+            raise ValueError
+    except (OSError, StopIteration, subprocess.SubprocessError, ValueError):
+        raise SmokeContractError(
+            "synthetic diagnostic permissions were unavailable",
+            reason="diagnostic_permissions_unavailable",
+        ) from None
 
 
 class SmokeSession(Protocol):
