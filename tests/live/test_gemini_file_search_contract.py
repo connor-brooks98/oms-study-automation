@@ -10,13 +10,12 @@ import os
 import stat
 import sys
 from collections.abc import Iterator
+from importlib import import_module
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import httpx
 import pytest
-from google import genai
-from google.genai import interactions
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "run-gemini-contract-smoke.py"
@@ -34,6 +33,10 @@ def _load_smoke() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _sdk_interactions() -> object:
+    return import_module("google.genai.interactions")
 
 
 class _FakeSession:
@@ -187,12 +190,13 @@ class _SdkInteractions:
         self.calls: list[dict[str, object]] = []
 
     async def create(self, **body: object) -> object:
+        sdk = _sdk_interactions()
         self.calls.append(body)
         tools = body["tools"]
         assert isinstance(tools, list)
         file_search = tools[0]
         if self.smoke.WRONG_LECTURE_ID in file_search["metadata_filter"]:
-            annotations: list[interactions.FileCitation] = []
+            annotations: list[object] = []
             answer = self.smoke.SmokeAnswer(answer="", supported=False)
         else:
             metadata = {
@@ -212,7 +216,7 @@ class _SdkInteractions:
                 )
             }
             annotations = [
-                interactions.FileCitation(
+                sdk.FileCitation(
                     custom_metadata=metadata,
                     document_uri=(
                         "fileSearchStores/sdk-store/documents/sdk-document"
@@ -227,21 +231,21 @@ class _SdkInteractions:
                 supported=True,
             )
         output_text = answer.model_dump_json()
-        return interactions.Interaction(
+        return sdk.Interaction(
             status="completed",
             output_text=output_text,
             steps=[
-                interactions.FileSearchResultStep(call_id="sdk-file-search-call"),
-                interactions.ModelOutputStep(
+                sdk.FileSearchResultStep(call_id="sdk-file-search-call"),
+                sdk.ModelOutputStep(
                     content=[
-                        interactions.TextContent(
+                        sdk.TextContent(
                             text=output_text,
                             annotations=annotations,
                         )
                     ],
                 )
             ],
-            usage=interactions.Usage(total_input_tokens=13, total_output_tokens=8),
+            usage=sdk.Usage(total_input_tokens=13, total_output_tokens=8),
         )
 
 
@@ -291,7 +295,8 @@ class _FakeSecrets:
         return self.value
 
 
-def _real_citation(smoke: ModuleType, **overrides: object) -> interactions.FileCitation:
+def _real_citation(smoke: ModuleType, **overrides: object) -> object:
+    sdk = _sdk_interactions()
     values: dict[str, object] = {
         "custom_metadata": {
             "course_id": smoke.SYNTHETIC_COURSE_ID,
@@ -305,33 +310,34 @@ def _real_citation(smoke: ModuleType, **overrides: object) -> interactions.FileC
         "source": smoke.SYNTHETIC_FACT,
     }
     values.update(overrides)
-    return interactions.FileCitation(**values)
+    return sdk.FileCitation(**values)
 
 
 def _real_interaction(
     smoke: ModuleType,
     *,
-    citation: interactions.FileCitation | None = None,
+    citation: object | None = None,
     steps: list[object] | None = None,
-    usage: interactions.Usage | None = None,
-) -> interactions.Interaction:
+    usage: object | None = None,
+) -> object:
+    sdk = _sdk_interactions()
     if steps is None:
         steps = [
-            interactions.FileSearchResultStep(call_id="sdk-file-search-call"),
-            interactions.ModelOutputStep(
+            sdk.FileSearchResultStep(call_id="sdk-file-search-call"),
+            sdk.ModelOutputStep(
                 content=[
-                    interactions.TextContent(
+                    sdk.TextContent(
                         text=smoke.SYNTHETIC_FACT,
                         annotations=[citation or _real_citation(smoke)],
                     )
                 ]
             ),
         ]
-    return interactions.Interaction(
+    return sdk.Interaction(
         status="completed",
         output_text=smoke.SYNTHETIC_FACT,
         steps=steps,
-        usage=usage or interactions.Usage(
+        usage=usage or sdk.Usage(
             total_input_tokens=13,
             total_output_tokens=8,
         ),
@@ -1076,11 +1082,12 @@ def test_temporary_failure_fixture_persists_retry_state_then_resumes() -> None:
 
 
 def test_locked_environment_exposes_exact_google_genai_models() -> None:
+    sdk = _sdk_interactions()
     assert importlib.metadata.version("google-genai") == "2.14.0"
-    assert interactions.Interaction.model_fields["steps"].default is None
-    assert interactions.ModelOutputStep.model_fields["content"].default is None
-    assert interactions.TextContent.model_fields["annotations"].default is None
-    assert set(interactions.FileCitation.model_fields) >= {
+    assert sdk.Interaction.model_fields["steps"].default is None
+    assert sdk.ModelOutputStep.model_fields["content"].default is None
+    assert sdk.TextContent.model_fields["annotations"].default is None
+    assert set(sdk.FileCitation.model_fields) >= {
         "custom_metadata",
         "document_uri",
         "file_name",
@@ -1090,70 +1097,98 @@ def test_locked_environment_exposes_exact_google_genai_models() -> None:
         "end_index",
         "type",
     }
-    assert interactions.FileCitation(type="file_citation").type == "file_citation"
-    assert set(interactions.Usage.model_fields) >= {
+    assert sdk.FileCitation(type="file_citation").type == "file_citation"
+    assert set(sdk.Usage.model_fields) >= {
         "total_input_tokens",
         "total_output_tokens",
     }
 
 
 @pytest.mark.parametrize(
-    ("response", "check", "diagnosis"),
+    ("case", "check", "diagnosis"),
     [
-        (
-            interactions.Interaction(status="completed", steps=None),
-            "citation_presence",
-            "citation_steps_absent",
-        ),
-        (
-            interactions.Interaction(
-                status="completed",
-                steps=[interactions.ModelOutputStep(content=None)],
-            ),
-            "citation_presence",
-            "citation_content_absent",
-        ),
-        (
-            interactions.Interaction(
-                status="completed",
-                steps=[
-                    interactions.ModelOutputStep(
-                        content=[
-                            interactions.TextContent(text="synthetic", annotations=None)
-                        ]
-                    )
-                ],
-            ),
-            "citation_presence",
-            "citation_annotations_absent",
-        ),
-        (
-            interactions.Interaction(
-                status="completed",
-                steps=[
-                    interactions.ModelOutputStep(
-                        content=[
-                            interactions.TextContent(
-                                text="synthetic",
-                                annotations=[
-                                    interactions.FileCitation(type="file_citation")
-                                ],
-                            )
-                        ]
-                    )
-                ],
-            ),
-            "citation_scope_binding",
-            "citation_metadata_absent",
-        ),
+        ("steps", "citation_presence", "citation_steps_absent"),
+        ("content", "citation_presence", "citation_content_absent"),
+        ("annotations", "citation_presence", "citation_annotations_absent"),
+        ("metadata", "citation_scope_binding", "citation_metadata_absent"),
     ],
 )
 def test_real_sdk_optional_citation_containers_have_distinct_diagnoses(
-    response: interactions.Interaction,
+    case: str,
     check: str,
     diagnosis: str,
 ) -> None:
     smoke = _load_smoke()
+    sdk = _sdk_interactions()
+    responses = {
+        "steps": sdk.Interaction(status="completed", steps=None),
+        "content": sdk.Interaction(
+            status="completed",
+            steps=[sdk.ModelOutputStep(content=None)],
+        ),
+        "annotations": sdk.Interaction(
+            status="completed",
+            steps=[
+                sdk.ModelOutputStep(
+                    content=[sdk.TextContent(text="synthetic", annotations=None)]
+                )
+            ],
+        ),
+        "metadata": sdk.Interaction(
+            status="completed",
+            steps=[
+                sdk.ModelOutputStep(
+                    content=[
+                        sdk.TextContent(
+                            text="synthetic",
+                            annotations=[sdk.FileCitation(type="file_citation")],
+                        )
+                    ]
+                )
+            ],
+        ),
+    }
+
+    audit = smoke._audit_citations(
+        responses[case],
+        smoke.SmokeScope(
+            smoke.SYNTHETIC_COURSE_ID,
+            smoke.SYNTHETIC_EXAM_ID,
+            smoke.SYNTHETIC_LECTURE_ID,
+        ),
+        "fileSearchStores/sdk-store/documents/sdk-document",
+        "task-2-8-synthetic.pdf",
+    )
+
+    assert audit.checks[check] == diagnosis
+
+
+@pytest.mark.parametrize(
+    ("case", "diagnosis"),
+    [
+        ("content", "citation_content_invalid"),
+        ("annotations", "citation_annotations_invalid"),
+    ],
+)
+def test_real_sdk_malformed_citation_containers_are_not_absent(
+    case: str,
+    diagnosis: str,
+) -> None:
+    smoke = _load_smoke()
+    sdk = _sdk_interactions()
+    if case == "content":
+        step = sdk.ModelOutputStep.model_construct(content="malformed")
+    else:
+        step = sdk.ModelOutputStep(
+            content=[
+                sdk.TextContent.model_construct(
+                    type="text",
+                    text="synthetic",
+                    annotations="malformed",
+                )
+            ]
+        )
+    response = sdk.Interaction(status="completed", steps=[step])
 
     audit = smoke._audit_citations(
         response,
@@ -1166,7 +1201,7 @@ def test_real_sdk_optional_citation_containers_have_distinct_diagnoses(
         "task-2-8-synthetic.pdf",
     )
 
-    assert audit.checks[check] == diagnosis
+    assert audit.checks["citation_presence"] == diagnosis
 
 
 @pytest.mark.parametrize(
@@ -1205,23 +1240,22 @@ def test_real_file_citation_optional_none_is_not_a_scope_mismatch(
 
 def test_real_sdk_usage_uses_current_names_and_preserves_zero() -> None:
     smoke = _load_smoke()
+    sdk = _sdk_interactions()
 
-    audit = smoke._audit_usage(
-        interactions.Usage(total_input_tokens=0, total_output_tokens=0)
-    )
+    audit = smoke._audit_usage(sdk.Usage(total_input_tokens=0, total_output_tokens=0))
 
     assert audit.input_tokens == 0
     assert audit.output_tokens == 0
     assert audit.checks == {"usage_input": "passed", "usage_output": "passed"}
 
-    missing = smoke._audit_usage(interactions.Usage())
+    missing = smoke._audit_usage(sdk.Usage())
     assert missing.checks == {
         "usage_input": "usage_input_absent",
         "usage_output": "usage_output_absent",
     }
 
     malformed = smoke._audit_usage(
-        interactions.Usage.model_construct(
+        sdk.Usage.model_construct(
             total_input_tokens="legacy",
             total_output_tokens=-1,
         )
@@ -1234,6 +1268,7 @@ def test_real_sdk_usage_uses_current_names_and_preserves_zero() -> None:
 
 def test_real_sdk_optional_values_distinguish_absent_malformed_and_mismatch() -> None:
     smoke = _load_smoke()
+    sdk = _sdk_interactions()
     scope = smoke.SmokeScope(
         smoke.SYNTHETIC_COURSE_ID,
         smoke.SYNTHETIC_EXAM_ID,
@@ -1241,7 +1276,7 @@ def test_real_sdk_optional_values_distinguish_absent_malformed_and_mismatch() ->
     )
 
     malformed = _real_citation(smoke)
-    malformed = interactions.FileCitation.model_construct(
+    malformed = sdk.FileCitation.model_construct(
         **{
             **malformed.model_dump(),
             "custom_metadata": "malformed",
@@ -1279,10 +1314,15 @@ def test_real_sdk_optional_values_distinguish_absent_malformed_and_mismatch() ->
     )
 
     with pytest.raises(smoke.SmokeContractError) as absent:
-        smoke._interaction_output(interactions.Interaction(status="completed"))
+        smoke._interaction_output(
+            sdk.Interaction.model_construct(
+                status="completed",
+                output_text=None,
+            )
+        )
     assert absent.value.reason == "structured_output_absent"
 
-    malformed_output = interactions.Interaction.model_construct(
+    malformed_output = sdk.Interaction.model_construct(
         status="completed",
         output_text=7,
     )
@@ -1505,6 +1545,7 @@ def test_cleanup_diagnostics_distinguish_request_from_context_close() -> None:
 
 
 def test_google_genai_serializes_exact_interactions_wire_body() -> None:
+    sdk = import_module("google.genai")
     captured: list[dict[str, object]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -1516,7 +1557,7 @@ def test_google_genai_serializes_exact_interactions_wire_body() -> None:
         )
 
     async def send() -> None:
-        client = genai.Client(
+        client = sdk.Client(
             api_key="synthetic-sdk-key",
             http_options={
                 "api_version": "v1beta",
