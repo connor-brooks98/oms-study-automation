@@ -355,6 +355,8 @@ def _depth_control_evidence(
     evidence = []
     for entity, depth in _depth_controls(source_index):
         needle = _normalized_entity_text(entity)
+        if not re.search(r"\b(?:warning signs?|checklists?|criteria)\b", needle):
+            continue
         matches = sorted(
             (
                 passage

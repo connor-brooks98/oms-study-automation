@@ -1375,14 +1375,14 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
                 artifact_id="outline:9",
                 source_kind=SourceKind.SUMMARY,
                 locator="summary:depth:1",
-                text="SCID, X-linked Lymphoproliferative: DEEP. Molecular detail follows.",
+                text="SCID, Jeffrey Modell Warning Signs: MEDIUM. Clinical detail follows.",
                 source_id="SUM:12:DEPTH:D1",
                 summary_section="depth",
             ),
             _passage(
                 SourceKind.SLIDE,
                 "slide:2",
-                "X-linked lymphoproliferative disease is caused by SH2D1A mutation.",
+                "Jeffrey Modell Warning Signs include recurrent infections and thresholds.",
             ),
         ],
         snapshot_id="snapshot-1",
@@ -1392,9 +1392,16 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
         concept_id="C01",
         canonical_statement="SCID causes absent T-cell function.",
         primary_entity="SCID",
-        depth="deep",
+        depth="medium",
         emphasis_flag=False,
-        importance="high",
+        importance="medium",
+    )
+    jeffrey_modell = (
+        "The Jeffrey Modell Warning Signs are 8 ear infections in one year, 2 serious "
+        "sinus infections in one year, 2 months of antibiotics with little effect, 2 "
+        "pneumonias in one year, failure to gain weight or grow normally, recurrent deep "
+        "skin or organ abscesses, persistent thrush after age one, need for intravenous "
+        "antibiotics, 2 deep-seated infections, and family history of PID."
     )
     repaired = CardConceptLedger(
         lecture_entity_count=2,
@@ -1402,11 +1409,11 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
             scid,
             CardConcept(
                 concept_id="C02",
-                canonical_statement="X-linked lymphoproliferative syndrome impairs EBV control.",
-                primary_entity="X-linked lymphoproliferative syndrome",
-                depth="deep",
+                canonical_statement=jeffrey_modell,
+                primary_entity="Jeffrey Modell Warning Signs",
+                depth="medium",
                 emphasis_flag=False,
-                importance="high",
+                importance="medium",
             ),
         ),
     )
@@ -1427,7 +1434,7 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
 
     assert result.ledger == repaired
     assert [attempt.outcome for attempt in attempts] == ["validation_failed", "accepted"]
-    assert "X-linked Lymphoproliferative (deep)" in attempts[0].validation_error
+    assert "Jeffrey Modell Warning Signs (medium)" in attempts[0].validation_error
     assert json.loads(generator.calls[0][1])["depth_control_evidence"][0][
         "passage_id"
     ].startswith("SLD:")
