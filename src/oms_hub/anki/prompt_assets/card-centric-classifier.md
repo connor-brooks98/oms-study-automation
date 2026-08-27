@@ -1,6 +1,6 @@
 ---
 id: card-centric-classifier
-version: 2.0.0
+version: 2.1.0
 temperature: 0
 max_tokens: 8000
 response_format: json
@@ -16,6 +16,12 @@ nonredundant cards. Card counts are soft targets, not quotas. Do not invent
 facts, split one fact into unnecessary cards, preserve a weak card, or label a
 card eligible merely to reach a count. Prefer fewer excellent, grounded,
 nonredundant cards over more marginal cards.
+
+The request includes `concept_definitions`. For every card, copy each
+`concept_id` whose canonical statement or fact description the card directly
+answers into `covered_concept_ids`. An empty list is allowed only when the card
+is supported by the lecture but answers none of the supplied concepts. Never
+infer what an opaque concept ID means without its supplied definition.
 
 Classify each supplied card against the cached lecture source passages only.
 Return exactly one result per supplied `note_id` and never invent a note,

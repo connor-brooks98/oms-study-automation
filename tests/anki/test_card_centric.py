@@ -756,6 +756,59 @@ def test_classifier_uses_cached_prefix_and_restores_parallel_batch_order() -> No
     assert [batch.note_ids for batch in result.telemetry.batches] == [(3,), (1,), (2,)]
 
 
+def test_classifier_receives_concept_definitions_and_rejects_all_unmapped_yes() -> None:
+    source = build_source_index(
+        [_passage(SourceKind.SLIDE, "slide:1", "IgA transfusion evidence")],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    concept = CardConcept(
+        concept_id="C01",
+        canonical_statement="IgA deficiency can cause transfusion anaphylaxis.",
+        primary_entity="IgA deficiency",
+        aliases=("anti-IgA reaction",),
+        depth="deep",
+        emphasis_flag=True,
+        importance="high",
+        fact_descriptions=("Anti-IgA causes transfusion anaphylaxis.",),
+    )
+    unmapped = CardClassificationBatchOutput(
+        results=(
+            CardClassification(
+                note_id=1,
+                verdict="YES",
+                primary_subject="IgA deficiency",
+                reason="the slide supports the card",
+                supporting_passage_ids=(source.passages[0].passage_id,),
+            ),
+        )
+    )
+    generator = _Generator([unmapped])
+    classifier = CardCentricClassifier(StructuredTextService(generator))
+
+    with pytest.raises(CardCentricValidationError, match="no YES cards"):
+        asyncio.run(
+            classifier.classify(
+                [_card(1)],
+                source_index=source,
+                concept_ids=("C01",),
+                concepts=(concept,),
+                provider=ProviderName.ANTHROPIC,
+                model="claude-haiku",
+            )
+        )
+
+    assert generator.inputs[0]["concept_definitions"] == [
+        {
+            "concept_id": "C01",
+            "canonical_statement": "IgA deficiency can cause transfusion anaphylaxis.",
+            "primary_entity": "IgA deficiency",
+            "aliases": ["anti-IgA reaction"],
+            "fact_descriptions": ["Anti-IgA causes transfusion anaphylaxis."],
+        }
+    ]
+
+
 def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
     source = build_source_index(
         [
@@ -1321,11 +1374,13 @@ class _Generator:
         self.outputs = list(outputs)
         self.options = []
         self.instructions = []
+        self.inputs = []
 
     def generate_text(self, instruction, input_text, *, output_schema, provider, model, options):
         del output_schema, provider, model
         self.instructions.append(instruction)
         self.options.append(options)
+        self.inputs.append(json.loads(input_text))
         output = (
             self.outputs.pop(0)
             if self.outputs

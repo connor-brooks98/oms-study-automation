@@ -803,10 +803,27 @@ class CardCentricClassifier:
         *,
         source_index: CardCentricSourceIndex,
         concept_ids: tuple[str, ...],
+        concepts: Sequence[CardConcept] = (),
         provider: ProviderName,
         model: str,
     ) -> ClassifierResult:
         _unique_card_ids(cards)
+        concept_definitions = tuple(
+            {
+                "concept_id": concept.concept_id,
+                "canonical_statement": concept.canonical_statement,
+                "primary_entity": concept.primary_entity,
+                "aliases": list(concept.aliases),
+                "fact_descriptions": list(concept.fact_descriptions),
+            }
+            for concept in sorted(concepts, key=lambda item: item.concept_id)
+        )
+        if concept_definitions and tuple(
+            item["concept_id"] for item in concept_definitions
+        ) != tuple(sorted(concept_ids)):
+            raise CardCentricValidationError(
+                "classifier concept definitions do not match allowed concept IDs"
+            )
         batches = tuple(_batches(cards, self.batch_size))
         semaphore = asyncio.Semaphore(self.concurrency)
 
@@ -821,6 +838,7 @@ class CardCentricClassifier:
                     batch_index=batch_index,
                     source_index=source_index,
                     concept_ids=concept_ids,
+                    concept_definitions=concept_definitions,
                     provider=provider,
                     model=model,
                 )
@@ -841,6 +859,14 @@ class CardCentricClassifier:
             )
         )
         request_ids = tuple(audit.request_id for audit in audits)
+        if (
+            concept_definitions
+            and any(item.verdict == "YES" for item in results)
+            and not any(item.covered_concept_ids for item in results)
+        ):
+            raise CardCentricValidationError(
+                "classifier mapped no YES cards to allowed concepts"
+            )
         return ClassifierResult(
             results=results,
             telemetry=ClassifierTelemetry(
@@ -863,12 +889,14 @@ class CardCentricClassifier:
         batch_index: int,
         source_index: CardCentricSourceIndex,
         concept_ids: tuple[str, ...],
+        concept_definitions: tuple[dict[str, object], ...],
         provider: ProviderName,
         model: str,
     ) -> _CompletedBatch:
         request = json.dumps(
             {
                 "cards": [card.model_dump(mode="json") for card in cards],
+                "concept_definitions": list(concept_definitions),
                 "allowed_concept_ids": list(concept_ids),
                 "allowed_supporting_passage_ids": [
                     passage.passage_id for passage in source_index.passages
@@ -882,6 +910,9 @@ class CardCentricClassifier:
         partition_instruction = (
             "Return exactly one result for each of these note IDs and no other note IDs: "
             f"{json.dumps(note_ids, separators=(',', ':'))}. Copy every ID exactly. "
+            "For each card, copy every allowed concept ID whose canonical statement or "
+            "fact description the card directly answers; use an empty concept list only "
+            "when the card is lecture-supported but answers none of those concepts. "
             "Copy supporting passage IDs and concept IDs verbatim from their allowed lists; "
             "never synthesize IDs. If an exact supporting passage ID is uncertain, omit it "
             "and do not return YES."

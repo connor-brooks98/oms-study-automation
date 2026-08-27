@@ -2627,7 +2627,8 @@ class CurationServicesRunner:
         scope_payload = _payload(context, CurationStage.CARD_TAG_SCOPE)
         try:
             scope = TagScopeResult.model_validate(scope_payload["scope"])
-            concept_ids = tuple(concept.concept_id for concept in _card_ledger(context).concepts)
+            ledger = _card_ledger(context)
+            concept_ids = tuple(concept.concept_id for concept in ledger.concepts)
         except (KeyError, TypeError, ValueError) as exc:
             raise PinnedInputChanged("card-centric scope or ledger artifact is malformed") from exc
         cards_by_id = {card.note_id: card for card in _card_records(source_payload)}
@@ -2667,6 +2668,7 @@ class CurationServicesRunner:
             selected,
             source_index=source,
             concept_ids=concept_ids,
+            concepts=ledger.concepts if is_v2 else (),
             provider=ProviderName(stage_model.provider),
             model=stage_model.model,
         )
@@ -2879,6 +2881,7 @@ class CurationServicesRunner:
             selected,
             source_index=_card_source_index(context),
             concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
+            concepts=ledger.concepts if is_v2 else (),
             provider=ProviderName(stage_model.provider),
             model=stage_model.model,
         )
