@@ -868,6 +868,23 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 ),
             ),
         )
+    with pytest.raises(ValueError, match="Jeffrey Modell"):
+        CardConceptLedger(
+            lecture_entity_count=1,
+            concepts=(
+                CardConcept(
+                    concept_id="C01",
+                    canonical_statement=(
+                        "The Jeffrey Modell Warning Signs are clinical criteria used "
+                        "to recognize primary immunodeficiency."
+                    ),
+                    primary_entity="Jeffrey Modell Warning Signs",
+                    depth="medium",
+                    emphasis_flag=False,
+                    importance="medium",
+                ),
+            ),
+        )
     with pytest.raises(ValueError, match="C01-M1: SCID pathogenesis"):
         CardConceptLedger(
             lecture_entity_count=1,
