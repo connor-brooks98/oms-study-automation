@@ -28,6 +28,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardRecord,
     ClassifierResult,
     ClassifierTelemetry,
+    CoveredFactEvidence,
     DedupeAdvisoryCandidate,
     FastCardClassification,
     FastClassificationResult,
@@ -225,6 +226,33 @@ def _dedupe_stage_fixture(
                 "fast_classifier": FastClassificationResult(results=()).model_dump(mode="json"),
                 "fallback_note_ids": [],
             },
+            CurationStage.CARD_LEDGER: {
+                "ledger": CardConceptLedger(
+                    lecture_entity_count=2,
+                    concepts=(
+                        CardConcept(
+                            concept_id="C01",
+                            canonical_statement="Alpha fixture facts.",
+                            primary_entity="Alpha",
+                            depth="deep",
+                            emphasis_flag=False,
+                            importance="high",
+                            suggested_fact_count=2,
+                            fact_descriptions=("Alpha beta.", "Gamma delta."),
+                        ),
+                        CardConcept(
+                            concept_id="C02",
+                            canonical_statement="Secondary fixture facts.",
+                            primary_entity="Secondary",
+                            depth="medium",
+                            emphasis_flag=False,
+                            importance="medium",
+                            suggested_fact_count=2,
+                            fact_descriptions=("Secondary one.", "Secondary two."),
+                        ),
+                    ),
+                ).model_dump(mode="json")
+            },
         },
     )
     return runner, context, source.passages[0].passage_id
@@ -309,6 +337,11 @@ def _set_dedupe_existing(
     *,
     concept_id: str = "C01",
 ) -> None:
+    card = next(
+        item
+        for item in context.prior_payloads[CurationStage.SOURCE_INDEX]["cards"]
+        if item["note_id"] == note_id
+    )
     context.prior_payloads[CurationStage.CARD_CLASSIFY]["classifier"]["results"] = [
         CardClassification(
             note_id=note_id,
@@ -316,9 +349,56 @@ def _set_dedupe_existing(
             primary_subject="fixture",
             reason="eligible comparison",
             covered_concept_ids=(concept_id,) if concept_id else (),
+            covered_fact_ids=(f"{concept_id}-M1",) if concept_id else (),
+            covered_fact_evidence=(
+                CoveredFactEvidence(
+                    fact_id=f"{concept_id}-M1",
+                    field="text",
+                    span=card["text"],
+                ),
+            )
+            if concept_id
+            else (),
             supporting_passage_ids=(passage_id,),
         ).model_dump(mode="json")
     ]
+
+
+def test_v2_concept_coverage_cannot_expand_to_all_facts() -> None:
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="Two distinct facts.",
+                primary_entity="Fixture",
+                depth="medium",
+                emphasis_flag=False,
+                importance="medium",
+                suggested_fact_count=2,
+                fact_descriptions=("First fact.", "Second fact."),
+            ),
+        ),
+    )
+    classification = CardClassification(
+        note_id=1,
+        verdict="YES",
+        primary_subject="fixture",
+        reason="legacy concept-only coverage",
+        covered_concept_ids=("C01",),
+    )
+
+    with pytest.raises(PinnedInputChanged, match="without fact IDs"):
+        stages_module._classification_fact_ids(
+            classification,
+            ledger,
+            pipeline_contract_version="card_centric_v2",
+        )
+    assert stages_module._classification_fact_ids(
+        classification,
+        ledger,
+        pipeline_contract_version="card_centric_v1",
+    ) == ("C01-M1", "C01-M2")
 
 
 def test_card_dedupe_v2_preserves_existing_duplicate_identity() -> None:
@@ -386,7 +466,7 @@ def test_card_dedupe_v2_does_not_cross_concept_boundaries() -> None:
     ]
 
 
-def test_card_dedupe_v2_recovers_an_unmapped_existing_duplicate() -> None:
+def test_card_dedupe_v2_does_not_transfer_fact_to_unmapped_existing_duplicate() -> None:
     note = CardRecord(
         note_id=41,
         content_sha256="1" * 64,
@@ -417,8 +497,23 @@ def test_card_dedupe_v2_recovers_an_unmapped_existing_duplicate() -> None:
     )
 
     result = product.payload["resolutions"][0]
-    assert result["status"] == "duplicate_of_existing"
-    assert result["duplicate_of_existing_note_id"] == 41
+    assert result["status"] == "generated"
+    assert result["duplicate_of_existing_note_id"] is None
+    review = product.payload["semantic_dedupe_reviews"][0]
+    assert review["reason"] == "unproven_fact_entailment"
+    assert review["retry_exhausted"] is False
+    assert review["nearest_semantic_identity"]["existing_note_id"] == 41
+    assert product.payload["semantic_dedupe_diagnostics"] == [
+        {
+            "card_id": "G01",
+            "fact_id": "C02-M2",
+            "disposition": "duplicate",
+            "nearest_identity": "note:41",
+            "semantic_score": 1.0,
+            "fact_entailment_proven": False,
+        }
+    ]
+    assert product.payload["terminal_resolutions"] == []
 
 
 def test_card_dedupe_v2_uses_pinned_existing_vectors_without_uploading_notes() -> None:
@@ -1195,8 +1290,10 @@ def test_card_reconciliation_constructs_the_full_v2_s9_snapshot() -> None:
         "C01": "covered",
         "C02": "uncovered",
         "C03": "intentional_gap",
-        "C04": "uncovered",
+        "C04": "intentional_gap",
     }
+    assert "A1" in product.payload["passed"]
+    assert "S8" in {item["assertion_id"] for item in product.payload["failed"]}
     assert snapshot["overflow_acknowledgement"] == acknowledgement.as_dict()
     assert repository.acknowledgement_calls == [
         {

@@ -282,6 +282,7 @@ def _thorough_duplicate_target(
         primary_subject="fixture",
         reason="independently eligible thorough S8 duplicate target",
         covered_concept_ids=(concept_id,),
+        covered_fact_ids=(f"{concept_id}-M1",),
         supporting_passage_ids=(passage_id,),
     )
 

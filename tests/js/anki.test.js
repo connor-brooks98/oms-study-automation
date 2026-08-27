@@ -721,7 +721,24 @@ test("candidate review uses the blind audit instead of fake confidence", () => {
     subject: "hemophilia A",
     support: "None",
     structureIssues: ["Context Trap"],
+    fieldReviews: [],
   });
+});
+
+test("card-centric field reviews stay visible without becoming quality flags", () => {
+  const review = anki.candidateAudit({
+    reason: "Text remains usable",
+    provenance: {
+      card_centric_v2: {
+        field_reviews: [
+          { field: "extra", reason: "Extra conflicts with the lecture" },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(review.fieldReviews, ["Extra: Extra conflicts with the lecture"]);
+  assert.deepEqual(review.structureIssues, []);
 });
 
 test("convergence summary surfaces pass count and manual review state", () => {

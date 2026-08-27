@@ -94,6 +94,7 @@
 
   const candidateAudit = (candidate) => {
     const audit = candidate?.provenance?.audit;
+    const cardCentric = candidate?.provenance?.card_centric_v2;
     if (!audit || typeof audit !== "object") {
       return {
         label: "Coverage assessment",
@@ -101,6 +102,9 @@
         subject: "",
         support: "",
         structureIssues: [],
+        fieldReviews: (Array.isArray(cardCentric?.field_reviews)
+          ? cardCentric.field_reviews
+          : []).map((review) => `${readableState(review.field)}: ${review.reason}`),
       };
     }
     return {
@@ -111,6 +115,7 @@
       structureIssues: (Array.isArray(audit.structure_issue)
         ? audit.structure_issue
         : []).map(readableState),
+      fieldReviews: [],
     };
   };
 
@@ -1217,6 +1222,9 @@
       ...(audit.support ? { source_support: audit.support } : {}),
       ...(audit.structureIssues.length
         ? { structure_issues: audit.structureIssues.join(", ") }
+        : {}),
+      ...(audit.fieldReviews.length
+        ? { field_review: audit.fieldReviews.join(" · ") }
         : {}),
     }).forEach(([name, value]) => {
       const row = element(documentRef, "div");

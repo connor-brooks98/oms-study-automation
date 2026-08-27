@@ -7,6 +7,8 @@ of the old retrieval graph.
 
 import hashlib
 import json
+import re
+import unicodedata
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -239,6 +241,34 @@ CardFlag = Literal[
 ]
 
 
+class CoveredFactEvidence(CardCentricContract):
+    fact_id: FactId
+    field: Literal["text", "extra"]
+    span: str = Field(min_length=1, max_length=4_000)
+
+    @field_validator("span")
+    @classmethod
+    def clean_span(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("covered fact evidence span must be nonblank")
+        return value
+
+
+class CardFieldReview(CardCentricContract):
+    field: Literal["text", "extra"]
+    disposition: Literal["exclude_from_fact_evidence"]
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def clean_reason(cls, value: str) -> str:
+        value = value.strip()
+        if not value or "\n" in value or "\r" in value:
+            raise ValueError("field review reason must be nonblank and one line")
+        return value
+
+
 class CardClassification(CardCentricContract):
     note_id: int = Field(gt=0)
     verdict: CardVerdict
@@ -246,8 +276,10 @@ class CardClassification(CardCentricContract):
     reason: str = Field(min_length=1, max_length=500)
     covered_concept_ids: tuple[str, ...] = ()
     covered_fact_ids: tuple[FactId, ...] = ()
+    covered_fact_evidence: tuple[CoveredFactEvidence, ...] = ()
     supporting_passage_ids: tuple[str, ...] = ()
     flags: tuple[CardFlag, ...] = ()
+    field_reviews: tuple[CardFieldReview, ...] = ()
 
     @field_validator(
         "covered_concept_ids", "covered_fact_ids", "supporting_passage_ids", "flags"
@@ -264,6 +296,19 @@ class CardClassification(CardCentricContract):
         if not value.strip() or "\n" in value or "\r" in value:
             raise ValueError("classifier reason must be nonblank and one line")
         return value.strip()
+
+    @model_validator(mode="after")
+    def unique_fact_evidence_and_field_reviews(self) -> "CardClassification":
+        evidence = [
+            (item.fact_id, item.field, item.span.casefold())
+            for item in self.covered_fact_evidence
+        ]
+        if len(evidence) != len(set(evidence)):
+            raise ValueError("covered fact evidence must be unique")
+        reviewed_fields = [item.field for item in self.field_reviews]
+        if len(reviewed_fields) != len(set(reviewed_fields)):
+            raise ValueError("field reviews must name each field at most once")
+        return self
 
 
 class CardClassificationBatchOutput(CardCentricContract):
@@ -329,6 +374,13 @@ class CardConcept(CardCentricContract):
             f"{self.concept_id}-M{index + 1}" for index in range(self.suggested_fact_count)
         )
 
+    @property
+    def stable_fact_keys(self) -> tuple[str, ...]:
+        return tuple(
+            stable_fact_key(self.primary_entity, statement)
+            for statement in self.fact_descriptions
+        )
+
     @field_validator("canonical_statement", "primary_entity")
     @classmethod
     def nonblank_fact(cls, value: str) -> str:
@@ -384,6 +436,7 @@ class CardConceptLedger(CardCentricContract):
     concepts: tuple[CardConcept, ...] = Field(min_length=1)
     lecture_entity_count: int = Field(ge=1)
     forbidden_cloze_targets: tuple[str, ...] = ()
+    fact_stable_keys: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def unique_concept_ids(self) -> "CardConceptLedger":
@@ -396,6 +449,29 @@ class CardConceptLedger(CardCentricContract):
         ) != len(targets):
             raise ValueError("forbidden cloze targets must be nonblank and unique")
         object.__setattr__(self, "forbidden_cloze_targets", targets)
+        stable_keys = {
+            fact_id: stable_key
+            for concept in self.concepts
+            for fact_id, stable_key in zip(
+                concept.fact_ids, concept.stable_fact_keys, strict=True
+            )
+        }
+        if len(stable_keys) != sum(len(concept.fact_ids) for concept in self.concepts):
+            raise ValueError("ledger fact IDs must be unique")
+        if len(set(stable_keys.values())) != len(stable_keys):
+            raise ValueError("ledger facts must be distinct after normalization")
+        object.__setattr__(self, "fact_stable_keys", dict(sorted(stable_keys.items())))
+        control_only = re.compile(
+            r"\b(?:received|receives|was given|were given)\s+"
+            r"(?:deep|medium|surface)\s+(?:lecture\s+)?coverage\b",
+            re.IGNORECASE,
+        )
+        if any(
+            control_only.search(statement)
+            for concept in self.concepts
+            for statement in concept.fact_descriptions
+        ):
+            raise ValueError("lecture depth metadata cannot be a card-generating fact")
         return self
 
     @property
@@ -438,6 +514,21 @@ def serialize_card_centric_ledger(
             "forbidden_cloze_targets": list(ledger.forbidden_cloze_targets),
         }
     return ledger.model_dump(mode="json")
+
+
+_FACT_IDENTITY_SPACE = re.compile(r"\s+")
+
+
+def stable_fact_key(primary_entity: str, fact_statement: str) -> str:
+    """Return a model-independent fact identity that survives ledger reordering."""
+
+    def normalize(value: str) -> str:
+        return _FACT_IDENTITY_SPACE.sub(
+            " ", unicodedata.normalize("NFKC", value).strip()
+        ).casefold()
+
+    material = f"fact-v1\0{normalize(primary_entity)}\0{normalize(fact_statement)}"
+    return hashlib.sha256(material.encode()).hexdigest()
 
 
 class SemanticPreFilterResult(CardCentricContract):
@@ -586,9 +677,12 @@ class SemanticDedupeReview(CardCentricContract):
 
     card_id: str = Field(min_length=1)
     fact_id: str = Field(pattern=r"^C[0-9]{2,4}-M[0-9]{1,4}$")
-    retry_exhausted: Literal[True] = True
+    reason: Literal["retry_exhausted", "unproven_fact_entailment"] = "retry_exhausted"
+    retry_exhausted: bool = True
     automatic_unique: Literal[False] = False
-    lexical_candidates: tuple[DedupeAdvisoryCandidate, ...]
+    lexical_candidates: tuple[DedupeAdvisoryCandidate, ...] = ()
+    nearest_semantic_identity: DuplicateIdentity | None = None
+    semantic_score: float | None = Field(default=None, ge=-1, le=1)
 
     @model_validator(mode="after")
     def candidates_describe_this_generated_card(self) -> "SemanticDedupeReview":
@@ -600,6 +694,14 @@ class SemanticDedupeReview(CardCentricContract):
         identities = [candidate.identity.model_dump_json() for candidate in self.lexical_candidates]
         if len(identities) != len(set(identities)):
             raise ValueError("dedupe advisory candidate identities must be unique")
+        if self.reason == "retry_exhausted" and self.retry_exhausted is not True:
+            raise ValueError("retry-exhausted review must record exhausted retries")
+        if self.reason == "unproven_fact_entailment" and (
+            self.retry_exhausted
+            or self.nearest_semantic_identity is None
+            or self.semantic_score is None
+        ):
+            raise ValueError("unproven entailment review needs its semantic match evidence")
         return self
 
 

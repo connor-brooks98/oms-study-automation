@@ -1,6 +1,6 @@
 ---
 id: card-centric-ledger-v2
-version: 2.0.4
+version: 2.1.0
 max_tokens: 7000
 response_format: json
 schema: lcl_v2
@@ -28,6 +28,18 @@ array per fact in `forbidden_cloze_targets_by_fact`, and `is_mechanism`.
 `canonical_statement` remains the single canonical concept statement. Preserve
 the legacy top-level `forbidden_cloze_targets` for compatibility. Never invent
 source IDs or material absent from the lecture.
+
+Every `fact_description` must be one independently testable medical proposition.
+Never emit a fact that merely describes lecture depth, coverage, emphasis, or
+pedagogy. Keep depth only in the concept's `depth` field. When one entity requires
+more than five distinct facts, emit a continuation concept with the same
+`primary_entity` and the next sequential concept ID; never rebundle the extra
+facts into composite statements. Do not repeat or recombine a fact across
+continuation concepts.
+
+Create a standalone diagnostic-workflow concept only when a supplied passage
+teaches that workflow as a workflow. Tests mentioned separately inside disease
+sections remain facts of those disease concepts.
 
 ## Importance is derived, never estimated
 

@@ -191,14 +191,21 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
     terminal = snapshot.terminal_resolutions
     terminal_by_fact = {resolution.fact_id: resolution for resolution in terminal}
     semantic_review_ids = set(snapshot.semantic_review_required_card_ids)
+    reviewed_fact_ids = {
+        item.fact_id for item in canonical_generated if item.card_id in semantic_review_ids
+    }
 
     # S7/S8 conservation is independent of the selected S9 subset.  A
     # duplicate is a terminal duplicate resolution, never an unresolved fact.
     output_set_error = False
-    if snapshot.terminal_resolutions_provided and not semantic_review_ids:
+    if snapshot.terminal_resolutions_provided:
         try:
             GeneratedOutputSet(
-                required_fact_ids=snapshot.required_fact_ids,
+                required_fact_ids=tuple(
+                    fact_id
+                    for fact_id in snapshot.required_fact_ids
+                    if fact_id not in reviewed_fact_ids
+                ),
                 canonical_all_generated=tuple(
                     GeneratedCardIdentity(
                         card_id=item.card_id,
@@ -207,8 +214,13 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
                         split_index=item.split_index,
                     )
                     for item in canonical_generated
+                    if item.fact_id not in reviewed_fact_ids
                 ),
-                selected_generated_card_ids=snapshot.selected_generated_card_ids,
+                selected_generated_card_ids=tuple(
+                    card_id
+                    for card_id in snapshot.selected_generated_card_ids
+                    if card_id not in semantic_review_ids
+                ),
                 resolutions=terminal,
             )
         except ValidationError:
@@ -218,7 +230,8 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
 
     terminal_exact = (
         len(terminal_by_fact) == len(terminal)
-        and set(terminal_by_fact) == required
+        and set(terminal_by_fact) | reviewed_fact_ids == required
+        and not set(terminal_by_fact) & reviewed_fact_ids
         and not semantic_review_ids & {
             card_id
             for resolution in terminal

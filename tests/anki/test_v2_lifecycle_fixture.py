@@ -62,9 +62,14 @@ def test_real_handler_lifecycle_harness_exposes_stage_artifacts() -> None:
                     canonical_statement="Heme synthesis starts in mitochondria.",
                     primary_entity="Heme synthesis",
                     aliases=("heme",),
-                    depth="deep",
-                    emphasis_flag=True,
-                    importance="high",
+                        depth="deep",
+                        emphasis_flag=True,
+                        importance="high",
+                        suggested_fact_count=2,
+                        fact_descriptions=(
+                            "Heme synthesis starts in mitochondria.",
+                            "Heme synthesis combines glycine and succinyl-CoA.",
+                        ),
                 ),
             ),
             lecture_entity_count=1,
@@ -189,10 +194,13 @@ def test_real_handler_lifecycle_harness_exposes_stage_artifacts() -> None:
                     ).model_dump(mode="json"),
                 },
                 CurationStage.CARD_RESIDUAL: {"classifier": None},
-                CurationStage.CARD_FAST_CLASSIFY: {
+                    CurationStage.CARD_FAST_CLASSIFY: {
                     "fast_classifier": FastClassificationResult(results=()).model_dump(mode="json"),
-                    "fallback_note_ids": [],
-                },
+                        "fallback_note_ids": [],
+                    },
+                    CurationStage.CARD_LEDGER: {
+                        "ledger": ledger_product.payload["ledger"],
+                    },
                 CurationStage.CARD_GAP_FILL: {
                     "resolutions": [item.model_dump(mode="json") for item in generated]
                 },

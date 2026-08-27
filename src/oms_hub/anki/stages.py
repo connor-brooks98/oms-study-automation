@@ -147,7 +147,7 @@ from oms_hub.anki.lcl import (
     LectureConceptLedger,
     runtime_ledger_from_v2,
 )
-from oms_hub.anki.normalize import NormalizedNote
+from oms_hub.anki.normalize import NormalizedNote, normalize_html
 from oms_hub.anki.pipeline import (
     PinnedInputChanged,
     StageContext,
@@ -2729,7 +2729,11 @@ class CurationServicesRunner:
                         evidence["evidence_quality"] = evidence_quality.value
                     coverage[concept_id].append(evidence)
             if is_v2:
-                for fact_id in _classification_fact_ids(item, ledger):
+                for fact_id in _classification_fact_ids(
+                    item,
+                    ledger,
+                    pipeline_contract_version=context.job.pipeline_contract_version.value,
+                ):
                     if fact_id in fact_coverage:
                         evidence = {
                             "note_id": item.note_id,
@@ -4034,14 +4038,18 @@ class CurationServicesRunner:
     ) -> StageProduct:
         """Adapt immutable card artifacts to the existing semantic deduper."""
         source = _card_source_index(context)
+        ledger = _card_ledger(context)
+        classifications_by_note = {
+            item.note_id: item for item in _all_card_classifications(context)
+        }
         existing_ids = {
             item.note_id
-            for item in _all_card_classifications(context)
+            for item in classifications_by_note.values()
             if selection_eligible_v2(item, source)
         }
         existing_concepts = {
             item.note_id: set(item.covered_concept_ids)
-            for item in _all_card_classifications(context)
+            for item in classifications_by_note.values()
             if item.note_id in existing_ids
         }
         # Only independently eligible thorough classifications can terminate a
@@ -4068,6 +4076,8 @@ class CurationServicesRunner:
             nearest_limit=5,
         )
         resolved: list[GeneratedCardResolution] = []
+        semantic_reviews: list[SemanticDedupeReview] = []
+        semantic_dedupe_diagnostics: list[dict[str, object]] = []
         accepted: list[GapCardProposal] = []
         accepted_ids: set[str] = set()
         for batch_index, item in enumerate(generated):
@@ -4109,6 +4119,17 @@ class CurationServicesRunner:
                 accepted_ids.add(f"proposal:{item.card_id}")
                 continue
             nearest = outcome.nearest_matches[0].identifier if outcome.nearest_matches else None
+            diagnostic: dict[str, object] = {
+                "card_id": item.card_id,
+                "fact_id": item.fact_id,
+                "disposition": outcome.disposition,
+                "nearest_identity": nearest or "none",
+                "semantic_score": (
+                    outcome.nearest_matches[0].score if outcome.nearest_matches else None
+                ),
+                "fact_entailment_proven": None,
+            }
+            semantic_dedupe_diagnostics.append(diagnostic)
             update: dict[str, Any] = {
                 "status": "duplicate_of_existing",
                 "reason": f"semantic dedup {outcome.disposition}: nearest={nearest or 'none'}",
@@ -4117,11 +4138,56 @@ class CurationServicesRunner:
             }
             if nearest is not None and nearest.startswith("note:"):
                 try:
-                    update["duplicate_of_existing_note_id"] = int(nearest.removeprefix("note:"))
+                    note_id = int(nearest.removeprefix("note:"))
                 except ValueError as exc:
                     raise PinnedInputChanged(
                         "semantic dedupe returned an invalid note identity"
                     ) from exc
+                classification = classifications_by_note.get(note_id)
+                existing_card = cards.get(note_id)
+                excluded_fields = (
+                    {review.field for review in classification.field_reviews}
+                    if classification is not None
+                    else set()
+                )
+                proven_fact_ids = (
+                    {
+                        evidence.fact_id
+                        for evidence in classification.covered_fact_evidence
+                        if existing_card is not None
+                        and evidence.field not in excluded_fields
+                        and normalize_html(evidence.span).casefold()
+                        in normalize_html(getattr(existing_card, evidence.field)).casefold()
+                    }
+                    if classification is not None
+                    else set()
+                )
+                if (
+                    outcome.disposition != "duplicate"
+                    or item.fact_id not in proven_fact_ids
+                    or item.fact_id not in ledger.fact_stable_keys
+                ):
+                    diagnostic["fact_entailment_proven"] = False
+                    resolved.append(item)
+                    semantic_reviews.append(
+                        SemanticDedupeReview(
+                            card_id=item.card_id,
+                            fact_id=item.fact_id,
+                            reason="unproven_fact_entailment",
+                            retry_exhausted=False,
+                            nearest_semantic_identity=DuplicateIdentity(
+                                existing_note_id=note_id
+                            ),
+                            semantic_score=(
+                                outcome.nearest_matches[0].score
+                                if outcome.nearest_matches
+                                else None
+                            ),
+                        )
+                    )
+                    continue
+                diagnostic["fact_entailment_proven"] = True
+                update["duplicate_of_existing_note_id"] = note_id
             elif nearest is not None and nearest in accepted_ids:
                 update["duplicate_of_generated_card_id"] = nearest.removeprefix("proposal:")
             else:
@@ -4131,8 +4197,13 @@ class CurationServicesRunner:
             kind="card_centric_dedupe",
             payload={
                 "resolutions": [item.model_dump(mode="json") for item in resolved],
-                "semantic_dedupe_reviews": [],
-                "terminal_resolutions": _dedupe_terminal_resolutions(resolved),
+                "semantic_dedupe_reviews": [
+                    item.model_dump(mode="json") for item in semantic_reviews
+                ],
+                "semantic_dedupe_diagnostics": semantic_dedupe_diagnostics,
+                "terminal_resolutions": _dedupe_terminal_resolutions(
+                    resolved, semantic_reviews
+                ),
             },
         )
 
@@ -4633,6 +4704,7 @@ class CurationServicesRunner:
         )
         if set(selected_review_ids) != {review.card_id for review in semantic_dedupe_reviews}:
             raise PinnedInputChanged("selection semantic review IDs do not match dedupe reviews")
+        reviewed_fact_ids = {review.fact_id for review in semantic_dedupe_reviews}
         existing_coverage_by_nid = {
             item.note_id: tuple(item.covered_concept_ids)
             for item in classifications
@@ -4649,13 +4721,6 @@ class CurationServicesRunner:
                     for item in fast.results
                     if fast_selection_eligible_v2(item, _card_source_index(context))
                 }
-            )
-        for item in generated:
-            if item.status != "duplicate_of_existing" or item.duplicate_of_existing_note_id is None:
-                continue
-            note_id = item.duplicate_of_existing_note_id
-            existing_coverage_by_nid[note_id] = tuple(
-                sorted({*existing_coverage_by_nid.get(note_id, ()), item.concept_id})
             )
         forbidden_by_fact = {
             f"{concept.concept_id}-M{index + 1}": (
@@ -4748,10 +4813,20 @@ class CurationServicesRunner:
             # coverage reconciliation has its selected target, A1/A2 must
             # fail closed rather than misrepresent it as an intentional gap.
             canonical_unresolved_fact_ids=tuple(
-                item.fact_id for item in generated if item.status == "unresolved"
+                sorted(
+                    {
+                        *(item.fact_id for item in generated if item.status == "unresolved"),
+                        *reviewed_fact_ids,
+                    }
+                )
             ),
             unresolved_fact_ids=tuple(
-                item.fact_id for item in generated if item.status == "unresolved"
+                sorted(
+                    {
+                        *(item.fact_id for item in generated if item.status == "unresolved"),
+                        *reviewed_fact_ids,
+                    }
+                )
             ),
             expected_scoped_nids=scope.scoped_note_ids,
             classifications=(
@@ -5078,11 +5153,19 @@ def _card_residual_targets(
 def _classification_fact_ids(
     classification: CardClassification,
     ledger: CardConceptLedger,
+    *,
+    pipeline_contract_version: str,
 ) -> tuple[str, ...]:
     if classification.covered_fact_ids:
         return classification.covered_fact_ids
-    # Previously persisted v2 artifacts only recorded concept coverage. New
-    # classifier output is validated against exact fact IDs before persistence.
+    if pipeline_contract_version != PipelineContractVersion.CARD_CENTRIC_V1.value:
+        if classification.covered_concept_ids:
+            raise PinnedInputChanged(
+                "card-centric v2 classification has concept coverage without fact IDs"
+            )
+        return ()
+    # Persisted v1 artifacts predate fact-level output. Their single-concept
+    # coverage remains loadable without granting the same expansion to v2.
     concepts = {concept.concept_id: concept for concept in ledger.concepts}
     return tuple(
         fact_id
@@ -5531,7 +5614,11 @@ def _merged_card_coverage(context: StageContext) -> dict[str, dict[str, Any]]:
                         evidence["evidence_quality"] = evidence_quality.value
                     coverage[concept_id]["evidence"].append(evidence)
             if is_v2 and ledger is not None:
-                for fact_id in _classification_fact_ids(item, ledger):
+                for fact_id in _classification_fact_ids(
+                    item,
+                    ledger,
+                    pipeline_contract_version=context.job.pipeline_contract_version.value,
+                ):
                     concept_id = fact_id.rpartition("-M")[0]
                     facts = coverage.get(concept_id, {}).get("facts")
                     if not isinstance(facts, dict) or fact_id not in facts:
@@ -5835,6 +5922,11 @@ def _v2_card_candidates(
     selection_metadata_by_identity: Mapping[str, dict[str, object]] | None = None,
 ) -> tuple[Candidate, ...]:
     """Materialize scoped S4 terminals plus legitimate unscoped residuals."""
+    stable_fact_keys = (
+        _card_ledger(context).fact_stable_keys
+        if CurationStage.CARD_LEDGER in context.prior_payloads
+        else {}
+    )
     cards = {
         card.note_id: card for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
     }
@@ -5854,17 +5946,6 @@ def _v2_card_candidates(
     else:
         pre_excluded_note_ids = tuple(fallback_note_ids)
     fallback = set(_unrecovered_s4a_exclusion_note_ids(pre_excluded_note_ids, classifications))
-    duplicate_fact_ids_by_note: dict[int, set[str]] = {}
-    deduped = (
-        _card_deduped(context)
-        if CurationStage.DEDUPE in context.prior_payloads
-        else ()
-    )
-    for row in deduped:
-        if row.status == "duplicate_of_existing" and row.duplicate_of_existing_note_id is not None:
-            duplicate_fact_ids_by_note.setdefault(row.duplicate_of_existing_note_id, set()).add(
-                row.fact_id
-            )
     selection_metadata_by_identity = selection_metadata_by_identity or {}
     if needs_review_ids - set(thorough):
         raise PinnedInputChanged("v2 S4b NEEDS_REVIEW rows lack S4c terminal results")
@@ -5930,11 +6011,8 @@ def _v2_card_candidates(
             provenance_kind = "prefilter_fallback"
         else:
             raise PinnedInputChanged("v2 classification terminal is unavailable")
-        recovered_fact_ids = duplicate_fact_ids_by_note.get(note_id, set())
-        fact_ids = tuple(sorted({*fact_ids, *recovered_fact_ids}))
-        concept_ids = tuple(
-            sorted({*concept_ids, *(fact_id.rpartition("-M")[0] for fact_id in fact_ids)})
-        )
+        fact_ids = tuple(sorted(fact_ids))
+        concept_ids = tuple(sorted(concept_ids))
         candidates.append(
             Candidate(
                 note_id=note_id,
@@ -5945,7 +6023,20 @@ def _v2_card_candidates(
                         "classification_kind": provenance_kind,
                         "covered_concept_ids": list(concept_ids),
                         "covered_fact_ids": list(fact_ids),
+                        "covered_stable_fact_keys": [
+                            stable_fact_keys[fact_id]
+                            for fact_id in fact_ids
+                            if fact_id in stable_fact_keys
+                        ],
                         "flags": list(flags),
+                        "field_reviews": [
+                            item.model_dump(mode="json")
+                            for item in (
+                                thorough_item.field_reviews
+                                if note_id in residual or note_id in thorough
+                                else ()
+                            )
+                        ],
                         "selection_eligible": eligible,
                     },
                     "selection": selection_metadata_by_identity.get(

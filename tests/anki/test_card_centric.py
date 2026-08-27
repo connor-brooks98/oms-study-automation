@@ -25,12 +25,15 @@ from oms_hub.anki.card_centric_contracts import (
     CardClassificationBatchOutput,
     CardConcept,
     CardConceptLedger,
+    CardFieldReview,
     CardRecord,
     CensusTrust,
+    CoveredFactEvidence,
     FastCardClassification,
     GeneratedCardResolution,
     SnapshotCensus,
     serialize_card_centric_ledger,
+    stable_fact_key,
 )
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
@@ -723,6 +726,174 @@ def test_classifier_validates_only_canonical_source_prefixed_passage_ids() -> No
     assert not selection_eligible(downgraded[0], source)
 
 
+def test_v2_fact_coverage_requires_normalized_card_field_evidence() -> None:
+    source = build_source_index(
+        [_passage(SourceKind.SLIDE, "slide:1", "CD40 is expressed on B cells")],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    card = CardRecord(
+        note_id=1,
+        content_sha256="1" * 64,
+        text="<b>CD40L</b> is expressed on {{c1::T cells}}.",
+        extra="CD40 is expressed on B cells.",
+        tags=(),
+        deck_names=("AnKing",),
+    )
+    classifier = CardCentricClassifier(StructuredTextService(_Generator([])))
+    passage_id = source.passages[0].passage_id
+    valid = CardClassificationBatchOutput(
+        results=(
+            CardClassification(
+                note_id=1,
+                verdict="YES",
+                primary_subject="CD40L",
+                reason="The card directly states the location.",
+                covered_concept_ids=("C01",),
+                covered_fact_ids=("C01-M1",),
+                covered_fact_evidence=(
+                    CoveredFactEvidence(
+                        fact_id="C01-M1",
+                        field="text",
+                        span="CD40L is expressed on T cells",
+                    ),
+                ),
+                supporting_passage_ids=(passage_id,),
+                field_reviews=(
+                    CardFieldReview(
+                        field="extra",
+                        disposition="exclude_from_fact_evidence",
+                        reason="Extra is not used for this fact.",
+                    ),
+                ),
+            ),
+        )
+    )
+
+    validated = classifier.validate_output(
+        valid,
+        cards=(card,),
+        source_index=source,
+        concept_ids=("C01",),
+        fact_ids_by_concept={"C01": ("C01-M1",)},
+    )[0]
+    assert validated.covered_fact_ids == ("C01-M1",)
+    assert selection_eligible_v2(validated, source)
+
+    missing = valid.model_copy(
+        update={
+            "results": (
+                valid.results[0].model_copy(update={"covered_fact_evidence": ()}),
+            )
+        }
+    )
+    with pytest.raises(CardCentricValidationError, match="exact card-field evidence"):
+        classifier.validate_output(
+            missing,
+            cards=(card,),
+            source_index=source,
+            concept_ids=("C01",),
+            fact_ids_by_concept={"C01": ("C01-M1",)},
+        )
+
+    lecture_only = valid.model_copy(
+        update={
+            "results": (
+                valid.results[0].model_copy(
+                    update={
+                        "covered_fact_evidence": (
+                            CoveredFactEvidence(
+                                fact_id="C01-M1",
+                                field="text",
+                                span="CD40 is expressed on B cells",
+                            ),
+                        )
+                    }
+                ),
+            )
+        }
+    )
+    with pytest.raises(CardCentricValidationError, match="does not occur"):
+        classifier.validate_output(
+            lecture_only,
+            cards=(card,),
+            source_index=source,
+            concept_ids=("C01",),
+            fact_ids_by_concept={"C01": ("C01-M1",)},
+        )
+
+
+def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> None:
+    assert stable_fact_key(" CD40 ", "Expressed  on B cells") == stable_fact_key(
+        "cd40", "expressed on b cells"
+    )
+    first = CardConcept(
+        concept_id="C01",
+        canonical_statement="CD40 is expressed on B cells.",
+        primary_entity="CD40",
+        depth="deep",
+        emphasis_flag=False,
+        importance="high",
+    )
+    reordered = first.model_copy(update={"concept_id": "C02"})
+    assert first.stable_fact_keys == reordered.stable_fact_keys
+
+    with pytest.raises(ValueError, match="depth metadata"):
+        CardConceptLedger(
+            lecture_entity_count=1,
+            concepts=(
+                CardConcept(
+                    concept_id="C01",
+                    canonical_statement="Six diseases received deep coverage.",
+                    primary_entity="Lecture coverage",
+                    depth="deep",
+                    emphasis_flag=False,
+                    importance="high",
+                ),
+            ),
+        )
+
+
+def test_fact_ceiling_requires_a_continuation_concept() -> None:
+    with pytest.raises(ValueError, match="less than or equal to 5"):
+        CardConcept(
+            concept_id="C01",
+            canonical_statement="Dense entity.",
+            primary_entity="Dense entity",
+            depth="deep",
+            emphasis_flag=False,
+            importance="high",
+            suggested_fact_count=6,
+            fact_descriptions=tuple(f"Fact {index}." for index in range(1, 7)),
+        )
+
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="First five facts.",
+                primary_entity="Dense entity",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+                suggested_fact_count=5,
+                fact_descriptions=tuple(f"Fact {index}." for index in range(1, 6)),
+            ),
+            CardConcept(
+                concept_id="C02",
+                canonical_statement="Sixth fact.",
+                primary_entity="Dense entity",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+                fact_descriptions=("Fact 6.",),
+            ),
+        ),
+    )
+    assert len(set(ledger.fact_stable_keys.values())) == 6
+
+
 def test_classifier_uses_cached_prefix_and_restores_parallel_batch_order() -> None:
     source = build_source_index(
         [_passage(SourceKind.SLIDE, "slide:1", "evidence")],
@@ -893,7 +1064,7 @@ def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
 def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     prompt = Path("src/oms_hub/anki/prompt_assets/card-centric-ledger-v2.md").read_text()
 
-    assert "version: 2.0.4" in prompt
+    assert "version: 2.1.0" in prompt
     assert "temperature:" not in prompt.split("---", 2)[1]
     assert "model:" not in prompt.split("---", 2)[1]
     assert (
@@ -906,7 +1077,7 @@ def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     )
     assert "`low` **if and only if** `emphasis_flag` is `false` and `depth` is `surface`." in prompt
     observed_hash = hashlib.sha256(prompt.encode()).hexdigest()
-    assert observed_hash == "a7e68bd507ed3cd16dbb60ef2820abdb0e61710ad8e205a5d72e9ba290eb331f"
+    assert observed_hash == "b0d36a31f51327f455c0f2296da235239cdea47650f10cb529479c260bd0d920"
     assert observed_hash != "1561da45dd05048dcf9d92fc709ce117f994bc0f38eb075a81bf2937bd1e2580"
 
 

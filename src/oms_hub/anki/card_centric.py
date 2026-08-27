@@ -34,6 +34,7 @@ from oms_hub.anki.correction_contracts import (
     SelectionTier,
 )
 from oms_hub.anki.domain import SourceKind
+from oms_hub.anki.normalize import normalize_html
 from oms_hub.anki.provider_attempts import emit_provider_event, provider_call_scope
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.llm.anthropic import resolve_anthropic_model_capabilities
@@ -925,9 +926,14 @@ class CardCentricClassifier:
             "Return exactly one result for each of these note IDs and no other note IDs: "
             f"{json.dumps(note_ids, separators=(',', ':'))}. Copy every ID exactly. "
             "For each card, copy every fact ID whose statement the card directly answers "
-            "into covered_fact_ids, then copy exactly those facts' parent concept IDs into "
+            "into covered_fact_ids. For every covered fact, return covered_fact_evidence "
+            "with the exact shortest Text or Extra substring carrying that proposition; "
+            "lecture passages cannot serve as card-field evidence. Then copy exactly those "
+            "facts' parent concept IDs into "
             "covered_concept_ids. Use both empty lists only when the card is lecture-supported "
-            "but answers none of the supplied facts. Copy supporting passage, fact, and "
+            "but answers none of the supplied facts. If Text or Extra conflicts with the "
+            "lecture, add a field_review excluding that field from fact evidence; do not use "
+            "a CardFlag for an otherwise usable field. Copy supporting passage, fact, and "
             "concept IDs verbatim from their allowed lists; "
             "never synthesize IDs. If an exact supporting passage ID is uncertain, omit it "
             "and do not return YES."
@@ -1099,6 +1105,7 @@ class CardCentricClassifier:
             for fact_id in fact_ids
         }
         validated: list[CardClassification] = []
+        cards_by_id = {card.note_id: card for card in cards}
         for result in output.results:
             if self.require_nonblank_reason and not result.reason.strip():
                 raise CardCentricValidationError("classifier returned a blank reason")
@@ -1107,6 +1114,26 @@ class CardCentricClassifier:
             if fact_to_concept:
                 if not set(result.covered_fact_ids) <= set(fact_to_concept):
                     raise CardCentricValidationError("classifier invented a fact ID")
+                evidence_fact_ids = {
+                    evidence.fact_id for evidence in result.covered_fact_evidence
+                }
+                if evidence_fact_ids != set(result.covered_fact_ids):
+                    raise CardCentricValidationError(
+                        "classifier fact coverage lacks exact card-field evidence"
+                    )
+                excluded_fields = {review.field for review in result.field_reviews}
+                card = cards_by_id[result.note_id]
+                for evidence in result.covered_fact_evidence:
+                    if evidence.field in excluded_fields:
+                        raise CardCentricValidationError(
+                            "classifier used an excluded card field as fact evidence"
+                        )
+                    field_text = normalize_html(getattr(card, evidence.field)).casefold()
+                    span = normalize_html(evidence.span).casefold()
+                    if not span or span not in field_text:
+                        raise CardCentricValidationError(
+                            "classifier fact evidence does not occur in the named card field"
+                        )
                 expected_concepts = {
                     fact_to_concept[fact_id] for fact_id in result.covered_fact_ids
                 }
@@ -1236,15 +1263,6 @@ def select_high_yield_v2(
         if generated_row.status == "duplicate_of_existing"
         and generated_row.duplicate_of_existing_note_id is not None
     }
-    duplicate_fact_ids_by_note: dict[int, set[str]] = {}
-    for generated_row in generated_cards:
-        if (
-            generated_row.status == "duplicate_of_existing"
-            and generated_row.duplicate_of_existing_note_id is not None
-        ):
-            duplicate_fact_ids_by_note.setdefault(
-                generated_row.duplicate_of_existing_note_id, set()
-            ).add(generated_row.fact_id)
     duplicate_target_generated_card_ids = {
         generated_row.duplicate_of_generated_card_id
         for generated_row in generated_cards
@@ -1331,10 +1349,7 @@ def select_high_yield_v2(
             selectable_generated_ids.add(generated_row.card_id)
 
     for classification in classifications:
-        fact_ids = {
-            *classification.covered_fact_ids,
-            *duplicate_fact_ids_by_note.get(classification.note_id, set()),
-        }
+        fact_ids = set(classification.covered_fact_ids)
         concept_ids = {
             *classification.covered_concept_ids,
             *(fact_id.rpartition("-M")[0] for fact_id in fact_ids),
@@ -1354,16 +1369,6 @@ def select_high_yield_v2(
         )
         if selection_eligible_v2(classification, source_index):
             tier = SelectionTier.T3 if tier_priority == 0 else SelectionTier.T5
-        elif (
-            classification.verdict == "MAYBE"
-            and not classification.flags
-            and coverage
-            and any(
-                passage_id in source_authority
-                for passage_id in classification.supporting_passage_ids
-            )
-        ):
-            tier = SelectionTier.T6
         else:
             continue
         candidates.append(

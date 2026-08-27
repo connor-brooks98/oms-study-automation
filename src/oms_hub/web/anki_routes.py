@@ -1651,13 +1651,16 @@ def _concept_review_groups(
         for concept_id in ledger_concept_ids
     }
     for candidate in candidates:
-        audit = candidate.provenance.get("card_centric", {})
+        audit = candidate.provenance.get(
+            "card_centric_v2", candidate.provenance.get("card_centric", {})
+        )
         verdict = str(audit.get("verdict", candidate.verdict)).upper()
         concept_ids = tuple(audit.get("covered_concept_ids", ())) or (candidate.best_concept_id,)
         summary = {
             "note_id": candidate.note_id,
             "reason": candidate.reason,
             "selected": candidate.selected,
+            "field_reviews": list(audit.get("field_reviews", ())),
         }
         for concept_id in concept_ids:
             item = groups.setdefault(

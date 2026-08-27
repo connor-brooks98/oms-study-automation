@@ -1,6 +1,6 @@
 ---
 id: card-centric-classifier
-version: 2.2.0
+version: 2.3.0
 temperature: 0
 max_tokens: 8000
 response_format: json
@@ -23,6 +23,14 @@ into `covered_fact_ids`, then copy exactly those facts' parent `concept_id`
 values into `covered_concept_ids`. Both lists must be empty when the card is
 supported by the lecture but answers none of the supplied facts. Never infer
 what an opaque concept or fact ID means without its supplied definition.
+
+For every covered fact, return `covered_fact_evidence` naming `text` or `extra`
+and the exact shortest substring in that card field which carries the complete
+proposition. Lecture passages establish grounding but cannot supply a proposition
+missing from the card. If one card field conflicts with the lecture, add a
+`field_review` with `exclude_from_fact_evidence` for that field; do not add a
+quality flag when the other field remains usable. An excluded field cannot prove
+fact coverage.
 
 Classify each supplied card against the cached lecture source passages only.
 Return exactly one result per supplied `note_id` and never invent a note,

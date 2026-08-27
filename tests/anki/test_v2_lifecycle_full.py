@@ -17,6 +17,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardConceptLedger,
     ClassifierResult,
     ClassifierTelemetry,
+    CoveredFactEvidence,
     FastCardClassification,
     FastClassificationResult,
     GeneratedCardResolution,
@@ -259,6 +260,13 @@ def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
                         "reason": "Grounded existing high coverage.",
                         "covered_concept_ids": [f"C{note_id + 1:02d}"],
                         "covered_fact_ids": [f"C{note_id + 1:02d}-M1"],
+                        "covered_fact_evidence": [
+                            {
+                                "fact_id": f"C{note_id + 1:02d}-M1",
+                                "field": "text",
+                                "span": f"Unrelated heme review card {note_id}",
+                            }
+                        ],
                         "supporting_passage_ids": [slide_id],
                     "flags": [],
                 }
@@ -824,6 +832,14 @@ def test_expected_red_p3_h3_s8_duplicate_identity_survives_into_s9_audit() -> No
                     primary_subject="heme synthesis",
                     reason="Grounded existing coverage.",
                     covered_concept_ids=("C02",),
+                    covered_fact_ids=("C02-M1",),
+                    covered_fact_evidence=(
+                        CoveredFactEvidence(
+                            fact_id="C02-M1",
+                            field="text",
+                            span="Heme synthesis begins in mitochondria",
+                        ),
+                    ),
                     supporting_passage_ids=(slide_id,),
                 ),
                 *(
@@ -1255,9 +1271,17 @@ def test_fast_only_concept_gets_terminal_replacement_after_floor_before_s9() -> 
                         note_id=index,
                         verdict="YES",
                         primary_subject=f"independent entity {index}",
-                        reason="Grounded ordinary coverage.",
-                        covered_concept_ids=(f"C{index - 1:02d}",),
-                        supporting_passage_ids=(slide_id,),
+                            reason="Grounded ordinary coverage.",
+                            covered_concept_ids=(f"C{index - 1:02d}",),
+                            covered_fact_ids=(f"C{index - 1:02d}-M1",),
+                            covered_fact_evidence=(
+                                CoveredFactEvidence(
+                                    fact_id=f"C{index - 1:02d}-M1",
+                                    field="text",
+                                    span=f"Unrelated heme review card {index}",
+                                ),
+                            ),
+                            supporting_passage_ids=(slide_id,),
                     )
                     for index in range(2, 62)
                 ),

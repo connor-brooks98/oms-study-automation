@@ -130,7 +130,7 @@ def test_concept_review_groups_keep_yes_maybe_flagged_and_generated_separate() -
         note_id=42,
         content_hash="a" * 64,
         best_concept_id="C01",
-        provenance={"card_centric": {"verdict": "YES", "flags": []}},
+        provenance={"card_centric_v2": {"verdict": "YES", "flags": []}},
         scores={},
         predicted_band="YES",
         verdict="yes",
@@ -155,7 +155,14 @@ def test_concept_review_groups_keep_yes_maybe_flagged_and_generated_separate() -
     assert groups == [
         {
             "concept_id": "C01",
-            "yes": [{"note_id": 42, "reason": "grounded", "selected": True}],
+            "yes": [
+                {
+                    "note_id": 42,
+                    "reason": "grounded",
+                    "selected": True,
+                    "field_reviews": [],
+                }
+            ],
             "maybe": [],
             "flagged": [],
             "generated": [{"card_id": "CC-1", "selected": True, "validation_state": "valid"}],
