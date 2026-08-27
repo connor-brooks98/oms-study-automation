@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -925,6 +926,19 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 "CD40L is expressed on T cells while CD40 is expressed on B cells.",
             ),
         )
+    for mechanism_fact in (
+        "BTK mutations act on B-cell development and rely on kinase signaling.",
+        "ATM protein acts on double-strand breaks and depends on p53 activation.",
+    ):
+        CardConcept(
+            concept_id="C01",
+            canonical_statement=mechanism_fact,
+            primary_entity="mechanism",
+            depth="deep",
+            emphasis_flag=False,
+            importance="high",
+            is_mechanism=True,
+        )
     with pytest.raises(ValueError, match="multiple locations"):
         CardConcept(
             concept_id="C01",
@@ -1471,6 +1485,30 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
     assert json.loads(generator.calls[1][1])["depth_control_evidence"] == json.loads(
         generator.calls[0][1]
     )["depth_control_evidence"]
+
+
+def test_captured_lecture_101_checklist_payload_is_complete() -> None:
+    captured = Path(
+        "docs/implementation/anki-lecture-101-depth-control-evidence-2026-08-27.md"
+    ).read_text()
+    slide = captured.split("### Item 1", 1)[1].split("### Item 2", 1)[0]
+    statement = " ".join(re.findall(r"^\d+\. `(.+)`$", slide, re.MULTILINE))
+
+    assert "SLD:101:0047:P:8d42edb6595fedde" in captured
+    assert "TRX:101:0036:P:9e3d09c9cf22e5e9" in captured
+    CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement=statement,
+                primary_entity="Jeffrey Modell Warning Signs",
+                depth="medium",
+                emphasis_flag=False,
+                importance="medium",
+            ),
+        ),
+    )
 
 
 @pytest.mark.parametrize("invalid_primary", [False, True])

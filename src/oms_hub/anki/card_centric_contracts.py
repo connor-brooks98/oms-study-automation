@@ -423,7 +423,7 @@ class CardConcept(CardCentricContract):
         if any(";" in value for value in descriptions):
             raise ValueError("atomic fact descriptions cannot bundle semicolon clauses")
         multiple_locations = re.compile(
-            r"\b[\w+.-]+\s+(?:is\s+expressed\s+)?on\b.+"
+            r"\b[\w+.-]+\s+is\s+expressed\s+on\b.+"
             r"\band\s+[\w+.-]+\s+(?:is\s+expressed\s+)?on\b",
             re.IGNORECASE,
         )
