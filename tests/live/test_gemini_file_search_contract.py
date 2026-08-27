@@ -264,6 +264,10 @@ class _PrivateSdkInteractions:
         file_search = tools[0]
         if self.smoke.PRIVATE_SHADOW_WRONG_LECTURE_ID in file_search["metadata_filter"]:
             annotations: list[object] = []
+            output_text = self.smoke.SmokeAnswer(
+                answer="",
+                supported=False,
+            ).model_dump_json()
         else:
             pdf = next(item for item in self.manifest.inputs if item.input_key == "pdf")
             annotations = [
@@ -283,7 +287,7 @@ class _PrivateSdkInteractions:
                     source=self.view.evidence_units[0].normalized_text,
                 )
             ]
-        output_text = "private response discarded by adapter"
+            output_text = "private response discarded by adapter"
         return sdk.Interaction(
             status="completed",
             output_text=output_text,
@@ -531,11 +535,12 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
             source_revision_id=view.source_revision_id,
             manifest=manifest,
             file_bindings=(("files/sdk-file", "pdf"),),
+            require_structured_no_result=True,
         )
     )
 
-    assert positive == smoke.PrivateShadowQueryAudit(1, 1, 19, 6)
-    assert negative == smoke.PrivateShadowQueryAudit(0, 0, 19, 6)
+    assert positive == smoke.PrivateShadowQueryAudit(1, 1, 19, 6, None, None)
+    assert negative == smoke.PrivateShadowQueryAudit(0, 0, 19, 6, False, True)
     assert operation == "operations/sdk-operation"
     upload_call = next(client.aio.files.calls[0] for client in clients if client.aio.files.calls)
     assert upload_call == (
@@ -557,7 +562,19 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
             "max_overlap_tokens": 100,
         }
     }
-    assert all(set(body) == {"input", "model", "store", "tools"} for body in interactions.calls)
+    assert set(interactions.calls[0]) == {"input", "model", "store", "tools"}
+    assert set(interactions.calls[1]) == {
+        "input",
+        "model",
+        "response_format",
+        "store",
+        "tools",
+    }
+    assert interactions.calls[1]["response_format"] == {
+        "type": "text",
+        "mime_type": "application/json",
+        "schema": smoke.SmokeAnswer.model_json_schema(),
+    }
     assert all(body["model"] == "gemini-3.7-flash" for body in interactions.calls)
     assert all(body["store"] is False for body in interactions.calls)
 

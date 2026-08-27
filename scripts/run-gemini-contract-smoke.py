@@ -300,6 +300,8 @@ class PrivateShadowQueryAudit:
     resolved_citation_count: int
     input_tokens: int
     output_tokens: int
+    supported: bool | None
+    answer_empty: bool | None
 
 
 class DiagnosticSink(Protocol):
@@ -566,6 +568,7 @@ class PrivateShadowSession(Protocol):
         source_revision_id: str,
         manifest: object,
         file_bindings: tuple[tuple[str, str], ...],
+        require_structured_no_result: bool = False,
     ) -> PrivateShadowQueryAudit: ...
 
     async def delete_document(self, document_name: str) -> None: ...
@@ -824,6 +827,7 @@ class GoogleGenaiSmokeSession:
         source_revision_id: str,
         manifest: object,
         file_bindings: tuple[tuple[str, str], ...],
+        require_structured_no_result: bool = False,
     ) -> PrivateShadowQueryAudit:
         body: dict[str, object] = {
             "model": self._config.file_search_model,
@@ -837,9 +841,27 @@ class GoogleGenaiSmokeSession:
                 }
             ],
         }
+        if require_structured_no_result:
+            body["response_format"] = {
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": SmokeAnswer.model_json_schema(),
+            }
         async with self._clients.client() as client:
             response = await _provider_call(lambda: client.interactions.create(**body))
-        _interaction_output(response)
+        output_text = _interaction_output(response)
+        supported: bool | None = None
+        answer_empty: bool | None = None
+        if require_structured_no_result:
+            try:
+                answer = SmokeAnswer.model_validate_json(output_text)
+            except ValidationError:
+                raise SmokeContractError(
+                    "private shadow negative answer was invalid",
+                    reason="negative_answer_invalid",
+                ) from None
+            supported = answer.supported
+            answer_empty = answer.answer == ""
         usage = _audit_usage(_field(response, "usage"))
         if (
             usage.input_tokens is None
@@ -863,6 +885,8 @@ class GoogleGenaiSmokeSession:
             resolved_count,
             usage.input_tokens,
             usage.output_tokens,
+            supported,
+            answer_empty,
         )
 
     async def list_documents(self, store_name: str) -> tuple[str, ...]:
@@ -2197,8 +2221,13 @@ async def _run_private_shadow_sequence(
             source_revision_id=view.source_revision_id,
             manifest=manifest,
             file_bindings=file_bindings,
+            require_structured_no_result=True,
         )
-        if negative.citation_count != 0:
+        if (
+            negative.citation_count != 0
+            or negative.supported is not False
+            or negative.answer_empty is not True
+        ):
             raise SmokeContractError(
                 "private shadow wrong scope retrieved evidence",
                 reason="private_wrong_scope_retrieved",
@@ -2225,13 +2254,13 @@ async def _run_private_shadow_sequence(
             except BaseException:
                 cleanup_failed = True
             states.append("store_deleted")
+    if failure is not None:
+        raise failure
     if cleanup_failed:
         raise SmokeContractError(
             "private shadow cleanup failed",
             reason="private_cleanup_failed",
         ) from None
-    if failure is not None:
-        raise failure
     assert positive is not None and negative is not None
     return {
         **preflight,
