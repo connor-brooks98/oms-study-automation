@@ -2288,6 +2288,36 @@ def test_card_gap_fill_v2_repairs_inadmissible_evidence(
     assert len(product.payload["resolutions"]) == 3
 
 
+def test_card_gap_fill_v2_preserves_failed_repairs_as_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid = CardGapBatch(
+        resolutions=(
+            _generated_card_gap("C01-M1", "SLD:12:9999:P:fabricated"),
+            _generated_card_gap("C01-M2", _CARD_GAP_FILL_PASSAGE_ID),
+            CardGapOutput(fact_id="C01-M3", status="unresolved", reason="No atomic card."),
+        )
+    )
+    runner, context, _ = _card_gap_fill_harness((invalid, invalid))
+    monkeypatch.setattr(
+        stages_module,
+        "_merged_card_coverage",
+        lambda _: {"C01": {"status": "uncovered", "evidence": []}},
+    )
+
+    product = asyncio.run(runner._card_gap_fill(context))
+
+    assert [row["status"] for row in product.payload["resolutions"]] == [
+        "unresolved",
+        "unresolved",
+        "unresolved",
+    ]
+    assert all(
+        "Gap generation repair failed" in row["reason"]
+        for row in product.payload["resolutions"]
+    )
+
+
 def test_card_gap_fill_v2_repairs_missing_cloze(monkeypatch: pytest.MonkeyPatch) -> None:
     valid = CardGapBatch(
         resolutions=(

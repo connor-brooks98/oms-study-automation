@@ -39,6 +39,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardConceptLedger,
     CardEvidenceAudit,
     CardGapBatch,
+    CardGapOutput,
     CardRecord,
     ClassifierResult,
     FastCardClassification,
@@ -3051,6 +3052,7 @@ class CurationServicesRunner:
                     options=GenerationOptions(cacheable_source_prefix=source.prefix),
                 )
             attempts = [result]
+            finalize_result = True
             expected = {fact["fact_id"] for fact in missing_facts}
             try:
                 if is_v2:
@@ -3113,7 +3115,22 @@ class CurationServicesRunner:
                         "contract_failed",
                         error=str(repair_error),
                     )
-                    raise
+                    if not isinstance(repair_error, _CardGapContentInvalid):
+                        raise
+                    finalize_result = False
+                    result = replace(
+                        result,
+                        value=CardGapBatch(
+                            resolutions=tuple(
+                                CardGapOutput(
+                                    fact_id=fact_id,
+                                    status="unresolved",
+                                    reason=f"Gap generation repair failed: {repair_error}",
+                                )
+                                for fact_id in sorted(expected)
+                            )
+                        ),
+                    )
             try:
                 for item in result.value.resolutions:
                     if item.status == "generated" and (
@@ -3194,7 +3211,8 @@ class CurationServicesRunner:
                 )
                 for attempt in attempts
             )
-            finalize_provider_call(result.attempt_handle)
+            if finalize_result:
+                finalize_provider_call(result.attempt_handle)
         return StageProduct(
             kind="card_centric_gap_fill",
             payload={"resolutions": [item.model_dump(mode="json") for item in output]},
@@ -6069,6 +6087,10 @@ def _card_v2_replay_input(context: StageContext, key: str) -> object:
     return replay_inputs.get(key)
 
 
+class _CardGapContentInvalid(PinnedInputChanged):
+    """A grounded card defect that can safely remain an explicit gap."""
+
+
 def _validate_card_gap_batch_v2(
     batch: CardGapBatch,
     expected_fact_ids: set[str],
@@ -6095,17 +6117,17 @@ def _validate_card_gap_batch_v2(
         for card in generated:
             cited_passage_ids = set(card.source_passage_ids)
             if not cited_passage_ids <= admissible_passage_ids:
-                raise PinnedInputChanged(
+                raise _CardGapContentInvalid(
                     f"Fact {fact_id}: generated card must cite admissible lecture evidence"
                 )
             if not cited_passage_ids <= nonempty_passage_ids:
-                raise PinnedInputChanged(
+                raise _CardGapContentInvalid(
                     f"Fact {fact_id}: generated card must cite nonempty grounded lecture evidence"
                 )
             try:
                 validate_gap_card_fields(card.text.strip(), card.extra.strip())
             except GapValidationError as exc:
-                raise PinnedInputChanged(f"Fact {fact_id}: {exc}") from exc
+                raise _CardGapContentInvalid(f"Fact {fact_id}: {exc}") from exc
         if len(generated) == 1:
             card = generated[0]
             if card.split or card.split_index is not None:
@@ -6141,7 +6163,7 @@ def _validate_card_gap_batch_v2(
             f"{fact_id}: {', '.join(forbidden_cloze_targets_by_fact.get(fact_id, ()))}"
             for fact_id in sorted(set(violations))
         )
-        raise PinnedInputChanged(
+        raise _CardGapContentInvalid(
             "card-centric v2 gap output blanks forbidden targets for facts: " + details
         )
 
