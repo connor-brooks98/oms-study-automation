@@ -925,6 +925,18 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 "CD40L is expressed on T cells while CD40 is expressed on B cells.",
             ),
         )
+    with pytest.raises(ValueError, match="multiple locations"):
+        CardConcept(
+            concept_id="C01",
+            canonical_statement="Two compact locations.",
+            primary_entity="CD40 signaling",
+            depth="deep",
+            emphasis_flag=False,
+            importance="high",
+            fact_descriptions=(
+                "CD40L is expressed on activated T cells and CD40 on B cells.",
+            ),
+        )
     with pytest.raises(ValueError, match="depth metadata"):
         CardConceptLedger(
             lecture_entity_count=1,
@@ -936,6 +948,22 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                     depth="surface",
                     emphasis_flag=False,
                     importance="low",
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="missing: sinus infections"):
+        CardConceptLedger(
+            lecture_entity_count=1,
+            concepts=(
+                CardConcept(
+                    concept_id="C01",
+                    canonical_statement=(
+                        "Ten warning signs of primary immunodeficiency include ear infections."
+                    ),
+                    primary_entity="Jeffrey Modell Warning Signs",
+                    depth="medium",
+                    emphasis_flag=False,
+                    importance="medium",
                 ),
             ),
         )
@@ -1383,7 +1411,8 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
             _passage(
                 SourceKind.SLIDE,
                 "slide:2",
-                "Jeffrey Modell Warning Signs include recurrent infections and thresholds.",
+                "The Jeffrey Modell Foundation's ten warning signs include recurrent "
+                "infections and thresholds.",
             ),
         ],
         snapshot_id="snapshot-1",

@@ -362,7 +362,8 @@ def _depth_control_evidence(
                 passage
                 for passage in source_index.passages
                 if passage.authority != "summary"
-                and needle in _normalized_entity_text(passage.text)
+                and set(needle.split())
+                <= set(_normalized_entity_text(passage.text).split())
             ),
             key=lambda passage: (passage.authority != "slide", passage.passage_id),
         )[:2]

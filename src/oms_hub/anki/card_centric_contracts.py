@@ -422,7 +422,16 @@ class CardConcept(CardCentricContract):
             raise ValueError("fact_descriptions length must equal suggested_fact_count")
         if any(";" in value for value in descriptions):
             raise ValueError("atomic fact descriptions cannot bundle semicolon clauses")
-        if any(value.casefold().count(" is expressed on ") > 1 for value in descriptions):
+        multiple_locations = re.compile(
+            r"\b[\w+.-]+\s+(?:is\s+expressed\s+)?on\b.+"
+            r"\band\s+[\w+.-]+\s+(?:is\s+expressed\s+)?on\b",
+            re.IGNORECASE,
+        )
+        if any(
+            value.casefold().count(" is expressed on ") > 1
+            or multiple_locations.search(value)
+            for value in descriptions
+        ):
             raise ValueError("atomic fact descriptions cannot bundle multiple locations")
         by_fact = tuple(
             tuple(value.strip() for value in targets)
@@ -513,7 +522,15 @@ class CardConceptLedger(CardCentricContract):
             for fact_id, statement in zip(
                 concept.fact_ids, concept.fact_descriptions, strict=True
             )
-            if "jeffrey modell" in statement.casefold()
+            if "jeffrey modell"
+            in " ".join(
+                (
+                    concept.primary_entity,
+                    *concept.aliases,
+                    concept.canonical_statement,
+                    *concept.fact_descriptions,
+                )
+            ).casefold()
             and any(
                 re.search(pattern, statement, re.IGNORECASE) is None
                 for _, pattern in jeffrey_modell_items
