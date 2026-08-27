@@ -123,6 +123,7 @@ class CardCentricLedgerService:
         )
         if not summary_prefix:
             raise CardCentricValidationError("ledger requires summary passages")
+        depth_control_evidence = _depth_control_evidence(source_index)
         input_text = json.dumps(
             {
                 "summary_passages": [
@@ -130,6 +131,7 @@ class CardCentricLedgerService:
                     for passage in source_index.passages
                     if passage.authority == "summary"
                 ],
+                "depth_control_evidence": depth_control_evidence,
                 "contract": "coverage_checklist_only",
             },
             sort_keys=True,
@@ -152,8 +154,8 @@ class CardCentricLedgerService:
                     output_model=CardConceptLedger,
                     provider=provider,
                     model=model,
-                    # S2 is deliberately summary-only: transcript and slide text are
-                    # reserved for the source-grounded S4/S6/S7 calls.
+                    # S2 caches the summary and receives only bounded passages that
+                    # substantiate entities named by summary depth controls.
                     options=options,
                 )
                 _validate_ledger_depth_controls(result, source_index)
@@ -175,6 +177,7 @@ class CardCentricLedgerService:
                 {
                     "invalid_response": error.raw_text,
                     "validation_error": str(error),
+                    "depth_control_evidence": depth_control_evidence,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -291,14 +294,7 @@ def _validate_ledger_depth_controls(
     source_index: CardCentricSourceIndex,
 ) -> None:
     """Require every entity named by summary depth controls at that depth."""
-    required = tuple(
-        (entity.strip(), match.group("depth").casefold())
-        for passage in source_index.passages
-        if passage.authority == "summary"
-        if (match := _DEPTH_CONTROL.match(passage.text)) is not None
-        for entity in match.group("entities").split(",")
-        if entity.strip()
-    )
+    required = _depth_controls(source_index)
     missing = []
     for entity, depth in required:
         needle = _normalized_entity_text(entity)
@@ -338,6 +334,46 @@ def _validate_ledger_depth_controls(
         ),
         attempt_handle=result.attempt_handle,
     )
+
+
+def _depth_controls(
+    source_index: CardCentricSourceIndex,
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (entity.strip(), match.group("depth").casefold())
+        for passage in source_index.passages
+        if passage.authority == "summary"
+        if (match := _DEPTH_CONTROL.match(passage.text)) is not None
+        for entity in match.group("entities").split(",")
+        if entity.strip()
+    )
+
+
+def _depth_control_evidence(
+    source_index: CardCentricSourceIndex,
+) -> list[dict[str, str]]:
+    evidence = []
+    for entity, depth in _depth_controls(source_index):
+        needle = _normalized_entity_text(entity)
+        matches = sorted(
+            (
+                passage
+                for passage in source_index.passages
+                if passage.authority != "summary"
+                and needle in _normalized_entity_text(passage.text)
+            ),
+            key=lambda passage: (passage.authority != "slide", passage.passage_id),
+        )[:2]
+        evidence.extend(
+            {
+                "required_entity": entity,
+                "depth": depth,
+                "passage_id": passage.passage_id,
+                "text": passage.text,
+            }
+            for passage in matches
+        )
+    return evidence
 
 
 def _normalized_entity_text(value: str) -> str:

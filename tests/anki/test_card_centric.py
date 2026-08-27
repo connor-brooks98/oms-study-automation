@@ -1378,7 +1378,12 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
                 text="SCID, X-linked Lymphoproliferative: DEEP. Molecular detail follows.",
                 source_id="SUM:12:DEPTH:D1",
                 summary_section="depth",
-            )
+            ),
+            _passage(
+                SourceKind.SLIDE,
+                "slide:2",
+                "X-linked lymphoproliferative disease is caused by SH2D1A mutation.",
+            ),
         ],
         snapshot_id="snapshot-1",
         source_revision_hashes={7: "a" * 64},
@@ -1423,6 +1428,12 @@ def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
     assert result.ledger == repaired
     assert [attempt.outcome for attempt in attempts] == ["validation_failed", "accepted"]
     assert "X-linked Lymphoproliferative (deep)" in attempts[0].validation_error
+    assert json.loads(generator.calls[0][1])["depth_control_evidence"][0][
+        "passage_id"
+    ].startswith("SLD:")
+    assert json.loads(generator.calls[1][1])["depth_control_evidence"] == json.loads(
+        generator.calls[0][1]
+    )["depth_control_evidence"]
 
 
 @pytest.mark.parametrize("invalid_primary", [False, True])
