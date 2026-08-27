@@ -15,6 +15,7 @@ from oms_hub.document_processing.domain import (
 from oms_hub.document_processing.shadow import LegacyPptxProcessor
 from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
+from oms_hub.knowledge.backfill import scope_ids
 from oms_hub.knowledge.models import SourceRevisionState
 from oms_hub.providers.contracts import AuthorityClass
 from oms_hub.source_trust_schema29 import project_schema29_index_input
@@ -139,10 +140,8 @@ def test_schema29_projects_complete_cp0002_view_without_source_trust_tables(
     assert view.source_family == "legacy_slides"
     assert view.revision_state is SourceRevisionState.READY
     assert view.authority_class is AuthorityClass.COURSE_MATERIAL
-    assert (view.course_id, view.exam_id, view.lecture_id) == (
-        "synthetic-hematology-80b3b15134ebfc091b274628",
-        "exam-2-d0155c2f7fffe0f79c6b47e7",
-        "lecture-13-c6e20e8ba68254f8308689ed",
+    assert (view.course_id, view.exam_id, view.lecture_id) == scope_ids(
+        "Synthetic Hematology", 2, 13
     )
     assert view.pptx.path == revision.canonical_source_path
     assert view.pdf.path == revision.canonical_derived_path
