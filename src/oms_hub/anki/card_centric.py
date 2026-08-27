@@ -39,6 +39,7 @@ from oms_hub.anki.provider_attempts import emit_provider_event, provider_call_sc
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.llm.anthropic import resolve_anthropic_model_capabilities
 from oms_hub.llm.domain import (
+    GeneratedText,
     GenerationOptions,
     LLMRequestError,
     ProviderCapabilities,
@@ -155,6 +156,7 @@ class CardCentricLedgerService:
                     # reserved for the source-grounded S4/S6/S7 calls.
                     options=options,
                 )
+                _validate_ledger_depth_controls(result, source_index)
         except StructuredOutputError as error:
             _record_ledger_attempt(
                 record_attempt,
@@ -187,6 +189,7 @@ class CardCentricLedgerService:
                         model=model,
                         options=options,
                     )
+                    _validate_ledger_depth_controls(result, source_index)
             except StructuredOutputError as repair_error:
                 _record_ledger_attempt(
                     record_attempt,
@@ -275,6 +278,70 @@ class CardCentricLedgerService:
             generation_parameters_sha256=parameters_sha256,
             request_ids=request_ids,
         )
+
+
+_DEPTH_CONTROL = re.compile(
+    r"^\s*(?P<entities>[^:\n]+):\s*(?P<depth>DEEP|MEDIUM|SURFACE)\b",
+    re.IGNORECASE,
+)
+
+
+def _validate_ledger_depth_controls(
+    result: StructuredJSONResult[CardConceptLedger],
+    source_index: CardCentricSourceIndex,
+) -> None:
+    """Require every entity named by summary depth controls at that depth."""
+    required = tuple(
+        (entity.strip(), match.group("depth").casefold())
+        for passage in source_index.passages
+        if passage.authority == "summary"
+        if (match := _DEPTH_CONTROL.match(passage.text)) is not None
+        for entity in match.group("entities").split(",")
+        if entity.strip()
+    )
+    missing = []
+    for entity, depth in required:
+        needle = _normalized_entity_text(entity)
+        if any(
+            concept.depth == depth
+            and needle
+            in _normalized_entity_text(
+                " ".join(
+                    (
+                        concept.primary_entity,
+                        *concept.aliases,
+                        concept.canonical_statement,
+                        *concept.fact_descriptions,
+                    )
+                )
+            )
+            for concept in result.value.concepts
+        ):
+            continue
+        missing.append(f"{entity} ({depth})")
+    if not missing:
+        return
+    message = "ledger omitted named depth-control entities: " + ", ".join(missing)
+    raise StructuredOutputError(
+        message,
+        raw_text=result.raw_text,
+        generation=GeneratedText(
+            text=result.raw_text,
+            provider=result.provider,
+            model=result.model,
+            request_id=result.request_id,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cost_microusd=result.cost_microusd,
+            cache_creation_input_tokens=result.cache_creation_input_tokens,
+            cache_read_input_tokens=result.cache_read_input_tokens,
+        ),
+        attempt_handle=result.attempt_handle,
+    )
+
+
+def _normalized_entity_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
 def _combined_request_id(request_ids: tuple[str, ...]) -> str:

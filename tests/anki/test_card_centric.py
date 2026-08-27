@@ -1349,6 +1349,65 @@ def test_card_ledger_invalid_primary_gets_one_complete_repair_and_replaces_outpu
     assert (result.input_tokens, result.output_tokens, result.cost_microusd) == (20, 10, 2)
 
 
+def test_card_ledger_repairs_missing_named_depth_control_entity() -> None:
+    source = build_source_index(
+        [
+            SourcePassage.create(
+                revision_id=9,
+                lecture_id=12,
+                artifact_id="outline:9",
+                source_kind=SourceKind.SUMMARY,
+                locator="summary:depth:1",
+                text="SCID, X-linked Lymphoproliferative: DEEP. Molecular detail follows.",
+                source_id="SUM:12:DEPTH:D1",
+                summary_section="depth",
+            )
+        ],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    scid = CardConcept(
+        concept_id="C01",
+        canonical_statement="SCID causes absent T-cell function.",
+        primary_entity="SCID",
+        depth="deep",
+        emphasis_flag=False,
+        importance="high",
+    )
+    repaired = CardConceptLedger(
+        lecture_entity_count=2,
+        concepts=(
+            scid,
+            CardConcept(
+                concept_id="C02",
+                canonical_statement="X-linked lymphoproliferative syndrome impairs EBV control.",
+                primary_entity="X-linked lymphoproliferative syndrome",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+            ),
+        ),
+    )
+    attempts = []
+    generator = _LedgerSequenceGenerator(
+        [
+            CardConceptLedger(lecture_entity_count=1, concepts=(scid,)).model_dump_json(),
+            repaired.model_dump_json(),
+        ]
+    )
+
+    result = CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+        source_index=source,
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        record_attempt=attempts.append,
+    )
+
+    assert result.ledger == repaired
+    assert [attempt.outcome for attempt in attempts] == ["validation_failed", "accepted"]
+    assert "X-linked Lymphoproliferative (deep)" in attempts[0].validation_error
+
+
 @pytest.mark.parametrize("invalid_primary", [False, True])
 def test_card_ledger_attempts_keep_requested_route_when_response_model_is_aliased(
     invalid_primary: bool,
