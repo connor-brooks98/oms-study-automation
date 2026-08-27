@@ -1911,6 +1911,102 @@ def test_private_preflight_consumes_schema29_projection_without_source_trust_rep
     }
 
 
+def test_private_preflight_flow_emits_only_allowlisted_schema29_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from oms_hub.artifacts import ArtifactRole
+    from oms_hub.files.atomic import sha256_file
+    from oms_hub.knowledge.models import (
+        EvidenceLocator,
+        EvidenceLocatorKind,
+        EvidenceUnit,
+        SourceRevisionState,
+    )
+    from oms_hub.knowledge.service import CanonicalInputArtifact, IndexInputView
+    from oms_hub.providers.contracts import AuthorityClass
+
+    smoke = _load_smoke()
+    pptx = tmp_path / "synthetic.pptx"
+    pdf = tmp_path / "synthetic.pdf"
+    markdown = tmp_path / "normalized.md"
+    pptx.write_bytes(b"offline synthetic pptx")
+    pdf.write_bytes(smoke.synthetic_pdf_bytes())
+    markdown.write_text("# Synthetic\n\nOffline evidence.\n", encoding="utf-8")
+    evidence = EvidenceUnit(
+        evidence_id="ev_schema29",
+        source_revision_id="sr_schema29",
+        authority_class=AuthorityClass.COURSE_MATERIAL,
+        course_id="course",
+        exam_id="exam",
+        lecture_id="lecture",
+        locator=EvidenceLocator(EvidenceLocatorKind.SLIDE, "1"),
+        normalized_text="Offline evidence.",
+        content_sha256=hashlib.sha256(b"Offline evidence.").hexdigest(),
+    )
+    view = IndexInputView(
+        source_document_id="legacy-study-revision:29",
+        source_revision_id="sr_schema29",
+        source_family="legacy_slides",
+        revision_state=SourceRevisionState.READY,
+        authority_class=AuthorityClass.COURSE_MATERIAL,
+        course_id="course",
+        exam_id="exam",
+        lecture_id="lecture",
+        pptx=CanonicalInputArtifact(
+            "29:pptx",
+            ArtifactRole.PPTX,
+            pptx,
+            sha256_file(pptx),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+        pdf=CanonicalInputArtifact(
+            "29:pdf",
+            ArtifactRole.PDF,
+            pdf,
+            sha256_file(pdf),
+            "application/pdf",
+        ),
+        markdown=CanonicalInputArtifact(
+            "sr_schema29:markdown",
+            ArtifactRole.CLEANED,
+            markdown,
+            sha256_file(markdown),
+            "text/markdown",
+        ),
+        evidence_units=(evidence,),
+        assets=(),
+    )
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+
+    record = smoke.run_private_shadow_preflight(
+        "29",
+        schema_version=29,
+        artifacts=SimpleNamespace(),
+        materialization_root=tmp_path,
+    )
+
+    assert set(record) == {
+        "status",
+        "source_revision_hash",
+        "document_types",
+        "page_count",
+        "slide_count",
+        "provider_operation_states",
+        "byte_usage",
+        "warnings",
+    }
+    assert record["status"] == "ready"
+    assert record["document_types"] == ["markdown", "pdf", "pptx"]
+    assert record["page_count"] == 1
+    assert record["slide_count"] == 1
+    assert record["provider_operation_states"] == ["private_preflight_ready"]
+    assert record["warnings"] == []
+    script_source = SCRIPT.read_text(encoding="utf-8")
+    assert "source_revisions" not in script_source
+    assert "KnowledgeRepository" not in script_source
+
+
 def test_opt_in_without_stored_credential_fails_before_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
