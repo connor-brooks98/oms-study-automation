@@ -357,6 +357,10 @@ _MULTIPLE_EXPRESSION_LOCATIONS = re.compile(
     r"\band\s+[\w+.-]+\s+(?:is\s+expressed\s+)?on\b",
     re.IGNORECASE,
 )
+_EXPRESSION_LOCATION = re.compile(
+    r"\b[\w+.-]+\s+is\s+expressed\s+on\s+(?P<location>[^.;]+)[.;]?$",
+    re.IGNORECASE,
+)
 _CONTROL_ONLY = re.compile(
     r"\b(?:(?:received|receives|was given|were given)\s+"
     r"(?:deep|medium|surface)\s+(?:lecture\s+)?coverage|"
@@ -371,8 +375,8 @@ _PLACEHOLDER_ONLY = re.compile(
     r"lecture (?:noted|covered|explained|taught)\b|"
     r"(?:named )?(?:clinical )?(?:checklist|criteria) (?:is |are )?"
     r"(?:used|that helps) to (?:identify|recognize)|"
-    r"(?:basic|characteristic)[^.]{0,80}(?:gene|defect)"
-    r"[^.]{0,100}clinical (?:features|presentation))\b",
+    r"(?:basic|characteristic)[^.]{0,80}(?:gene|defect)|"
+    r"(?:characteristic|clinical)[^.]{0,80}(?:features|presentation))\b",
     re.IGNORECASE,
 )
 def card_fact_structure_defects(descriptions: tuple[str, ...]) -> tuple[str, ...]:
@@ -479,6 +483,19 @@ class CardConcept(CardCentricContract):
             raise ValueError("forbidden_cloze_targets_by_fact must have one tuple per fact")
         if any(not value for targets in by_fact for value in targets):
             raise ValueError("per-fact forbidden cloze targets cannot be blank")
+        for description, targets in zip(descriptions, by_fact, strict=False):
+            match = _EXPRESSION_LOCATION.search(description)
+            if match is None:
+                continue
+            location = match.group("location").strip().casefold()
+            if any(
+                location == (target_text := target.strip(" .").casefold())
+                or location.startswith(target_text + " ")
+                for target in targets
+            ):
+                raise ValueError(
+                    "per-fact forbidden cloze targets cannot include a location answer"
+                )
         object.__setattr__(self, "forbidden_cloze_targets_by_fact", by_fact)
         return self
 

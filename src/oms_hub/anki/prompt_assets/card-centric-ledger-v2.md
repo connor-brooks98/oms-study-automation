@@ -1,6 +1,6 @@
 ---
 id: card-centric-ledger-v2
-version: 2.1.6
+version: 2.1.7
 max_tokens: 7000
 response_format: json
 schema: lcl_v2
@@ -29,6 +29,10 @@ array per fact in `forbidden_cloze_targets_by_fact`, and `is_mechanism`.
 the legacy top-level `forbidden_cloze_targets` for compatibility. Never invent
 source IDs or material absent from the lecture.
 
+For an expression-location fact, put only the named molecule in that fact's
+`forbidden_cloze_targets_by_fact` row. Never forbid the location, because the
+gap card must leave the molecule visible and test where it is expressed.
+
 The user input may include `depth_control_evidence`. These are bounded lecture
 passages supplied only to substantiate named checklists or warning signs from
 the summary depth map. Match the lecturer's demonstrated depth: preserve every
@@ -55,8 +59,9 @@ continuation concepts.
 Surface depth still requires one or two concrete identification propositions:
 name the actual gene/defect, characteristic exposure, or clinical recognition
 pattern supported by the source. Never emit phrases such as "covered at a basic
-level," "associated gene and clinical features," or another promise to teach
-details that the fact itself omits.
+level," "a basic gene defect," "a characteristic clinical presentation,"
+"associated gene and clinical features," or another promise to teach details
+that the fact itself omits.
 
 A named checklist or warning-sign list taught for recall is one recognition fact
 whose `fact_description` preserves the concrete source-listed items and

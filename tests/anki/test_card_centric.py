@@ -869,6 +869,34 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 ),
             ),
         )
+    with pytest.raises(ValueError, match="placeholders"):
+        CardConceptLedger(
+            lecture_entity_count=1,
+            concepts=(
+                CardConcept(
+                    concept_id="C01",
+                    canonical_statement=(
+                        "Wiskott-Aldrich syndrome is associated with a basic gene "
+                        "defect noted in the lecture."
+                    ),
+                    primary_entity="Wiskott-Aldrich syndrome",
+                    depth="surface",
+                    emphasis_flag=False,
+                    importance="low",
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="location answer"):
+        CardConcept(
+            concept_id="C01",
+            canonical_statement="CD40 is expressed on B cells in Hyper-IgM syndrome.",
+            primary_entity="CD40",
+            depth="deep",
+            emphasis_flag=False,
+            importance="high",
+            fact_descriptions=("CD40 is expressed on B cells in Hyper-IgM syndrome.",),
+            forbidden_cloze_targets_by_fact=(("CD40", "B cells"),),
+        )
     awareness = CardConceptLedger(
         lecture_entity_count=1,
         concepts=(
@@ -1182,7 +1210,7 @@ def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
 def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     prompt = Path("src/oms_hub/anki/prompt_assets/card-centric-ledger-v2.md").read_text()
 
-    assert "version: 2.1.6" in prompt
+    assert "version: 2.1.7" in prompt
     assert "temperature:" not in prompt.split("---", 2)[1]
     assert "model:" not in prompt.split("---", 2)[1]
     assert (
@@ -1195,7 +1223,7 @@ def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     )
     assert "`low` **if and only if** `emphasis_flag` is `false` and `depth` is `surface`." in prompt
     observed_hash = hashlib.sha256(prompt.encode()).hexdigest()
-    assert observed_hash == "5e74976fac216ee07bbf49bc93d7532dd157a90fd25ea0e6b1f8acfea71b40cf"
+    assert observed_hash == "b7163f2e7958afa49ff4c87bd79c0bc6f629a8f0fd22f61e4661a98e1f5caaac"
     assert observed_hash != "1561da45dd05048dcf9d92fc709ce117f994bc0f38eb075a81bf2937bd1e2580"
 
 
