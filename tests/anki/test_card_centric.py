@@ -876,6 +876,23 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 CardConcept(
                     concept_id="C01",
                     canonical_statement=(
+                        "X-linked lymphoproliferative disease is an inborn error of "
+                        "immunity."
+                    ),
+                    primary_entity="X-linked lymphoproliferative disease",
+                    depth="surface",
+                    emphasis_flag=False,
+                    importance="low",
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="placeholders"):
+        CardConceptLedger(
+            lecture_entity_count=1,
+            concepts=(
+                CardConcept(
+                    concept_id="C01",
+                    canonical_statement=(
                         "X-linked lymphoproliferative disease is associated with an "
                         "X-linked genetic defect."
                     ),

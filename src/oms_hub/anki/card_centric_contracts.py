@@ -375,6 +375,7 @@ _PLACEHOLDER_ONLY = re.compile(
     r"lecture (?:noted|covered|explained|taught)\b|"
     r"(?:named )?(?:clinical )?(?:checklist|criteria) (?:is |are )?"
     r"(?:used|that helps) to (?:identify|recognize)|"
+    r"(?:is|are) (?:an? )?(?:primary immunodeficiency|inborn error of immunity)|"
     r"(?:basic|characteristic)[^.]{0,80}(?:gene|defect)|"
     r"(?:associated with|has|involves) (?:an? )?(?:x-linked )?"
     r"(?:genetic|gene) defect|"
