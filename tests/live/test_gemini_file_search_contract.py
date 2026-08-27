@@ -2192,7 +2192,9 @@ class _PrivateShadowSession:
 
     async def delete_document(self, document_name: str) -> None:
         self.calls.append(("delete_document", document_name))
-        if self.fail_cleanup and document_name.endswith("5"):
+        if self.fail_cleanup and len(
+            [call for call in self.calls if call[0] == "delete_document"]
+        ) == 1:
             raise RuntimeError("raw cleanup failure must not escape")
 
     async def delete_file(self, file_name: str) -> None:

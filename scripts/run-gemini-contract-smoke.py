@@ -8,6 +8,7 @@ import asyncio
 import base64
 import csv
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -49,6 +50,13 @@ SYNTHETIC_REVISION_ID = "sr_aaaaaaaaaaaaaaaaaaaaaaaaaa"
 SYNTHETIC_MARKER = "cobalt-otter-28"
 SYNTHETIC_FACT = f"The Task 2.8 synthetic marker is {SYNTHETIC_MARKER}."
 WRONG_LECTURE_ID = "task-2-8-wrong-lecture"
+PRIVATE_SHADOW_MODEL_CONTRACT = (
+    "2.14.0",
+    "gemini-3.7-flash",
+    "models/gemini-embedding-2",
+    "v1beta",
+)
+PRIVATE_SHADOW_WRONG_LECTURE_ID = "task-2-8-private-wrong-lecture"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _MAX_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
 _IS_WINDOWS = os.name == "nt"
@@ -99,6 +107,10 @@ class SmokeContractError(RuntimeError):
             "positive_answer_unsupported",
             "positive_citation_missing",
             "positive_citation_unresolved",
+            "private_cleanup_failed",
+            "private_citation_unresolved",
+            "private_usage_invalid",
+            "private_wrong_scope_retrieved",
             "structured_output_invalid",
             "structured_output_absent",
             "structured_output_unavailable",
@@ -162,10 +174,6 @@ def run_private_shadow_preflight(
     materialization_root: Path,
     parser: Any | None = None,
 ) -> dict[str, object]:
-    from oms_hub.files.pdf import validate_pdf
-    from oms_hub.indexing.service import build_index_manifest
-    from oms_hub.knowledge.models import EvidenceLocatorKind
-
     view = prepare_private_shadow_index_input(
         slide_revision_id,
         schema_version=schema_version,
@@ -173,7 +181,43 @@ def run_private_shadow_preflight(
         materialization_root=materialization_root,
         parser=parser,
     )
+    return _private_shadow_preflight_from_view(view)
+
+
+def _private_shadow_manifest(view: IndexInputView) -> Any:
+    from oms_hub.indexing.service import IndexManifest, IndexManifestInput, build_index_manifest
+
     manifest = build_index_manifest(view)
+    all_evidence_ids = tuple(ref.evidence_id for ref in manifest.evidence)
+    return IndexManifest(
+        source_revision_id=manifest.source_revision_id,
+        authority_class=manifest.authority_class,
+        inputs=(
+            IndexManifestInput(
+                input_key="pptx",
+                input_kind="pptx",
+                path=view.pptx.path,
+                media_type=view.pptx.media_type,
+                sha256=view.pptx.sha256,
+                evidence_ids=all_evidence_ids,
+            ),
+            *manifest.inputs,
+        ),
+        evidence=manifest.evidence,
+    )
+
+
+def _private_shadow_preflight_from_view(view: IndexInputView) -> dict[str, object]:
+    return _expected_private_shadow_preflight(view, _private_shadow_manifest(view))
+
+
+def _expected_private_shadow_preflight(
+    view: IndexInputView,
+    manifest: Any,
+) -> dict[str, object]:
+    from oms_hub.files.pdf import validate_pdf
+    from oms_hub.knowledge.models import EvidenceLocatorKind
+
     if not view.evidence_units or any(
         unit.locator.kind is not EvidenceLocatorKind.SLIDE
         for unit in view.evidence_units
@@ -182,19 +226,20 @@ def run_private_shadow_preflight(
     slide_numbers = {
         _canonical_slide_number(unit.locator.value) for unit in view.evidence_units
     }
-    inputs = (view.pptx.path, *(item.path for item in manifest.inputs))
     return {
         "status": "ready",
         "source_revision_hash": hashlib.sha256(
             view.source_revision_id.encode("utf-8")
         ).hexdigest(),
         "document_types": sorted(
-            {"pptx", *(item.input_kind for item in manifest.inputs)}
+            {item.input_kind for item in manifest.inputs}
         ),
         "page_count": validate_pdf(view.pdf.path).page_count,
         "slide_count": len(slide_numbers),
         "provider_operation_states": ["private_preflight_ready"],
-        "byte_usage": {"index_inputs": sum(path.stat().st_size for path in inputs)},
+        "byte_usage": {
+            "index_inputs": sum(item.path.stat().st_size for item in manifest.inputs)
+        },
         "warnings": [],
     }
 
@@ -247,6 +292,14 @@ class UsageAudit:
     input_tokens: int | None
     output_tokens: int | None
     checks: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateShadowQueryAudit:
+    citation_count: int
+    resolved_citation_count: int
+    input_tokens: int
+    output_tokens: int
 
 
 class DiagnosticSink(Protocol):
@@ -482,6 +535,46 @@ class SmokeSession(Protocol):
     async def delete_store(self, store_name: str) -> None: ...
 
 
+class PrivateShadowSession(Protocol):
+    model_contract: tuple[str, str, str, str]
+
+    async def create_store(self, display_name: str, embedding_model: str) -> str: ...
+
+    async def upload_input(
+        self,
+        display_name: str,
+        path: Path,
+        media_type: str,
+    ) -> str: ...
+
+    async def import_input(
+        self,
+        store_name: str,
+        file_name: str,
+        metadata: tuple[tuple[str, str], ...],
+        chunking: object | None,
+    ) -> str: ...
+
+    async def wait_for_import(self, operation_name: str) -> str: ...
+
+    async def query_private(
+        self,
+        store_name: str,
+        prompt: str,
+        scope: SmokeScope,
+        *,
+        source_revision_id: str,
+        manifest: object,
+        file_bindings: tuple[tuple[str, str], ...],
+    ) -> PrivateShadowQueryAudit: ...
+
+    async def delete_document(self, document_name: str) -> None: ...
+
+    async def delete_file(self, file_name: str) -> None: ...
+
+    async def delete_store(self, store_name: str) -> None: ...
+
+
 class GoogleGenaiSmokeSession:
     """Minimum live adapter for the pinned google-genai 2.14.0 contract."""
 
@@ -495,6 +588,12 @@ class GoogleGenaiSmokeSession:
         self._config = GeminiConfig(api_key=SecretStr(api_key))
         self._clients = GeminiClientFactory(self._config, sdk_factory=sdk_factory)
         self._diagnostic_sink = diagnostic_sink
+        self.model_contract = (
+            self._config.sdk_version,
+            self._config.file_search_model,
+            self._config.embedding_model,
+            self._config.api_version,
+        )
         self._store_name: str | None = None
         self._document_name: str | None = None
         self._file_name: str | None = None
@@ -531,6 +630,21 @@ class GoogleGenaiSmokeSession:
         self._file_name = file_name
         return file_name
 
+    async def upload_input(
+        self,
+        display_name: str,
+        path: Path,
+        media_type: str,
+    ) -> str:
+        async with self._clients.client() as client:
+            uploaded = await _provider_call(
+                lambda: client.files.upload(
+                    file=path,
+                    config={"display_name": display_name, "mime_type": media_type},
+                )
+            )
+        return _provider_identity(uploaded, "file")
+
     async def import_file(
         self,
         store_name: str,
@@ -549,6 +663,30 @@ class GoogleGenaiSmokeSession:
                 ),
                 diagnostic_sink=self._diagnostic_sink,
                 label="import_file",
+            )
+        return _provider_identity(operation, "operation")
+
+    async def import_input(
+        self,
+        store_name: str,
+        file_name: str,
+        metadata: tuple[tuple[str, str], ...],
+        chunking: object | None,
+    ) -> str:
+        config: dict[str, object] = {
+            "custom_metadata": [
+                {"key": key, "string_value": value} for key, value in metadata
+            ]
+        }
+        if chunking is not None:
+            config["chunking_config"] = chunking
+        async with self._clients.client() as client:
+            operation = await _provider_call(
+                lambda: client.file_search_stores.import_file(
+                    file_search_store_name=store_name,
+                    file_name=file_name,
+                    config=config,
+                )
             )
         return _provider_identity(operation, "operation")
 
@@ -675,6 +813,56 @@ class GoogleGenaiSmokeSession:
             output_tokens=usage.output_tokens,
             citation_checks=tuple(citations.checks.items()),
             usage_checks=tuple(usage.checks.items()),
+        )
+
+    async def query_private(
+        self,
+        store_name: str,
+        prompt: str,
+        scope: SmokeScope,
+        *,
+        source_revision_id: str,
+        manifest: object,
+        file_bindings: tuple[tuple[str, str], ...],
+    ) -> PrivateShadowQueryAudit:
+        body: dict[str, object] = {
+            "model": self._config.file_search_model,
+            "input": prompt,
+            "store": False,
+            "tools": [
+                {
+                    "type": "file_search",
+                    "file_search_store_names": [store_name],
+                    "metadata_filter": _scope_filter(scope),
+                }
+            ],
+        }
+        async with self._clients.client() as client:
+            response = await _provider_call(lambda: client.interactions.create(**body))
+        _interaction_output(response)
+        usage = _audit_usage(_field(response, "usage"))
+        if (
+            usage.input_tokens is None
+            or usage.output_tokens is None
+            or any(value != "passed" for value in usage.checks.values())
+        ):
+            raise SmokeContractError(
+                "private shadow usage was invalid",
+                reason="private_usage_invalid",
+            )
+        citation_count, resolved_count = _private_shadow_citation_counts(
+            response,
+            store_name=store_name,
+            scope=scope,
+            source_revision_id=source_revision_id,
+            manifest=manifest,
+            file_bindings=file_bindings,
+        )
+        return PrivateShadowQueryAudit(
+            citation_count,
+            resolved_count,
+            usage.input_tokens,
+            usage.output_tokens,
         )
 
     async def list_documents(self, store_name: str) -> tuple[str, ...]:
@@ -1126,6 +1314,85 @@ def _audit_citations(
         outcomes = results[name]
         checks[name] = "passed" if "passed" in outcomes else outcomes[0]
     return CitationAudit(tuple(found), checks)
+
+
+def _private_shadow_citation_counts(
+    response: object,
+    *,
+    store_name: str,
+    scope: SmokeScope,
+    source_revision_id: str,
+    manifest: Any,
+    file_bindings: tuple[tuple[str, str], ...],
+) -> tuple[int, int]:
+    from oms_hub.providers.gemini.citations import ProviderCitation, map_provider_citation
+
+    steps = _field(response, "steps")
+    if not isinstance(steps, Iterable) or isinstance(steps, (str, bytes, Mapping)):
+        return 0, 0
+    inputs = {item.input_key: item for item in manifest.inputs}
+    expected_scope = {
+        "course_id": scope.course_id,
+        "exam_id": scope.exam_id,
+        "lecture_id": scope.lecture_id,
+        "source_revision_id": source_revision_id,
+    }
+    citation_count = 0
+    resolved_count = 0
+    for step in steps:
+        contents = _field(step, "content")
+        if _field(step, "type") != "model_output" or not isinstance(contents, Iterable):
+            continue
+        for content in contents:
+            annotations = _field(content, "annotations")
+            if not isinstance(annotations, Iterable) or isinstance(
+                annotations, (str, bytes, Mapping)
+            ):
+                continue
+            for annotation in annotations:
+                if _field(annotation, "type") != "file_citation":
+                    continue
+                citation_count += 1
+                try:
+                    metadata = _string_metadata(_field(annotation, "custom_metadata"))
+                    input_key = metadata.get("input_key")
+                    item = inputs.get(input_key)
+                    if (
+                        item is None
+                        or any(metadata.get(key) != value for key, value in expected_scope.items())
+                        or metadata.get("input_kind") != item.input_kind
+                        or metadata.get("input_sha256") != item.sha256
+                    ):
+                        continue
+                    cited_file = _field(annotation, "file_name")
+                    if not isinstance(cited_file, str):
+                        continue
+                    matched_keys = {
+                        key
+                        for provider_file, key in file_bindings
+                        if _resource_identity_matches(cited_file, provider_file)
+                    }
+                    if matched_keys != {input_key}:
+                        continue
+                    document_uri = _field(annotation, "document_uri")
+                    if document_uri is not None and (
+                        not isinstance(document_uri, str)
+                        or (
+                            document_uri != store_name
+                            and not document_uri.startswith(f"{store_name}/documents/")
+                        )
+                    ):
+                        continue
+                    excerpt = " ".join(
+                        _citation_excerpt(annotation, _field(content, "text")).split()
+                    )
+                    page = _optional_page(_field(annotation, "page_number"))
+                    citation = ProviderCitation(item.path.name, excerpt, page)
+                    if map_provider_citation(citation, manifest) is not None:
+                        resolved_count += 1
+                except (SmokeContractError, TypeError, ValueError):
+                    continue
+    return citation_count, resolved_count
 
 
 def _citations(
@@ -1830,6 +2097,206 @@ def run_temporary_failure_fixture() -> dict[str, object]:
         }
     finally:
         database.close()
+
+
+def _private_shadow_metadata(view: IndexInputView, item: Any) -> tuple[tuple[str, str], ...]:
+    return (
+        ("authority_class", view.authority_class.value),
+        ("course_id", view.course_id),
+        ("exam_id", view.exam_id),
+        ("lecture_id", view.lecture_id),
+        ("source_revision_id", view.source_revision_id),
+        ("input_key", item.input_key),
+        ("input_kind", item.input_kind),
+        ("input_sha256", item.sha256),
+    )
+
+
+async def _run_private_shadow_sequence(
+    session: PrivateShadowSession,
+    view: IndexInputView,
+    preflight: dict[str, object],
+    *,
+    clock: Callable[[], float],
+) -> dict[str, object]:
+    if session.model_contract != PRIVATE_SHADOW_MODEL_CONTRACT:
+        raise LiveSmokeBlocked("private shadow model contract mismatch")
+    manifest = _private_shadow_manifest(view)
+    store_name: str | None = None
+    files: list[tuple[str, str]] = []
+    documents: list[str] = []
+    states: list[str] = []
+    failure: BaseException | None = None
+    cleanup_failed = False
+    positive: PrivateShadowQueryAudit | None = None
+    negative: PrivateShadowQueryAudit | None = None
+    started = clock()
+    try:
+        store_name = await session.create_store(
+            "Study Hub Task 2.8 private shadow",
+            PRIVATE_SHADOW_MODEL_CONTRACT[2],
+        )
+        states.append("store_created")
+        for item in manifest.inputs:
+            file_name = await session.upload_input(
+                item.path.name,
+                item.path,
+                item.media_type,
+            )
+            files.append((file_name, item.input_key))
+            chunking = (
+                {
+                    "white_space_config": {
+                        "max_tokens_per_chunk": 700,
+                        "max_overlap_tokens": 100,
+                    }
+                }
+                if item.input_key == "normalized_markdown"
+                else None
+            )
+            operation = await session.import_input(
+                store_name,
+                file_name,
+                _private_shadow_metadata(view, item),
+                chunking,
+            )
+            documents.append(await session.wait_for_import(operation))
+        states.extend(
+            (f"inputs_uploaded:{len(files)}", f"inputs_imported:{len(documents)}")
+        )
+        file_bindings = tuple(files)
+        positive = await session.query_private(
+            store_name,
+            (
+                "Using only the indexed lecture, return one concise supported statement "
+                "with a citation."
+            ),
+            SmokeScope(view.course_id, view.exam_id, view.lecture_id),
+            source_revision_id=view.source_revision_id,
+            manifest=manifest,
+            file_bindings=file_bindings,
+        )
+        if (
+            positive.citation_count < 1
+            or positive.resolved_citation_count != positive.citation_count
+        ):
+            raise SmokeContractError(
+                "private shadow citations were unresolved",
+                reason="private_citation_unresolved",
+            )
+        states.append("positive_query_complete")
+        if view.lecture_id == PRIVATE_SHADOW_WRONG_LECTURE_ID:
+            raise LiveSmokeBlocked("private shadow wrong-scope identity collided")
+        negative = await session.query_private(
+            store_name,
+            (
+                "Using only the requested lecture scope, return one supported statement "
+                "with a citation."
+            ),
+            SmokeScope(view.course_id, view.exam_id, PRIVATE_SHADOW_WRONG_LECTURE_ID),
+            source_revision_id=view.source_revision_id,
+            manifest=manifest,
+            file_bindings=file_bindings,
+        )
+        if negative.citation_count != 0:
+            raise SmokeContractError(
+                "private shadow wrong scope retrieved evidence",
+                reason="private_wrong_scope_retrieved",
+            )
+        states.append("wrong_scope_query_complete")
+    except BaseException as error:
+        failure = error
+    finally:
+        for document_name in reversed(documents):
+            try:
+                await session.delete_document(document_name)
+            except BaseException:
+                cleanup_failed = True
+        states.append(f"documents_deleted:{len(documents)}")
+        for file_name, _ in reversed(files):
+            try:
+                await session.delete_file(file_name)
+            except BaseException:
+                cleanup_failed = True
+        states.append(f"files_deleted:{len(files)}")
+        if store_name is not None:
+            try:
+                await session.delete_store(store_name)
+            except BaseException:
+                cleanup_failed = True
+            states.append("store_deleted")
+    if cleanup_failed:
+        raise SmokeContractError(
+            "private shadow cleanup failed",
+            reason="private_cleanup_failed",
+        ) from None
+    if failure is not None:
+        raise failure
+    assert positive is not None and negative is not None
+    return {
+        **preflight,
+        "status": "passed",
+        "provider_operation_states": states,
+        "citation_resolution_rate": (
+            positive.resolved_citation_count / positive.citation_count
+        ),
+        "duration_ms": round((clock() - started) * 1000),
+        "token_usage": {
+            "input": positive.input_tokens + negative.input_tokens,
+            "output": positive.output_tokens + negative.output_tokens,
+        },
+    }
+
+
+async def run_authorized_private_shadow(
+    slide_revision_id: str,
+    *,
+    schema_version: int,
+    artifacts: ArtifactService,
+    materialization_root: Path,
+    secret_store: SecretStore | None = None,
+    session_factory: Callable[[str], PrivateShadowSession] | None = None,
+    parser: Any | None = None,
+    clock: Callable[[], float] = monotonic,
+) -> dict[str, object]:
+    if os.getenv("RUN_PRIVATE_GEMINI_SHADOW") != "1":
+        raise LiveSmokeBlocked(
+            "RUN_PRIVATE_GEMINI_SHADOW=1 is required for a private shadow"
+        )
+    try:
+        sdk_version = importlib.metadata.version("google-genai")
+    except importlib.metadata.PackageNotFoundError:
+        raise LiveSmokeBlocked("private shadow model contract mismatch") from None
+    if sdk_version != PRIVATE_SHADOW_MODEL_CONTRACT[0]:
+        raise LiveSmokeBlocked("private shadow model contract mismatch")
+    view = prepare_private_shadow_index_input(
+        slide_revision_id,
+        schema_version=schema_version,
+        artifacts=artifacts,
+        materialization_root=materialization_root,
+        parser=parser,
+    )
+    preflight = _private_shadow_preflight_from_view(view)
+    expected = _expected_private_shadow_preflight(view, _private_shadow_manifest(view))
+    if preflight != expected:
+        raise LiveSmokeBlocked("private shadow preflight mismatch")
+    if secret_store is None:
+        from oms_hub.security.secret_store import KeyringSecretStore
+
+        secret_store = KeyringSecretStore()
+    try:
+        api_key = secret_store.get("gemini-api-key")
+    except Exception:
+        raise LiveSmokeBlocked("stored Gemini credential is unavailable") from None
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise LiveSmokeBlocked("stored Gemini credential is unavailable")
+    normalized_key = api_key.strip()
+    session = (
+        GoogleGenaiSmokeSession(normalized_key)
+        if session_factory is None
+        else session_factory(normalized_key)
+    )
+    return await _run_private_shadow_sequence(session, view, preflight, clock=clock)
 
 
 async def run_authorized_live_smoke(
