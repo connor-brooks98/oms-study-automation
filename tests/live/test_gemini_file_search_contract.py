@@ -534,6 +534,26 @@ def test_interaction_citation_rejects_conflicting_document_uri() -> None:
     assert raised.value.reason == "citation_wrong_document"
 
 
+def test_interaction_citation_accepts_exact_document_uri() -> None:
+    smoke = _load_smoke()
+    document_name = "fileSearchStores/sdk-store/documents/sdk-document"
+    audit = smoke._audit_citations(
+        _real_interaction(
+            smoke,
+            citation=_real_citation(smoke, document_uri=document_name),
+        ),
+        smoke.SmokeScope(
+            smoke.SYNTHETIC_COURSE_ID,
+            smoke.SYNTHETIC_EXAM_ID,
+            smoke.SYNTHETIC_LECTURE_ID,
+        ),
+        document_name,
+        "task-2-8-synthetic.pdf",
+    )
+
+    assert audit.checks["citation_document_binding"] == "passed"
+
+
 def test_contract_failure_record_retains_only_allowlisted_reason() -> None:
     smoke = _load_smoke()
 
@@ -662,6 +682,35 @@ def test_operation_poll_is_bounded_by_remaining_deadline(
     session = smoke.GoogleGenaiSmokeSession("synthetic-sdk-key", sdk_factory=sdk_factory)
 
     with pytest.raises(smoke.SmokeTemporaryFailure, match="timed out"):
+        asyncio.run(session.wait_for_import("operations/sdk-operation"))
+
+
+def test_completed_import_rejects_full_document_from_another_store() -> None:
+    smoke = _load_smoke()
+
+    class CrossStoreOperations(_SdkOperations):
+        async def get(self, operation: object) -> object:
+            self.calls.append(operation)
+            return SimpleNamespace(
+                name="operations/sdk-operation",
+                done=True,
+                error=None,
+                response=SimpleNamespace(
+                    parent="other-store",
+                    document_name="fileSearchStores/other-store/documents/sdk-document",
+                ),
+            )
+
+    def sdk_factory(**kwargs: object) -> _SdkClient:
+        del kwargs
+        client = _SdkClient(smoke)
+        client.aio.operations = CrossStoreOperations()
+        return client
+
+    session = smoke.GoogleGenaiSmokeSession("synthetic-sdk-key", sdk_factory=sdk_factory)
+    session._store_name = "fileSearchStores/sdk-store"
+
+    with pytest.raises(smoke.SmokeContractError, match="did not match the store"):
         asyncio.run(session.wait_for_import("operations/sdk-operation"))
 
 
