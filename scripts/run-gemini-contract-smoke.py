@@ -5,14 +5,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import os
+import tempfile
+import traceback
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import import_module
 from io import BytesIO
+from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -39,19 +43,45 @@ SYNTHETIC_REVISION_ID = "sr_aaaaaaaaaaaaaaaaaaaaaaaaaa"
 SYNTHETIC_MARKER = "cobalt-otter-28"
 SYNTHETIC_FACT = f"The Task 2.8 synthetic marker is {SYNTHETIC_MARKER}."
 WRONG_LECTURE_ID = "task-2-8-wrong-lecture"
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_MAX_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
+_CITATION_CHECKS = (
+    "citation_presence",
+    "citation_document_binding",
+    "citation_file_binding",
+    "citation_scope_binding",
+    "citation_page_binding",
+    "citation_excerpt_binding",
+)
 
 
 class SmokeContractError(RuntimeError):
     _SAFE_REASONS = frozenset(
         {
             "citation_document_identity_unavailable",
+            "citation_document_uri_absent",
+            "citation_document_uri_invalid",
             "citation_excerpt_invalid",
+            "citation_excerpt_absent",
+            "citation_excerpt_mismatch",
             "citation_excerpt_unavailable",
+            "citation_file_absent",
+            "citation_file_invalid",
             "citation_metadata_invalid",
+            "citation_metadata_absent",
+            "citation_annotations_absent",
+            "citation_annotations_invalid",
+            "citation_content_absent",
+            "citation_content_invalid",
             "citation_page_invalid",
+            "citation_page_absent",
+            "citation_page_mismatch",
             "citation_scope_mismatch",
+            "citation_steps_absent",
+            "citation_steps_invalid",
             "citation_wrong_document",
             "citation_wrong_file",
+            "diagnostic_overflow",
             "negative_answer_invalid",
             "positive_answer_invalid",
             "positive_answer_missing_marker",
@@ -59,7 +89,12 @@ class SmokeContractError(RuntimeError):
             "positive_citation_missing",
             "positive_citation_unresolved",
             "structured_output_invalid",
+            "structured_output_absent",
             "structured_output_unavailable",
+            "usage_input_absent",
+            "usage_input_invalid",
+            "usage_output_absent",
+            "usage_output_invalid",
             "usage_count_invalid",
         }
     )
@@ -110,6 +145,118 @@ class SmokeQueryResult:
     citations: tuple[SmokeCitation, ...]
     input_tokens: int | None = None
     output_tokens: int | None = None
+    citation_checks: tuple[tuple[str, str], ...] = ()
+    usage_checks: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CitationAudit:
+    citations: tuple[SmokeCitation, ...]
+    checks: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class UsageAudit:
+    input_tokens: int | None
+    output_tokens: int | None
+    checks: dict[str, str]
+
+
+class DiagnosticSink(Protocol):
+    def capture(self, label: str, value: object) -> None: ...
+
+    def capture_exception(self, label: str, error: BaseException) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _SyntheticDiagnosticRequest:
+    output_path: Path
+    course_id: str
+    exam_id: str
+    lecture_id: str
+    source_revision_id: str
+    fixture_sha256: str
+
+
+@dataclass(slots=True)
+class _SyntheticDiagnosticSink:
+    request: _SyntheticDiagnosticRequest
+    events: list[dict[str, object]] = field(default_factory=list)
+    secrets: list[str] = field(default_factory=list)
+    _closed: bool = False
+
+    @classmethod
+    def open(cls, request: _SyntheticDiagnosticRequest) -> _SyntheticDiagnosticSink:
+        _validate_diagnostic_request(request)
+        if request.output_path.exists():
+            raise LiveSmokeBlocked("synthetic diagnostic output already exists")
+        return cls(request=request)
+
+    def add_secret(self, value: str) -> None:
+        if value:
+            self.secrets.append(value)
+
+    def capture(self, label: str, value: object) -> None:
+        self.events.append(
+            {
+                "label": label,
+                "value": _diagnostic_value(value, tuple(self.secrets)),
+            }
+        )
+
+    def capture_exception(self, label: str, error: BaseException) -> None:
+        response = _field(error, "response")
+        self.capture(
+            label,
+            {
+                "exception_type": type(error).__name__,
+                "message": str(error),
+                "traceback": "".join(traceback.format_exception(error)),
+                "status": _field(response, "status_code"),
+                "headers": _field(response, "headers"),
+                "body": _response_body(response),
+            },
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        payload = json.dumps(
+            {
+                "schema_version": 1,
+                "synthetic_only": True,
+                "events": self.events,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(payload) > _MAX_DIAGNOSTIC_BYTES:
+            raise SmokeContractError(
+                "synthetic diagnostic overflow",
+                reason="diagnostic_overflow",
+            )
+        output = self.request.output_path
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(file_descriptor, 0o600)
+            with os.fdopen(file_descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(temporary, output)
+        finally:
+            temporary.unlink(missing_ok=True)
+        self._closed = True
+
+    def delete(self) -> None:
+        self.request.output_path.unlink(missing_ok=True)
+        self.events.clear()
+        self.secrets.clear()
 
 
 class SmokeSession(Protocol):
@@ -148,9 +295,16 @@ class SmokeSession(Protocol):
 class GoogleGenaiSmokeSession:
     """Minimum live adapter for the pinned google-genai 2.14.0 contract."""
 
-    def __init__(self, api_key: str, *, sdk_factory: SdkFactory | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        sdk_factory: SdkFactory | None = None,
+        diagnostic_sink: DiagnosticSink | None = None,
+    ) -> None:
         self._config = GeminiConfig(api_key=SecretStr(api_key))
         self._clients = GeminiClientFactory(self._config, sdk_factory=sdk_factory)
+        self._diagnostic_sink = diagnostic_sink
         self._document_name: str | None = None
         self._file_display_name: str | None = None
 
@@ -162,7 +316,9 @@ class GoogleGenaiSmokeSession:
                         "display_name": display_name,
                         "embedding_model": embedding_model,
                     }
-                )
+                ),
+                diagnostic_sink=self._diagnostic_sink,
+                label="create_store",
             )
         return _provider_identity(created, "store")
 
@@ -175,7 +331,9 @@ class GoogleGenaiSmokeSession:
                         "display_name": display_name,
                         "mime_type": "application/pdf",
                     },
-                )
+                ),
+                diagnostic_sink=self._diagnostic_sink,
+                label="upload_pdf",
             )
         file_name = _provider_identity(uploaded, "file")
         self._file_display_name = display_name
@@ -196,7 +354,9 @@ class GoogleGenaiSmokeSession:
                     file_search_store_name=store_name,
                     file_name=file_name,
                     config={"custom_metadata": custom_metadata},
-                )
+                ),
+                diagnostic_sink=self._diagnostic_sink,
+                label="import_file",
             )
         return _provider_identity(operation, "operation")
 
@@ -216,16 +376,30 @@ class GoogleGenaiSmokeSession:
                     async with asyncio.timeout(remaining):
                         operation = await client.operations.get(operation)
                 except TimeoutError:
+                    if self._diagnostic_sink is not None:
+                        self._diagnostic_sink.capture_exception(
+                            "wait_for_import.timeout",
+                            TimeoutError("Gemini import operation timed out"),
+                        )
                     raise SmokeTemporaryFailure("Gemini import operation timed out") from None
                 except GeminiProviderError:
                     raise
                 except Exception as error:
+                    if self._diagnostic_sink is not None:
+                        self._diagnostic_sink.capture_exception(
+                            "wait_for_import.request_failed",
+                            error,
+                        )
                     raise translate_gemini_error(error) from None
+                if self._diagnostic_sink is not None:
+                    self._diagnostic_sink.capture("wait_for_import.response", operation)
                 if bool(_field(operation, "done")):
                     break
                 await asyncio.sleep(self._config.operation_poll_seconds)
         operation_error = _field(operation, "error")
         if operation_error:
+            if self._diagnostic_sink is not None:
+                self._diagnostic_sink.capture("wait_for_import.operation_error", operation_error)
             status = _field(operation_error, "code")
             raise translate_gemini_error(
                 _OperationFailure(status if isinstance(status, int) else None)
@@ -263,16 +437,15 @@ class GoogleGenaiSmokeSession:
                 "mime_type": "application/json",
                 "schema": response_schema.model_json_schema(),
             }
+        if self._diagnostic_sink is not None:
+            self._diagnostic_sink.capture("query.request", body)
         async with self._clients.client() as client:
             response = await _provider_call(
-                lambda: client.interactions.create(**body)
+                lambda: client.interactions.create(**body),
+                diagnostic_sink=self._diagnostic_sink,
+                label="query.response",
             )
-        output_text = _field(response, "output_text")
-        if not isinstance(output_text, str) or not output_text:
-            raise SmokeContractError(
-                "Gemini structured output was unavailable",
-                reason="structured_output_unavailable",
-            )
+        output_text = _interaction_output(response)
         if response_schema is None:
             answer = {"answer": output_text, "supported": True}
         else:
@@ -283,66 +456,121 @@ class GoogleGenaiSmokeSession:
                     "Gemini structured output did not match the required schema",
                     reason="structured_output_invalid",
                 ) from None
-        usage = _field(response, "usage_metadata")
-        if usage is None:
-            usage = _field(response, "usage")
+        usage = _audit_usage(_field(response, "usage"))
+        citations = _audit_citations(
+            response,
+            scope,
+            self._document_name,
+            self._file_display_name,
+        )
         return SmokeQueryResult(
             answer=answer,
-            citations=_citations(
-                response,
-                store_name,
-                scope,
-                self._document_name,
-                self._file_display_name,
-            ),
-            input_tokens=_optional_count(
-                _field(usage, "total_input_tokens")
-                or _field(usage, "prompt_token_count")
-            ),
-            output_tokens=_optional_count(
-                _field(usage, "total_output_tokens")
-                or _field(usage, "candidates_token_count")
-            ),
+            citations=citations.citations,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            citation_checks=tuple(citations.checks.items()),
+            usage_checks=tuple(usage.checks.items()),
         )
 
     async def list_documents(self, store_name: str) -> tuple[str, ...]:
         async with self._clients.client() as client:
             listed = await _provider_call(
-                lambda: client.file_search_stores.documents.list(parent=store_name)
+                lambda: client.file_search_stores.documents.list(parent=store_name),
+                diagnostic_sink=self._diagnostic_sink,
+                label="list_documents",
             )
             documents = await _collect(listed)
         return tuple(sorted(_provider_identity(item, "document") for item in documents))
 
     async def delete_document(self, document_name: str) -> None:
-        async with self._clients.client() as client:
-            await _provider_call(
-                lambda: client.file_search_stores.documents.delete(
+        await self._delete_resource(
+            "document",
+            lambda client: client.file_search_stores.documents.delete(
                     name=document_name,
                     config={"force": True},
-                )
-            )
+            ),
+        )
 
     async def delete_file(self, file_name: str) -> None:
-        async with self._clients.client() as client:
-            await _provider_call(lambda: client.files.delete(name=file_name))
+        await self._delete_resource(
+            "file",
+            lambda client: client.files.delete(name=file_name),
+        )
 
     async def delete_store(self, store_name: str) -> None:
-        async with self._clients.client() as client:
-            await _provider_call(
-                lambda: client.file_search_stores.delete(
+        await self._delete_resource(
+            "store",
+            lambda client: client.file_search_stores.delete(
                     name=store_name,
                     config={"force": True},
+            ),
+        )
+
+    async def _delete_resource(
+        self,
+        label: str,
+        request: Callable[[Any], Awaitable[Any]],
+    ) -> None:
+        try:
+            sdk_client = self._clients._build_sdk_client()  # noqa: SLF001
+            client = sdk_client.aio
+            close = client.aclose
+        except Exception as error:
+            if self._diagnostic_sink is not None:
+                self._diagnostic_sink.capture_exception(
+                    f"cleanup.{label}.client_setup_failed",
+                    error,
                 )
-            )
+            raise translate_gemini_error(error) from None
+        request_error: GeminiProviderError | None = None
+        try:
+            try:
+                response = await request(client)
+            except Exception as error:
+                if self._diagnostic_sink is not None:
+                    self._diagnostic_sink.capture_exception(
+                        f"cleanup.{label}.delete_request_failed",
+                        error,
+                    )
+                request_error = translate_gemini_error(error)
+            else:
+                if self._diagnostic_sink is not None:
+                    self._diagnostic_sink.capture(
+                        f"cleanup.{label}.delete_response",
+                        response,
+                    )
+        finally:
+            try:
+                await close()
+            except Exception as error:
+                if self._diagnostic_sink is not None:
+                    self._diagnostic_sink.capture_exception(
+                        f"cleanup.{label}.context_close_failed",
+                        error,
+                    )
+                if request_error is None:
+                    request_error = translate_gemini_error(error)
+        if request_error is not None:
+            raise request_error from None
 
 
-async def _provider_call(request: Callable[[], Awaitable[Any]]) -> Any:
+async def _provider_call(
+    request: Callable[[], Awaitable[Any]],
+    *,
+    diagnostic_sink: DiagnosticSink | None = None,
+    label: str = "provider_call",
+) -> Any:
     try:
-        return await request()
+        response = await request()
     except GeminiProviderError:
         raise
     except Exception as error:
+        if diagnostic_sink is not None:
+            diagnostic_sink.capture_exception(f"{label}.failed", error)
         raise translate_gemini_error(error) from None
+    if diagnostic_sink is not None:
+        diagnostic_sink.capture(label, response)
+    return response
 
 
 def _provider_identity(value: object, label: str, field: str = "name") -> str:
@@ -364,6 +592,84 @@ def _field(value: object, name: str) -> object | None:
         return None
 
 
+def _synthetic_diagnostic_request(output_path: Path) -> _SyntheticDiagnosticRequest:
+    return _SyntheticDiagnosticRequest(
+        output_path=output_path,
+        course_id=SYNTHETIC_COURSE_ID,
+        exam_id=SYNTHETIC_EXAM_ID,
+        lecture_id=SYNTHETIC_LECTURE_ID,
+        source_revision_id=SYNTHETIC_REVISION_ID,
+        fixture_sha256=hashlib.sha256(synthetic_pdf_bytes()).hexdigest(),
+    )
+
+
+def _validate_diagnostic_request(request: _SyntheticDiagnosticRequest) -> None:
+    expected = _synthetic_diagnostic_request(request.output_path)
+    if request != expected:
+        raise LiveSmokeBlocked("synthetic diagnostic scope mismatch")
+    output = request.output_path
+    if not output.is_absolute() or not output.parent.is_dir():
+        raise LiveSmokeBlocked("synthetic diagnostic output path is unavailable")
+    try:
+        output.resolve().relative_to(_REPOSITORY_ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise LiveSmokeBlocked("synthetic diagnostic output must be outside the repository")
+
+
+def _diagnostic_value(value: object, secrets: tuple[str, ...]) -> object:
+    if isinstance(value, SecretStr):
+        return "[REDACTED]"
+    if isinstance(value, BaseModel):
+        return _diagnostic_value(value.model_dump(mode="json"), secrets)
+    if isinstance(value, Mapping):
+        cleaned: dict[str, object] = {}
+        for key, item in value.items():
+            name = str(key)
+            normalized = name.casefold().replace("_", "-")
+            if (
+                normalized in {
+                    "api-key",
+                    "authorization",
+                    "cookie",
+                    "credentials",
+                    "set-cookie",
+                    "x-goog-api-key",
+                }
+                or normalized.endswith("-credential")
+                or normalized.endswith("-secret")
+            ):
+                cleaned[name] = "[REDACTED]"
+            else:
+                cleaned[name] = _diagnostic_value(item, secrets)
+        return cleaned
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_diagnostic_value(item, secrets) for item in value]
+    if isinstance(value, bytes):
+        return {"base64": base64.b64encode(value).decode("ascii")}
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        cleaned_text = value
+        for secret in secrets:
+            cleaned_text = cleaned_text.replace(secret, "[REDACTED]")
+        return cleaned_text
+    attributes = getattr(value, "__dict__", None)
+    if isinstance(attributes, Mapping):
+        return _diagnostic_value(attributes, secrets)
+    return _diagnostic_value(repr(value), secrets)
+
+
+def _response_body(response: object | None) -> object | None:
+    if response is None:
+        return None
+    content = _field(response, "content")
+    if content is not None:
+        return content
+    return _field(response, "text")
+
+
 def _scope_filter(scope: SmokeScope) -> str:
     values = {
         "course_id": scope.course_id,
@@ -380,6 +686,217 @@ def _scope_filter(scope: SmokeScope) -> str:
     return " AND ".join(f'{key}="{value}"' for key, value in values.items())
 
 
+def _interaction_output(response: object) -> str:
+    output = _field(response, "output_text")
+    if output is None:
+        raise SmokeContractError(
+            "Gemini structured output was absent",
+            reason="structured_output_absent",
+        )
+    if not isinstance(output, str) or not output:
+        raise SmokeContractError(
+            "Gemini structured output was invalid",
+            reason="structured_output_invalid",
+        )
+    return output
+
+
+def _audit_usage(value: object | None) -> UsageAudit:
+    checks: dict[str, str] = {}
+    counts: list[int | None] = []
+    for field_name, check_name in (
+        ("total_input_tokens", "usage_input"),
+        ("total_output_tokens", "usage_output"),
+    ):
+        raw = _field(value, field_name) if value is not None else None
+        if raw is None:
+            counts.append(None)
+            checks[check_name] = f"{check_name}_absent"
+        elif isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            counts.append(None)
+            checks[check_name] = f"{check_name}_invalid"
+        else:
+            counts.append(raw)
+            checks[check_name] = "passed"
+    return UsageAudit(counts[0], counts[1], checks)
+
+
+def _audit_citations(
+    response: object,
+    scope: SmokeScope,
+    document_name: str | None,
+    file_display_name: str | None,
+) -> CitationAudit:
+    steps = _field(response, "steps")
+    blocked = {name: "blocked_by_citation_presence" for name in _CITATION_CHECKS}
+    if steps is None:
+        blocked["citation_presence"] = "citation_steps_absent"
+        return CitationAudit((), blocked)
+    if not isinstance(steps, Iterable) or isinstance(steps, (str, bytes, Mapping)):
+        blocked["citation_presence"] = "citation_steps_invalid"
+        return CitationAudit((), blocked)
+    found: list[SmokeCitation] = []
+    results: dict[str, list[str]] = {name: [] for name in _CITATION_CHECKS}
+    expected = {
+        "course_id": scope.course_id,
+        "exam_id": scope.exam_id,
+        "lecture_id": scope.lecture_id,
+        "source_revision_id": SYNTHETIC_REVISION_ID,
+    }
+    saw_model_output = False
+    saw_content = False
+    saw_annotations = False
+    invalid_content = False
+    invalid_annotations = False
+    for step in steps:
+        if _field(step, "type") != "model_output":
+            continue
+        saw_model_output = True
+        contents = _field(step, "content")
+        if contents is None:
+            continue
+        if not isinstance(contents, Iterable) or isinstance(
+            contents, (str, bytes, Mapping)
+        ):
+            invalid_content = True
+            continue
+        saw_content = True
+        for content in contents:
+            if _field(content, "type") != "text":
+                continue
+            annotations = _field(content, "annotations")
+            if annotations is None:
+                continue
+            if not isinstance(annotations, Iterable) or isinstance(
+                annotations, (str, bytes, Mapping)
+            ):
+                invalid_annotations = True
+                continue
+            saw_annotations = True
+            for annotation in annotations:
+                if _field(annotation, "type") != "file_citation":
+                    continue
+                results["citation_presence"].append("passed")
+                current: dict[str, str] = {}
+                raw_metadata = _field(annotation, "custom_metadata")
+                if raw_metadata is None:
+                    current["citation_scope_binding"] = "citation_metadata_absent"
+                elif isinstance(raw_metadata, (str, bytes)) or not isinstance(
+                    raw_metadata,
+                    (Mapping, Iterable),
+                ):
+                    current["citation_scope_binding"] = "citation_metadata_invalid"
+                else:
+                    try:
+                        actual = _string_metadata(raw_metadata)
+                    except SmokeContractError:
+                        current["citation_scope_binding"] = "citation_metadata_invalid"
+                    else:
+                        current["citation_scope_binding"] = (
+                            "passed"
+                            if all(actual.get(key) == value for key, value in expected.items())
+                            else "citation_scope_mismatch"
+                        )
+                if document_name is None:
+                    current["citation_document_binding"] = (
+                        "citation_document_identity_unavailable"
+                    )
+                locator = _field(annotation, "document_uri")
+                if document_name is not None:
+                    if locator is None:
+                        current["citation_document_binding"] = (
+                            "citation_document_uri_absent"
+                        )
+                    elif (
+                        not isinstance(locator, str)
+                        or not locator
+                        or len(locator) > 500
+                        or not locator.isprintable()
+                    ):
+                        current["citation_document_binding"] = (
+                            "citation_document_uri_invalid"
+                        )
+                    else:
+                        current["citation_document_binding"] = (
+                            "passed" if locator == document_name else "citation_wrong_document"
+                        )
+                cited_file = _field(annotation, "file_name")
+                if cited_file is None:
+                    current["citation_file_binding"] = "citation_file_absent"
+                elif (
+                    not isinstance(cited_file, str)
+                    or not cited_file
+                    or len(cited_file) > 500
+                    or not cited_file.isprintable()
+                ):
+                    current["citation_file_binding"] = "citation_file_invalid"
+                else:
+                    current["citation_file_binding"] = (
+                        "passed" if cited_file == file_display_name else "citation_wrong_file"
+                    )
+                page_value = _field(annotation, "page_number")
+                if page_value is None:
+                    page = None
+                    current["citation_page_binding"] = "citation_page_absent"
+                else:
+                    try:
+                        page = _optional_page(page_value)
+                    except SmokeContractError:
+                        page = None
+                        current["citation_page_binding"] = "citation_page_invalid"
+                    else:
+                        current["citation_page_binding"] = (
+                            "passed" if page == 1 else "citation_page_mismatch"
+                        )
+                try:
+                    excerpt = _citation_excerpt(annotation, _field(content, "text"))
+                except SmokeContractError as error:
+                    excerpt = ""
+                    current["citation_excerpt_binding"] = (
+                        "citation_excerpt_absent"
+                        if error.reason == "citation_excerpt_unavailable"
+                        else error.reason or "citation_excerpt_invalid"
+                    )
+                else:
+                    current["citation_excerpt_binding"] = (
+                        "passed" if SYNTHETIC_FACT in excerpt else "citation_excerpt_mismatch"
+                    )
+                for name, outcome in current.items():
+                    results[name].append(outcome)
+                if document_name is not None and all(
+                    current.get(name) == "passed"
+                    for name in _CITATION_CHECKS
+                    if name != "citation_presence"
+                ):
+                    found.append(
+                        SmokeCitation(
+                            document_name=document_name,
+                            page_number=page,
+                            excerpt=excerpt,
+                        )
+                    )
+    if not results["citation_presence"]:
+        if not saw_model_output:
+            diagnosis = "citation_steps_absent"
+        elif invalid_content:
+            diagnosis = "citation_content_invalid"
+        elif not saw_content:
+            diagnosis = "citation_content_absent"
+        elif invalid_annotations:
+            diagnosis = "citation_annotations_invalid"
+        elif not saw_annotations:
+            diagnosis = "citation_annotations_absent"
+        else:
+            diagnosis = "positive_citation_missing"
+        blocked["citation_presence"] = diagnosis
+        return CitationAudit((), blocked)
+    checks: dict[str, str] = {}
+    for name in _CITATION_CHECKS:
+        outcomes = results[name]
+        checks[name] = "passed" if "passed" in outcomes else outcomes[0]
+    return CitationAudit(tuple(found), checks)
+
+
 def _citations(
     response: object,
     store_name: str,
@@ -388,79 +905,27 @@ def _citations(
     file_display_name: str | None,
 ) -> tuple[SmokeCitation, ...]:
     del store_name
-    steps = _field(response, "steps")
-    if not isinstance(steps, Iterable) or isinstance(steps, (str, bytes, Mapping)):
-        return ()
-    found: list[SmokeCitation] = []
-    expected = {
-        "course_id": scope.course_id,
-        "exam_id": scope.exam_id,
-        "lecture_id": scope.lecture_id,
-        "source_revision_id": SYNTHETIC_REVISION_ID,
-    }
-    for step in steps:
-        if _field(step, "type") != "model_output":
-            continue
-        contents = _field(step, "content")
-        if not isinstance(contents, Iterable) or isinstance(
-            contents, (str, bytes, Mapping)
-        ):
-            continue
-        for content in contents:
-            if _field(content, "type") != "text":
-                continue
-            annotations = _field(content, "annotations")
-            if not isinstance(annotations, Iterable) or isinstance(
-                annotations, (str, bytes, Mapping)
-            ):
-                continue
-            for annotation in annotations:
-                if _field(annotation, "type") != "file_citation":
-                    continue
-                actual = _string_metadata(_field(annotation, "custom_metadata"))
-                if any(actual.get(key) != value for key, value in expected.items()):
-                    raise SmokeContractError(
-                        "Gemini citation metadata did not match the requested scope",
-                        reason="citation_scope_mismatch",
-                    )
-                if document_name is None:
-                    raise SmokeContractError(
-                        "Gemini citation arrived before import identity was known",
-                        reason="citation_document_identity_unavailable",
-                    )
-                locator = _field(annotation, "document_uri")
-                if locator is not None and (
-                    not isinstance(locator, str)
-                    or not locator
-                    or len(locator) > 500
-                    or not locator.isprintable()
-                    or locator != document_name
-                ):
-                    raise SmokeContractError(
-                        "Gemini citation referenced the wrong document",
-                        reason="citation_wrong_document",
-                    )
-                cited_file = _field(annotation, "file_name")
-                if (
-                    not isinstance(cited_file, str)
-                    or not cited_file
-                    or len(cited_file) > 500
-                    or not cited_file.isprintable()
-                    or cited_file != file_display_name
-                ):
-                    raise SmokeContractError(
-                        "Gemini citation referenced the wrong file",
-                        reason="citation_wrong_file",
-                    )
-                excerpt = _citation_excerpt(annotation, _field(content, "text"))
-                found.append(
-                    SmokeCitation(
-                        document_name=document_name,
-                        page_number=_optional_page(_field(annotation, "page_number")),
-                        excerpt=excerpt,
-                    )
-                )
-    return tuple(found)
+    audit = _audit_citations(response, scope, document_name, file_display_name)
+    for name in (
+        "citation_scope_binding",
+        "citation_file_binding",
+        "citation_document_binding",
+        "citation_page_binding",
+        "citation_excerpt_binding",
+    ):
+        reason = audit.checks[name]
+        if reason not in {"passed", "blocked_by_citation_presence"}:
+            messages = {
+                "citation_scope_binding": (
+                    "Gemini citation metadata did not match the requested scope"
+                ),
+                "citation_file_binding": "Gemini citation referenced the wrong file",
+                "citation_document_binding": "Gemini citation referenced the wrong document",
+                "citation_page_binding": "Gemini citation page did not satisfy the contract",
+                "citation_excerpt_binding": "Gemini citation excerpt did not satisfy the contract",
+            }
+            raise SmokeContractError(messages[name], reason=reason)
+    return audit.citations
 
 
 def _string_metadata(value: object) -> dict[str, str]:
@@ -612,6 +1077,7 @@ async def run_contract_smoke(
     *,
     clock: Callable[[], float] = monotonic,
     failure_evidence: dict[str, object] | None = None,
+    diagnostic_sink: DiagnosticSink | None = None,
 ) -> dict[str, object]:
     pdf = synthetic_pdf_bytes()
     digest = hashlib.sha256(pdf).hexdigest()
@@ -627,186 +1093,368 @@ async def run_contract_smoke(
     )
     store_name: str | None = None
     file_name: str | None = None
+    operation_name: str | None = None
     document_name: str | None = None
     resource_states = {
         "document": "not_started",
         "file": "not_started",
         "store": "not_started",
     }
+    check_names = (
+        "create_store",
+        "upload_pdf",
+        "import_file",
+        "wait_for_import",
+        "positive_answer",
+        *_CITATION_CHECKS,
+        "usage_input",
+        "usage_output",
+        "negative_structured_output",
+        "wrong_lecture_filtering",
+        "document_listing",
+        "cleanup_document",
+        "cleanup_file",
+        "cleanup_store",
+    )
+    checks = dict.fromkeys(check_names, "not_run")
+    errors: list[Exception] = []
+    first_failure_stage: str | None = None
+    cleanup_error: SmokeContractError | None = None
+    cleanup_status = "not_started"
+    positive: SmokeQueryResult | None = None
+    negative_answer: SmokeAnswer | None = None
+    citation: SmokeCitation | None = None
     started = clock()
     if failure_evidence is not None:
         failure_evidence.clear()
         failure_evidence["failure_stage"] = "create_store"
+
+    def fail(check: str, diagnosis: str, error: Exception, stage: str) -> None:
+        nonlocal first_failure_stage
+        checks[check] = diagnosis
+        errors.append(error)
+        if first_failure_stage is None:
+            first_failure_stage = stage
+
+    def block_after(check: str, diagnosis: str) -> None:
+        seen = False
+        for name in check_names:
+            if name == check:
+                seen = True
+                continue
+            if seen and not name.startswith("cleanup_"):
+                checks[name] = diagnosis
+
+    if diagnostic_sink is not None:
+        diagnostic_sink.capture(
+            "contract.expected",
+            {
+                "course_id": SYNTHETIC_COURSE_ID,
+                "exam_id": SYNTHETIC_EXAM_ID,
+                "lecture_id": SYNTHETIC_LECTURE_ID,
+                "source_revision_id": SYNTHETIC_REVISION_ID,
+                "fixture_sha256": digest,
+            },
+        )
     try:
         resource_states["store"] = "unknown"
-        store_name = await session.create_store(
-            "Study Hub Task 2.8 synthetic contract",
-            "models/gemini-embedding-2",
-        )
-        resource_states["store"] = "confirmed"
-        if failure_evidence is not None:
-            failure_evidence["failure_stage"] = "upload_pdf"
-        resource_states["file"] = "unknown"
-        file_name = await session.upload_pdf("task-2-8-synthetic.pdf", pdf)
-        resource_states["file"] = "confirmed"
-        if failure_evidence is not None:
-            failure_evidence["failure_stage"] = "import_file"
-        resource_states["document"] = "unknown"
-        operation_name = await session.import_file(store_name, file_name, metadata)
-        if failure_evidence is not None:
-            failure_evidence["failure_stage"] = "wait_for_import"
-        document_name = await session.wait_for_import(operation_name)
-        resource_states["document"] = "confirmed"
-        if failure_evidence is not None:
-            failure_evidence["failure_stage"] = "positive_query"
-        positive = await session.query(
-            store_name,
-            "Return only the Task 2.8 synthetic marker value stated in the indexed PDF.",
-            SmokeScope(SYNTHETIC_COURSE_ID, SYNTHETIC_EXAM_ID, SYNTHETIC_LECTURE_ID),
-            response_schema=None,
-            omit_thinking=True,
-        )
-        if failure_evidence is not None:
-            failure_evidence["failure_stage"] = "positive_validation"
         try:
-            answer = SmokeAnswer.model_validate(positive.answer)
-        except ValidationError:
-            raise SmokeContractError(
-                "Gemini structured output did not match the required schema",
-                reason="structured_output_invalid",
-            ) from None
-        if not answer.supported:
-            raise SmokeContractError(
-                "structured output did not report grounded support",
-                reason="positive_answer_unsupported",
+            store_name = await session.create_store(
+                "Study Hub Task 2.8 synthetic contract",
+                "models/gemini-embedding-2",
             )
-        if SYNTHETIC_MARKER not in answer.answer:
-            raise SmokeContractError(
-                "structured output did not preserve the synthetic marker",
-                reason="positive_answer_missing_marker",
-            )
-        if not positive.citations:
-            raise SmokeContractError(
-                "positive query did not return a citation",
-                reason="positive_citation_missing",
-            )
-        citation = next(
-            (
-                item
-                for item in positive.citations
-                if item.document_name == document_name
-                and item.page_number == 1
-                and SYNTHETIC_FACT in item.excerpt
-            ),
-            None,
-        )
-        if citation is None:
-            raise SmokeContractError(
-                "positive citation did not resolve to PDF page one",
-                reason="positive_citation_unresolved",
-            )
-        if failure_evidence is not None:
-            failure_evidence["failure_stage"] = "negative_query"
-        negative = await session.query(
-            store_name,
-            "Use only indexed files. If no matching source exists, return an empty answer "
-            "and supported=false.",
-            SmokeScope(SYNTHETIC_COURSE_ID, SYNTHETIC_EXAM_ID, WRONG_LECTURE_ID),
-            response_schema=SmokeAnswer,
-            omit_thinking=True,
-        )
-        if failure_evidence is not None:
-            failure_evidence["failure_stage"] = "negative_validation"
+        except Exception as error:
+            fail("create_store", "create_store_failed", error, "create_store")
+            block_after("create_store", "blocked_by_create_store")
+        else:
+            checks["create_store"] = "passed"
+            resource_states["store"] = "confirmed"
+        if store_name is not None:
+            resource_states["file"] = "unknown"
+            try:
+                file_name = await session.upload_pdf("task-2-8-synthetic.pdf", pdf)
+            except Exception as error:
+                fail("upload_pdf", "upload_pdf_failed", error, "upload_pdf")
+                block_after("upload_pdf", "blocked_by_upload_pdf")
+            else:
+                checks["upload_pdf"] = "passed"
+                resource_states["file"] = "confirmed"
+        if store_name is not None and file_name is not None:
+            resource_states["document"] = "unknown"
+            try:
+                operation_name = await session.import_file(store_name, file_name, metadata)
+            except Exception as error:
+                fail("import_file", "import_file_failed", error, "import_file")
+                block_after("import_file", "blocked_by_import_file")
+            else:
+                checks["import_file"] = "passed"
+        if operation_name is not None:
+            try:
+                document_name = await session.wait_for_import(operation_name)
+            except Exception as error:
+                fail("wait_for_import", "wait_for_import_failed", error, "wait_for_import")
+                block_after("wait_for_import", "blocked_by_wait_for_import")
+            else:
+                checks["wait_for_import"] = "passed"
+                resource_states["document"] = "confirmed"
+        if store_name is not None and document_name is not None:
+            try:
+                positive = await session.query(
+                    store_name,
+                    "Return only the Task 2.8 synthetic marker value stated in the indexed PDF.",
+                    SmokeScope(
+                        SYNTHETIC_COURSE_ID,
+                        SYNTHETIC_EXAM_ID,
+                        SYNTHETIC_LECTURE_ID,
+                    ),
+                    response_schema=None,
+                    omit_thinking=True,
+                )
+            except Exception as error:
+                fail("positive_answer", "positive_query_failed", error, "positive_query")
+                for name in (*_CITATION_CHECKS, "usage_input", "usage_output"):
+                    checks[name] = "blocked_by_positive_query"
+            else:
+                try:
+                    answer = SmokeAnswer.model_validate(positive.answer)
+                except ValidationError:
+                    contract_error = SmokeContractError(
+                        "Gemini structured output did not match the required schema",
+                        reason="structured_output_invalid",
+                    )
+                    fail(
+                        "positive_answer",
+                        "structured_output_invalid",
+                        contract_error,
+                        "positive_validation",
+                    )
+                else:
+                    if not answer.supported:
+                        contract_error = SmokeContractError(
+                            "structured output did not report grounded support",
+                            reason="positive_answer_unsupported",
+                        )
+                        fail(
+                            "positive_answer",
+                            "positive_answer_unsupported",
+                            contract_error,
+                            "positive_validation",
+                        )
+                    elif SYNTHETIC_MARKER not in answer.answer:
+                        contract_error = SmokeContractError(
+                            "structured output did not preserve the synthetic marker",
+                            reason="positive_answer_missing_marker",
+                        )
+                        fail(
+                            "positive_answer",
+                            "positive_answer_missing_marker",
+                            contract_error,
+                            "positive_validation",
+                        )
+                    else:
+                        checks["positive_answer"] = "passed"
+                citation_checks = dict(positive.citation_checks)
+                if not citation_checks:
+                    citation_checks = {
+                        name: "passed" if positive.citations else "blocked_by_citation_presence"
+                        for name in _CITATION_CHECKS
+                    }
+                    citation_checks["citation_presence"] = (
+                        "passed" if positive.citations else "positive_citation_missing"
+                    )
+                checks.update(citation_checks)
+                for name in _CITATION_CHECKS:
+                    diagnosis = checks[name]
+                    if diagnosis not in {"passed", "blocked_by_citation_presence"}:
+                        contract_error = SmokeContractError(
+                            "positive citation did not satisfy the contract",
+                            reason=diagnosis,
+                        )
+                        fail(name, diagnosis, contract_error, "positive_validation")
+                usage_checks = dict(positive.usage_checks)
+                if not usage_checks:
+                    usage_checks = {
+                        "usage_input": (
+                            "passed"
+                            if positive.input_tokens is not None
+                            else "usage_input_absent"
+                        ),
+                        "usage_output": (
+                            "passed"
+                            if positive.output_tokens is not None
+                            else "usage_output_absent"
+                        ),
+                    }
+                checks.update(usage_checks)
+                citation = positive.citations[0] if positive.citations else None
+
+            try:
+                negative = await session.query(
+                    store_name,
+                    "Use only indexed files. If no matching source exists, return an empty "
+                    "answer and supported=false.",
+                    SmokeScope(
+                        SYNTHETIC_COURSE_ID,
+                        SYNTHETIC_EXAM_ID,
+                        WRONG_LECTURE_ID,
+                    ),
+                    response_schema=SmokeAnswer,
+                    omit_thinking=True,
+                )
+            except Exception as error:
+                fail(
+                    "negative_structured_output",
+                    "negative_query_failed",
+                    error,
+                    "negative_query",
+                )
+                checks["wrong_lecture_filtering"] = "blocked_by_negative_query"
+            else:
+                try:
+                    negative_answer = SmokeAnswer.model_validate(negative.answer)
+                except ValidationError:
+                    contract_error = SmokeContractError(
+                        "Gemini structured output did not match the required schema",
+                        reason="structured_output_invalid",
+                    )
+                    fail(
+                        "negative_structured_output",
+                        "structured_output_invalid",
+                        contract_error,
+                        "negative_validation",
+                    )
+                    checks["wrong_lecture_filtering"] = (
+                        "blocked_by_negative_structured_output"
+                    )
+                else:
+                    checks["negative_structured_output"] = "passed"
+                    retrieved = (
+                        bool(negative.citations)
+                        or dict(negative.citation_checks).get("citation_presence")
+                        == "passed"
+                    )
+                    if (
+                        retrieved
+                        or negative_answer.supported
+                        or negative_answer.answer != ""
+                    ):
+                        contract_error = SmokeContractError(
+                            "wrong-lecture metadata filter returned supported source content",
+                            reason="negative_answer_invalid",
+                        )
+                        fail(
+                            "wrong_lecture_filtering",
+                            "negative_answer_invalid",
+                            contract_error,
+                            "negative_validation",
+                        )
+                    else:
+                        checks["wrong_lecture_filtering"] = "passed"
+
+            try:
+                listed = await session.list_documents(store_name)
+            except Exception as error:
+                fail(
+                    "document_listing",
+                    "document_listing_failed",
+                    error,
+                    "list_documents",
+                )
+            else:
+                if listed == (document_name,):
+                    checks["document_listing"] = "passed"
+                else:
+                    contract_error = SmokeContractError(
+                        "document listing did not round-trip the imported document"
+                    )
+                    fail(
+                        "document_listing",
+                        "document_listing_mismatch",
+                        contract_error,
+                        "list_documents",
+                    )
+    finally:
         try:
-            negative_answer = SmokeAnswer.model_validate(negative.answer)
-        except ValidationError:
-            raise SmokeContractError(
-                "Gemini structured output did not match the required schema",
-                reason="structured_output_invalid",
-            ) from None
-        if (
-            negative.citations
-            or negative_answer.supported
-            or negative_answer.answer != ""
-        ):
-            raise SmokeContractError(
-                "wrong-lecture metadata filter returned supported source content",
-                reason="negative_answer_invalid",
+            await _cleanup(
+                session,
+                document_name,
+                file_name,
+                store_name,
+                checks=checks,
             )
-        if failure_evidence is not None:
-            failure_evidence["failure_stage"] = "list_documents"
-        if await session.list_documents(store_name) != (document_name,):
-            raise SmokeContractError("document listing did not round-trip the imported document")
-        duration_ms = round((clock() - started) * 1000)
-        record = {
-            "schema_version": 1,
-            "status": "passed",
-            "sdk_version": "2.14.0",
-            "model": "gemini-3.7-flash",
-            "embedding_model": "models/gemini-embedding-2",
-            "source_revision_hash": hashlib.sha256(
-                SYNTHETIC_REVISION_ID.encode("utf-8")
-            ).hexdigest(),
-            "document_types": ["pdf"],
-            "page_count": 1,
-            "operation_states": ["done"],
-            "citation_resolution_rate": 1.0,
-            "citation": {
-                "page_number": citation.page_number,
-                "excerpt_sha256": hashlib.sha256(citation.excerpt.encode("utf-8")).hexdigest(),
-            },
-            "negative_scope_retrieved": False,
-            "structured_output": {
-                "schema": type(negative_answer).__name__,
-                "validated": True,
-                "answer_sha256": hashlib.sha256(
-                    negative_answer.answer.encode("utf-8")
-                ).hexdigest(),
-            },
-            "thinking_configuration": "omitted",
-            "duration_ms": duration_ms,
-            "usage": {
-                "indexed_bytes": len(pdf),
-                "input_tokens": positive.input_tokens,
-                "output_tokens": positive.output_tokens,
-            },
-            "provider_ids": {
-                "store": _redacted_identity(store_name),
-                "file": _redacted_identity(file_name),
-                "operation": _redacted_identity(operation_name),
-                "document": _redacted_identity(document_name),
-            },
-            "warnings": [],
-        }
-    except BaseException:
-        cleanup_status = "completed"
-        try:
-            await _cleanup(session, document_name, file_name, store_name)
-        except SmokeContractError:
+        except SmokeContractError as error:
+            cleanup_error = error
             cleanup_status = "failed"
         else:
-            if "unknown" in resource_states.values():
-                cleanup_status = "unknown"
-        if failure_evidence is not None:
-            failure_evidence["resources_created"] = dict(resource_states)
-            failure_evidence["cleanup"] = {
-                "attempted": sum(
-                    value is not None for value in (document_name, file_name, store_name)
-                ),
-                "status": cleanup_status,
-            }
-        raise
+            cleanup_status = (
+                "unknown" if "unknown" in resource_states.values() else "completed"
+            )
+
+    if cleanup_error is not None and not errors:
+        errors.append(cleanup_error)
+        first_failure_stage = "cleanup"
     if failure_evidence is not None:
-        failure_evidence["failure_stage"] = "cleanup"
-    try:
-        await _cleanup(session, document_name, file_name, store_name)
-    except SmokeContractError:
-        if failure_evidence is not None:
-            failure_evidence["resources_created"] = dict(resource_states)
-            failure_evidence["cleanup"] = {"attempted": 3, "status": "failed"}
-        raise
-    record["cleanup"] = {"attempted": 3, "status": "completed"}
-    return record
+        failure_evidence["failure_stage"] = first_failure_stage or "cleanup"
+        failure_evidence["resources_created"] = dict(resource_states)
+        failure_evidence["cleanup"] = {
+            "attempted": sum(
+                value is not None for value in (document_name, file_name, store_name)
+            ),
+            "status": cleanup_status,
+        }
+        failure_evidence["checks"] = dict(checks)
+    if diagnostic_sink is not None:
+        diagnostic_sink.capture("contract.check_matrix", checks)
+    if errors:
+        raise errors[0]
+    if positive is None or negative_answer is None or citation is None:
+        raise SmokeContractError("Task 2.8 smoke result was incomplete")
+    assert store_name is not None
+    assert file_name is not None
+    assert operation_name is not None
+    assert document_name is not None
+    duration_ms = round((clock() - started) * 1000)
+    return {
+        "schema_version": 1,
+        "status": "passed",
+        "sdk_version": "2.14.0",
+        "model": "gemini-3.7-flash",
+        "embedding_model": "models/gemini-embedding-2",
+        "source_revision_hash": hashlib.sha256(
+            SYNTHETIC_REVISION_ID.encode("utf-8")
+        ).hexdigest(),
+        "document_types": ["pdf"],
+        "page_count": 1,
+        "operation_states": ["done"],
+        "citation_resolution_rate": 1.0,
+        "citation": {
+            "page_number": citation.page_number,
+            "excerpt_sha256": hashlib.sha256(citation.excerpt.encode("utf-8")).hexdigest(),
+        },
+        "negative_scope_retrieved": False,
+        "structured_output": {
+            "schema": type(negative_answer).__name__,
+            "validated": True,
+            "answer_sha256": hashlib.sha256(
+                negative_answer.answer.encode("utf-8")
+            ).hexdigest(),
+        },
+        "thinking_configuration": "omitted",
+        "duration_ms": duration_ms,
+        "usage": {
+            "indexed_bytes": len(pdf),
+            "input_tokens": positive.input_tokens,
+            "output_tokens": positive.output_tokens,
+        },
+        "provider_ids": {
+            "store": _redacted_identity(store_name),
+            "file": _redacted_identity(file_name),
+            "operation": _redacted_identity(operation_name),
+            "document": _redacted_identity(document_name),
+        },
+        "warnings": [],
+        "cleanup": {"attempted": 3, "status": "completed"},
+    }
 
 
 async def _cleanup(
@@ -814,19 +1462,28 @@ async def _cleanup(
     document_name: str | None,
     file_name: str | None,
     store_name: str | None,
+    *,
+    checks: dict[str, str] | None = None,
 ) -> None:
     failures: list[str] = []
-    for method, value in (
-        (session.delete_document, document_name),
-        (session.delete_file, file_name),
-        (session.delete_store, store_name),
+    for label, method, value in (
+        ("document", session.delete_document, document_name),
+        ("file", session.delete_file, file_name),
+        ("store", session.delete_store, store_name),
     ):
         if value is None:
+            if checks is not None:
+                checks[f"cleanup_{label}"] = "not_available"
             continue
         try:
             await method(value)
         except Exception as error:  # noqa: PERF203 - cleanup must attempt every resource
             failures.append(type(error).__name__)
+            if checks is not None:
+                checks[f"cleanup_{label}"] = "cleanup_delete_failed"
+        else:
+            if checks is not None:
+                checks[f"cleanup_{label}"] = "passed"
     if failures:
         raise SmokeContractError(f"provider cleanup failed: {', '.join(failures)}")
 
@@ -866,6 +1523,7 @@ def _failure_record(
         "retryable": retryable,
         "resources_created": evidence.get("resources_created", {}),
         "cleanup": evidence.get("cleanup", {"attempted": 0, "status": "not_started"}),
+        "checks": evidence.get("checks", {}),
     }
     if isinstance(error, SmokeContractError) and error.reason is not None:
         record["contract_reason"] = error.reason
@@ -935,9 +1593,15 @@ async def run_authorized_live_smoke(
     secret_store: SecretStore | None = None,
     session_factory: Callable[[str], SmokeSession] | None = None,
     failure_evidence: dict[str, object] | None = None,
+    diagnostic_request: _SyntheticDiagnosticRequest | None = None,
 ) -> dict[str, object]:
+    diagnostic_sink: _SyntheticDiagnosticSink | None = None
+    if diagnostic_request is not None:
+        _validate_diagnostic_request(diagnostic_request)
     if os.getenv("RUN_LIVE_GEMINI_TESTS") != "1":
         raise LiveSmokeBlocked("RUN_LIVE_GEMINI_TESTS=1 is required for a live smoke")
+    if diagnostic_request is not None:
+        diagnostic_sink = _SyntheticDiagnosticSink.open(diagnostic_request)
     if secret_store is None:
         from oms_hub.security.secret_store import KeyringSecretStore
 
@@ -948,11 +1612,29 @@ async def run_authorized_live_smoke(
         raise LiveSmokeBlocked("stored Gemini credential is unavailable") from None
     if not isinstance(api_key, str) or not api_key.strip():
         raise LiveSmokeBlocked("stored Gemini credential is unavailable")
-    build_session = session_factory or GoogleGenaiSmokeSession
-    return await run_contract_smoke(
-        build_session(api_key.strip()),
-        failure_evidence=failure_evidence,
-    )
+    normalized_key = api_key.strip()
+    if diagnostic_sink is not None:
+        diagnostic_sink.add_secret(normalized_key)
+    if session_factory is None:
+        session: SmokeSession = GoogleGenaiSmokeSession(
+            normalized_key,
+            diagnostic_sink=diagnostic_sink,
+        )
+    else:
+        session = session_factory(normalized_key)
+    try:
+        return await run_contract_smoke(
+            session,
+            failure_evidence=failure_evidence,
+            diagnostic_sink=diagnostic_sink,
+        )
+    except BaseException as error:
+        if diagnostic_sink is not None:
+            diagnostic_sink.capture_exception("contract.failure", error)
+        raise
+    finally:
+        if diagnostic_sink is not None:
+            diagnostic_sink.close()
 
 
 def _plan() -> dict[str, object]:
@@ -976,13 +1658,29 @@ def _plan() -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute-live", action="store_true")
+    parser.add_argument("--synthetic-diagnostic-output", type=Path)
     args = parser.parse_args(argv)
     if not args.execute_live:
         print(json.dumps(_plan(), indent=2, sort_keys=True))
         return 0
     failure_evidence: dict[str, object] = {}
+    diagnostic_request = (
+        _synthetic_diagnostic_request(args.synthetic_diagnostic_output)
+        if args.synthetic_diagnostic_output is not None
+        else None
+    )
     try:
-        record = asyncio.run(run_authorized_live_smoke(failure_evidence=failure_evidence))
+        if diagnostic_request is None:
+            record = asyncio.run(
+                run_authorized_live_smoke(failure_evidence=failure_evidence)
+            )
+        else:
+            record = asyncio.run(
+                run_authorized_live_smoke(
+                    failure_evidence=failure_evidence,
+                    diagnostic_request=diagnostic_request,
+                )
+            )
     except LiveSmokeBlocked as error:
         parser.error(str(error))
     except (GeminiProviderError, SmokeContractError, SmokeTemporaryFailure) as error:
