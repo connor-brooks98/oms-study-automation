@@ -2044,6 +2044,8 @@ def test_private_preflight_extracts_canonical_slide_number(
         "1-2",
         " 1",
         "1 ",
+        "slide\t1",
+        "slide\n1",
     ),
 )
 def test_private_preflight_rejects_noncanonical_slide_locator(locator: str) -> None:
