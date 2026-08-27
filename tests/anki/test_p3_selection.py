@@ -509,10 +509,11 @@ def test_duplicate_targets_reserve_soft_cap_then_use_mandatory_overflow() -> Non
         },
     )
 
-    assert len(overflow.selection_metadata) == 71
+    assert len(overflow.selection_metadata) == 70
     assert overflow.selection_metadata[-1].identity == "existing:99"
     assert overflow.selection_metadata[-1].mandatory is True
-    assert overflow.selection_metadata[-1].manual_acknowledgement_required is True
+    assert overflow.selection_metadata[-1].manual_acknowledgement_required is False
+    assert "G70" in overflow.excluded_generated_card_ids
     assert overflow.overflow_acknowledgement is not None
 
 

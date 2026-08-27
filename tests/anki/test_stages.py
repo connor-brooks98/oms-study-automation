@@ -315,7 +315,7 @@ def _set_dedupe_existing(
             verdict="YES",
             primary_subject="fixture",
             reason="eligible comparison",
-            covered_concept_ids=(concept_id,),
+            covered_concept_ids=(concept_id,) if concept_id else (),
             supporting_passage_ids=(passage_id,),
         ).model_dump(mode="json")
     ]
@@ -384,6 +384,41 @@ def test_card_dedupe_v2_does_not_cross_concept_boundaries() -> None:
         "generated",
         "generated",
     ]
+
+
+def test_card_dedupe_v2_recovers_an_unmapped_existing_duplicate() -> None:
+    note = CardRecord(
+        note_id=41,
+        content_sha256="1" * 64,
+        text="{{c1::Mature B cells are absent}} in XLA",
+        extra="",
+        tags=(),
+        deck_names=("AnKing",),
+    )
+    runner, context, passage_id = _dedupe_stage_fixture(
+        _DedupeEmbedder([]),
+        cards=(note,),
+    )
+    _set_dedupe_existing(context, note.note_id, passage_id, concept_id="")
+
+    product = asyncio.run(
+        runner._card_dedupe_v2(
+            context,
+            {note.note_id: note},
+            (
+                _generated_dedupe_row(
+                    "G01",
+                    "C02-M2",
+                    "Mature B cells are absent in XLA",
+                    passage_id,
+                ),
+            ),
+        )
+    )
+
+    result = product.payload["resolutions"][0]
+    assert result["status"] == "duplicate_of_existing"
+    assert result["duplicate_of_existing_note_id"] == 41
 
 
 def test_card_dedupe_v2_uses_pinned_existing_vectors_without_uploading_notes() -> None:
@@ -2144,6 +2179,36 @@ def test_card_gap_fill_v2_uses_pinned_metadata_per_fact_targets_and_split_indice
     assert sent["lecture_title"] == "Pinned anemia title"
     assert structured.instructions == ["Pinned card gap prompt"]
     assert [row["split_index"] for row in product.payload["resolutions"]] == [1, 2, None, None]
+
+
+def test_card_gap_fill_v2_requests_only_uncovered_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = CardGapBatch(
+        resolutions=(_generated_card_gap("C01-M2", _CARD_GAP_FILL_PASSAGE_ID),)
+    )
+    runner, context, structured = _card_gap_fill_harness(batch)
+    monkeypatch.setattr(
+        stages_module,
+        "_merged_card_coverage",
+        lambda _: {
+            "C01": {
+                "status": "uncovered",
+                "evidence": [],
+                "facts": {
+                    "C01-M1": {"status": "covered", "evidence": [{"note_id": 1}]},
+                    "C01-M2": {"status": "uncovered", "evidence": []},
+                    "C01-M3": {"status": "covered", "evidence": [{"note_id": 2}]},
+                },
+            }
+        },
+    )
+
+    asyncio.run(runner._card_gap_fill(context))
+
+    assert structured.inputs[0]["missing_facts"] == [
+        {"fact_id": "C01-M2", "statement": "Beta."}
+    ]
 
 
 def test_card_gap_fill_v2_repairs_forbidden_cloze_targets(

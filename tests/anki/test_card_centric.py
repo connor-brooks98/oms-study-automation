@@ -805,8 +805,56 @@ def test_classifier_receives_concept_definitions_and_rejects_all_unmapped_yes() 
             "primary_entity": "IgA deficiency",
             "aliases": ["anti-IgA reaction"],
             "fact_descriptions": ["Anti-IgA causes transfusion anaphylaxis."],
+            "facts": [
+                {
+                    "fact_id": "C01-M1",
+                    "statement": "Anti-IgA causes transfusion anaphylaxis.",
+                }
+            ],
         }
     ]
+
+
+def test_classifier_requires_fact_ids_to_match_reported_concepts() -> None:
+    source = build_source_index(
+        [_passage(SourceKind.SLIDE, "slide:1", "XLA has absent mature B cells")],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    concept = CardConcept(
+        concept_id="C02",
+        canonical_statement="XLA has absent mature B cells.",
+        primary_entity="XLA",
+        depth="deep",
+        emphasis_flag=True,
+        importance="high",
+        fact_descriptions=("Mature B cells are absent in XLA.",),
+    )
+    concept_only = CardClassificationBatchOutput(
+        results=(
+            CardClassification(
+                note_id=1,
+                verdict="YES",
+                primary_subject="XLA",
+                reason="the slide directly supports the card",
+                covered_concept_ids=("C02",),
+                supporting_passage_ids=(source.passages[0].passage_id,),
+            ),
+        )
+    )
+    generator = _Generator([concept_only])
+
+    with pytest.raises(CardCentricValidationError, match="fact coverage"):
+        asyncio.run(
+            CardCentricClassifier(StructuredTextService(generator)).classify(
+                [_card(1)],
+                source_index=source,
+                concept_ids=("C02",),
+                concepts=(concept,),
+                provider=ProviderName.ANTHROPIC,
+                model="claude-haiku",
+            )
+        )
 
 
 def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:

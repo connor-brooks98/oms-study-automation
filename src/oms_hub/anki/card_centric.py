@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -815,6 +815,12 @@ class CardCentricClassifier:
                 "primary_entity": concept.primary_entity,
                 "aliases": list(concept.aliases),
                 "fact_descriptions": list(concept.fact_descriptions),
+                "facts": [
+                    {"fact_id": fact_id, "statement": statement}
+                    for fact_id, statement in zip(
+                        concept.fact_ids, concept.fact_descriptions, strict=True
+                    )
+                ],
             }
             for concept in sorted(concepts, key=lambda item: item.concept_id)
         )
@@ -907,13 +913,22 @@ class CardCentricClassifier:
         )
         attempts: list[StructuredJSONResult[CardClassificationBatchOutput]] = []
         note_ids = tuple(card.note_id for card in cards)
+        fact_ids_by_concept = {
+            str(concept["concept_id"]): tuple(
+                str(fact["fact_id"])
+                for fact in concept["facts"]
+                if isinstance(fact, dict)
+            )
+            for concept in concept_definitions
+        }
         partition_instruction = (
             "Return exactly one result for each of these note IDs and no other note IDs: "
             f"{json.dumps(note_ids, separators=(',', ':'))}. Copy every ID exactly. "
-            "For each card, copy every allowed concept ID whose canonical statement or "
-            "fact description the card directly answers; use an empty concept list only "
-            "when the card is lecture-supported but answers none of those concepts. "
-            "Copy supporting passage IDs and concept IDs verbatim from their allowed lists; "
+            "For each card, copy every fact ID whose statement the card directly answers "
+            "into covered_fact_ids, then copy exactly those facts' parent concept IDs into "
+            "covered_concept_ids. Use both empty lists only when the card is lecture-supported "
+            "but answers none of the supplied facts. Copy supporting passage, fact, and "
+            "concept IDs verbatim from their allowed lists; "
             "never synthesize IDs. If an exact supporting passage ID is uncertain, omit it "
             "and do not return YES."
         )
@@ -928,7 +943,11 @@ class CardCentricClassifier:
                 )
             attempts.append(first)
             validated = self._validate_attempt(
-                first, cards=cards, source_index=source_index, concept_ids=concept_ids
+                first,
+                cards=cards,
+                source_index=source_index,
+                concept_ids=concept_ids,
+                fact_ids_by_concept=fact_ids_by_concept,
             )
         except (StructuredOutputError, CardCentricValidationError) as first_error:
             if self.retry_attempts < 2:
@@ -975,7 +994,11 @@ class CardCentricClassifier:
                 )
             attempts.append(repaired)
             validated = self._validate_attempt(
-                repaired, cards=cards, source_index=source_index, concept_ids=concept_ids
+                repaired,
+                cards=cards,
+                source_index=source_index,
+                concept_ids=concept_ids,
+                fact_ids_by_concept=fact_ids_by_concept,
             )
         result = attempts[-1]
         return _CompletedBatch(
@@ -1027,6 +1050,7 @@ class CardCentricClassifier:
         cards: Sequence[CardRecord],
         source_index: CardCentricSourceIndex,
         concept_ids: tuple[str, ...],
+        fact_ids_by_concept: Mapping[str, tuple[str, ...]],
     ) -> tuple[CardClassification, ...]:
         try:
             return self.validate_output(
@@ -1034,6 +1058,7 @@ class CardCentricClassifier:
                 cards=cards,
                 source_index=source_index,
                 concept_ids=concept_ids,
+                fact_ids_by_concept=fact_ids_by_concept,
             )
         except CardCentricValidationError as exc:
             expected = {card.note_id for card in cards}
@@ -1057,6 +1082,7 @@ class CardCentricClassifier:
         cards: Sequence[CardRecord],
         source_index: CardCentricSourceIndex,
         concept_ids: tuple[str, ...],
+        fact_ids_by_concept: Mapping[str, tuple[str, ...]] | None = None,
     ) -> tuple[CardClassification, ...]:
         expected = {card.note_id for card in cards}
         observed = [result.note_id for result in output.results]
@@ -1066,12 +1092,28 @@ class CardCentricClassifier:
             )
         passages = {passage.passage_id: passage for passage in source_index.passages}
         allowed_concepts = set(concept_ids)
+        fact_ids_by_concept = fact_ids_by_concept or {}
+        fact_to_concept = {
+            fact_id: concept_id
+            for concept_id, fact_ids in fact_ids_by_concept.items()
+            for fact_id in fact_ids
+        }
         validated: list[CardClassification] = []
         for result in output.results:
             if self.require_nonblank_reason and not result.reason.strip():
                 raise CardCentricValidationError("classifier returned a blank reason")
             if not set(result.covered_concept_ids) <= allowed_concepts:
                 raise CardCentricValidationError("classifier invented a concept ID")
+            if fact_to_concept:
+                if not set(result.covered_fact_ids) <= set(fact_to_concept):
+                    raise CardCentricValidationError("classifier invented a fact ID")
+                expected_concepts = {
+                    fact_to_concept[fact_id] for fact_id in result.covered_fact_ids
+                }
+                if set(result.covered_concept_ids) != expected_concepts:
+                    raise CardCentricValidationError(
+                        "classifier concept coverage does not match fact coverage"
+                    )
             if not set(result.supporting_passage_ids) <= set(passages):
                 result = result.model_copy(
                     update={"verdict": "MAYBE", "supporting_passage_ids": ()}
@@ -1194,6 +1236,15 @@ def select_high_yield_v2(
         if generated_row.status == "duplicate_of_existing"
         and generated_row.duplicate_of_existing_note_id is not None
     }
+    duplicate_fact_ids_by_note: dict[int, set[str]] = {}
+    for generated_row in generated_cards:
+        if (
+            generated_row.status == "duplicate_of_existing"
+            and generated_row.duplicate_of_existing_note_id is not None
+        ):
+            duplicate_fact_ids_by_note.setdefault(
+                generated_row.duplicate_of_existing_note_id, set()
+            ).add(generated_row.fact_id)
     duplicate_target_generated_card_ids = {
         generated_row.duplicate_of_generated_card_id
         for generated_row in generated_cards
@@ -1280,18 +1331,26 @@ def select_high_yield_v2(
             selectable_generated_ids.add(generated_row.card_id)
 
     for classification in classifications:
-        tier_priority = covered_priority(classification.covered_concept_ids)
-        # ponytail: note identity conservatively preserves distinct facts until the
-        # classifier emits covered_fact_ids; semantic note dedupe can replace this proxy.
+        fact_ids = {
+            *classification.covered_fact_ids,
+            *duplicate_fact_ids_by_note.get(classification.note_id, set()),
+        }
+        concept_ids = {
+            *classification.covered_concept_ids,
+            *(fact_id.rpartition("-M")[0] for fact_id in fact_ids),
+        }
+        tier_priority = covered_priority(tuple(concept_ids))
         coverage = frozenset(
-            {
+            (("fact", fact_id) for fact_id in fact_ids)
+            if fact_ids
+            else (
                 ("note", str(classification.note_id)),
                 *(
                     ("concept", concept_id)
                     for concept_id in classification.covered_concept_ids
                     if concept_id in concepts
                 ),
-            }
+            )
         )
         if selection_eligible_v2(classification, source_index):
             tier = SelectionTier.T3 if tier_priority == 0 else SelectionTier.T5
@@ -1317,9 +1376,7 @@ def select_high_yield_v2(
                 evidence_quality=evidence_quality(classification.supporting_passage_ids),
                 coverage=coverage,
                 concept_coverage=frozenset(
-                    concept_id
-                    for concept_id in classification.covered_concept_ids
-                    if concept_id in concepts
+                    concept_id for concept_id in concept_ids if concept_id in concepts
                 ),
                 priority=tier_priority,
                 duplicate_target=classification.note_id in duplicate_target_note_ids,

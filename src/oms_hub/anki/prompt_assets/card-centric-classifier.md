@@ -1,6 +1,6 @@
 ---
 id: card-centric-classifier
-version: 2.1.0
+version: 2.2.0
 temperature: 0
 max_tokens: 8000
 response_format: json
@@ -17,11 +17,12 @@ facts, split one fact into unnecessary cards, preserve a weak card, or label a
 card eligible merely to reach a count. Prefer fewer excellent, grounded,
 nonredundant cards over more marginal cards.
 
-The request includes `concept_definitions`. For every card, copy each
-`concept_id` whose canonical statement or fact description the card directly
-answers into `covered_concept_ids`. An empty list is allowed only when the card
-is supported by the lecture but answers none of the supplied concepts. Never
-infer what an opaque concept ID means without its supplied definition.
+The request includes `concept_definitions` with separately identified `facts`.
+For every card, copy each `fact_id` whose statement the card directly answers
+into `covered_fact_ids`, then copy exactly those facts' parent `concept_id`
+values into `covered_concept_ids`. Both lists must be empty when the card is
+supported by the lecture but answers none of the supplied facts. Never infer
+what an opaque concept or fact ID means without its supplied definition.
 
 Classify each supplied card against the cached lecture source passages only.
 Return exactly one result per supplied `note_id` and never invent a note,

@@ -18,6 +18,7 @@ from oms_hub.anki.correction_contracts import (
     DuplicateIdentity,
     SelectionMetadata,
 )
+from oms_hub.anki.v2_contracts import FactId
 
 
 class CardCentricContract(BaseModel):
@@ -244,10 +245,13 @@ class CardClassification(CardCentricContract):
     primary_subject: str = Field(min_length=1, max_length=500)
     reason: str = Field(min_length=1, max_length=500)
     covered_concept_ids: tuple[str, ...] = ()
+    covered_fact_ids: tuple[FactId, ...] = ()
     supporting_passage_ids: tuple[str, ...] = ()
     flags: tuple[CardFlag, ...] = ()
 
-    @field_validator("covered_concept_ids", "supporting_passage_ids", "flags")
+    @field_validator(
+        "covered_concept_ids", "covered_fact_ids", "supporting_passage_ids", "flags"
+    )
     @classmethod
     def unique_values(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)) or any(not item.strip() for item in value):
@@ -318,6 +322,12 @@ class CardConcept(CardCentricContract):
     fact_descriptions: tuple[str, ...] = ()
     forbidden_cloze_targets_by_fact: tuple[tuple[str, ...], ...] = ()
     is_mechanism: bool = False
+
+    @property
+    def fact_ids(self) -> tuple[str, ...]:
+        return tuple(
+            f"{self.concept_id}-M{index + 1}" for index in range(self.suggested_fact_count)
+        )
 
     @field_validator("canonical_statement", "primary_entity")
     @classmethod

@@ -2710,6 +2710,9 @@ class CurationServicesRunner:
         coverage: dict[str, list[dict[str, Any]]] = {
             concept.concept_id: [] for concept in ledger.concepts
         }
+        fact_coverage: dict[str, list[dict[str, Any]]] = {
+            fact_id: [] for concept in ledger.concepts for fact_id in concept.fact_ids
+        }
         for item in classified.results:
             evidence_quality = evidence_quality_v2(item, source) if is_v2 else None
             eligible = evidence_quality is not None if is_v2 else selection_eligible(item, source)
@@ -2724,6 +2727,16 @@ class CurationServicesRunner:
                     if evidence_quality is not None:
                         evidence["evidence_quality"] = evidence_quality.value
                     coverage[concept_id].append(evidence)
+            if is_v2:
+                for fact_id in _classification_fact_ids(item, ledger):
+                    if fact_id in fact_coverage:
+                        evidence = {
+                            "note_id": item.note_id,
+                            "supporting_passage_ids": list(item.supporting_passage_ids),
+                        }
+                        if evidence_quality is not None:
+                            evidence["evidence_quality"] = evidence_quality.value
+                        fact_coverage[fact_id].append(evidence)
         if fast is not None:
             for fast_item in fast.results:
                 if not fast_selection_eligible_v2(fast_item, source):
@@ -2741,11 +2754,39 @@ class CurationServicesRunner:
             kind="card_centric_coverage",
             payload={
                 "coverage": {
-                    concept_id: {
-                        "status": "covered" if evidence else "uncovered",
-                        "evidence": sorted(evidence, key=lambda value: value["note_id"]),
+                    concept.concept_id: {
+                        "status": (
+                            "covered"
+                            if (
+                                all(fact_coverage[fact_id] for fact_id in concept.fact_ids)
+                                if is_v2
+                                else coverage[concept.concept_id]
+                            )
+                            else "uncovered"
+                        ),
+                        "evidence": sorted(
+                            coverage[concept.concept_id], key=lambda value: value["note_id"]
+                        ),
+                        **(
+                            {
+                                "facts": {
+                                    fact_id: {
+                                        "status": (
+                                            "covered" if fact_coverage[fact_id] else "uncovered"
+                                        ),
+                                        "evidence": sorted(
+                                            fact_coverage[fact_id],
+                                            key=lambda value: value["note_id"],
+                                        ),
+                                    }
+                                    for fact_id in concept.fact_ids
+                                }
+                            }
+                            if is_v2
+                            else {}
+                        ),
                     }
-                    for concept_id, evidence in coverage.items()
+                    for concept in ledger.concepts
                 },
                 "source_sha256": source.source_sha256,
             },
@@ -2937,7 +2978,11 @@ class CurationServicesRunner:
         for concept_index, concept in enumerate(ledger.concepts):
             if _coverage_suppresses_recovery(coverage[concept.concept_id]):
                 continue
-            fact_count = concept.suggested_fact_count if is_v2 else 1
+            fact_indexes = (
+                _uncovered_fact_indexes(concept, coverage[concept.concept_id])
+                if is_v2
+                else (0,)
+            )
             missing_facts = [
                 {
                     "fact_id": f"{concept.concept_id}-M{index + 1}",
@@ -2945,7 +2990,7 @@ class CurationServicesRunner:
                         concept.fact_descriptions[index] if is_v2 else concept.canonical_statement
                     ),
                 }
-                for index in range(fact_count)
+                for index in fact_indexes
             ]
             forbidden_by_fact = FactForbiddenClozeMap(
                 facts=tuple(
@@ -2957,7 +3002,7 @@ class CurationServicesRunner:
                             else ()
                         ),
                     )
-                    for index, fact in enumerate(missing_facts)
+                    for index, fact in zip(fact_indexes, missing_facts, strict=True)
                 )
             )
             generation_input: dict[str, object] = {
@@ -4005,7 +4050,8 @@ class CurationServicesRunner:
             concept_notes = tuple(
                 note
                 for note in existing_notes
-                if item.concept_id in existing_concepts.get(note.note_id, set())
+                if not existing_concepts.get(note.note_id)
+                or item.concept_id in existing_concepts[note.note_id]
             )
             concept_vectors = (
                 None
@@ -4536,10 +4582,10 @@ class CurationServicesRunner:
             f"{concept.concept_id}-M{index + 1}"
             for concept in ledger.concepts
             if not _coverage_suppresses_recovery(coverage[concept.concept_id])
-            for index in range(
-                concept.suggested_fact_count
-                if context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
-                else 1
+            for index in (
+                _uncovered_fact_indexes(concept, coverage[concept.concept_id])
+                if is_v2
+                else (0,)
             )
         )
         selected_nids = (
@@ -4560,7 +4606,7 @@ class CurationServicesRunner:
         if set(selected_review_ids) != {review.card_id for review in semantic_dedupe_reviews}:
             raise PinnedInputChanged("selection semantic review IDs do not match dedupe reviews")
         existing_coverage_by_nid = {
-            item.note_id: item.covered_concept_ids
+            item.note_id: tuple(item.covered_concept_ids)
             for item in classifications
             if (
                 selection_eligible_v2(item, _card_source_index(context))
@@ -4575,6 +4621,13 @@ class CurationServicesRunner:
                     for item in fast.results
                     if fast_selection_eligible_v2(item, _card_source_index(context))
                 }
+            )
+        for item in generated:
+            if item.status != "duplicate_of_existing" or item.duplicate_of_existing_note_id is None:
+                continue
+            note_id = item.duplicate_of_existing_note_id
+            existing_coverage_by_nid[note_id] = tuple(
+                sorted({*existing_coverage_by_nid.get(note_id, ()), item.concept_id})
             )
         forbidden_by_fact = {
             f"{concept.concept_id}-M{index + 1}": (
@@ -4994,6 +5047,42 @@ def _card_residual_targets(
     )
 
 
+def _classification_fact_ids(
+    classification: CardClassification,
+    ledger: CardConceptLedger,
+) -> tuple[str, ...]:
+    if classification.covered_fact_ids:
+        return classification.covered_fact_ids
+    # Previously persisted v2 artifacts only recorded concept coverage. New
+    # classifier output is validated against exact fact IDs before persistence.
+    concepts = {concept.concept_id: concept for concept in ledger.concepts}
+    return tuple(
+        fact_id
+        for concept_id in classification.covered_concept_ids
+        if concept_id in concepts
+        for fact_id in concepts[concept_id].fact_ids
+    )
+
+
+def _uncovered_fact_indexes(
+    concept: CardConcept,
+    coverage: Mapping[str, Any],
+) -> tuple[int, ...]:
+    facts = coverage.get("facts")
+    if facts is None:
+        return tuple(range(concept.suggested_fact_count))
+    if not isinstance(facts, dict) or set(facts) != set(concept.fact_ids):
+        raise PinnedInputChanged("card-centric fact coverage is malformed")
+    indexes: list[int] = []
+    for index, fact_id in enumerate(concept.fact_ids):
+        fact = facts[fact_id]
+        if not isinstance(fact, dict) or fact.get("status") not in {"covered", "uncovered"}:
+            raise PinnedInputChanged("card-centric fact coverage is malformed")
+        if fact["status"] == "uncovered":
+            indexes.append(index)
+    return tuple(indexes)
+
+
 def _coverage_suppresses_recovery(value: Mapping[str, Any]) -> bool:
     """Only thorough/generated-grade evidence may suppress terminal recovery.
 
@@ -5373,10 +5462,31 @@ def _card_coverage_payload(context: StageContext) -> dict[str, dict[str, Any]]:
 
 def _merged_card_coverage(context: StageContext) -> dict[str, dict[str, Any]]:
     coverage = {
-        key: {"status": value["status"], "evidence": list(value.get("evidence", []))}
+        key: {
+            "status": value["status"],
+            "evidence": list(value.get("evidence", [])),
+            **(
+                {
+                    "facts": {
+                        fact_id: {
+                            "status": fact["status"],
+                            "evidence": list(fact.get("evidence", [])),
+                        }
+                        for fact_id, fact in value["facts"].items()
+                    }
+                }
+                if isinstance(value.get("facts"), dict)
+                else {}
+            ),
+        }
         for key, value in _card_coverage_payload(context).items()
     }
     source = _card_source_index(context)
+    ledger = (
+        _card_ledger(context)
+        if any(isinstance(value.get("facts"), dict) for value in coverage.values())
+        else None
+    )
     is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
     for item in _all_card_classifications(context):
         evidence_quality = evidence_quality_v2(item, source) if is_v2 else None
@@ -5392,6 +5502,20 @@ def _merged_card_coverage(context: StageContext) -> dict[str, dict[str, Any]]:
                     if evidence_quality is not None:
                         evidence["evidence_quality"] = evidence_quality.value
                     coverage[concept_id]["evidence"].append(evidence)
+            if is_v2 and ledger is not None:
+                for fact_id in _classification_fact_ids(item, ledger):
+                    concept_id = fact_id.rpartition("-M")[0]
+                    facts = coverage.get(concept_id, {}).get("facts")
+                    if not isinstance(facts, dict) or fact_id not in facts:
+                        continue
+                    evidence = {
+                        "note_id": item.note_id,
+                        "supporting_passage_ids": list(item.supporting_passage_ids),
+                    }
+                    if evidence_quality is not None:
+                        evidence["evidence_quality"] = evidence_quality.value
+                    facts[fact_id]["status"] = "covered"
+                    facts[fact_id]["evidence"].append(evidence)
     if is_v2:
         fast, _ = _card_fast_classifier(context)
         for fast_item in fast.results:
@@ -5406,6 +5530,18 @@ def _merged_card_coverage(context: StageContext) -> dict[str, dict[str, Any]]:
                             "supporting_passage_ids": list(fast_item.supporting_passage_ids),
                             "evidence_quality": "fast_pass",
                         }
+                    )
+        if ledger is not None:
+            for concept in ledger.concepts:
+                facts = coverage.get(concept.concept_id, {}).get("facts")
+                if isinstance(facts, dict):
+                    coverage[concept.concept_id]["status"] = (
+                        "covered"
+                        if all(
+                            facts[fact_id]["status"] == "covered"
+                            for fact_id in concept.fact_ids
+                        )
+                        else "uncovered"
                     )
     return coverage
 
@@ -5690,6 +5826,17 @@ def _v2_card_candidates(
     else:
         pre_excluded_note_ids = tuple(fallback_note_ids)
     fallback = set(_unrecovered_s4a_exclusion_note_ids(pre_excluded_note_ids, classifications))
+    duplicate_fact_ids_by_note: dict[int, set[str]] = {}
+    deduped = (
+        _card_deduped(context)
+        if CurationStage.DEDUPE in context.prior_payloads
+        else ()
+    )
+    for row in deduped:
+        if row.status == "duplicate_of_existing" and row.duplicate_of_existing_note_id is not None:
+            duplicate_fact_ids_by_note.setdefault(row.duplicate_of_existing_note_id, set()).add(
+                row.fact_id
+            )
     selection_metadata_by_identity = selection_metadata_by_identity or {}
     if needs_review_ids - set(thorough):
         raise PinnedInputChanged("v2 S4b NEEDS_REVIEW rows lack S4c terminal results")
@@ -5703,6 +5850,7 @@ def _v2_card_candidates(
         if card is None:
             raise PinnedInputChanged("v2 classification artifact references an unknown card")
         concept_ids: tuple[str, ...]
+        fact_ids: tuple[str, ...]
         verdict: str
         predicted_band: str
         eligible: bool
@@ -5712,6 +5860,7 @@ def _v2_card_candidates(
         if note_id in residual:
             thorough_item = residual[note_id]
             concept_ids = thorough_item.covered_concept_ids
+            fact_ids = thorough_item.covered_fact_ids
             verdict = thorough_item.verdict.lower()
             predicted_band = thorough_item.verdict
             eligible = selection_eligible_v2(thorough_item, source)
@@ -5721,6 +5870,7 @@ def _v2_card_candidates(
         elif note_id in thorough:
             thorough_item = thorough[note_id]
             concept_ids = thorough_item.covered_concept_ids
+            fact_ids = thorough_item.covered_fact_ids
             verdict = thorough_item.verdict.lower()
             predicted_band = thorough_item.verdict
             eligible = selection_eligible_v2(thorough_item, source)
@@ -5730,6 +5880,7 @@ def _v2_card_candidates(
         elif note_id in fast:
             fast_item = fast[note_id]
             concept_ids = fast_item.grounded_concept_ids
+            fact_ids = ()
             verdict = {
                 "LIKELY_YES": "keep",
                 "LIKELY_NO": "drop",
@@ -5742,6 +5893,7 @@ def _v2_card_candidates(
             provenance_kind = "fast"
         elif note_id in fallback:
             concept_ids = ()
+            fact_ids = ()
             verdict = "uncertain"
             predicted_band = "PREFILTER_FALLBACK"
             eligible = False
@@ -5750,6 +5902,11 @@ def _v2_card_candidates(
             provenance_kind = "prefilter_fallback"
         else:
             raise PinnedInputChanged("v2 classification terminal is unavailable")
+        recovered_fact_ids = duplicate_fact_ids_by_note.get(note_id, set())
+        fact_ids = tuple(sorted({*fact_ids, *recovered_fact_ids}))
+        concept_ids = tuple(
+            sorted({*concept_ids, *(fact_id.rpartition("-M")[0] for fact_id in fact_ids)})
+        )
         candidates.append(
             Candidate(
                 note_id=note_id,
@@ -5759,6 +5916,7 @@ def _v2_card_candidates(
                     "card_centric_v2": {
                         "classification_kind": provenance_kind,
                         "covered_concept_ids": list(concept_ids),
+                        "covered_fact_ids": list(fact_ids),
                         "flags": list(flags),
                         "selection_eligible": eligible,
                     },

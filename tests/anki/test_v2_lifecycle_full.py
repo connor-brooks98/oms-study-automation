@@ -256,9 +256,10 @@ def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
                     "note_id": note_id,
                     "verdict": "YES",
                     "primary_subject": "heme synthesis",
-                    "reason": "Grounded existing high coverage.",
-                    "covered_concept_ids": [f"C{note_id + 1:02d}"],
-                    "supporting_passage_ids": [slide_id],
+                        "reason": "Grounded existing high coverage.",
+                        "covered_concept_ids": [f"C{note_id + 1:02d}"],
+                        "covered_fact_ids": [f"C{note_id + 1:02d}-M1"],
+                        "supporting_passage_ids": [slide_id],
                     "flags": [],
                 }
                 for note_id in range(2, 11)
@@ -539,7 +540,7 @@ def test_s6_mid_band_has_explicit_disposition_expected_red_p2_m8() -> None:
         assert fast_product.payload["degraded_batches"] == []
         assert fast_product.payload["fast_classifier"]["results"][0]["verdict"] == "LIKELY_YES"
         assert classified.payload["thorough_count"] == 8
-        assert coverage.payload["coverage"]["C01"]["status"] == "covered"
+        assert coverage.payload["coverage"]["C01"]["status"] == "uncovered"
         assert coverage.payload["coverage"]["C02"]["status"] == "uncovered"
         assert residual.payload["audits"][0]["hit_note_ids"] == [2]
         assert residual.payload["audits"][0]["disposition"] == "below_classification_threshold"
@@ -1022,7 +1023,8 @@ def test_duplicate_target_identity_survives_selection_into_reconciliation() -> N
 
     report = reconcile_card_centric(snapshot)
 
-    assert selection.selected_existing_note_ids == (11, *range(1, 11))
+    assert selection.selected_existing_note_ids[0] == 11
+    assert set(selection.selected_existing_note_ids) == set(range(1, 12))
     assert selection.excluded_existing_note_ids == ()
     assert report.failed == ()
     # The deliberately 10-card fixture still warns below the policy floor;
@@ -1290,7 +1292,7 @@ def test_fast_only_concept_gets_terminal_replacement_after_floor_before_s9() -> 
         )
         prior[CurationStage.CARD_COVERAGE] = coverage.payload
         assert coverage.payload["coverage"]["C61"] == {
-            "status": "covered",
+            "status": "uncovered",
             "evidence": [
                 {
                     "note_id": 1,
@@ -1298,6 +1300,7 @@ def test_fast_only_concept_gets_terminal_replacement_after_floor_before_s9() -> 
                     "evidence_quality": "fast_pass",
                 }
             ],
+            "facts": {"C61-M1": {"status": "uncovered", "evidence": []}},
         }
 
         residual = await harness.invoke(
@@ -1986,8 +1989,7 @@ def test_expected_red_p3_h5_positions_66_to_70_require_governed_marginal_reasons
     assert all(item.get("marginal_value_reason") in allowed for item in marginal)
 
 
-def test_existing_subset_concept_coverage_preserves_distinct_note_facts() -> None:
-    """Concept subset coverage cannot prove that two existing notes repeat one fact."""
+def test_existing_fact_coverage_removes_a_redundant_subset_note() -> None:
     source = CardCentricSourceIndex.model_validate(lifecycle_source_payload()["source_index"])
     slide_id = next(
         passage.passage_id for passage in source.passages if passage.authority == "slide"
@@ -1998,6 +2000,7 @@ def test_existing_subset_concept_coverage_preserves_distinct_note_facts() -> Non
         primary_subject="heme synthesis mechanism",
         reason="Grounded atomic coverage with direct slide support.",
         covered_concept_ids=("C01", "C02"),
+        covered_fact_ids=("C01-M1", "C02-M1"),
         supporting_passage_ids=(slide_id,),
     )
     dominated_subset = CardClassification(
@@ -2006,6 +2009,7 @@ def test_existing_subset_concept_coverage_preserves_distinct_note_facts() -> Non
         primary_subject="heme synthesis",
         reason="Grounded subset coverage with no additional evidence.",
         covered_concept_ids=("C01",),
+        covered_fact_ids=("C01-M1",),
         supporting_passage_ids=(slide_id,),
     )
 
@@ -2019,8 +2023,8 @@ def test_existing_subset_concept_coverage_preserves_distinct_note_facts() -> Non
         )
     )
 
-    assert selected == (1, 2)
-    assert excluded == ()
+    assert selected == (1,)
+    assert excluded == (2,)
     assert generated == ()
 
 
