@@ -3164,7 +3164,8 @@ class CurationServicesRunner:
                 raise
             for item in result.value.resolutions:
                 card_id = hashlib.sha256(
-                    f"{concept.concept_id}\0{item.fact_id}\0{item.text}\0{item.extra}".encode()
+                    f"{context.job.id}\0{concept.concept_id}\0{item.fact_id}\0"
+                    f"{item.split_index or 0}\0{item.text}\0{item.extra}".encode()
                 ).hexdigest()[:32]
                 evidence_ids: tuple[str, ...] = ()
                 if item.status == "generated":

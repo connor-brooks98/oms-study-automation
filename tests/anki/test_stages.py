@@ -2276,6 +2276,7 @@ def _card_gap_fill_harness(
     runner.structured = structured
     context = SimpleNamespace(
         job=SimpleNamespace(
+            id="job-1",
             lecture_id=12,
             pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
             resolved_model_config=SimpleNamespace(
@@ -2362,6 +2363,14 @@ def test_card_gap_fill_v2_uses_pinned_metadata_per_fact_targets_and_split_indice
     assert sent["lecture_title"] == "Pinned anemia title"
     assert structured.instructions == ["Pinned card gap prompt"]
     assert [row["split_index"] for row in product.payload["resolutions"]] == [1, 2, None, None]
+    card_ids = [row["card_id"] for row in product.payload["resolutions"]]
+    assert len(card_ids) == len(set(card_ids))
+    expected = hashlib.sha256(
+        b"job-1\0C01\0C01-M1\0"
+        b"1\0{{c1::<b>delta</b>}} is grounded.\0"
+        b"Grounded explanation."
+    ).hexdigest()[:32]
+    assert card_ids[0] == f"CC-{expected}"
 
 
 def test_card_gap_fill_v2_requests_only_uncovered_facts(

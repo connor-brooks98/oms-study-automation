@@ -539,6 +539,7 @@ def test_s7_title_edit_must_not_change_provider_input_mid_stage() -> None:
     runner.structured = provider
     context = SimpleNamespace(
         job=SimpleNamespace(
+            id="job-1",
             lecture_id=12,
             pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
             resolved_model_config=SimpleNamespace(
