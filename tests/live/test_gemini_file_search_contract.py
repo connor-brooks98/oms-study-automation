@@ -1236,6 +1236,8 @@ def test_real_file_citation_optional_none_is_not_a_scope_mismatch(
     )
 
     assert audit.checks[check] == diagnosis
+    if field == "document_uri":
+        assert len(audit.citations) == 1
 
 
 def test_real_sdk_usage_uses_current_names_and_preserves_zero() -> None:
@@ -1380,6 +1382,7 @@ def test_synthetic_diagnostic_sink_is_atomic_private_redacted_and_deletable(
             "status": 400,
             "message": "full synthetic provider message",
             "body": {"synthetic": "full body"},
+            "binary_body": b"prefix-synthetic-secret-value-suffix",
             "api_key": "synthetic-secret-value",
             "headers": {
                 "Authorization": "Bearer synthetic-secret-value",
@@ -1401,7 +1404,7 @@ def test_synthetic_diagnostic_sink_is_atomic_private_redacted_and_deletable(
     assert "full body" in encoded
     assert "full synthetic exception message" in encoded
     assert "Traceback" in encoded
-    assert "retained" in encoded
+    assert "retained" not in encoded
     assert "synthetic-secret-value" not in encoded
     sink.delete()
     assert not request.output_path.exists()
@@ -1424,6 +1427,28 @@ def test_synthetic_diagnostic_path_inside_git_blocks_before_secret_read(
         )
 
     assert secrets.calls == []
+
+
+def test_synthetic_diagnostic_rejects_injected_session_before_secret_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    secrets = _FakeSecrets("must-not-be-read")
+    request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
+    monkeypatch.setenv("RUN_LIVE_GEMINI_TESTS", "1")
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="default synthetic session"):
+        asyncio.run(
+            smoke.run_authorized_live_smoke(
+                secret_store=secrets,
+                session_factory=lambda api_key: _FakeSession(smoke),
+                diagnostic_request=request,
+            )
+        )
+
+    assert secrets.calls == []
+    assert not request.output_path.exists()
 
 
 def test_synthetic_diagnostic_overflow_leaves_no_partial_file(
@@ -1477,6 +1502,31 @@ def test_check_matrix_continues_after_independent_positive_failures() -> None:
         "delete_file",
         "delete_store",
     ]
+
+
+def test_optional_document_uri_diagnosis_does_not_fail_bound_citation() -> None:
+    smoke = _load_smoke()
+
+    class OptionalDocumentUri(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id == smoke.SYNTHETIC_LECTURE_ID:
+                checks = {
+                    name: "passed" for name in smoke._CITATION_CHECKS
+                }
+                checks["citation_document_binding"] = (
+                    "citation_document_uri_absent"
+                )
+                return dataclasses.replace(
+                    result,
+                    citation_checks=tuple(checks.items()),
+                )
+            return result
+
+    record = asyncio.run(smoke.run_contract_smoke(OptionalDocumentUri(smoke)))
+
+    assert record["status"] == "passed"
 
 
 def test_cleanup_diagnostics_distinguish_request_from_context_close() -> None:
