@@ -139,6 +139,53 @@ def prepare_private_shadow_index_input(
     )
 
 
+def run_private_shadow_preflight(
+    slide_revision_id: str,
+    *,
+    schema_version: int,
+    artifacts: ArtifactService,
+    materialization_root: Path,
+    parser: Any | None = None,
+) -> dict[str, object]:
+    from oms_hub.files.pdf import validate_pdf
+    from oms_hub.indexing.service import build_index_manifest
+    from oms_hub.knowledge.models import EvidenceLocatorKind
+
+    view = prepare_private_shadow_index_input(
+        slide_revision_id,
+        schema_version=schema_version,
+        artifacts=artifacts,
+        materialization_root=materialization_root,
+        parser=parser,
+    )
+    manifest = build_index_manifest(view)
+    slide_locators = {
+        unit.locator.value
+        for unit in view.evidence_units
+        if unit.locator.kind is EvidenceLocatorKind.SLIDE
+    }
+    if not slide_locators or any(
+        unit.locator.kind is not EvidenceLocatorKind.SLIDE
+        for unit in view.evidence_units
+    ):
+        raise LiveSmokeBlocked("private shadow source has invalid slide evidence")
+    inputs = (view.pptx.path, *(item.path for item in manifest.inputs))
+    return {
+        "status": "ready",
+        "source_revision_hash": hashlib.sha256(
+            view.source_revision_id.encode("utf-8")
+        ).hexdigest(),
+        "document_types": sorted(
+            {"pptx", *(item.input_kind for item in manifest.inputs)}
+        ),
+        "page_count": validate_pdf(view.pdf.path).page_count,
+        "slide_count": len(slide_locators),
+        "provider_operation_states": ["private_preflight_ready"],
+        "byte_usage": {"index_inputs": sum(path.stat().st_size for path in inputs)},
+        "warnings": [],
+    }
+
+
 class _OperationFailure(Exception):
     def __init__(self, status_code: int | None) -> None:
         self.status_code = status_code
