@@ -4051,8 +4051,8 @@ class CurationServicesRunner:
             for item in classifications_by_note.values()
             if selection_eligible_v2(item, source)
         }
-        existing_concepts = {
-            item.note_id: set(item.covered_concept_ids)
+        existing_fact_ids = {
+            item.note_id: set(item.covered_fact_ids)
             for item in classifications_by_note.values()
             if item.note_id in existing_ids
         }
@@ -4092,8 +4092,7 @@ class CurationServicesRunner:
             concept_notes = tuple(
                 note
                 for note in existing_notes
-                if not existing_concepts.get(note.note_id)
-                or item.concept_id in existing_concepts[note.note_id]
+                if item.fact_id in existing_fact_ids.get(note.note_id, set())
             )
             concept_vectors = (
                 None
@@ -4104,7 +4103,7 @@ class CurationServicesRunner:
                 }
             )
             concept_accepted = tuple(
-                other for other in accepted if other.concept_id == item.concept_id
+                other for other in accepted if other.fact_id == item.fact_id
             )
             with provider_call_scope(
                 batch_index=batch_index,
@@ -4134,6 +4133,11 @@ class CurationServicesRunner:
                 "fact_entailment_proven": None,
             }
             semantic_dedupe_diagnostics.append(diagnostic)
+            if outcome.disposition == "overlap":
+                resolved.append(item)
+                accepted.append(proposal)
+                accepted_ids.add(f"proposal:{item.card_id}")
+                continue
             update: dict[str, Any] = {
                 "status": "duplicate_of_existing",
                 "reason": f"semantic dedup {outcome.disposition}: nearest={nearest or 'none'}",
@@ -4167,8 +4171,7 @@ class CurationServicesRunner:
                     else set()
                 )
                 if (
-                    outcome.disposition != "duplicate"
-                    or item.fact_id not in proven_fact_ids
+                    item.fact_id not in proven_fact_ids
                     or item.fact_id not in ledger.fact_stable_keys
                 ):
                     diagnostic["fact_entailment_proven"] = False

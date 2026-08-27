@@ -211,7 +211,7 @@ def test_real_handler_lifecycle_harness_exposes_stage_artifacts() -> None:
             "generated",
             "generated",
         ]
-        assert embedder.calls == [("document", ("second fact beta", "first fact alpha"))]
+        assert embedder.calls == []
         assert harness.exposed_payloads() == {
             CurationStage.CARD_LEDGER: ledger_product.payload,
             CurationStage.CARD_EVIDENCE_AUDIT: product.payload,

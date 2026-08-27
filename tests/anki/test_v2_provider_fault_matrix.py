@@ -20,6 +20,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardRecord,
     ClassifierResult,
     ClassifierTelemetry,
+    CoveredFactEvidence,
     FastCardClassification,
     FastClassificationResult,
     GeneratedCardResolution,
@@ -636,10 +637,18 @@ def test_expected_red_p3_h10_exhausted_semantic_outage_requires_manual_review(
                     CardClassification(
                         note_id=card.note_id,
                         verdict="YES",
-                        primary_subject="fixture",
-                        reason="Eligible existing fixture.",
-                        covered_concept_ids=("C01",),
-                        supporting_passage_ids=(source.passages[0].passage_id,),
+                            primary_subject="fixture",
+                            reason="Eligible existing fixture.",
+                            covered_concept_ids=("C01",),
+                            covered_fact_ids=("C01-M1",),
+                            covered_fact_evidence=(
+                                CoveredFactEvidence(
+                                    fact_id="C01-M1",
+                                    field="text",
+                                    span=card.text,
+                                ),
+                            ),
+                            supporting_passage_ids=(source.passages[0].passage_id,),
                     ),
                 ),
                 telemetry=ClassifierTelemetry(

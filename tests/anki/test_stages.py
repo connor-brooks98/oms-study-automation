@@ -129,6 +129,17 @@ class _OrthogonalDedupeEmbedder:
         ]  # type: ignore[return-value]
 
 
+class _OverlapDedupeEmbedder:
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        input_type: InputType,
+    ) -> FloatMatrix:
+        assert input_type == "document"
+        return [[0.62, 1.0] for _ in texts]  # type: ignore[return-value]
+
+
 class _FailingDedupeEmbedder:
     async def embed(
         self,
@@ -428,7 +439,9 @@ def test_card_dedupe_v2_preserves_existing_duplicate_identity() -> None:
     assert result["status"] == "duplicate_of_existing"
     assert result["duplicate_of_existing_note_id"] == 41
     assert result["duplicate_of_generated_card_id"] is None
-    terminal = GeneratedFactResolution.model_validate(product.payload["terminal_resolutions"][0])
+    terminal = GeneratedFactResolution.model_validate(
+        product.payload["terminal_resolutions"][0]
+    )
     assert terminal.fact_id == "C01-M1"
     assert terminal.kind == "duplicate_of_existing"
     assert terminal.duplicate_of == DuplicateIdentity(existing_note_id=41)
@@ -466,7 +479,44 @@ def test_card_dedupe_v2_does_not_cross_concept_boundaries() -> None:
     ]
 
 
-def test_card_dedupe_v2_does_not_transfer_fact_to_unmapped_existing_duplicate() -> None:
+def test_card_dedupe_v2_keeps_existing_overlap_without_manual_review() -> None:
+    note = CardRecord(
+        note_id=41,
+        content_sha256="1" * 64,
+        text="CD40L is expressed on T cells.",
+        extra="",
+        tags=(),
+        deck_names=("AnKing",),
+    )
+    runner, context, passage_id = _dedupe_stage_fixture(
+        _OverlapDedupeEmbedder(),
+        cards=(note,),
+    )
+    _set_dedupe_existing(context, note.note_id, passage_id)
+
+    product = asyncio.run(
+        runner._card_dedupe_v2(
+            context,
+            {note.note_id: note},
+            (
+                _generated_dedupe_row(
+                    "G01",
+                    "C01-M1",
+                    "CD40 is expressed on B cells.",
+                    passage_id,
+                ),
+            ),
+        )
+    )
+
+    assert product.payload["resolutions"][0]["status"] == "generated"
+    assert product.payload["semantic_dedupe_reviews"] == []
+    assert product.payload["semantic_dedupe_diagnostics"][0]["disposition"] == (
+        "overlap"
+    )
+
+
+def test_card_dedupe_v2_does_not_compare_an_existing_card_for_another_fact() -> None:
     note = CardRecord(
         note_id=41,
         content_sha256="1" * 64,
@@ -479,7 +529,7 @@ def test_card_dedupe_v2_does_not_transfer_fact_to_unmapped_existing_duplicate() 
         _DedupeEmbedder([]),
         cards=(note,),
     )
-    _set_dedupe_existing(context, note.note_id, passage_id, concept_id="")
+    _set_dedupe_existing(context, note.note_id, passage_id, concept_id="C01")
 
     product = asyncio.run(
         runner._card_dedupe_v2(
@@ -488,7 +538,7 @@ def test_card_dedupe_v2_does_not_transfer_fact_to_unmapped_existing_duplicate() 
             (
                 _generated_dedupe_row(
                     "G01",
-                    "C02-M2",
+                    "C01-M2",
                     "Mature B cells are absent in XLA",
                     passage_id,
                 ),
@@ -499,21 +549,9 @@ def test_card_dedupe_v2_does_not_transfer_fact_to_unmapped_existing_duplicate() 
     result = product.payload["resolutions"][0]
     assert result["status"] == "generated"
     assert result["duplicate_of_existing_note_id"] is None
-    review = product.payload["semantic_dedupe_reviews"][0]
-    assert review["reason"] == "unproven_fact_entailment"
-    assert review["retry_exhausted"] is False
-    assert review["nearest_semantic_identity"]["existing_note_id"] == 41
-    assert product.payload["semantic_dedupe_diagnostics"] == [
-        {
-            "card_id": "G01",
-            "fact_id": "C02-M2",
-            "disposition": "duplicate",
-            "nearest_identity": "note:41",
-            "semantic_score": 1.0,
-            "fact_entailment_proven": False,
-        }
-    ]
-    assert product.payload["terminal_resolutions"] == []
+    assert product.payload["semantic_dedupe_reviews"] == []
+    assert product.payload["semantic_dedupe_diagnostics"] == []
+    assert product.payload["terminal_resolutions"][0]["kind"] == "generated"
 
 
 def test_card_dedupe_v2_uses_pinned_existing_vectors_without_uploading_notes() -> None:
@@ -553,8 +591,12 @@ def test_card_dedupe_v2_uses_pinned_existing_vectors_without_uploading_notes() -
 
 def test_card_dedupe_v2_preserves_generated_duplicate_card_identity() -> None:
     runner, context, passage_id = _dedupe_stage_fixture(_DedupeEmbedder([]))
-    first = _generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id)
-    second = _generated_dedupe_row("G02", "C01-M2", "{{c1::Alpha}} beta", passage_id)
+    first = _generated_dedupe_row(
+        "G01", "C01-M1", "Alpha beta", passage_id
+    ).model_copy(update={"split": True, "split_index": 1})
+    second = _generated_dedupe_row(
+        "G02", "C01-M1", "{{c1::Alpha}} beta", passage_id
+    ).model_copy(update={"split": True, "split_index": 2})
 
     product = asyncio.run(runner._card_dedupe_v2(context, {}, (first, second)))
 
@@ -562,17 +604,21 @@ def test_card_dedupe_v2_preserves_generated_duplicate_card_identity() -> None:
     assert result["status"] == "duplicate_of_existing"
     assert result["duplicate_of_existing_note_id"] is None
     assert result["duplicate_of_generated_card_id"] == "G01"
-    terminal = GeneratedFactResolution.model_validate(product.payload["terminal_resolutions"][1])
-    assert terminal.fact_id == "C01-M2"
-    assert terminal.kind == "duplicate_of_existing"
-    assert terminal.duplicate_of == DuplicateIdentity(generated_card_id="G01")
+    terminal = GeneratedFactResolution.model_validate(product.payload["terminal_resolutions"][0])
+    assert terminal.fact_id == "C01-M1"
+    assert terminal.kind == "generated"
+    assert terminal.generated_card_ids == ("G01",)
 
 
 def test_real_s8_generated_duplicate_target_survives_selection_into_s9() -> None:
     """S8's generated-card identity remains selected through S9 reconciliation."""
     runner, context, passage_id = _dedupe_stage_fixture(_OrthogonalDedupeEmbedder())
-    first = _generated_dedupe_row("G01", "C01-M1", "{{c1::Alpha}} beta", passage_id)
-    second = _generated_dedupe_row("G02", "C01-M2", "{{c1::Alpha}} beta", passage_id)
+    first = _generated_dedupe_row(
+        "G01", "C01-M1", "{{c1::Alpha}} beta", passage_id
+    ).model_copy(update={"split": True, "split_index": 1})
+    second = _generated_dedupe_row(
+        "G02", "C01-M1", "{{c1::Alpha}} beta", passage_id
+    ).model_copy(update={"split": True, "split_index": 2})
     other_generated = tuple(
         _generated_dedupe_row(
             f"G{index:02d}",
