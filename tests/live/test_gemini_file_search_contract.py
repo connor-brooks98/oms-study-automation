@@ -16,6 +16,7 @@ from types import ModuleType, SimpleNamespace
 
 import httpx
 import pytest
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "run-gemini-contract-smoke.py"
@@ -2053,6 +2054,299 @@ def test_private_preflight_rejects_noncanonical_slide_locator(locator: str) -> N
 
     with pytest.raises(smoke.LiveSmokeBlocked, match="invalid slide evidence"):
         smoke._canonical_slide_number(locator)
+
+
+def _private_shadow_view(smoke: ModuleType, tmp_path: Path) -> object:
+    from oms_hub.artifacts import ArtifactRole
+    from oms_hub.document_processing.domain import DocumentLocator
+    from oms_hub.files.atomic import sha256_file
+    from oms_hub.knowledge.models import (
+        EvidenceLocator,
+        EvidenceLocatorKind,
+        EvidenceUnit,
+        SourceRevisionState,
+    )
+    from oms_hub.knowledge.service import (
+        CanonicalInputArtifact,
+        IndexAssetView,
+        IndexInputView,
+    )
+    from oms_hub.providers.contracts import AuthorityClass
+
+    revision_id = "sr_private_shadow_aaaaaaaaaaaa"
+    pptx = tmp_path / "lecture.pptx"
+    pdf = tmp_path / "lecture.pdf"
+    markdown = tmp_path / "normalized.md"
+    image = tmp_path / "diagram.png"
+    pptx.write_bytes(b"private fixture pptx")
+    pdf.write_bytes(smoke.synthetic_pdf_bytes())
+    markdown.write_text("# Private fixture\n\nDo not emit this text.\n", encoding="utf-8")
+    Image.new("RGB", (32, 24), "white").save(image, format="PNG")
+    evidence = EvidenceUnit(
+        evidence_id="ev_private_1",
+        source_revision_id=revision_id,
+        authority_class=AuthorityClass.COURSE_MATERIAL,
+        course_id="course-private",
+        exam_id="exam-private",
+        lecture_id="lecture-private",
+        locator=EvidenceLocator(EvidenceLocatorKind.SLIDE, "1"),
+        normalized_text="Do not emit this text.",
+        content_sha256=hashlib.sha256(b"Do not emit this text.").hexdigest(),
+    )
+    return IndexInputView(
+        source_document_id="opaque-private-document",
+        source_revision_id=revision_id,
+        source_family="legacy_slides",
+        revision_state=SourceRevisionState.READY,
+        authority_class=AuthorityClass.COURSE_MATERIAL,
+        course_id=evidence.course_id,
+        exam_id=evidence.exam_id,
+        lecture_id=evidence.lecture_id,
+        pptx=CanonicalInputArtifact(
+            f"{revision_id}:pptx",
+            ArtifactRole.PPTX,
+            pptx,
+            sha256_file(pptx),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+        pdf=CanonicalInputArtifact(
+            f"{revision_id}:pdf",
+            ArtifactRole.PDF,
+            pdf,
+            sha256_file(pdf),
+            "application/pdf",
+        ),
+        markdown=CanonicalInputArtifact(
+            f"{revision_id}:markdown",
+            ArtifactRole.CLEANED,
+            markdown,
+            sha256_file(markdown),
+            "text/markdown",
+        ),
+        evidence_units=(evidence,),
+        assets=(
+            IndexAssetView(
+                asset_id="asset-private-diagram",
+                path=image,
+                media_type="image/png",
+                sha256=sha256_file(image),
+                locator=DocumentLocator("slide 1", slide_number=1),
+                width=32,
+                height=24,
+                visual_semantic=True,
+                evidence_ids=(evidence.evidence_id,),
+            ),
+        ),
+    )
+
+
+class _PrivateShadowSession:
+    def __init__(self, smoke: ModuleType, *, fail_cleanup: bool = False) -> None:
+        self.smoke = smoke
+        self.fail_cleanup = fail_cleanup
+        self.calls: list[tuple[str, object]] = []
+        self.model_contract = smoke.PRIVATE_SHADOW_MODEL_CONTRACT
+
+    async def create_store(self, display_name: str, embedding_model: str) -> str:
+        self.calls.append(("create_store", (display_name, embedding_model)))
+        return "fileSearchStores/private-store"
+
+    async def upload_input(
+        self,
+        display_name: str,
+        path: Path,
+        media_type: str,
+    ) -> str:
+        self.calls.append(("upload_input", (display_name, path.name, media_type)))
+        return f"files/{display_name}"
+
+    async def import_input(
+        self,
+        store_name: str,
+        file_name: str,
+        metadata: tuple[tuple[str, str], ...],
+        chunking: object | None,
+    ) -> str:
+        self.calls.append(("import_input", (store_name, file_name, metadata, chunking)))
+        return f"operations/{len(self.calls)}"
+
+    async def wait_for_import(self, operation_name: str) -> str:
+        self.calls.append(("wait_for_import", operation_name))
+        return f"fileSearchStores/private-store/documents/{len(self.calls)}"
+
+    async def query_private(
+        self,
+        store_name: str,
+        prompt: str,
+        scope: object,
+        *,
+        source_revision_id: str,
+        manifest: object,
+        file_bindings: tuple[tuple[str, str], ...],
+    ) -> object:
+        del prompt, source_revision_id, manifest, file_bindings
+        self.calls.append(("query_private", (store_name, scope)))
+        if scope.lecture_id == "lecture-private":
+            return self.smoke.PrivateShadowQueryAudit(2, 2, 17, 9)
+        return self.smoke.PrivateShadowQueryAudit(0, 0, 11, 4)
+
+    async def delete_document(self, document_name: str) -> None:
+        self.calls.append(("delete_document", document_name))
+        if self.fail_cleanup and document_name.endswith("5"):
+            raise RuntimeError("raw cleanup failure must not escape")
+
+    async def delete_file(self, file_name: str) -> None:
+        self.calls.append(("delete_file", file_name))
+
+    async def delete_store(self, store_name: str) -> None:
+        self.calls.append(("delete_store", store_name))
+
+
+def test_private_shadow_requires_opt_in_before_projection_or_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    secrets = _FakeSecrets("stored-private-key")
+    projected = False
+
+    def project(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        nonlocal projected
+        projected = True
+        return object()
+
+    monkeypatch.delenv("RUN_PRIVATE_GEMINI_SHADOW", raising=False)
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", project)
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="RUN_PRIVATE_GEMINI_SHADOW"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                secret_store=secrets,
+            )
+        )
+
+    assert projected is False
+    assert secrets.calls == []
+
+
+def test_private_shadow_mismatch_fails_before_secret_and_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    secrets = _FakeSecrets("stored-private-key")
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    original = smoke._private_shadow_preflight_from_view
+
+    def mismatched(projected: object) -> dict[str, object]:
+        record = original(projected)
+        record["page_count"] = 2
+        return record
+
+    monkeypatch.setattr(smoke, "_private_shadow_preflight_from_view", mismatched)
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="preflight mismatch"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                secret_store=secrets,
+                session_factory=lambda key: pytest.fail(f"provider received {key}"),
+            )
+        )
+
+    assert secrets.calls == []
+
+
+def test_private_shadow_indexes_every_input_queries_and_returns_only_aggregates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    secrets = _FakeSecrets("stored-private-key")
+    session = _PrivateShadowSession(smoke)
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+
+    record = asyncio.run(
+        smoke.run_authorized_private_shadow(
+            "29",
+            schema_version=29,
+            artifacts=SimpleNamespace(),
+            materialization_root=tmp_path,
+            secret_store=secrets,
+            session_factory=lambda key: session if key == "stored-private-key" else None,
+            clock=iter((100.0, 100.25)).__next__,
+        )
+    )
+
+    assert set(record) == {
+        "status",
+        "source_revision_hash",
+        "document_types",
+        "page_count",
+        "slide_count",
+        "provider_operation_states",
+        "citation_resolution_rate",
+        "duration_ms",
+        "byte_usage",
+        "token_usage",
+        "warnings",
+    }
+    assert record["status"] == "passed"
+    assert record["document_types"] == ["image", "markdown", "pdf", "pptx"]
+    assert record["citation_resolution_rate"] == 1.0
+    assert record["duration_ms"] == 250
+    assert record["token_usage"] == {"input": 28, "output": 13}
+    assert record["warnings"] == []
+    assert secrets.calls == ["gemini-api-key"]
+    assert len([call for call in session.calls if call[0] == "upload_input"]) == 4
+    assert len([call for call in session.calls if call[0] == "import_input"]) == 4
+    assert len([call for call in session.calls if call[0] == "query_private"]) == 2
+    assert len([call for call in session.calls if call[0] == "delete_document"]) == 4
+    assert len([call for call in session.calls if call[0] == "delete_file"]) == 4
+    assert session.calls[-1] == ("delete_store", "fileSearchStores/private-store")
+    serialized = json.dumps(record, sort_keys=True)
+    assert "Do not emit this text" not in serialized
+    assert "fileSearchStores/private-store" not in serialized
+
+
+def test_private_shadow_cleanup_failure_still_attempts_every_delete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    session = _PrivateShadowSession(smoke, fail_cleanup=True)
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+
+    with pytest.raises(smoke.SmokeContractError, match="cleanup failed") as raised:
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: session,
+            )
+        )
+
+    assert raised.value.reason == "private_cleanup_failed"
+    assert len([call for call in session.calls if call[0] == "delete_document"]) == 4
+    assert len([call for call in session.calls if call[0] == "delete_file"]) == 4
+    assert len([call for call in session.calls if call[0] == "delete_store"]) == 1
 
 
 def test_opt_in_without_stored_credential_fails_before_provider(
