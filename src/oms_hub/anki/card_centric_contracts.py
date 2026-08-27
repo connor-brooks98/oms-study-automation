@@ -422,6 +422,8 @@ class CardConcept(CardCentricContract):
             raise ValueError("fact_descriptions length must equal suggested_fact_count")
         if any(";" in value for value in descriptions):
             raise ValueError("atomic fact descriptions cannot bundle semicolon clauses")
+        if any(value.casefold().count(" is expressed on ") > 1 for value in descriptions):
+            raise ValueError("atomic fact descriptions cannot bundle multiple locations")
         by_fact = tuple(
             tuple(value.strip() for value in targets)
             for targets in self.forbidden_cloze_targets_by_fact
@@ -470,19 +472,27 @@ class CardConceptLedger(CardCentricContract):
         )
         placeholder_only = re.compile(
             r"\b(?:as (?:noted|described) in the lecture|"
+            r"(?:covered|explained|taught|reviewed)\b[^.]{0,160}\b"
+            r"(?:in (?:the )?lecture|with (?:clinical|molecular)|in molecular detail)|"
+            r"lecture (?:noted|covered|explained|taught)\b|"
             r"(?:named )?(?:clinical )?(?:checklist|criteria) (?:is |are )?"
             r"(?:used|that helps) to (?:identify|recognize)|"
             r"(?:basic|characteristic)[^.]{0,80}(?:gene|defect)"
             r"[^.]{0,100}clinical (?:features|presentation))\b",
             re.IGNORECASE,
         )
-        if any(
-            control_only.search(statement) or placeholder_only.search(statement)
+        invalid_placeholders = [
+            f"{fact_id}: {statement}"
             for concept in self.concepts
-            for statement in concept.fact_descriptions
-        ):
+            for fact_id, statement in zip(
+                concept.fact_ids, concept.fact_descriptions, strict=True
+            )
+            if control_only.search(statement) or placeholder_only.search(statement)
+        ]
+        if invalid_placeholders:
             raise ValueError(
-                "lecture depth metadata or placeholders cannot be card-generating facts"
+                "lecture depth metadata or placeholders cannot be card-generating facts: "
+                + " | ".join(invalid_placeholders)
             )
         return self
 

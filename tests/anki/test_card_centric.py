@@ -868,6 +868,22 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
                 ),
             ),
         )
+    with pytest.raises(ValueError, match="C01-M1: SCID pathogenesis"):
+        CardConceptLedger(
+            lecture_entity_count=1,
+            concepts=(
+                CardConcept(
+                    concept_id="C01",
+                    canonical_statement=(
+                        "SCID pathogenesis was covered in molecular detail in lecture."
+                    ),
+                    primary_entity="SCID",
+                    depth="deep",
+                    emphasis_flag=False,
+                    importance="high",
+                ),
+            ),
+        )
     with pytest.raises(ValueError, match="semicolon"):
         CardConcept(
             concept_id="C01",
@@ -878,6 +894,18 @@ def test_fact_identity_survives_reordering_and_depth_metadata_is_rejected() -> N
             importance="high",
             fact_descriptions=(
                 "CD40L is on T cells; CD40 is on B cells.",
+            ),
+        )
+    with pytest.raises(ValueError, match="multiple locations"):
+        CardConcept(
+            concept_id="C01",
+            canonical_statement="Two locations.",
+            primary_entity="CD40 signaling",
+            depth="deep",
+            emphasis_flag=False,
+            importance="high",
+            fact_descriptions=(
+                "CD40L is expressed on T cells while CD40 is expressed on B cells.",
             ),
         )
     with pytest.raises(ValueError, match="depth metadata"):
