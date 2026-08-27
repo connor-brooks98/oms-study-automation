@@ -243,7 +243,11 @@ class _SyntheticDiagnosticSink:
         )
         temporary = Path(temporary_name)
         try:
-            os.fchmod(file_descriptor, 0o600)
+            fchmod = getattr(os, "fchmod", None)
+            if callable(fchmod):
+                fchmod(file_descriptor, 0o600)
+            else:
+                os.chmod(temporary, 0o600)
             with os.fdopen(file_descriptor, "wb") as handle:
                 handle.write(payload)
                 handle.flush()
