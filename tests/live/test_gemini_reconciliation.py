@@ -4,14 +4,22 @@ import asyncio
 import importlib.util
 import json
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
-from google.genai import types
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "run-gemini-reconciliation.py"
+
+
+def _sdk_types() -> Any:
+    from google.genai import types
+
+    return types
 
 
 def _load_operator() -> ModuleType:
@@ -34,9 +42,9 @@ class _FakeSession:
     def __init__(
         self,
         *,
-        stores: list[types.FileSearchStore],
-        files: list[types.File],
-        documents: dict[str, list[types.Document]],
+        stores: list[Any],
+        files: list[Any],
+        documents: dict[str, list[Any]],
         delete_document: bool = True,
         fail_document_relist: bool = False,
     ) -> None:
@@ -48,13 +56,13 @@ class _FakeSession:
         self.document_lists = 0
         self.calls: list[tuple[str, str]] = []
 
-    async def list_stores(self) -> tuple[types.FileSearchStore, ...]:
+    async def list_stores(self) -> tuple[Any, ...]:
         return tuple(self.stores)
 
-    async def list_files(self) -> tuple[types.File, ...]:
+    async def list_files(self) -> tuple[Any, ...]:
         return tuple(self.files)
 
-    async def list_documents(self, store_name: str) -> tuple[types.Document, ...]:
+    async def list_documents(self, store_name: str) -> tuple[Any, ...]:
         self.document_lists += 1
         if self.fail_document_relist and self.document_lists == 2:
             raise RuntimeError("synthetic relist failure")
@@ -80,6 +88,7 @@ def _owned_session(
     delete_document: bool = True,
     fail_document_relist: bool = False,
 ) -> _FakeSession:
+    types = _sdk_types()
     token = "a" * 32
     store_name = "fileSearchStores/owned"
     return _FakeSession(
@@ -170,6 +179,7 @@ def test_document_relist_failure_still_attempts_known_file_and_store_cleanup() -
 
 def test_scope_cap_fails_before_any_mutation() -> None:
     operator = _load_operator()
+    types = _sdk_types()
     stores = [
         types.FileSearchStore(
             name=f"fileSearchStores/owned-{index}",
@@ -206,6 +216,7 @@ def test_optional_sdk_identity_none_blocks_before_mutation(kind: str) -> None:
 
 def test_optional_display_name_none_is_ignored_as_foreign() -> None:
     operator = _load_operator()
+    types = _sdk_types()
     session = _FakeSession(
         stores=[types.FileSearchStore(name="fileSearchStores/foreign", display_name=None)],
         files=[types.File(name="files/foreign", display_name=None)],
@@ -217,6 +228,74 @@ def test_optional_display_name_none_is_ignored_as_foreign() -> None:
     assert record["status"] == "passed"
     assert record["matched_counts"] == {"stores": 0, "files": 0, "documents": 0}
     assert session.calls == []
+
+
+def test_live_session_awaits_pinned_sdk_lists_and_uses_exact_delete_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    types = _sdk_types()
+    calls: list[tuple[str, object]] = []
+
+    async def pager(item: object) -> AsyncIterator[object]:
+        yield item
+
+    async def list_stores(*, config: object) -> object:
+        calls.append(("list_stores", config))
+        return pager(types.FileSearchStore(name="fileSearchStores/one"))
+
+    async def list_files(*, config: object) -> object:
+        calls.append(("list_files", config))
+        return pager(types.File(name="files/one"))
+
+    async def list_documents(*, parent: str) -> object:
+        calls.append(("list_documents", parent))
+        return pager(types.Document(name=f"{parent}/documents/one"))
+
+    async def delete_document(**kwargs: object) -> None:
+        calls.append(("delete_document", kwargs))
+
+    async def delete_file(**kwargs: object) -> None:
+        calls.append(("delete_file", kwargs))
+
+    async def delete_store(**kwargs: object) -> None:
+        calls.append(("delete_store", kwargs))
+
+    client = SimpleNamespace(
+        file_search_stores=SimpleNamespace(
+            list=list_stores,
+            delete=delete_store,
+            documents=SimpleNamespace(list=list_documents, delete=delete_document),
+        ),
+        files=SimpleNamespace(list=list_files, delete=delete_file),
+    )
+
+    class Factory:
+        @asynccontextmanager
+        async def client(self) -> AsyncIterator[SimpleNamespace]:
+            yield client
+
+    monkeypatch.setattr(operator, "GeminiClientFactory", lambda config: Factory())
+    session = operator.GoogleGenaiReconciliationSession("synthetic-key")
+
+    assert asyncio.run(session.list_stores())[0].name == "fileSearchStores/one"
+    assert asyncio.run(session.list_files())[0].name == "files/one"
+    assert (
+        asyncio.run(session.list_documents("fileSearchStores/one"))[0].name
+        == "fileSearchStores/one/documents/one"
+    )
+    asyncio.run(session.delete_document("document"))
+    asyncio.run(session.delete_file("file"))
+    asyncio.run(session.delete_store("store"))
+
+    assert calls == [
+        ("list_stores", {"page_size": 100}),
+        ("list_files", {"page_size": 100}),
+        ("list_documents", "fileSearchStores/one"),
+        ("delete_document", {"name": "document", "config": {"force": True}}),
+        ("delete_file", {"name": "file"}),
+        ("delete_store", {"name": "store", "config": {"force": True}}),
+    ]
 
 
 class _FakeSecrets:
@@ -238,10 +317,14 @@ def test_authorized_boundary_reads_the_stored_key_exactly_once(
     monkeypatch.setenv("RUN_GEMINI_RECONCILIATION", "1")
     monkeypatch.setattr(operator.importlib.metadata, "version", lambda name: "2.14.0")
 
+    def session_factory(key: str) -> _FakeSession:
+        received.append(key)
+        return session
+
     record = asyncio.run(
         operator.run_authorized_reconciliation(
             secret_store=secrets,
-            session_factory=lambda key: (received.append(key), session)[1],
+            session_factory=session_factory,
         )
     )
 

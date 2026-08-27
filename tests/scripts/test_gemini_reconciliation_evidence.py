@@ -54,6 +54,8 @@ def test_python_json_to_powershell_evidence_path_runs_in_committed_harness() -> 
             str(HARNESS),
             "-EvidenceScript",
             str(EVIDENCE),
+            "-WrapperScript",
+            str(WRAPPER),
             "-PythonExecutable",
             sys.executable,
         ],

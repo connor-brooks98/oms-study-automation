@@ -4,6 +4,9 @@ param(
   [string]$EvidenceScript,
 
   [Parameter(Mandatory = $true)]
+  [string]$WrapperScript,
+
+  [Parameter(Mandatory = $true)]
   [string]$PythonExecutable
 )
 
@@ -45,12 +48,16 @@ record = {
     "provider_cleanup_complete": True,
     "warnings": [],
 }
-Path(os.environ["OMS_EMITTER_OUTPUT"]).write_text(
+payload = (
     os.environ.get("OMS_EMITTER_PREFIX", "")
     + json.dumps(record, sort_keys=True, separators=(",", ":"))
-    + "\n",
-    encoding="utf-8",
+    + "\n"
 )
+output = os.environ.get("OMS_EMITTER_OUTPUT")
+if output is None:
+    print(payload, end="")
+else:
+    Path(output).write_text(payload, encoding="utf-8")
 '@,
   $Utf8
 )
@@ -69,7 +76,75 @@ function Write-PythonJson([string]$Path, [string]$Prefix = "") {
   }
 }
 
+$HealthProcess = $null
 try {
+  $Project = Join-Path $Sandbox "project"
+  $Scripts = Join-Path $Project "scripts"
+  New-Item -ItemType Directory -Path $Scripts | Out-Null
+  Copy-Item -LiteralPath $EvidenceScript `
+    -Destination (Join-Path $Scripts "gemini-reconciliation-evidence.ps1")
+  Copy-Item -LiteralPath $Emitter `
+    -Destination (Join-Path $Scripts "run-gemini-reconciliation.py")
+  $HealthServer = Join-Path $Sandbox "health_server.py"
+  $PortFile = Join-Path $Sandbox "health-port.txt"
+  [System.IO.File]::WriteAllText(
+    $HealthServer,
+    @'
+import http.server
+import json
+import sys
+from pathlib import Path
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"status": "ok"}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        return
+
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+Path(sys.argv[1]).write_text(str(server.server_port), encoding="ascii")
+for _ in range(2):
+    server.handle_request()
+server.server_close()
+'@,
+    $Utf8
+  )
+  $HealthProcess = Start-Process -FilePath $PythonExecutable `
+    -ArgumentList @($HealthServer, $PortFile) -WindowStyle Hidden -PassThru
+  for ($Attempt = 0; $Attempt -lt 100 -and -not (Test-Path $PortFile); $Attempt++) {
+    Start-Sleep -Milliseconds 50
+  }
+  if (-not (Test-Path -LiteralPath $PortFile)) {
+    throw "Offline health fixture did not start."
+  }
+  $Port = [System.IO.File]::ReadAllText($PortFile, $Utf8)
+  $WrapperSafe = Join-Path $Sandbox "wrapper-safe.json"
+  $WrapperStatus = Join-Path $Sandbox "wrapper-status.json"
+  $WrapperDiagnostic = Join-Path $Sandbox "wrapper-diagnostic"
+  $PowerShellExecutable = (Get-Process -Id $PID).Path
+  & $PowerShellExecutable -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $Project `
+    -DiagnosticRoot $WrapperDiagnostic -SafeResultPath $WrapperSafe `
+    -SafeStatusPath $WrapperStatus -HubHealthUri "http://127.0.0.1:$Port/health"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Committed wrapper rejected valid Python JSON."
+  }
+  $WrapperStatusRecord = Get-Content -LiteralPath $WrapperStatus -Raw | ConvertFrom-Json
+  if (-not $WrapperStatusRecord.evidence_usable -or
+      -not $WrapperStatusRecord.provider_cleanup_complete -or
+      -not $WrapperStatusRecord.operator_artifacts_deleted -or
+      $WrapperStatusRecord.raw_diagnostic_retained) {
+    throw "Committed wrapper did not separate evidence and cleanup state."
+  }
+
   $Raw = Join-Path $Sandbox "operator.stdout"
   $Safe = Join-Path $Sandbox "safe.json"
   $Stage = Join-Path $Sandbox "stage.json"
@@ -112,6 +187,21 @@ try {
     throw "Invalid JSON shape did not produce the validation contract."
   }
 
+  $UnknownCode = Join-Path $Sandbox "unknown-code.stdout"
+  $UnknownRecord = Get-Content -LiteralPath $Raw -Raw | ConvertFrom-Json
+  $UnknownRecord.status = "blocked"
+  $UnknownRecord.provider_operation_states = @("inventory_failed")
+  $UnknownRecord.provider_cleanup_complete = $false
+  $UnknownRecord.warnings = @("provider_payload_must_not_be_allowlisted")
+  $UnknownRecord | ConvertTo-Json -Compress -Depth 5 |
+    Set-Content -LiteralPath $UnknownCode -Encoding UTF8
+  $UnknownResult = Convert-GeminiReconciliationEvidence `
+    -RawStdoutPath $UnknownCode -SafeResultPath (Join-Path $Sandbox "unknown-safe.json") `
+    -StageMarkerPath (Join-Path $Sandbox "unknown-stage.json")
+  if ($UnknownResult.ExitCode -ne 42 -or -not $UnknownResult.RetainRaw) {
+    throw "Unknown warning code was accepted into safe evidence."
+  }
+
   $WriteRaw = Join-Path $Sandbox "write.stdout"
   $WriteStage = Join-Path $Sandbox "write-stage.json"
   $DirectoryAsDestination = Join-Path $Sandbox "directory-destination"
@@ -128,5 +218,8 @@ try {
 
   Write-Output "RECONCILIATION_EVIDENCE_HARNESS_VERIFIED"
 } finally {
+  if ($null -ne $HealthProcess -and -not $HealthProcess.HasExited) {
+    Stop-Process -Id $HealthProcess.Id -Force -ErrorAction SilentlyContinue
+  }
   Remove-Item -LiteralPath $Sandbox -Recurse -Force -ErrorAction SilentlyContinue
 }
