@@ -47,13 +47,53 @@ function Protect-ReconciliationDirectory {
   $Rules = @($Acl.GetAccessRules(
       $true, $false, [System.Security.Principal.SecurityIdentifier]
   ))
+  $RequiredRights = [System.Security.AccessControl.FileSystemRights]::FullControl
+  $RequiredInheritance =
+    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
   if (-not $Acl.AreAccessRulesProtected -or $Rules.Count -ne 1 -or
       $Rules[0].IdentityReference.Value -cne $Identity.Sid -or
       $Rules[0].AccessControlType -ne
         [System.Security.AccessControl.AccessControlType]::Allow -or
-      $Rules[0].IsInherited) {
+      $Rules[0].IsInherited -or
+      ($Rules[0].FileSystemRights -band $RequiredRights) -ne $RequiredRights -or
+      ($Rules[0].InheritanceFlags -band $RequiredInheritance) -ne
+        $RequiredInheritance -or
+      $Rules[0].PropagationFlags -ne
+        [System.Security.AccessControl.PropagationFlags]::None) {
     throw "Diagnostic DACL was not current-user-only."
   }
+}
+
+function Resolve-ReconciliationSafePath {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [switch]$ExistingLeaf
+  )
+  $FullPath = [System.IO.Path]::GetFullPath($Path)
+  $ExistingPath = if ($ExistingLeaf) {$FullPath} else {Split-Path -Parent $FullPath}
+  if (-not (Test-Path -LiteralPath $ExistingPath -PathType Container)) {
+    throw "Reconciliation path parent was unavailable."
+  }
+  $Cursor = $ExistingPath
+  while (-not [string]::IsNullOrEmpty($Cursor)) {
+    $Item = Get-Item -LiteralPath $Cursor -Force
+    if ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+      throw "Reconciliation path must not cross a reparse point."
+    }
+    $Parent = Split-Path -Parent $Cursor
+    if ([string]::IsNullOrEmpty($Parent) -or $Parent -ceq $Cursor) {
+      break
+    }
+    $Cursor = $Parent
+  }
+  $CanonicalExisting = (Get-Item -LiteralPath $ExistingPath -Force).FullName
+  if ($ExistingLeaf) {
+    return [System.IO.Path]::GetFullPath($CanonicalExisting)
+  }
+  return [System.IO.Path]::GetFullPath(
+    (Join-Path $CanonicalExisting (Split-Path -Leaf $FullPath))
+  )
 }
 
 function Get-HubHealthState {
@@ -81,12 +121,19 @@ function Write-SafeStatus {
 }
 
 try {
+  $ProjectRoot = Resolve-ReconciliationSafePath -Path $ProjectRoot -ExistingLeaf
+  $DiagnosticRoot = Resolve-ReconciliationSafePath -Path $DiagnosticRoot
+  $Operator = Join-Path $ProjectRoot "scripts/run-gemini-reconciliation.py"
+  $EvidenceModule = Join-Path $ProjectRoot "scripts/gemini-reconciliation-evidence.ps1"
+  $RawStdout = Join-Path $DiagnosticRoot "operator.stdout"
+  $RawStderr = Join-Path $DiagnosticRoot "operator.stderr"
+  $StageMarker = Join-Path $DiagnosticRoot "evidence-stage.json"
   foreach ($Required in @($PythonExecutable, $Operator, $EvidenceModule)) {
     if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
       throw "Required reconciliation input was unavailable."
     }
   }
-  if ($DiagnosticRoot.StartsWith(
+  if ($DiagnosticRoot -ceq $ProjectRoot -or $DiagnosticRoot.StartsWith(
       $ProjectRoot + [System.IO.Path]::DirectorySeparatorChar,
       [System.StringComparison]::OrdinalIgnoreCase
   )) {
@@ -94,11 +141,6 @@ try {
   }
   if (Test-Path -LiteralPath $DiagnosticRoot) {
     throw "Diagnostic root must be newly created."
-  }
-  $DiagnosticParent = Split-Path -Parent $DiagnosticRoot
-  if ((Get-Item -LiteralPath $DiagnosticParent).Attributes -band
-      [System.IO.FileAttributes]::ReparsePoint) {
-    throw "Diagnostic parent must not be a reparse point."
   }
   New-Item -ItemType Directory -Path $DiagnosticRoot | Out-Null
   Protect-ReconciliationDirectory -Path $DiagnosticRoot
