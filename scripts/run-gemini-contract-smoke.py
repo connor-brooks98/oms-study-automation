@@ -60,6 +60,9 @@ _CITATION_CHECKS = (
     "citation_page_binding",
     "citation_excerpt_binding",
 )
+_PRIVATE_SLIDE_COORDINATE = re.compile(
+    r"(?:slide\s+)?([1-9][0-9]*)(?::[1-9][0-9]*)?\Z"
+)
 
 
 class SmokeContractError(RuntimeError):
@@ -120,6 +123,18 @@ class LiveSmokeBlocked(RuntimeError):
     pass
 
 
+def _canonical_slide_number(locator: str) -> int:
+    match = _PRIVATE_SLIDE_COORDINATE.fullmatch(locator)
+    if match is None:
+        raise LiveSmokeBlocked("private shadow source has invalid slide evidence")
+    try:
+        return int(match.group(1))
+    except ValueError:
+        raise LiveSmokeBlocked(
+            "private shadow source has invalid slide evidence"
+        ) from None
+
+
 def prepare_private_shadow_index_input(
     slide_revision_id: str,
     *,
@@ -159,16 +174,14 @@ def run_private_shadow_preflight(
         parser=parser,
     )
     manifest = build_index_manifest(view)
-    slide_locators = {
-        unit.locator.value
-        for unit in view.evidence_units
-        if unit.locator.kind is EvidenceLocatorKind.SLIDE
-    }
-    if not slide_locators or any(
+    if not view.evidence_units or any(
         unit.locator.kind is not EvidenceLocatorKind.SLIDE
         for unit in view.evidence_units
     ):
         raise LiveSmokeBlocked("private shadow source has invalid slide evidence")
+    slide_numbers = {
+        _canonical_slide_number(unit.locator.value) for unit in view.evidence_units
+    }
     inputs = (view.pptx.path, *(item.path for item in manifest.inputs))
     return {
         "status": "ready",
@@ -179,7 +192,7 @@ def run_private_shadow_preflight(
             {"pptx", *(item.input_kind for item in manifest.inputs)}
         ),
         "page_count": validate_pdf(view.pdf.path).page_count,
-        "slide_count": len(slide_locators),
+        "slide_count": len(slide_numbers),
         "provider_operation_states": ["private_preflight_ready"],
         "byte_usage": {"index_inputs": sum(path.stat().st_size for path in inputs)},
         "warnings": [],
