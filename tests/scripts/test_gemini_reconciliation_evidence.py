@@ -25,6 +25,11 @@ def test_reconciliation_wrapper_commits_distinct_evidence_stages_and_retention()
     assert "evidence_usable" in evidence
     assert "operator_artifacts_deleted" in wrapper
     assert "provider_cleanup_complete" in evidence
+    assert "FileSystemRights]::FullControl" in wrapper
+    assert "InheritanceFlags]::ContainerInherit" in wrapper
+    assert "InheritanceFlags]::ObjectInherit" in wrapper
+    assert "FileAttributes]::ReparsePoint" in wrapper
+    assert "Resolve-ReconciliationSafePath" in wrapper
     assert "wrapper_failed" not in evidence
     assert "wrapper_failed" not in wrapper
     assert "RUN_GEMINI_RECONCILIATION" in wrapper

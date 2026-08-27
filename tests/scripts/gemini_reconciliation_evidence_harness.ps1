@@ -111,7 +111,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
 Path(sys.argv[1]).write_text(str(server.server_port), encoding="ascii")
-for _ in range(2):
+for _ in range(8):
     server.handle_request()
 server.server_close()
 '@,
@@ -126,10 +126,38 @@ server.server_close()
     throw "Offline health fixture did not start."
   }
   $Port = [System.IO.File]::ReadAllText($PortFile, $Utf8)
+  $PowerShellExecutable = (Get-Process -Id $PID).Path
+
+  $JunctionTarget = Join-Path $Sandbox "junction-target"
+  $JunctionParent = Join-Path $JunctionTarget "existing"
+  $Junction = Join-Path $Sandbox "junction"
+  New-Item -ItemType Directory -Path $JunctionParent | Out-Null
+  New-Item -ItemType Junction -Path $Junction -Target $JunctionTarget | Out-Null
+  & $PowerShellExecutable -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $Project `
+    -DiagnosticRoot (Join-Path $Junction "existing/diagnostic") `
+    -SafeResultPath (Join-Path $Sandbox "junction-safe.json") `
+    -SafeStatusPath (Join-Path $Sandbox "junction-status.json") `
+    -HubHealthUri "http://127.0.0.1:$Port/health"
+  if ($LASTEXITCODE -eq 0) {
+    throw "Diagnostic reparse ancestor was not rejected before launch."
+  }
+
+  $ProjectJunction = Join-Path $Sandbox "project-junction"
+  New-Item -ItemType Junction -Path $ProjectJunction -Target $Project | Out-Null
+  & $PowerShellExecutable -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $ProjectJunction `
+    -DiagnosticRoot (Join-Path $Sandbox "project-junction-diagnostic") `
+    -SafeResultPath (Join-Path $Sandbox "project-junction-safe.json") `
+    -SafeStatusPath (Join-Path $Sandbox "project-junction-status.json") `
+    -HubHealthUri "http://127.0.0.1:$Port/health"
+  if ($LASTEXITCODE -eq 0) {
+    throw "Project-root reparse ancestor was not rejected before launch."
+  }
+
   $WrapperSafe = Join-Path $Sandbox "wrapper-safe.json"
   $WrapperStatus = Join-Path $Sandbox "wrapper-status.json"
   $WrapperDiagnostic = Join-Path $Sandbox "wrapper-diagnostic"
-  $PowerShellExecutable = (Get-Process -Id $PID).Path
   & $PowerShellExecutable -NoProfile -NonInteractive -ExecutionPolicy Bypass `
     -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $Project `
     -DiagnosticRoot $WrapperDiagnostic -SafeResultPath $WrapperSafe `
@@ -143,6 +171,41 @@ server.server_close()
       -not $WrapperStatusRecord.operator_artifacts_deleted -or
       $WrapperStatusRecord.raw_diagnostic_retained) {
     throw "Committed wrapper did not separate evidence and cleanup state."
+  }
+
+  $PrefixWrapperSafe = Join-Path $Sandbox "prefix-wrapper-safe.json"
+  $PrefixWrapperStatus = Join-Path $Sandbox "prefix-wrapper-status.json"
+  $PrefixWrapperDiagnostic = Join-Path $Sandbox "prefix-wrapper-diagnostic"
+  $env:OMS_EMITTER_PREFIX = "sdk-prefix-line`n"
+  try {
+    & $PowerShellExecutable -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $Project `
+      -DiagnosticRoot $PrefixWrapperDiagnostic -SafeResultPath $PrefixWrapperSafe `
+      -SafeStatusPath $PrefixWrapperStatus -HubHealthUri "http://127.0.0.1:$Port/health"
+  } finally {
+    Remove-Item Env:OMS_EMITTER_PREFIX -ErrorAction SilentlyContinue
+  }
+  if ($LASTEXITCODE -ne 0) {
+    throw "Prefix diagnostic wrapper path did not complete."
+  }
+  $PrefixWrapperRecord = Get-Content -LiteralPath $PrefixWrapperStatus -Raw |
+    ConvertFrom-Json
+  $PrefixAcl = Get-Acl -LiteralPath $PrefixWrapperDiagnostic
+  $PrefixRules = @($PrefixAcl.GetAccessRules(
+      $true, $false, [System.Security.Principal.SecurityIdentifier]
+  ))
+  $RequiredInheritance =
+    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  if (-not $PrefixWrapperRecord.raw_diagnostic_retained -or
+      $PrefixWrapperRecord.operator_artifacts_deleted -or
+      -not $PrefixAcl.AreAccessRulesProtected -or $PrefixRules.Count -ne 1 -or
+      (($PrefixRules[0].FileSystemRights -band
+        [System.Security.AccessControl.FileSystemRights]::FullControl) -ne
+        [System.Security.AccessControl.FileSystemRights]::FullControl) -or
+      (($PrefixRules[0].InheritanceFlags -band $RequiredInheritance) -ne
+        $RequiredInheritance)) {
+    throw "Retained raw diagnostic DACL was not exact current-user FullControl."
   }
 
   $Raw = Join-Path $Sandbox "operator.stdout"
