@@ -79,7 +79,8 @@ function Assert-ReconciliationRecord {
         "file_list", "document_list"
       ) -or
       $Record.provider_error_category -notin @(
-        "none", "authentication", "quota", "transient", "contract", "provider"
+        "none", "authentication", "quota", "transient", "contract", "provider",
+        "provider_bad_request", "provider_not_found"
       )) {
     throw "Reconciliation evidence header was invalid."
   }
@@ -120,7 +121,8 @@ function Assert-ReconciliationRecord {
       "store_client", "store_request", "store_close", "file_list", "document_list"
     ) -and
     $Record.provider_error_category -in @(
-      "authentication", "quota", "transient", "contract", "provider"
+      "authentication", "quota", "transient", "contract", "provider",
+      "provider_bad_request", "provider_not_found"
     )
   if ($Record.status -ceq "passed") {
     if (-not $Record.provider_cleanup_complete -or $Warnings.Count -ne 0 -or
