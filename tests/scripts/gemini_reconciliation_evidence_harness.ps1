@@ -322,6 +322,29 @@ server.server_close()
     }
   }
 
+  foreach ($SafeProviderCategory in @("provider_bad_request", "provider_not_found")) {
+    $SafeCategoryPath = Join-Path $Sandbox (
+      "safe-provider-category-{0}.stdout" -f $SafeProviderCategory
+    )
+    $SafeCategoryRecord = Get-Content -LiteralPath $Raw -Raw | ConvertFrom-Json
+    $SafeCategoryRecord.status = "blocked"
+    $SafeCategoryRecord.provider_operation_states = @("inventory_failed")
+    $SafeCategoryRecord.provider_cleanup_complete = $false
+    $SafeCategoryRecord.inventory_failure_stage = "store_request"
+    $SafeCategoryRecord.provider_error_category = $SafeProviderCategory
+    $SafeCategoryRecord.warnings = @("provider_reconciliation_incomplete")
+    $SafeCategoryRecord | ConvertTo-Json -Compress -Depth 5 |
+      Set-Content -LiteralPath $SafeCategoryPath -Encoding UTF8
+    $SafeCategoryResult = Convert-GeminiReconciliationEvidence `
+      -RawStdoutPath $SafeCategoryPath `
+      -SafeResultPath ($SafeCategoryPath + ".safe") `
+      -StageMarkerPath ($SafeCategoryPath + ".stage")
+    if ($SafeCategoryResult.ExitCode -ne 0 -or
+        -not $SafeCategoryResult.EvidenceUsable) {
+      throw "Safe provider request category was rejected."
+    }
+  }
+
   $PrefixRaw = Join-Path $Sandbox "prefix.stdout"
   $PrefixSafe = Join-Path $Sandbox "prefix-safe.json"
   $PrefixStage = Join-Path $Sandbox "prefix-stage.json"
@@ -372,7 +395,8 @@ server.server_close()
   foreach ($InvalidPair in @(
       @{Stage="unknown_stage";Category="provider"},
       @{Stage="store_list";Category="provider"},
-      @{Stage="file_list";Category="unknown_category"}
+      @{Stage="file_list";Category="unknown_category"},
+      @{Stage="not_applicable";Category="provider_bad_request"}
   )) {
     $InvalidPairPath = Join-Path $Sandbox (
       "invalid-pair-{0}.stdout" -f [Guid]::NewGuid().ToString("N")

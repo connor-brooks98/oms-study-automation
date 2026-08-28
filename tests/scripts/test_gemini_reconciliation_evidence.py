@@ -29,6 +29,8 @@ def test_reconciliation_wrapper_commits_distinct_evidence_stages_and_retention()
     assert "provider_error_category" in evidence
     for store_stage in ("store_client", "store_request", "store_close"):
         assert store_stage in evidence
+    for provider_category in ("provider_bad_request", "provider_not_found"):
+        assert f'"{provider_category}"' in evidence
     assert '"store_list"' not in evidence
     assert '$SafeRecord.operator_result.status -cne "passed"' in wrapper
     assert "FileSystemRights]::FullControl" in wrapper

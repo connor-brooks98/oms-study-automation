@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -285,6 +286,41 @@ def _real_factory_session(
     return session
 
 
+def _real_sdk_transport_session(operator: ModuleType, *, status_code: int) -> Any:
+    from google import genai
+    from google.genai import types
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            json={
+                "error": {
+                    "code": status_code,
+                    "message": "private-body-marker",
+                    "status": "PRIVATE_STATUS",
+                }
+            },
+            headers={"x-request-id": "private-request-id-marker"},
+        )
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    sdk_client = genai.Client(
+        api_key="synthetic-key",
+        http_options=types.HttpOptions(
+            api_version="v1beta",
+            base_url="https://unit.invalid",
+            httpx_async_client=async_client,
+        ),
+    )
+    clients = operator.GeminiClientFactory(
+        operator.GeminiConfig(api_key=operator.SecretStr("synthetic-key")),
+        sdk_factory=lambda **kwargs: sdk_client,
+    )
+    session = object.__new__(operator.GoogleGenaiReconciliationSession)
+    session._clients = clients
+    return session
+
+
 def _assert_safe_store_failure(record: dict[str, object], stage: str, category: str) -> None:
     assert record["schema_version"] == 2
     assert record["status"] == "blocked"
@@ -340,6 +376,30 @@ def test_store_request_and_pager_failures_share_request_stage(failure_site: str)
 
     _assert_safe_store_failure(record, "store_request", "transient")
     assert calls[-1] == "close"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "category"),
+    ((400, "provider_bad_request"), (404, "provider_not_found")),
+)
+def test_real_sdk_store_request_projects_only_safe_provider_status(
+    status_code: int,
+    category: str,
+) -> None:
+    operator = _load_operator()
+    session = _real_sdk_transport_session(operator, status_code=status_code)
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    _assert_safe_store_failure(record, "store_request", category)
+    serialized = json.dumps(record, sort_keys=True)
+    for forbidden in (
+        "private-body-marker",
+        "PRIVATE_STATUS",
+        "private-request-id-marker",
+        str(status_code),
+    ):
+        assert forbidden not in serialized
 
 
 def test_store_close_failure_is_categorized_after_successful_collection() -> None:
