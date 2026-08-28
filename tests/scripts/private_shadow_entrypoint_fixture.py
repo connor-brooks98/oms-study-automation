@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any, cast
 
 PREFLIGHT_KEYS = {
     "status",
@@ -163,11 +164,12 @@ def main() -> int:
         project.mkdir()
         database = root / "fixture.db"
         database.write_bytes(b"fixture")
-        setattr(module, "_load_reviewed_operator", lambda: _reviewed(args.mode, database))
+        entrypoint = cast(Any, module)
+        entrypoint._load_reviewed_operator = lambda: _reviewed(args.mode, database)
         os.environ["OMS_TASK28_PRIVATE_SCRATCH"] = str(scratch)
         os.environ["OMS_TASK28_PRIVATE_PROJECT"] = str(project)
         os.environ["RUN_PRIVATE_GEMINI_SHADOW"] = "1"
-        return int(module.main())
+        return int(entrypoint.main())
 
 
 if __name__ == "__main__":
