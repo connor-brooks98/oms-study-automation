@@ -499,6 +499,77 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     ]
 
 
+def test_real_sdk_smoke_store_list_respects_provider_page_limit() -> None:
+    smoke = _load_smoke()
+    sdk = import_module("google.genai")
+    requests: list[tuple[str, str, dict[str, str], bytes]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            (
+                request.method,
+                request.url.path,
+                dict(request.url.params),
+                request.content,
+            )
+        )
+        if request.url.params.get("pageToken") is None:
+            return httpx.Response(
+                200,
+                json={
+                    "fileSearchStores": [
+                        {
+                            "name": "fileSearchStores/one",
+                            "displayName": "target-store",
+                        }
+                    ],
+                    "nextPageToken": "synthetic-next-page",
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "fileSearchStores": [
+                    {"name": "fileSearchStores/two", "displayName": "other-store"}
+                ]
+            },
+            request=request,
+        )
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    sdk_client = sdk.Client(
+        api_key="synthetic-sdk-key",
+        http_options={
+            "api_version": "v1beta",
+            "base_url": "https://unit.invalid",
+            "httpx_async_client": async_client,
+        },
+    )
+    session = smoke.GoogleGenaiSmokeSession(
+        "synthetic-sdk-key",
+        sdk_factory=lambda **kwargs: sdk_client,
+    )
+
+    matched = asyncio.run(session.find_stores("target-store"))
+
+    assert matched == ("fileSearchStores/one",)
+    assert requests == [
+        (
+            "GET",
+            "/v1beta/fileSearchStores",
+            {"pageSize": "20"},
+            b"",
+        ),
+        (
+            "GET",
+            "/v1beta/fileSearchStores",
+            {"pageSize": "20", "pageToken": "synthetic-next-page"},
+            b"",
+        ),
+    ]
+
+
 def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
     tmp_path: Path,
 ) -> None:
@@ -577,6 +648,13 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
     assert operation == "operations/sdk-operation"
     assert reconciled == ("files/reconciled",)
     assert reconciled_stores == ("fileSearchStores/reconciled",)
+    list_call = next(
+        client.aio.file_search_stores.calls[0]
+        for client in clients
+        if client.aio.file_search_stores.calls
+        and client.aio.file_search_stores.calls[0][0] == "list"
+    )
+    assert list_call == ("list", {"page_size": 20})
     upload_call = next(client.aio.files.calls[0] for client in clients if client.aio.files.calls)
     assert upload_call == (
         "upload",
