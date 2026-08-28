@@ -1,6 +1,8 @@
 {
   "schema_version": 1,
-  "status": "composed_not_executed_review_pending",
+  "status": "composed_not_executed_reviewed_ship",
+  "reviewed_composition_commit": "2873dca02d1be09072bf79d67f14b547d89b3c1f",
+  "reviewed_composition_tree": "0702e8c8f4477a35b9f691e7c047562627fbd99b",
   "source_commit": "909785131b113fb5b2083b74bd2757c2fc0dbf4b",
   "source_tree": "d7eb0dae14d915d24b47a6a865ffe6eb31ab5c6a",
   "entrypoint_review_green": "4bc82fbb258cb1192323fe16f1123c8b2a5fdb82",
@@ -106,6 +108,6 @@
   "prior_authorization_used": false,
   "production_mutated": false,
   "gate_2b_mutated": false,
-  "specification_review": "pending",
-  "quality_security_review": "pending"
+  "specification_review": "SHIP — exact head 2873dca02d1be09072bf79d67f14b547d89b3c1f; no findings",
+  "quality_security_review": "SHIP — exact head 2873dca02d1be09072bf79d67f14b547d89b3c1f; no findings"
 }
