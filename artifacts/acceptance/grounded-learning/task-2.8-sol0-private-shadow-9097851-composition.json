@@ -67,6 +67,42 @@
   "provider_contacted": false,
   "provider_inventory_or_reconciliation_performed": false,
   "provider_state": "unknown",
+  "next_authorization_prerequisite": {
+    "composition_kind": "separate_reconciliation_only",
+    "must_be_hash_bound_and_independently_reviewed": true,
+    "must_not_reuse_private_shadow_controller_or_launcher": true
+  },
+  "next_authorization_scope": {
+    "limited_interactive_invocations": 1,
+    "stored_key_reads": 1,
+    "store_display_name_fullmatch": "task-2-8-private-[0-9a-f]{32}",
+    "file_display_name_fullmatch": "task-2-8-private-[0-9a-f]{32}-[0-9]{3}",
+    "allowed_operations": [
+      "global_store_inventory",
+      "global_file_inventory",
+      "exact_matched_store_document_inspection",
+      "delete_exact_matches_only",
+      "relist_exact_matches"
+    ],
+    "forbidden_operations": [
+      "private_source_access",
+      "create",
+      "upload",
+      "import",
+      "query",
+      "new_resource",
+      "private_retry",
+      "production_or_gate_mutation"
+    ],
+    "evidence_schema_version": 2,
+    "required_acceptance": [
+      "zero_remaining_exact_store_matches",
+      "zero_remaining_exact_file_matches",
+      "temporary_task_and_root_absent",
+      "hub_running_and_schema29_healthy",
+      "independent_evidence_review_ship"
+    ]
+  },
   "prior_authorization_used": false,
   "production_mutated": false,
   "gate_2b_mutated": false,
