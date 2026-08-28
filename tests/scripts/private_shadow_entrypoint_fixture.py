@@ -76,7 +76,12 @@ class _Engine:
 class _Database:
     engine = _Engine()
 
+    def __init__(self, close_failure: bool) -> None:
+        self._close_failure = close_failure
+
     def close(self) -> None:
+        if self._close_failure:
+            raise FixtureFailure("synthetic_close_failed")
         return None
 
 
@@ -122,6 +127,8 @@ def _reviewed(mode: str, database_path: Path) -> SimpleNamespace:
             path.unlink()
 
     def cleanup(scratch: Path) -> None:
+        if mode == "cleanup_failure":
+            raise FixtureFailure("synthetic_cleanup_failed")
         for child in tuple(scratch.iterdir()):
             remove_tree(child)
 
@@ -133,7 +140,7 @@ def _reviewed(mode: str, database_path: Path) -> SimpleNamespace:
         _approved_hashes=lambda _project: ("a" * 64, "b" * 64),
         _runtime_configuration=lambda: ("sqlite:///fixture.db", database_path.parent),
         backup_sqlite_database=lambda _source, backup: backup.write_bytes(b"fixture"),
-        Database=lambda _url: _Database(),
+        Database=lambda _url: _Database(mode == "close_failure"),
         text=lambda statement: statement,
         ArtifactService=lambda *_args, **_kwargs: object(),
         _select_revision=lambda *_args: SimpleNamespace(id=1),
@@ -153,7 +160,11 @@ def _reviewed(mode: str, database_path: Path) -> SimpleNamespace:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--entrypoint", type=Path, required=True)
-    parser.add_argument("--mode", choices=("corrected", "fallback"), required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("corrected", "fallback", "close_failure", "cleanup_failure"),
+        required=True,
+    )
     args = parser.parse_args()
     module = _load_entrypoint(args.entrypoint)
     with tempfile.TemporaryDirectory(prefix="task28-entrypoint-fixture-") as temporary:

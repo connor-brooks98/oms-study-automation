@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -65,8 +67,26 @@ def test_entrypoint_harness_binds_actual_entrypoint_to_real_validator() -> None:
     for required in (
         "PRIVATE_SHADOW_ENTRYPOINT_HARNESS_VERIFIED",
         "Convert-PrivateShadowEvidence",
-        'foreach ($Mode in @("corrected", "fallback"))',
+        'foreach ($Mode in @("corrected", "fallback", "close_failure", "cleanup_failure"))',
         "$Process.ExitCode -ne 1",
         "Count -ne 15",
     ):
         assert required in harness
+
+
+def test_entrypoint_close_and_cleanup_failures_still_emit_fail_closed_json() -> None:
+    fixture = ROOT / "tests" / "scripts" / "private_shadow_entrypoint_fixture.py"
+    for mode in ("close_failure", "cleanup_failure"):
+        result = subprocess.run(
+            [sys.executable, str(fixture), "--entrypoint", str(ENTRYPOINT), "--mode", mode],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 1
+        assert result.stderr == ""
+        record = json.loads(result.stdout)
+        assert set(record) == FAILURE_KEYS
+        assert record["provider_cleanup_outcome"] == "unknown"
+        assert record["provider_reconciliation_outcome"] == "unknown"
