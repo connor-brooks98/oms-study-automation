@@ -8,7 +8,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 PREFLIGHT_KEYS = {
     "status",
@@ -103,7 +103,7 @@ class _Smoke:
         raise FixtureFailure("synthetic_blocked")
 
 
-def _load_entrypoint(path: Path):
+def _load_entrypoint(path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location("task_2_8_composition_entrypoint", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("entrypoint_unavailable")
@@ -113,7 +113,7 @@ def _load_entrypoint(path: Path):
     return module
 
 
-def _reviewed(mode: str, database_path: Path):
+def _reviewed(mode: str, database_path: Path) -> SimpleNamespace:
     def remove_tree(path: Path) -> None:
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
@@ -163,7 +163,7 @@ def main() -> int:
         project.mkdir()
         database = root / "fixture.db"
         database.write_bytes(b"fixture")
-        module._load_reviewed_operator = lambda: _reviewed(args.mode, database)
+        setattr(module, "_load_reviewed_operator", lambda: _reviewed(args.mode, database))
         os.environ["OMS_TASK28_PRIVATE_SCRATCH"] = str(scratch)
         os.environ["OMS_TASK28_PRIVATE_PROJECT"] = str(project)
         os.environ["RUN_PRIVATE_GEMINI_SHADOW"] = "1"
