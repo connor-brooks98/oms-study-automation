@@ -570,6 +570,96 @@ def test_real_sdk_smoke_store_list_respects_provider_page_limit() -> None:
     ]
 
 
+def test_real_sdk_normalized_markdown_upload_and_import_wire_contract(
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    sdk = import_module("google.genai")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/upload/v1beta/files":
+            return httpx.Response(
+                200,
+                headers={"X-Goog-Upload-URL": "https://unit.invalid/upload-session"},
+                request=request,
+            )
+        if request.url.path == "/upload-session":
+            return httpx.Response(
+                200,
+                json={
+                    "file": {
+                        "name": "files/normalized-markdown",
+                        "mimeType": "text/markdown",
+                    }
+                },
+                headers={"X-Goog-Upload-Status": "final"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={"name": "operations/import-1", "done": False},
+            request=request,
+        )
+
+    def sdk_factory(**kwargs: object) -> object:
+        assert kwargs["api_key"] == "synthetic-sdk-key"
+        return sdk.Client(
+            api_key="synthetic-sdk-key",
+            http_options={
+                "api_version": "v1beta",
+                "base_url": "https://unit.invalid",
+                "httpx_async_client": httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler)
+                ),
+            },
+        )
+
+    markdown = tmp_path / "normalized.md"
+    markdown.write_text("# Synthetic\n", encoding="utf-8")
+    session = smoke.GoogleGenaiSmokeSession(
+        "synthetic-sdk-key",
+        sdk_factory=sdk_factory,
+    )
+
+    file_name = asyncio.run(
+        session.upload_input("normalized.md", markdown, "text/markdown")
+    )
+    operation = asyncio.run(
+        session.import_input(
+            "fileSearchStores/synthetic",
+            file_name,
+            (("input_key", "normalized_markdown"),),
+            {
+                "white_space_config": {
+                    "max_tokens_per_chunk": 700,
+                    "max_overlap_tokens": 100,
+                }
+            },
+        )
+    )
+
+    assert operation == "operations/import-1"
+    upload_init = requests[0]
+    upload_body = json.loads(upload_init.content)
+    assert upload_init.headers["x-goog-upload-header-content-type"] == "text/markdown"
+    assert upload_body["file"]["mime_type"] == "text/markdown"
+    import_body = json.loads(requests[-1].content)
+    assert import_body == {
+        "fileName": "files/normalized-markdown",
+        "customMetadata": [
+            {"key": "input_key", "stringValue": "normalized_markdown"}
+        ],
+        "chunkingConfig": {
+            "whiteSpaceConfig": {
+                "maxTokensPerChunk": 700,
+                "maxOverlapTokens": 100,
+            }
+        },
+    }
+
+
 def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
     tmp_path: Path,
 ) -> None:
@@ -2417,6 +2507,7 @@ class _PrivateShadowSession:
         uncertain_store: bool = False,
         fail_reconciliation: bool = False,
         unknown_primary: bool = False,
+        fail_markdown_import: bool = False,
     ) -> None:
         self.smoke = smoke
         self.fail_cleanup = fail_cleanup
@@ -2426,6 +2517,7 @@ class _PrivateShadowSession:
         self.uncertain_store = uncertain_store
         self.fail_reconciliation = fail_reconciliation
         self.unknown_primary = unknown_primary
+        self.fail_markdown_import = fail_markdown_import
         self.calls: list[tuple[str, object]] = []
         self.live_files: dict[str, str] = {}
         self.live_stores: dict[str, str] = {}
@@ -2480,6 +2572,13 @@ class _PrivateShadowSession:
         chunking: object | None,
     ) -> str:
         self.calls.append(("import_input", (store_name, file_name, metadata, chunking)))
+        if self.fail_markdown_import and ("input_key", "normalized_markdown") in metadata:
+            raise self.smoke.GeminiProviderError(
+                "redacted provider failure",
+                provider_status_code=400,
+                category="provider",
+                diagnostic_code="unknown_provider",
+            )
         return f"operations/{len(self.calls)}"
 
     async def wait_for_import(self, operation_name: str) -> str:
@@ -2783,12 +2882,20 @@ def test_private_shadow_primary_failure_retains_safe_cleanup_evidence(
         "provider_operation_states",
         "byte_usage",
         "failure_stage",
+        "failure_input_identity",
+        "provider_error_category",
+        "provider_status_code",
+        "provider_reason",
         "provider_cleanup_outcome",
         "provider_reconciliation_outcome",
         "warnings",
     }
     assert evidence["status"] == "blocked"
     assert evidence["failure_stage"] == "positive_query"
+    assert evidence["failure_input_identity"] == "none"
+    assert evidence["provider_error_category"] == "none"
+    assert evidence["provider_status_code"] is None
+    assert evidence["provider_reason"] == "none"
     assert evidence["provider_cleanup_outcome"] == "failed"
     assert evidence["provider_reconciliation_outcome"] == "unknown"
     assert evidence["warnings"] == [
@@ -2808,6 +2915,45 @@ def test_private_shadow_primary_failure_retains_safe_cleanup_evidence(
     assert "raw cleanup failure" not in serialized
     assert "fileSearchStores/private-store" not in serialized
     assert "stored-private-key" not in serialized
+
+
+def test_private_shadow_markdown_import_failure_retains_only_safe_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    session = _PrivateShadowSession(smoke, fail_markdown_import=True)
+    evidence: dict[str, object] = {}
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.GeminiProviderError):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: session,
+                failure_evidence=evidence,
+            )
+        )
+
+    assert evidence["failure_stage"] == "import_input"
+    assert evidence["failure_input_identity"] == "normalized_markdown"
+    assert evidence["provider_error_category"] == "provider"
+    assert evidence["provider_status_code"] == 400
+    assert evidence["provider_reason"] == "unknown_provider"
+    assert evidence["provider_cleanup_outcome"] == "complete"
+    assert evidence["provider_reconciliation_outcome"] == "empty"
+    serialized = json.dumps(evidence, sort_keys=True)
+    assert "redacted provider failure" not in serialized
+    assert "stored-private-key" not in serialized
+    assert "fileSearchStores/" not in serialized
 
 
 @pytest.mark.parametrize(

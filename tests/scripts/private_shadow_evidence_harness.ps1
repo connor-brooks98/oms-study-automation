@@ -78,6 +78,11 @@ else:
         "impossible_outcomes": "positive_query",
         "cleanup_count_mismatch": "positive_query",
         "store_count_mismatch": "upload_input",
+        "provider_diagnostics": "import_input",
+        "invalid_failure_input": "positive_query",
+        "invalid_provider_category": "positive_query",
+        "invalid_provider_status": "positive_query",
+        "invalid_provider_reason": "positive_query",
     }.get(mode, mode.removeprefix("stage_"))
     cleanup = "complete"
     reconciliation = "empty"
@@ -166,11 +171,33 @@ else:
         **base,
         "provider_operation_states": states,
         "failure_stage": stage,
+        "failure_input_identity": (
+            "normalized_markdown"
+            if stage in {"upload_input", "import_input", "wait_for_import"}
+            else "none"
+        ),
+        "provider_error_category": "none",
+        "provider_status_code": None,
+        "provider_reason": "none",
         "provider_cleanup_outcome": cleanup,
         "provider_reconciliation_outcome": reconciliation,
         "warnings": warnings,
     }
     exit_code = 1
+    if mode == "provider_diagnostics":
+        record["failure_stage"] = "import_input"
+        record["failure_input_identity"] = "normalized_markdown"
+        record["provider_error_category"] = "provider"
+        record["provider_status_code"] = 400
+        record["provider_reason"] = "unknown_provider"
+    elif mode == "invalid_failure_input":
+        record["failure_input_identity"] = "private-dynamic-input"
+    elif mode == "invalid_provider_category":
+        record["provider_error_category"] = "raw-provider-category"
+    elif mode == "invalid_provider_status":
+        record["provider_status_code"] = 99
+    elif mode == "invalid_provider_reason":
+        record["provider_reason"] = "raw provider response"
 if mode == "malformed":
     print("{")
 elif mode == "raw_content":
@@ -297,6 +324,15 @@ try {
     throw "Private-shadow preflight failure evidence was invalid."
   }
 
+  $Provider = Invoke-PrivateShadowCase -Mode "provider_diagnostics" `
+    -EvidenceUsable $true -ExpectedExit 1 | ConvertFrom-Json
+  if ($Provider.failure_input_identity -cne "normalized_markdown" -or
+      $Provider.provider_error_category -cne "provider" -or
+      $Provider.provider_status_code -ne 400 -or
+      $Provider.provider_reason -cne "unknown_provider") {
+    throw "Private-shadow provider diagnostics were invalid."
+  }
+
   $PrimaryFirst = Invoke-PrivateShadowCase -Mode "primary_over_cleanup" `
     -EvidenceUsable $true -ExpectedExit 1
   $PrimarySecond = Invoke-PrivateShadowCase -Mode "primary_over_cleanup" `
@@ -335,7 +371,9 @@ try {
   foreach ($Mode in @(
       "success_missing_state", "success_out_of_order", "success_failure_marker",
       "success_null_warnings", "reversed_warnings", "stage_progress_contradiction",
-      "impossible_outcomes", "cleanup_count_mismatch", "store_count_mismatch"
+      "impossible_outcomes", "cleanup_count_mismatch", "store_count_mismatch",
+      "invalid_failure_input", "invalid_provider_category",
+      "invalid_provider_status", "invalid_provider_reason"
   )) {
     Invoke-PrivateShadowCase -Mode $Mode `
       -EvidenceUsable $false -ExpectedExit 52 | Out-Null

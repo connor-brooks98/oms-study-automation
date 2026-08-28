@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from importlib import import_module
 from pathlib import Path
 from time import monotonic
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
@@ -40,10 +43,16 @@ class FakeFiles:
 class FakeStores:
     def __init__(self) -> None:
         self.import_calls: list[dict[str, object]] = []
+        self.transport_calls: list[tuple[object, ...]] = []
+        self._api_client = self
 
     async def import_file(self, **kwargs: object) -> object:
         self.import_calls.append(kwargs)
         return SimpleNamespace(name="operations/import-1")
+
+    async def async_request(self, *args: object) -> object:
+        self.transport_calls.append(args)
+        return SimpleNamespace(body='{"name":"operations/import-1"}')
 
 
 class FakeOperations:
@@ -127,15 +136,91 @@ def test_upload_import_and_cleanup_use_exact_async_sdk_contract(tmp_path: Path) 
     assert client.files.upload_calls == [
         {"file": source, "config": {"display_name": "lecture.pptx"}}
     ]
-    assert client.file_search_stores.import_calls == [
-        {
-            "file_search_store_name": "fileSearchStores/course-1",
-            "file_name": "files/provider-1",
-            "config": {"custom_metadata": metadata, "chunking_config": chunking},
-        }
+    assert client.file_search_stores.import_calls == []
+    assert client.file_search_stores.transport_calls == [
+        (
+            "post",
+            "fileSearchStores/course-1:importFile",
+            {
+                "fileName": "files/provider-1",
+                "customMetadata": [
+                    {"key": "authority_class", "stringValue": "course_material"},
+                    {"key": "source_revision_id", "stringValue": "sr_1"},
+                ],
+                "chunkingConfig": {
+                    "whiteSpaceConfig": {
+                        "maxTokensPerChunk": 700,
+                        "maxOverlapTokens": 100,
+                    }
+                },
+            },
+            None,
+        )
     ]
     assert client.files.delete_calls == [{"name": "files/provider-1"}]
     assert client.close_calls == 3
+
+
+def test_real_sdk_import_uses_exact_normalized_markdown_wire_body() -> None:
+    sdk = import_module("google.genai")
+    captured: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"name": "operations/import-1", "done": False},
+            request=request,
+        )
+
+    def sdk_factory(**kwargs: object) -> object:
+        assert kwargs["api_key"] == "provider-secret"
+        return sdk.Client(
+            api_key="provider-secret",
+            http_options={
+                "api_version": "v1beta",
+                "base_url": "https://unit.invalid",
+                "httpx_async_client": httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler)
+                ),
+            },
+        )
+
+    factory = GeminiClientFactory(
+        GeminiConfig(api_key=SecretStr("provider-secret")),
+        sdk_factory=sdk_factory,
+    )
+    admin = GeminiFileSearchAdmin(Database("sqlite://"), factory)
+
+    operation = run(
+        admin.import_file(
+            "fileSearchStores/course-1",
+            "files/normalized-markdown",
+            [{"key": "input_key", "string_value": "normalized_markdown"}],
+            {
+                "white_space_config": {
+                    "max_tokens_per_chunk": 700,
+                    "max_overlap_tokens": 100,
+                }
+            },
+        )
+    )
+
+    assert operation == OperationRef(name="operations/import-1")
+    assert captured == [
+        {
+            "fileName": "files/normalized-markdown",
+            "customMetadata": [
+                {"key": "input_key", "stringValue": "normalized_markdown"}
+            ],
+            "chunkingConfig": {
+                "whiteSpaceConfig": {
+                    "maxTokensPerChunk": 700,
+                    "maxOverlapTokens": 100,
+                }
+            },
+        }
+    ]
 
 
 def test_wait_polls_persisted_name_with_bounded_exponential_backoff(
