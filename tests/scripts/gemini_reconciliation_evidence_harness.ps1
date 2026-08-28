@@ -144,7 +144,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
 Path(sys.argv[1]).write_text(str(server.server_port), encoding="ascii")
-for _ in range(8):
+for _ in range(16):
     server.handle_request()
 server.server_close()
 '@,
