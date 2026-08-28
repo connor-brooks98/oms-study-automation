@@ -72,9 +72,14 @@
       transition-delay: 0s;
     }
 
-    .email-control {
+    .email-row {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 3.25rem;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: .65rem;
+    }
+
+    .email-control {
       height: 3rem;
       border: 1px solid var(--line);
       border-radius: 1rem;
@@ -88,8 +93,8 @@
     }
 
     .email-control input {
-      grid-column: 1;
-      grid-row: 1;
+      width: 100%;
+      height: 100%;
       min-width: 0;
       border: 0;
       outline: 0;
@@ -100,9 +105,15 @@
 
     .email-control input::placeholder { color: #8791a2; }
 
+    .email-action {
+      width: 3rem;
+      height: 3rem;
+      display: grid;
+      place-items: center;
+    }
+
     .submit-arrow {
-      grid-column: 2;
-      grid-row: 1;
+      grid-area: 1 / 1;
       width: 2.75rem;
       height: 2.75rem;
       align-self: center;
@@ -121,11 +132,10 @@
     .submit-arrow:hover { transform: translateX(.12rem); }
     .submit-arrow:active { transform: scale(.96); }
     .submit-arrow:focus-visible { outline: .2rem solid rgb(29 62 102 / 25%); outline-offset: .15rem; }
-    .email-control.is-resolved .submit-arrow { opacity: 0; transform: scale(.7) rotate(-25deg); pointer-events: none; }
+    .email-row.is-resolved .submit-arrow { opacity: 0; transform: scale(.7) rotate(-25deg); pointer-events: none; }
 
     .result-mark {
-      grid-column: 2;
-      grid-row: 1;
+      grid-area: 1 / 1;
       width: 2.65rem;
       height: 2.65rem;
       align-self: center;
@@ -138,7 +148,7 @@
       pointer-events: none;
     }
 
-    .email-control.is-resolved .result-mark {
+    .email-row.is-resolved .result-mark {
       opacity: 1;
       transform: scale(1) rotate(0);
       filter: blur(0);
@@ -148,7 +158,7 @@
     .result-mark svg { width: 2rem; height: 2rem; overflow: visible; }
     .result-ring { fill: none; stroke: currentColor; stroke-width: 2; opacity: .18; }
     .result-path { fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 30; stroke-dashoffset: 30; }
-    .email-control.is-resolved .result-path { animation: draw-mark .42s ease-out .22s forwards; }
+    .email-row.is-resolved .result-path { animation: draw-mark .42s ease-out .22s forwards; }
     .result-mark.is-success { color: var(--success); }
     .result-mark.is-error { color: var(--error); }
 
@@ -194,8 +204,9 @@
     }
 
     .otp-row.is-success .otp-slot {
+      border-width: 2px;
       border-color: var(--success);
-      background: #f1faf5;
+      background: #e2f7ea;
       animation: otp-success .48s cubic-bezier(.22, 1, .36, 1) both;
       animation-delay: calc(var(--slot) * 70ms);
     }
@@ -218,8 +229,8 @@
     @keyframes slot-in { to { opacity: 1; transform: translateY(0) rotateX(0); } }
     @keyframes otp-success {
       0% { transform: scale(1); box-shadow: 0 0 0 0 rgb(47 143 87 / 0%); }
-      55% { transform: translateY(-.15rem) scale(1.04); box-shadow: 0 0 0 .22rem rgb(47 143 87 / 16%); }
-      100% { transform: scale(1); box-shadow: 0 0 0 .08rem rgb(47 143 87 / 10%); }
+      55% { transform: translateY(-.15rem) scale(1.05); background: #caefd9; box-shadow: 0 0 0 .3rem rgb(47 143 87 / 26%); }
+      100% { transform: scale(1); background: #e2f7ea; box-shadow: 0 0 0 .16rem rgb(47 143 87 / 18%); }
     }
     @keyframes shake { 25% { transform: translateX(-.3rem); } 50% { transform: translateX(.25rem); } 75% { transform: translateX(-.12rem); } }
 
@@ -241,14 +252,18 @@
       <section class="auth-view is-active" id="email-view">
         <form id="email-form" novalidate>
           <label class="visually-hidden" id="email-label" for="email">School email</label>
-          <div class="email-control" id="email-control">
-            <input id="email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="Please enter school email to generate a OTP" required>
-            <button class="submit-arrow" type="submit" aria-label="Send one-time code">
-              <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M11 6l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
-            <span class="result-mark" id="result-mark" aria-hidden="true">
-              <svg viewBox="0 0 36 36"><circle class="result-ring" cx="18" cy="18" r="15"/><path class="result-path" id="result-path"/></svg>
-            </span>
+          <div class="email-row" id="email-row">
+            <div class="email-control">
+              <input id="email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="Please enter school email to generate a OTP" required>
+            </div>
+            <div class="email-action">
+              <button class="submit-arrow" type="submit" aria-label="Send one-time code">
+                <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M11 6l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <span class="result-mark" id="result-mark" aria-hidden="true">
+                <svg viewBox="0 0 36 36"><circle class="result-ring" cx="18" cy="18" r="15"/><path class="result-path" id="result-path"/></svg>
+              </span>
+            </div>
           </div>
           <p class="status-message" id="email-status" role="status" aria-live="polite"></p>
         </form>
@@ -279,7 +294,7 @@
 
       const emailForm = document.querySelector("#email-form");
       const emailInput = document.querySelector("#email");
-      const emailControl = document.querySelector("#email-control");
+      const emailRow = document.querySelector("#email-row");
       const emailStatus = document.querySelector("#email-status");
       const resultMark = document.querySelector("#result-mark");
       const resultPath = document.querySelector("#result-path");
@@ -292,7 +307,7 @@
       const successUrl = new URLSearchParams(window.location.search).get("success-url") || "/";
 
       const showEmailResult = (success) => {
-        emailControl.classList.add("is-resolved");
+        emailRow.classList.add("is-resolved");
         resultMark.classList.toggle("is-success", success);
         resultMark.classList.toggle("is-error", !success);
         resultPath.setAttribute("d", success ? "M10.5 18.5l5 5 10-11" : "M12.5 12.5l11 11m0-11-11 11");
@@ -313,7 +328,7 @@
           window.setTimeout(showOtp, 4000);
         } else {
           window.setTimeout(() => {
-            emailControl.classList.remove("is-resolved");
+            emailRow.classList.remove("is-resolved");
             emailInput.focus();
           }, 1600);
         }
@@ -352,7 +367,7 @@
         otpRow.classList.toggle("is-success", accepted);
         otpRow.classList.toggle("is-error", !accepted);
         document.querySelector("#otp-status").textContent = accepted ? "Code accepted." : "The code was not accepted.";
-        if (accepted) window.setTimeout(() => window.location.assign(successUrl), 950);
+        if (accepted) window.setTimeout(() => window.location.assign(successUrl), 1800);
       });
     })();
   </script>
