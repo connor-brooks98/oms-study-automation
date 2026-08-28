@@ -32,6 +32,15 @@ _MAX_FILES = 512
 _MAX_DOCUMENTS = 1_000
 
 
+class _StoreListFailure(Exception):
+    """Carry a fixed store lifecycle stage without formatting provider details."""
+
+    def __init__(self, stage: str, error: Exception) -> None:
+        super().__init__("Gemini store inventory lifecycle failed.")
+        self.stage = stage
+        self.error = error
+
+
 class GoogleGenaiReconciliationSession:
     """Pinned-SDK operations needed by the bounded reconciliation."""
 
@@ -42,9 +51,25 @@ class GoogleGenaiReconciliationSession:
         self._clients = GeminiClientFactory(config)
 
     async def list_stores(self) -> tuple[object, ...]:
-        async with self._clients.client() as client:
-            listed = await client.file_search_stores.list(config={"page_size": 100})
-            return await _collect(listed)
+        entered = False
+        collection_complete = False
+        try:
+            async with self._clients.client() as client:
+                entered = True
+                try:
+                    listed = await client.file_search_stores.list(config={"page_size": 100})
+                    stores = await _collect(listed)
+                except OverflowError:
+                    raise
+                except Exception as error:
+                    raise _StoreListFailure("store_request", error) from None
+                collection_complete = True
+            return stores
+        except (_StoreListFailure, OverflowError):
+            raise
+        except Exception as error:
+            stage = "store_close" if entered and collection_complete else "store_client"
+            raise _StoreListFailure(stage, error) from None
 
     async def list_files(self) -> tuple[object, ...]:
         async with self._clients.client() as client:
@@ -178,10 +203,12 @@ async def reconcile_resources(session: Any) -> dict[str, object]:
 
     try:
         stores = await session.list_stores()
+    except _StoreListFailure as failure:
+        return _blocked_provider_inventory(failure.stage, failure.error)
     except OverflowError:
         return _blocked_inventory("provider_reconciliation_scope_exceeded")
-    except Exception as error:
-        return _blocked_provider_inventory("store_list", error)
+    except Exception:
+        return _blocked_inventory("provider_reconciliation_contract_invalid")
     try:
         files = await session.list_files()
     except OverflowError:

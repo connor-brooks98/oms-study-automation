@@ -75,7 +75,8 @@ function Assert-ReconciliationRecord {
       $Record.status -notin @("passed", "blocked") -or
       $Record.provider_cleanup_complete -isnot [bool] -or
       $Record.inventory_failure_stage -notin @(
-        "not_applicable", "store_list", "file_list", "document_list"
+        "not_applicable", "store_client", "store_request", "store_close",
+        "file_list", "document_list"
       ) -or
       $Record.provider_error_category -notin @(
         "none", "authentication", "quota", "transient", "contract", "provider"
@@ -115,7 +116,9 @@ function Assert-ReconciliationRecord {
     $Warnings.Count -eq 1 -and
     $Warnings[0] -ceq "provider_reconciliation_incomplete"
   $HasProviderInventoryDiagnostic =
-    $Record.inventory_failure_stage -in @("store_list", "file_list", "document_list") -and
+    $Record.inventory_failure_stage -in @(
+      "store_client", "store_request", "store_close", "file_list", "document_list"
+    ) -and
     $Record.provider_error_category -in @(
       "authentication", "quota", "transient", "contract", "provider"
     )
