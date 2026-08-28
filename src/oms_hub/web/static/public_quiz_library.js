@@ -52,6 +52,12 @@
     }
   };
 
+  const requestConfirmation = (documentRef, options, invoker) => (
+    root.StudyHubShell?.confirmAction
+      ? root.StudyHubShell.confirmAction(documentRef, options, invoker, documentRef.defaultView)
+      : Promise.resolve(typeof root.confirm === "function" && root.confirm(options.message))
+  );
+
   const cookieValue = (cookie, name) => {
     const prefix = `${name}=`;
     const value = String(cookie || "").split(";").map((part) => part.trim())
@@ -83,81 +89,6 @@
       return payload.detail || fallback;
     } catch (_error) {
       return fallback;
-    }
-  };
-
-  const structuredPayload = (title, questions) => JSON.stringify({ title, questions });
-
-  const readStructuredQuestions = (form) => [...form.querySelectorAll("[data-payload-question]")].map((question) => {
-    const pairs = [...question.querySelectorAll("[data-choice]")].map((field, index) => ({
-      choice: field.value.trim(), correct: question.querySelectorAll("[data-correct]")[index]?.checked,
-    }));
-    const choices = pairs.map((pair) => pair.choice);
-    const correct = pairs.findIndex((pair) => pair.correct);
-    const image = JSON.parse(question.dataset.imageRef || "null");
-    return {
-      stem: question.querySelector("[data-stem]").value.trim(), choices, correct_index: correct,
-      rationale: question.querySelector("[data-rationale]").value.trim(),
-      topic: question.querySelector("[data-topic]").value.trim() || null,
-      area: question.querySelector("[data-area]").value.trim() || null,
-      learning_objective: question.querySelector("[data-learning-objective]").value.trim() || null,
-      image_ref: image,
-    };
-  });
-
-  const editorChoiceRow = (documentRef, value = "", checked = false) => {
-    const label = documentRef.createElement("label");
-    const radio = documentRef.createElement("input");
-    radio.type = "radio"; radio.dataset.correct = "true"; radio.checked = checked;
-    const input = documentRef.createElement("input");
-    input.dataset.choice = "true"; input.required = true; input.value = value;
-    const remove = documentRef.createElement("button");
-    remove.type = "button"; remove.dataset.removeChoice = "true"; remove.textContent = "Remove choice";
-    remove.className = "sh-btn sh-btn--danger";
-    label.append(radio, input, remove);
-    return label;
-  };
-  const editorQuestion = (documentRef, question = {}) => {
-    const fieldset = documentRef.createElement("fieldset");
-    fieldset.dataset.payloadQuestion = "true";
-    fieldset.dataset.imageRef = JSON.stringify(question.image_ref || null);
-    [["stem", "Stem"], ["rationale", "Rationale"], ["topic", "Topic"], ["area", "Area"], ["learningObjective", "Learning objective"]].forEach(([key, labelText]) => {
-      const label = documentRef.createElement("label"); label.textContent = labelText;
-      const input = documentRef.createElement(key === "stem" || key === "rationale" ? "textarea" : "input");
-      input.dataset[key === "learningObjective" ? "learningObjective" : key] = "true";
-      input.required = key === "stem" || key === "rationale";
-      input.value = question[key === "learningObjective" ? "learning_objective" : key] || "";
-      label.append(input); fieldset.append(label);
-    });
-    const choices = documentRef.createElement("div"); choices.dataset.choices = "true";
-    (question.choices || ["", ""]).forEach((choice, index) => {
-      choices.append(editorChoiceRow(documentRef, choice, index === Number(question.correct_index || 0)));
-    });
-    const add = documentRef.createElement("button"); add.type = "button"; add.dataset.addChoice = "true"; add.textContent = "Add choice"; add.className = "sh-btn sh-btn--secondary";
-    const remove = documentRef.createElement("button"); remove.type = "button"; remove.dataset.removeQuestion = "true"; remove.textContent = "Remove question"; remove.className = "sh-btn sh-btn--danger";
-    fieldset.append(choices, add, remove); return fieldset;
-  };
-
-  const loadPayloadEditor = async (documentRef, details) => {
-    if (details.dataset.loaded || details.dataset.loading) return;
-    details.dataset.loading = "true";
-    const status = details.querySelector("[data-payload-loading]");
-    status.textContent = "Loading questions…";
-    try {
-      const response = await root.fetch(details.dataset.payloadUrl, { cache: "no-store" });
-      if (!response.ok) throw new Error(await errorMessage(response, "Quiz questions could not be loaded."));
-      const payload = await response.json();
-      const form = details.querySelector("[data-payload-form]");
-      form.querySelector("[data-payload-title]").value = payload.title;
-      const group = form.querySelector("[data-payload-questions]");
-      (payload.questions || []).forEach((question) => group.append(editorQuestion(documentRef, question)));
-      form.hidden = false;
-      status.hidden = true;
-      details.dataset.loaded = "true";
-    } catch (error) {
-      status.textContent = error instanceof Error ? error.message : "Quiz questions could not be loaded.";
-    } finally {
-      delete details.dataset.loading;
     }
   };
 
@@ -424,9 +355,14 @@
       });
     };
     documentRef.querySelectorAll("[data-reset-quiz]").forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", async () => {
         closeOverflow(button);
-        if (typeof root.confirm === "function" && !root.confirm("Reset this quiz on this browser?")) return;
+        if (!await requestConfirmation(documentRef, {
+          title: "Reset quiz progress?",
+          message: "This clears this quiz's saved answers and progress on this browser.",
+          confirmLabel: "Reset quiz",
+          cancelLabel: "Keep progress",
+        }, button)) return;
         try {
           resetProgress(storage, button.dataset.quizToken, button.dataset.quizVersion);
           refresh();
@@ -439,7 +375,12 @@
     documentRef.querySelectorAll("[data-remove-quiz]").forEach((button) => {
       button.addEventListener("click", async () => {
         closeOverflow(button);
-        if (typeof root.confirm === "function" && !root.confirm("Remove this released quiz? Its source and run history will be preserved.")) return;
+        if (!await requestConfirmation(documentRef, {
+          title: "Remove this released quiz?",
+          message: "The quiz will leave the public library. Its source and run history will be preserved.",
+          confirmLabel: "Remove quiz",
+          cancelLabel: "Keep quiz",
+        }, button)) return;
         button.disabled = true;
         try {
           const response = await root.fetch(button.dataset.removeUrl, {
@@ -503,61 +444,22 @@
         }
       });
     });
-    documentRef.querySelectorAll("[data-payload-editor]").forEach((details) => {
-      details.addEventListener("toggle", () => { if (details.open) loadPayloadEditor(documentRef, details); });
-    });
-    documentRef.querySelectorAll("[data-payload-form]").forEach((form) => {
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const button = form.querySelector("button[type='submit']");
-        const questions = readStructuredQuestions(form);
-        if (!questions.length || questions.some((question) => question.choices.length < 2 || question.choices.length > 8 || question.choices.some((choice) => !choice) || question.correct_index < 0)) {
-          return report(documentRef, "Each quiz needs one question, two to eight choices, and a correct answer.");
-        }
+    documentRef.querySelectorAll("[data-edit-questions]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        closeOverflow(button);
         button.disabled = true;
         try {
-          const response = await root.fetch(form.dataset.payloadUrl, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json", "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "" },
-            body: JSON.stringify({ payload_json: structuredPayload(form.querySelector("[data-payload-title]").value, questions) }),
+          const response = await root.fetch(button.dataset.editUrl, {
+            method: "POST",
+            headers: { "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "" },
           });
-          if (!response.ok) throw new Error(await errorMessage(response, "Quiz questions could not be updated."));
-          root.location?.reload?.();
+          if (!response.ok) throw new Error(await errorMessage(response, "Quiz editor could not be opened."));
+          root.location?.assign?.((await response.json()).review_url);
         } catch (error) {
           button.disabled = false;
-          report(documentRef, error instanceof Error ? error.message : "Quiz questions could not be updated.");
+          report(documentRef, error instanceof Error ? error.message : "Quiz editor could not be opened.");
         }
       });
-    });
-    documentRef.addEventListener("click", (event) => {
-      const addQuestion = event.target.closest?.("[data-add-question]");
-      if (addQuestion) {
-        const group = addQuestion.closest("form").querySelector("[data-payload-questions]");
-        if (group.querySelectorAll("[data-payload-question]").length < 100) group.append(editorQuestion(documentRef));
-        return;
-      }
-      const removeQuestion = event.target.closest?.("[data-remove-question]");
-      if (removeQuestion) {
-        const form = removeQuestion.closest("form");
-        if (form.querySelectorAll("[data-payload-question]").length > 1) removeQuestion.closest("[data-payload-question]").remove();
-        return;
-      }
-      const removeChoice = event.target.closest?.("[data-remove-choice]");
-      if (removeChoice) {
-        const group = removeChoice.closest("[data-choices]");
-        if (group.querySelectorAll("[data-choice]").length > 2) removeChoice.closest("label").remove();
-        return;
-      }
-      const addChoice = event.target.closest?.("[data-add-choice]");
-      if (addChoice) {
-        const group = addChoice.closest("[data-payload-question]").querySelector("[data-choices]");
-        if (group.querySelectorAll("[data-choice]").length < 8) group.append(editorChoiceRow(documentRef));
-      }
-    });
-    documentRef.addEventListener("change", (event) => {
-      const radio = event.target.closest?.("[data-correct]");
-      if (radio?.checked) radio.closest("[data-payload-question]")
-        .querySelectorAll("[data-correct]").forEach((item) => { if (item !== radio) item.checked = false; });
     });
     documentRef.querySelectorAll("[data-view-flags]").forEach((button) => {
       button.addEventListener("click", async () => {
@@ -623,8 +525,8 @@
     cookieValue, managementRequest, setExpanded, directionSequence, reorderRequest,
     bindPointerReorder,
     reorderFailureStorageKey, storeReorderFailure, consumeReorderFailure, keyboardReorderDirection,
-    applyRenamedTitle, applyUnpublish, connectedFocusable, quizCountLabel, structuredPayload, readStructuredQuestions,
-    editorQuestion, loadPayloadEditor, openContextMenu, applyReorder,
+    applyRenamedTitle, applyUnpublish, connectedFocusable, quizCountLabel,
+    openContextMenu, applyReorder,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) bootstrap(root.document);

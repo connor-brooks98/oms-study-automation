@@ -65,32 +65,6 @@ test("corrupt browser progress is treated as not started", () => {
   assert.equal(library.readProgress(storage, "token", 1), "Not started");
 });
 
-test("structured editor payload retains image metadata", () => {
-  const retained = {
-    stem: "stem", choices: ["A", "B"], correct_index: 1, rationale: "why",
-    image_ref: { key: "image-1", source_title: "source", locator: "slide 1", description: "diagram" },
-  };
-  const payload = JSON.parse(library.structuredPayload("Title", [retained]));
-  assert.equal(payload.questions[0].correct_index, 1);
-  assert.deepEqual(payload.questions[0].image_ref, retained.image_ref);
-});
-
-test("structured editor never shifts a selected answer past a blank choice", () => {
-  const fields = [
-    { value: "A" }, { value: "" }, { value: "C" },
-  ];
-  const radios = [{ checked: false }, { checked: false }, { checked: true }];
-  const question = {
-    dataset: { imageRef: "null" },
-    querySelectorAll(selector) { return selector === "[data-choice]" ? fields : radios; },
-    querySelector() { return { value: "text" }; },
-  };
-  const form = { querySelectorAll() { return [question]; } };
-  const result = library.readStructuredQuestions(form)[0];
-  assert.equal(result.correct_index, 2);
-  assert.deepEqual(result.choices, ["A", "", "C"]);
-});
-
 test("successful reorder settles the existing row in its new position", () => {
   const rows = [{ id: "a" }, { id: "b" }, { id: "c" }];
   const parent = {
@@ -186,6 +160,8 @@ class FakeLibraryElement {
   }
 
   setAttribute() {}
+
+  closest() { return null; }
 }
 
 class FakeQuizRow {
@@ -243,6 +219,7 @@ class FakeLibraryDocument {
     resetButtons = [],
     removeButtons = [],
     titleForms = [],
+    editButtons = [],
     libraryMoveButtons = [],
     orderMoveButtons = [],
     resetMessage,
@@ -253,6 +230,7 @@ class FakeLibraryDocument {
     this.resetButtons = resetButtons;
     this.removeButtons = removeButtons;
     this.titleForms = titleForms;
+    this.editButtons = editButtons;
     this.libraryMoveButtons = libraryMoveButtons;
     this.orderMoveButtons = orderMoveButtons;
     this.resetMessage = resetMessage || new FakeLibraryElement();
@@ -265,6 +243,7 @@ class FakeLibraryDocument {
     if (selector === "[data-reset-quiz]") return this.resetButtons;
     if (selector === "[data-remove-quiz]") return this.removeButtons;
     if (selector === "[data-title-form]") return this.titleForms;
+    if (selector === "[data-edit-questions]") return this.editButtons;
     if (selector === "[data-move-quiz-library]") return this.libraryMoveButtons;
     if (selector === "[data-move-quiz-order]") return this.orderMoveButtons;
     return [];
@@ -317,7 +296,7 @@ test("library initialization is idempotent", () => {
   assert.equal(disclosure._listeners.click.length, 1);
 });
 
-test("per-quiz reset asks for confirmation and leaves progress untouched when cancelled", () => {
+test("per-quiz reset asks for confirmation and leaves progress untouched when cancelled", async () => {
   const storage = makeMemoryStorage();
   const storageKey = library.progressKey("tok1", 1);
   storage.setItem(storageKey, JSON.stringify({ version: 1, currentIndex: 1, questions: {} }));
@@ -332,7 +311,7 @@ test("per-quiz reset asks for confirmation and leaves progress untouched when ca
   try {
     library.initialize(documentRef, storage);
     const [handler] = resetButton._listeners.click;
-    handler();
+    await handler();
   } finally {
     global.confirm = originalConfirm;
   }
@@ -341,7 +320,7 @@ test("per-quiz reset asks for confirmation and leaves progress untouched when ca
   assert.equal(documentRef.resetMessage.textContent, "");
 });
 
-test("per-quiz reset clears progress once confirmed", () => {
+test("per-quiz reset clears progress once confirmed", async () => {
   const storage = makeMemoryStorage();
   const storageKey = library.progressKey("tok1", 1);
   storage.setItem(storageKey, JSON.stringify({ version: 1, currentIndex: 1, questions: {} }));
@@ -356,13 +335,32 @@ test("per-quiz reset clears progress once confirmed", () => {
   try {
     library.initialize(documentRef, storage);
     const [handler] = resetButton._listeners.click;
-    handler();
+    await handler();
   } finally {
     global.confirm = originalConfirm;
   }
 
   assert.equal(storage.getItem(storageKey), null);
   assert.match(documentRef.resetMessage.textContent, /reset/i);
+});
+
+test("edit questions opens the full private review workspace", async () => {
+  const button = new FakeLibraryElement();
+  button.dataset.editUrl = "/api/published-quizzes/token/edit-run";
+  const documentRef = new FakeLibraryDocument({ editButtons: [button] });
+  const originalFetch = global.fetch;
+  const originalLocation = global.location;
+  let assigned = null;
+  global.fetch = async () => ({ ok: true, json: async () => ({ review_url: "/studio/runs/edit/review" }) });
+  global.location = { assign: (url) => { assigned = url; } };
+  try {
+    library.initialize(documentRef, makeMemoryStorage());
+    await button._listeners.click[0]();
+  } finally {
+    global.fetch = originalFetch;
+    global.location = originalLocation;
+  }
+  assert.equal(assigned, "/studio/runs/edit/review");
 });
 
 test("remove leaves a released quiz alone when confirmation is cancelled", async () => {

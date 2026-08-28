@@ -4,6 +4,7 @@
   margin: 0 auto;
   padding-block: var(--sp-10) var(--sp-16);
 }
+.public-library--management { padding-block-end: calc(var(--sp-16) + 22rem); }
 .skip-link {
   position: absolute;
   width: 1px;
@@ -38,7 +39,11 @@
 }
 .course-list { display: grid; gap: var(--sp-3); }
 [hidden] { display: none !important; }
-.course-card { overflow: visible; }
+.course-card {
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
 .disclosure {
   display: flex;
   width: 100%;
@@ -119,6 +124,8 @@
   border-radius: var(--r-sm);
   background: var(--card);
   box-shadow: var(--shadow-sm);
+  max-height: min(36rem, calc(100dvh - var(--sp-16)));
+  overflow-y: auto;
 }
 .quiz-overflow__menu .button { width: 100%; justify-content: flex-start; white-space: normal; }
 .quiz-title-editor > summary {

@@ -118,6 +118,58 @@
     return toast;
   }
 
+  function confirmAction(documentRef, options = {}, invoker, windowRef) {
+    const win = windowRef || documentRef?.defaultView;
+    const dialog = documentRef?.querySelector?.("[data-confirm-dialog]");
+    const message = String(options.message || "Are you sure?");
+    if (!dialog || typeof dialog.showModal !== "function") {
+      return Promise.resolve(typeof win?.confirm === "function" ? win.confirm(message) : false);
+    }
+    const title = dialog.querySelector("[data-confirm-title]");
+    const copy = dialog.querySelector("[data-confirm-message]");
+    const accept = dialog.querySelector("[data-confirm-accept]");
+    const cancels = Array.from(dialog.querySelectorAll("[data-confirm-cancel]"));
+    title.textContent = options.title || "Confirm this action";
+    copy.textContent = message;
+    accept.textContent = options.confirmLabel || "Continue";
+    cancels.forEach((button) => {
+      if (button.textContent !== "×") button.textContent = options.cancelLabel || "Keep it";
+    });
+    accept.classList.toggle("sh-btn--danger", options.tone !== "primary");
+    accept.classList.toggle("sh-btn--primary", options.tone === "primary");
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (accepted) => {
+        if (settled) return;
+        settled = true;
+        accept.removeEventListener("click", acceptAction);
+        cancels.forEach((button) => button.removeEventListener("click", cancelAction));
+        dialog.removeEventListener("cancel", cancelEvent);
+        dialog.removeEventListener("click", backdropEvent);
+        dialog.classList.remove("is-open");
+        dialog.classList.add("is-closing");
+        const close = () => {
+          dialog.classList.remove("is-closing");
+          if (dialog.open) dialog.close();
+          invoker?.focus?.({ preventScroll: true });
+          resolve(accepted);
+        };
+        (win?.setTimeout || setTimeout)(close, transitionDelay(win, "--modal-duration"));
+      };
+      const acceptAction = () => finish(true);
+      const cancelAction = () => finish(false);
+      const cancelEvent = (event) => { event.preventDefault(); finish(false); };
+      const backdropEvent = (event) => { if (event.target === dialog) finish(false); };
+      accept.addEventListener("click", acceptAction);
+      cancels.forEach((button) => button.addEventListener("click", cancelAction));
+      dialog.addEventListener("cancel", cancelEvent);
+      dialog.addEventListener("click", backdropEvent);
+      if (!dialog.open) dialog.showModal();
+      (win?.requestAnimationFrame || ((callback) => callback()))(() => dialog.classList.add("is-open"));
+      cancels.find((button) => button.textContent !== "×")?.focus?.();
+    });
+  }
+
   function initialize(documentRef, windowRef) {
     if (!documentRef) return;
     const win = windowRef || (typeof window !== "undefined" ? window : null);
@@ -261,7 +313,7 @@
       });
     });
 
-    documentRef.querySelectorAll(".sh-dialog").forEach((dialog) => {
+    documentRef.querySelectorAll(".sh-dialog:not([data-confirm-dialog])").forEach((dialog) => {
       dialog.querySelectorAll("[data-close-dialog]").forEach((button) => {
         button.addEventListener("click", (event) => {
           event.preventDefault();
@@ -353,6 +405,6 @@
 
   return {
     initialize, matchesCommand, nextIndex, normalizeQuery, transitionDelay,
-    buttonIcon, enhanceButton, isStatefulAction, setButtonState, showToast, toastTone,
+    buttonIcon, confirmAction, enhanceButton, isStatefulAction, setButtonState, showToast, toastTone,
   };
 });

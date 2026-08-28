@@ -132,20 +132,46 @@ def test_public_library_starts_all_courses_and_exams_collapsed(tmp_path):
     assert response.text.count('class="lecture-list" hidden') == 2
 
 
-def test_management_library_defers_structured_editor_payload_to_owner(tmp_path):
+def test_management_library_routes_question_edits_to_full_review_workspace(tmp_path):
     app, published = _published_app(tmp_path)
     public = TestClient(app).get("/public/quizzes")
     managed = TestClient(app).get("/studio/library/quizzes")
 
-    assert "data-payload-questions" not in public.text
+    assert "data-edit-questions" not in public.text
     assert "correct_index" not in public.text
-    assert "data-payload-questions" in managed.text
-    assert f'data-payload-url="/api/published-quizzes/{published.token}/payload"' in managed.text
-    assert "<fieldset data-payload-question" not in managed.text
-    assert "data-add-question" in managed.text
-    assert "Open to load this quiz’s questions." in managed.text
+    assert "data-edit-questions" in managed.text
+    assert f'data-edit-url="/api/published-quizzes/{published.token}/edit-run"' in managed.text
+    assert "data-payload-questions" not in managed.text
     assert "/static/public_quiz_library.js?v=" in managed.text
     assert 'src="/public/quizzes/assets/' not in managed.text
+
+
+def test_edit_questions_stages_current_quiz_for_private_review(tmp_path):
+    app, published = _published_app(tmp_path)
+    with TestClient(app) as client:
+        client.get(f"/public/quizzes/{published.token}")
+        csrf = client.cookies.get("study_hub_csrf")
+        first = client.post(
+            f"/api/published-quizzes/{published.token}/edit-run",
+            headers={"X-CSRF-Token": csrf},
+        )
+        second = client.post(
+            f"/api/published-quizzes/{published.token}/edit-run",
+            headers={"X-CSRF-Token": csrf},
+        )
+        review_page = client.get(first.json()["review_url"])
+        review_data = client.get(
+            f"/studio/runs/{first.json()['run_id']}/review/data"
+        )
+        public_content = client.get(f"/public/quizzes/{published.token}/content")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert review_page.status_code == 200
+    assert review_data.status_code == 200
+    assert review_data.json()["questions"][0]["stem"] == published.quiz.questions[0].stem
+    assert review_data.json()["questions"][0]["correct_index"] == 0
+    assert public_content.json()["version"] == published.version
 
 
 def test_management_payload_endpoint_returns_answers_only_to_owner(tmp_path):

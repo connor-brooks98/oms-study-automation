@@ -599,6 +599,9 @@ body { overflow-x: clip; }
 .sh-dialog__header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-4); margin-block-end: var(--sp-4); }
 .sh-dialog__header h2 { margin: 0; font-size: var(--fs-h3); }
 .sh-dialog__kicker { margin: 0 0 var(--sp-1); color: var(--brand); font: 600 var(--fs-label)/1.2 var(--font-mono); text-transform: uppercase; letter-spacing: .06em; }
+.sh-confirm { width: min(32rem, calc(100% - (2 * var(--sp-4)))); }
+.sh-confirm__message { margin: var(--sp-5) 0; color: var(--text-2); }
+.sh-confirm__actions { display: flex; justify-content: flex-end; gap: var(--sp-3); }
 .sh-command__results { margin-block-start: var(--sp-3); display: grid; gap: var(--sp-1); }
 .sh-command__results a { justify-content: space-between; border: 1px solid transparent; }
 .sh-command__results a span { color: var(--text-3-strong); font-size: var(--fs-xs); }

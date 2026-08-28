@@ -10,7 +10,7 @@
     </div>
   </div>
 
-  <details class="settings-disclosure" open>
+  <details class="settings-disclosure t-accordion" open>
     <summary>
       <span class="sh-disclose" aria-hidden="true">▸</span>
       <span class="settings-disclosure-summary">
@@ -57,7 +57,7 @@
             <label for="credential-{{ provider.name }}">API credential</label>
             <div class="password-control">
               <input class="sh-input" id="credential-{{ provider.name }}" type="password" maxlength="8192" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="{{ 'Replace stored credential' if provider.configured else 'Paste credential' }}" data-credential-input>
-              <button class="password-toggle" type="button" aria-label="Show {{ provider.label }} credential" data-toggle-password>Show</button>
+              <button class="password-toggle sh-btn sh-btn--secondary" type="button" aria-label="Show {{ provider.label }} credential" data-toggle-password>Show</button>
             </div>
             <p class="field-help">Stored in Windows Credential Manager. Leave blank to keep the current credential.</p>
           </div>
@@ -94,7 +94,7 @@
           <label for="voyage-credential">Voyage AI API key</label>
           <div class="password-control">
             <input class="sh-input" id="voyage-credential" type="password" maxlength="8192" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="{{ 'Replace stored credential' if voyage_configured else 'Paste credential' }}" data-voyage-credential>
-            <button class="password-toggle" type="button" aria-label="Show Voyage AI credential" data-voyage-toggle>Show</button>
+            <button class="password-toggle sh-btn sh-btn--secondary" type="button" aria-label="Show Voyage AI credential" data-voyage-toggle>Show</button>
           </div>
           <p class="field-help">Supports Anki semantic indexing and is stored in Windows Credential Manager. Leave blank to keep the current credential.</p>
         </div>
@@ -120,7 +120,7 @@
     </section>
   </details>
 
-  <details class="settings-disclosure">
+  <details class="settings-disclosure t-accordion">
     <summary>
       <span class="sh-disclose" aria-hidden="true">▸</span>
       <span class="settings-disclosure-summary">
@@ -158,7 +158,7 @@
     </section>
   </details>
 
-  <details class="settings-disclosure">
+  <details class="settings-disclosure t-accordion">
     <summary>
       <span class="sh-disclose" aria-hidden="true">▸</span>
       <span class="settings-disclosure-summary">
@@ -190,7 +190,7 @@
     </section>
   </details>
 
-  <details class="settings-disclosure">
+  <details class="settings-disclosure t-accordion">
     <summary>
       <span class="sh-disclose" aria-hidden="true">▸</span>
       <span class="settings-disclosure-summary">
@@ -209,7 +209,7 @@
     </section>
   </details>
 
-  <details class="settings-disclosure settings-runtime-disclosure">
+  <details class="settings-disclosure settings-runtime-disclosure t-accordion">
     <summary>
       <span class="sh-disclose" aria-hidden="true">▸</span>
       <span class="settings-disclosure-summary">
@@ -253,5 +253,5 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/settings.js?v=20260806.3" defer></script>
+<script src="/static/settings.js?v=20260828.5" defer></script>
 {% endblock %}

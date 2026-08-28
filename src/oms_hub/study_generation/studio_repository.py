@@ -1805,6 +1805,79 @@ class StudioRepository:
             supersedes_run_id=previous.id,
         )
 
+    def create_published_quiz_edit_run(self, token: str) -> tuple[StudioRun, bool]:
+        """Stage a private direct-import revision without changing the live quiz."""
+        with self.database.session() as session:
+            published = session.get(PublishedQuizModel, token)
+            if published is None or not published.active:
+                raise KeyError(token)
+            previous = (
+                session.get(StudioRunModel, published.studio_run_id)
+                if published.studio_run_id
+                else None
+            )
+            if previous is None:
+                previous = StudioRunModel(
+                    id=str(uuid4()),
+                    subject=published.destination_subject,
+                    subject_key=published.destination_subject_key,
+                    exam_number=published.destination_exam_number,
+                    destination_subject=published.destination_subject,
+                    destination_subject_key=published.destination_subject_key,
+                    destination_exam_number=published.destination_exam_number,
+                    label=published.label,
+                    label_key=published.label_key,
+                    prompt="",
+                    workflow_kind=QuizWorkflowKind.DIRECT_IMPORT.value,
+                    content_kind=published.content_kind,
+                    state=StudioRunState.COMPLETE.value,
+                    stage=StudioRunStage.COMPLETE.value,
+                    published_token=published.token,
+                )
+                session.add(previous)
+                session.flush()
+                published.studio_run_id = previous.id
+            active_successor = session.scalar(
+                select(StudioRunModel).where(
+                    StudioRunModel.supersedes_run_id == previous.id,
+                    StudioRunModel.state.in_(
+                        {
+                            StudioRunState.QUEUED.value,
+                            StudioRunState.RUNNING.value,
+                            StudioRunState.RETRYING.value,
+                            StudioRunState.AWAITING_REVIEW.value,
+                        }
+                    ),
+                )
+            )
+            if active_successor is not None:
+                if (
+                    active_successor.workflow_kind == QuizWorkflowKind.DIRECT_IMPORT.value
+                    and active_successor.state == StudioRunState.AWAITING_REVIEW.value
+                ):
+                    return self._run_domain(session, active_successor), False
+                raise ValueError("another quiz revision is already in progress")
+            edit = StudioRunModel(
+                id=str(uuid4()),
+                subject=previous.subject,
+                subject_key=previous.subject_key,
+                exam_number=previous.exam_number,
+                destination_subject=previous.destination_subject,
+                destination_subject_key=previous.destination_subject_key,
+                destination_exam_number=previous.destination_exam_number,
+                label=published.label,
+                label_key=published.label_key,
+                prompt="",
+                workflow_kind=QuizWorkflowKind.DIRECT_IMPORT.value,
+                content_kind=published.content_kind,
+                state=StudioRunState.AWAITING_REVIEW.value,
+                stage=StudioRunStage.REVIEW.value,
+                supersedes_run_id=previous.id,
+            )
+            session.add(edit)
+            session.flush()
+            return self._run_domain(session, edit), True
+
     def hide_run(self, run_id: str) -> None:
         """Remove a terminal run from the Studio history without deleting its data.
 

@@ -10,8 +10,14 @@ from oms_hub.study_generation.domain import (
     PublishedQuizOrderDirection,
 )
 from oms_hub.study_generation.native_quiz import serialize_native_quiz
-from oms_hub.study_generation.practice_domain import QuizContentKind
+from oms_hub.study_generation.practice_domain import (
+    AnswerProvenance,
+    QuestionDraft,
+    QuizContentKind,
+)
+from oms_hub.study_generation.practice_review import PracticeReviewService, ReviewQuestion
 from oms_hub.study_generation.repository import GenerationRepository
+from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.web.csrf import require_form_csrf
 
 router = APIRouter(prefix="/api/published-quizzes")
@@ -205,6 +211,65 @@ def quiz_payload(request: Request, token: _PublishedQuizToken) -> JSONResponse:
     if published is None:
         raise HTTPException(404, "published quiz was not found")
     return JSONResponse(json.loads(serialize_native_quiz(published.quiz)))
+
+
+@router.post("/{token}/edit-run")
+def create_quiz_edit_run(request: Request, token: _PublishedQuizToken) -> JSONResponse:
+    require_form_csrf(request, None)
+    published = _repository(request).published_quiz(token)
+    if published is None:
+        raise HTTPException(404, "published quiz was not found")
+    studio = cast(StudioRepository, request.app.state.studio_repository)
+    try:
+        run, created = studio.create_published_quiz_edit_run(token)
+    except KeyError as error:
+        raise HTTPException(404, "published quiz was not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    if created:
+        questions = tuple(
+            ReviewQuestion(
+                QuestionDraft(
+                    question.id,
+                    question.id,
+                    question.stem,
+                    tuple(choice.text for choice in question.choices),
+                    next(
+                        index
+                        for index, choice in enumerate(question.choices)
+                        if choice.id == question.correct_choice_id
+                    ),
+                    question.rationale,
+                    question.image_ref,
+                    (),
+                    AnswerProvenance.PROVIDED_BY_SOURCE,
+                    1.0,
+                    (),
+                    False,
+                    None,
+                ),
+                question.topic,
+                question.area,
+                question.learning_objective,
+            )
+            for question in published.quiz.questions
+        )
+        review = cast(PracticeReviewService, request.app.state.practice_review)
+        review.store_review(run.id, questions)
+        media = {item.image_key: item for item in _repository(request).published_quiz_media(token)}
+        for question in published.quiz.questions:
+            item = media.get(question.image_ref.key) if question.image_ref else None
+            if item is None:
+                continue
+            try:
+                review.upload_image(run.id, question.id, item.path.name, item.path.read_bytes())
+            except (OSError, ValueError):
+                # The review stays safely blocked until the reviewer replaces the missing image.
+                continue
+    return JSONResponse(
+        {"run_id": run.id, "review_url": f"/studio/runs/{run.id}/review"},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/{token}/flags")

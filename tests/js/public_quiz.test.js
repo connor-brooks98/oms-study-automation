@@ -409,6 +409,11 @@ test("Question Information remains open through same-question interactions", asy
   app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
   information = app.querySelector("[data-question-information]");
   assert.equal(information.open, true, "selection preserves disclosure state");
+  assert.equal(
+    findByClass(app, "quiz-shell").className.includes("t-page-enter"),
+    false,
+    "selection does not replay the whole-page transition",
+  );
   app.querySelector('[data-focus-key="strike-c2"]'). _listeners.click[0]();
   information = app.querySelector("[data-question-information]");
   assert.equal(information.open, true, "elimination preserves disclosure state");

@@ -398,7 +398,7 @@
     // silent no-op in real browsers, which would leave focus wherever it
     // landed when the old node was removed (typically <body>). Fall back to
     // the (focusable, tabindex="-1") container in that case.
-    (match && !match.disabled ? match : container).focus();
+    (match && !match.disabled ? match : container).focus({ preventScroll: true });
   };
 
   const renderHighlightedText = (
@@ -502,6 +502,7 @@
       let state = restoreProgress(content, storage.getItem(key));
       const informationOpen = new Map();
       let pendingFocusKey;
+      let renderedViewKey = null;
 
       const persist = () => {
         storage.setItem(key, serializeProgress(state));
@@ -510,6 +511,11 @@
       const render = () => {
         const focusKey = pendingFocusKey ?? captureFocusKey(documentRef, app);
         pendingFocusKey = undefined;
+        const viewKey = state.currentIndex >= content.questions.length
+          ? "results"
+          : `question:${content.questions[state.currentIndex].id}`;
+        const animateView = renderedViewKey !== viewKey;
+        renderedViewKey = viewKey;
         const priorInformation = app.querySelector?.("[data-question-information]");
         if (priorInformation?.dataset?.questionInformation) {
           informationOpen.set(
@@ -520,7 +526,11 @@
         app.replaceChildren();
         if (state.currentIndex >= content.questions.length) {
           const summary = performanceSummary(content, state);
-          const result = element(documentRef, "section", "quiz-result t-page-enter");
+          const result = element(
+            documentRef,
+            "section",
+            `quiz-result${animateView ? " t-page-enter" : ""}`,
+          );
           result.append(
             element(documentRef, "p", "quiz-brand", "Study Hub"),
             element(documentRef, "h1", "sh-title", "Quiz complete"),
@@ -596,7 +606,11 @@
 
         const question = content.questions[state.currentIndex];
         const questionProgress = state.questions[question.id];
-        const shell = element(documentRef, "article", "quiz-shell t-page-enter");
+        const shell = element(
+          documentRef,
+          "article",
+          `quiz-shell${animateView ? " t-page-enter" : ""}`,
+        );
         const header = element(documentRef, "header", "quiz-header");
         const meta = element(documentRef, "div", "quiz-meta");
         const lectureLabel = content.lecture_number != null

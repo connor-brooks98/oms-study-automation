@@ -51,6 +51,9 @@ def test_settings_groups_controls_in_five_accessible_disclosures(tmp_path):
 
     assert response.status_code == 200
     assert response.text.count('<details class="settings-disclosure') == 5
+    assert response.text.count("settings-disclosure t-accordion") == 4
+    assert "settings-runtime-disclosure t-accordion" in response.text
+    assert "password-toggle sh-btn sh-btn--secondary" in response.text
     for label in (
         "AI Providers",
         "Task Assignments",

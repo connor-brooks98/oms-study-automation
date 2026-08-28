@@ -384,6 +384,9 @@ class PracticeReviewService:
     def store(self, run_id: str, drafts: tuple[QuestionDraft, ...]) -> None:
         self._save(run_id, tuple(ReviewQuestion(draft) for draft in drafts))
 
+    def store_review(self, run_id: str, questions: tuple[ReviewQuestion, ...]) -> None:
+        self._save(run_id, questions)
+
     def review(self, run_id: str) -> tuple[ReviewQuestion, ...]:
         stored = self.repository.run_artifact(run_id, _ARTIFACT_KEY)
         if stored is not None:

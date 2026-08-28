@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  {% set shell_asset_version = "20260828.4" %}
+  {% set shell_asset_version = "20260828.5" %}
   <link rel="stylesheet" href="/static/reset.css?v={{ shell_asset_version }}">
   <link rel="stylesheet" href="/static/tokens.css?v={{ shell_asset_version }}">
   <link rel="stylesheet" href="/static/study-hub.css?v={{ shell_asset_version }}">
@@ -88,6 +88,17 @@
       <a href="/uploads/slides">Upload slides</a><a href="/uploads/transcripts">Upload transcript</a>
       <a href="/quarantine">Quarantine</a><a href="/review">Review</a><a href="/settings">Settings</a>
     </nav>
+  </dialog>
+  <dialog class="sh-dialog sh-confirm t-modal" id="action-confirmation" aria-labelledby="action-confirmation-title" data-confirm-dialog>
+    <div class="sh-dialog__header">
+      <div><p class="sh-dialog__kicker">Double check</p><h2 id="action-confirmation-title" data-confirm-title>Confirm this action</h2></div>
+      <button class="sh-iconbtn" type="button" data-confirm-cancel aria-label="Close confirmation">×</button>
+    </div>
+    <p class="sh-confirm__message" data-confirm-message></p>
+    <div class="sh-confirm__actions">
+      <button class="sh-btn sh-btn--secondary" type="button" data-confirm-cancel>Keep it</button>
+      <button class="sh-btn sh-btn--danger" type="button" data-confirm-accept>Continue</button>
+    </div>
   </dialog>
   <main id="main-content" tabindex="-1">
     {% block content %}{% endblock %}

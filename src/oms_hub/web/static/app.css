@@ -1907,28 +1907,16 @@ code { overflow-wrap: anywhere; }
 }
 .provider-field { display: grid; }
 .password-control {
-  display: flex;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: .48rem;
-  background: white;
-}
-.password-control:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
 }
 .password-control input {
   min-width: 0;
-  flex: 1;
-  border: 0;
-  border-radius: 0;
-  outline: 0;
 }
 .password-toggle {
-  min-width: 4.2rem;
-  border: 0;
-  border-left: 1px solid var(--border);
-  background: var(--surface);
+  min-width: 4.8rem;
   /* Not --accent: at this lightness --accent (== --focus, tuned for
      outlines) only reaches ~3:1 on --surface, below AA for text. --brand-mid
      matches the existing link color convention and clears 5.9:1. */
@@ -2003,7 +1991,14 @@ code { overflow-wrap: anywhere; }
 .studio-runner select,
 .studio-import-intake input,
 .studio-import-intake select { width: 100%; }
-.studio-workflow-switch { display: flex; flex-wrap: wrap; gap: .65rem; margin: 0 0 1rem; }
+.studio-workflow-switch {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  margin: 0 0 1rem;
+}
+.studio-workflow-switch .sh-btn { width: 100%; min-width: 0; }
 [data-workflow-panel] {
   display: grid;
   gap: var(--sp-6);
@@ -2023,8 +2018,8 @@ code { overflow-wrap: anywhere; }
   display: grid;
   grid-template-columns: minmax(16rem, 1.15fr) minmax(14rem, 1fr) minmax(18rem, 1.1fr) auto;
   align-items: center;
-  gap: var(--sp-3) var(--sp-4);
-  padding: var(--sp-3);
+  gap: var(--sp-4) var(--sp-5);
+  padding: var(--sp-4);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface);
@@ -2042,6 +2037,11 @@ code { overflow-wrap: anywhere; }
 .studio-import-intake [data-import-source-row] .studio-import-row-role { display: grid; gap: .35rem; margin: 0; }
 .studio-import-intake [data-import-source-row] select { width: 100%; min-width: 0; }
 .studio-import-intake [data-import-source-row] .sh-check { margin: 0; }
+.studio-import-intake [data-import-source-row] .studio-import-row-notebook {
+  min-height: var(--control-h);
+  align-items: center;
+  line-height: 1.35;
+}
 .studio-import-intake [data-import-source-row] .sh-check input[type="checkbox"] { width: 16px; min-width: 16px; }
 .studio-import-intake [data-import-source-row] .sh-btn { justify-self: end; }
 .studio-source-picker {
@@ -2402,20 +2402,20 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 /* Blue Workbench · settings and Quiz Builder */
 .settings-page { padding-block-end: var(--sp-16); }
 .settings-disclosure {
-  margin: 0;
-  border: 0;
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-  background: transparent;
+  margin: 0 0 var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
 }
 .settings-disclosure:last-of-type { border-bottom: 1px solid var(--border); }
-.settings-disclosure > summary { min-height: 88px; padding: var(--sp-4) 0; }
+.settings-disclosure > summary { min-height: 88px; padding: var(--sp-5) var(--sp-6); }
 .settings-disclosure > summary > .sh-disclose {
   order: 2;
   margin-inline: auto var(--sp-3);
 }
 .settings-disclosure-title { margin: 0; font-size: var(--fs-h3); line-height: 1.25; }
-.settings-disclosure-content { padding: var(--sp-5) 0 var(--sp-8) calc(var(--sp-5) + var(--sp-2)); }
+.settings-disclosure-content { padding: var(--sp-5) var(--sp-6) var(--sp-6); }
 .provider-card.sh-card { box-shadow: none; }
 .provider-field > .sh-field-label[hidden] { display: none; }
 .provider-field > .sh-field-label:not([hidden]) { margin-block: var(--sp-3) var(--sp-2); }
@@ -2429,7 +2429,7 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 .studio-runner.sh-card,
 .studio-runs.sh-card { box-shadow: none; }
 .studio-workflow-switch { margin-block: var(--sp-5); }
-.studio-workflow-switch .sh-btn { min-width: 11rem; }
+.studio-workflow-switch .sh-btn { min-width: 0; }
 .studio-source-picker-group {
   padding: var(--sp-4);
   border-radius: var(--r-md);
@@ -2473,7 +2473,8 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 
 @media (max-width: 42rem) {
   .settings-disclosure > summary { min-height: 76px; }
-  .settings-disclosure-content { padding-inline-start: 0; }
+  .settings-disclosure > summary,
+  .settings-disclosure-content { padding-inline: var(--sp-4); }
   .studio-workflow-switch { width: 100%; }
   .studio-workflow-switch .sh-btn { min-width: 0; flex: 1; }
   .studio-import-intake [data-import-source-row] { grid-template-columns: minmax(0, 1fr); }

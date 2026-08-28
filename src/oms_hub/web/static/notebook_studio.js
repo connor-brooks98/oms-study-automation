@@ -11,6 +11,12 @@
     return item ? decodeURIComponent(item.split("=").slice(1).join("=")) : "";
   };
 
+  const requestConfirmation = (documentRef, options, invoker) => (
+    root.StudyHubShell?.confirmAction
+      ? root.StudyHubShell.confirmAction(documentRef, options, invoker, documentRef.defaultView)
+      : Promise.resolve(typeof root.confirm === "function" && root.confirm(options.message))
+  );
+
   const hasActiveSources = (sources) => sources.some(
     (source) => ["pending", "attaching", "deleting"].includes(source.state),
   );
@@ -422,7 +428,7 @@
     notebook.checked = attachToNotebook && importRoleAllowsNotebook(role);
     notebook.disabled = !importRoleAllowsNotebook(role);
     const notebookLabel = documentRef.createElement("label");
-    notebookLabel.className = "sh-check";
+    notebookLabel.className = "sh-check studio-import-row-notebook";
     notebookLabel.append(notebook, documentRef.createTextNode(" Use in NotebookLM for missing answers"));
     const remove = documentRef.createElement("button");
     remove.type = "button"; remove.dataset.removeImportSource = "true"; remove.textContent = "Remove";
@@ -795,18 +801,33 @@
       let url;
       let method;
       if (deleteButton) {
-        if (!root.confirm("Delete this source from NotebookLM and future selections?")) return;
+        if (!await requestConfirmation(documentRef, {
+          title: "Delete this source?",
+          message: "This removes the source from NotebookLM and future selections.",
+          confirmLabel: "Delete source",
+          cancelLabel: "Keep source",
+        }, deleteButton)) return;
         url = `/studio/sources/${encodeURIComponent(deleteButton.dataset.deleteSource)}`;
         method = "DELETE";
       } else if (rerunButton) {
         url = `/studio/runs/${encodeURIComponent(rerunButton.dataset.rerun)}/rerun`;
         method = "POST";
       } else if (removeRunButton) {
-        if (!root.confirm("Remove this run from history? A published quiz will remain available.")) return;
+        if (!await requestConfirmation(documentRef, {
+          title: "Remove this run from history?",
+          message: "The run will leave Quiz Builder history. Any published quiz will remain available.",
+          confirmLabel: "Remove run",
+          cancelLabel: "Keep run",
+        }, removeRunButton)) return;
         url = `/studio/runs/${encodeURIComponent(removeRunButton.dataset.removeRun)}`;
         method = "DELETE";
       } else {
-        if (!root.confirm("Unpublish this quiz? Private run history will be retained.")) return;
+        if (!await requestConfirmation(documentRef, {
+          title: "Unpublish this quiz?",
+          message: "The quiz will leave the public library. Private run history will be retained.",
+          confirmLabel: "Unpublish quiz",
+          cancelLabel: "Keep quiz",
+        }, unpublishButton)) return;
         url = `/studio/runs/${encodeURIComponent(unpublishButton.dataset.unpublishRun)}/publication`;
         method = "DELETE";
       }

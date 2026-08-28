@@ -74,3 +74,46 @@ test("toast feedback deduplicates the same message and keeps its semantic tone",
   assert.equal(region.children.length, 1);
   assert.equal(shell.toastTone("Review update failed.", { getAttribute: () => "alert" }), "error");
 });
+
+test("custom confirmation resolves only after its own action button is chosen", async () => {
+  const control = (text = "") => ({
+    textContent: text,
+    handlers: {},
+    classList: { toggle() {} },
+    addEventListener(type, handler) { this.handlers[type] = handler; },
+    removeEventListener(type) { delete this.handlers[type]; },
+    focus() {},
+  });
+  const title = control();
+  const message = control();
+  const accept = control("Continue");
+  const close = control("×");
+  const cancel = control("Keep it");
+  const dialog = {
+    open: false,
+    handlers: {},
+    classList: { add() {}, remove() {} },
+    querySelector(selector) {
+      return ({ "[data-confirm-title]": title, "[data-confirm-message]": message, "[data-confirm-accept]": accept })[selector];
+    },
+    querySelectorAll: () => [close, cancel],
+    addEventListener(type, handler) { this.handlers[type] = handler; },
+    removeEventListener(type) { delete this.handlers[type]; },
+    showModal() { this.open = true; },
+    close() { this.open = false; },
+  };
+  const documentRef = { defaultView: {}, querySelector: () => dialog };
+  const windowRef = { requestAnimationFrame: (callback) => callback(), setTimeout: (callback) => callback() };
+
+  const decision = shell.confirmAction(documentRef, {
+    title: "Reset quiz progress?",
+    message: "Saved answers will be cleared.",
+    confirmLabel: "Reset quiz",
+  }, null, windowRef);
+  accept.handlers.click();
+
+  assert.equal(await decision, true);
+  assert.equal(title.textContent, "Reset quiz progress?");
+  assert.equal(message.textContent, "Saved answers will be cleared.");
+  assert.equal(dialog.open, false);
+});
