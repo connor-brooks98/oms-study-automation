@@ -27,7 +27,7 @@ import os
 from pathlib import Path
 
 record = {
-    "schema_version": 1,
+    "schema_version": 2,
     "status": "passed",
     "provider_operation_states": [
         "inventory_complete",
@@ -46,8 +46,40 @@ record = {
         "documents_inspected": 0,
     },
     "provider_cleanup_complete": True,
+    "inventory_failure_stage": "not_applicable",
+    "provider_error_category": "none",
     "warnings": [],
 }
+mode = os.environ.get("OMS_EMITTER_MODE", "passed")
+if mode == "blocked":
+    record.update(
+        status="blocked",
+        provider_operation_states=["inventory_failed"],
+        provider_cleanup_complete=False,
+        inventory_failure_stage="store_list",
+        provider_error_category="transient",
+        warnings=["provider_reconciliation_incomplete"],
+    )
+elif mode == "not_authorized":
+    record.update(
+        status="blocked",
+        provider_operation_states=["reconciliation_failed"],
+        inspected_counts={"stores": 0, "files": 0, "documents": 0},
+        matched_counts={"stores": 0, "files": 0, "documents": 0},
+        delete_attempt_counts={"stores": 0, "files": 0, "documents": 0},
+        remaining_counts={
+            "stores": 0,
+            "files": 0,
+            "documents": 0,
+            "stores_inspected": 0,
+            "files_inspected": 0,
+            "documents_inspected": 0,
+        },
+        provider_cleanup_complete=False,
+        inventory_failure_stage="not_applicable",
+        provider_error_category="none",
+        warnings=["provider_reconciliation_not_authorized"],
+    )
 payload = (
     os.environ.get("OMS_EMITTER_PREFIX", "")
     + json.dumps(record, sort_keys=True, separators=(",", ":"))
@@ -58,6 +90,7 @@ if output is None:
     print(payload, end="")
 else:
     Path(output).write_text(payload, encoding="utf-8")
+raise SystemExit(0 if record["status"] == "passed" else 1)
 '@,
   $Utf8
 )
@@ -173,6 +206,57 @@ server.server_close()
     throw "Committed wrapper did not separate evidence and cleanup state."
   }
 
+  $BlockedWrapperSafe = Join-Path $Sandbox "blocked-wrapper-safe.json"
+  $BlockedWrapperStatus = Join-Path $Sandbox "blocked-wrapper-status.json"
+  $BlockedWrapperDiagnostic = Join-Path $Sandbox "blocked-wrapper-diagnostic"
+  $env:OMS_EMITTER_MODE = "blocked"
+  try {
+    & $PowerShellExecutable -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $Project `
+      -DiagnosticRoot $BlockedWrapperDiagnostic -SafeResultPath $BlockedWrapperSafe `
+      -SafeStatusPath $BlockedWrapperStatus -HubHealthUri "http://127.0.0.1:$Port/health"
+  } finally {
+    Remove-Item Env:OMS_EMITTER_MODE -ErrorAction SilentlyContinue
+  }
+  if ($LASTEXITCODE -ne 1) {
+    throw "Blocked operator record did not preserve its failing exit."
+  }
+  $BlockedWrapperRecord = Get-Content -LiteralPath $BlockedWrapperStatus -Raw |
+    ConvertFrom-Json
+  if (-not $BlockedWrapperRecord.evidence_usable -or
+      $BlockedWrapperRecord.provider_cleanup_complete -or
+      $BlockedWrapperRecord.operator_artifacts_deleted -or
+      -not $BlockedWrapperRecord.raw_diagnostic_retained -or
+      $BlockedWrapperRecord.hub_health_before -cne "ok" -or
+      $BlockedWrapperRecord.hub_health_after -cne "ok" -or
+      -not (Test-Path -LiteralPath $BlockedWrapperDiagnostic -PathType Container)) {
+    throw "Blocked usable evidence did not retain protected diagnostics."
+  }
+
+  $UnauthorizedWrapperSafe = Join-Path $Sandbox "unauthorized-wrapper-safe.json"
+  $UnauthorizedWrapperStatus = Join-Path $Sandbox "unauthorized-wrapper-status.json"
+  $UnauthorizedWrapperDiagnostic = Join-Path $Sandbox "unauthorized-wrapper-diagnostic"
+  $env:OMS_EMITTER_MODE = "not_authorized"
+  try {
+    & $PowerShellExecutable -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $Project `
+      -DiagnosticRoot $UnauthorizedWrapperDiagnostic `
+      -SafeResultPath $UnauthorizedWrapperSafe `
+      -SafeStatusPath $UnauthorizedWrapperStatus -HubHealthUri "http://127.0.0.1:$Port/health"
+  } finally {
+    Remove-Item Env:OMS_EMITTER_MODE -ErrorAction SilentlyContinue
+  }
+  if ($LASTEXITCODE -ne 1) {
+    throw "Not-authorized operator record did not preserve its failing exit."
+  }
+  $UnauthorizedWrapperRecord = Get-Content -LiteralPath $UnauthorizedWrapperStatus -Raw |
+    ConvertFrom-Json
+  if (-not $UnauthorizedWrapperRecord.evidence_usable -or
+      -not $UnauthorizedWrapperRecord.raw_diagnostic_retained -or
+      $UnauthorizedWrapperRecord.operator_artifacts_deleted) {
+    throw "Not-authorized evidence was rejected or discarded."
+  }
+
   $PrefixWrapperSafe = Join-Path $Sandbox "prefix-wrapper-safe.json"
   $PrefixWrapperStatus = Join-Path $Sandbox "prefix-wrapper-status.json"
   $PrefixWrapperDiagnostic = Join-Path $Sandbox "prefix-wrapper-diagnostic"
@@ -263,6 +347,31 @@ server.server_close()
     -StageMarkerPath (Join-Path $Sandbox "unknown-stage.json")
   if ($UnknownResult.ExitCode -ne 42 -or -not $UnknownResult.RetainRaw) {
     throw "Unknown warning code was accepted into safe evidence."
+  }
+
+  foreach ($InvalidPair in @(
+      @{Stage="unknown_stage";Category="provider"},
+      @{Stage="store_list";Category="unknown_category"}
+  )) {
+    $InvalidPairPath = Join-Path $Sandbox (
+      "invalid-pair-{0}.stdout" -f [Guid]::NewGuid().ToString("N")
+    )
+    $InvalidPairRecord = Get-Content -LiteralPath $Raw -Raw | ConvertFrom-Json
+    $InvalidPairRecord.status = "blocked"
+    $InvalidPairRecord.provider_operation_states = @("inventory_failed")
+    $InvalidPairRecord.provider_cleanup_complete = $false
+    $InvalidPairRecord.inventory_failure_stage = $InvalidPair.Stage
+    $InvalidPairRecord.provider_error_category = $InvalidPair.Category
+    $InvalidPairRecord.warnings = @("provider_reconciliation_incomplete")
+    $InvalidPairRecord | ConvertTo-Json -Compress -Depth 5 |
+      Set-Content -LiteralPath $InvalidPairPath -Encoding UTF8
+    $InvalidPairResult = Convert-GeminiReconciliationEvidence `
+      -RawStdoutPath $InvalidPairPath `
+      -SafeResultPath ($InvalidPairPath + ".safe") `
+      -StageMarkerPath ($InvalidPairPath + ".stage")
+    if ($InvalidPairResult.ExitCode -ne 42 -or -not $InvalidPairResult.RetainRaw) {
+      throw "Unknown inventory failure diagnostic was accepted."
+    }
   }
 
   $WriteRaw = Join-Path $Sandbox "write.stdout"

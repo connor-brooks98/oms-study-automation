@@ -12,6 +12,14 @@ from typing import Any
 
 import pytest
 
+from oms_hub.providers.gemini.errors import (
+    GeminiAuthenticationError,
+    GeminiContractError,
+    GeminiProviderError,
+    GeminiQuotaError,
+    GeminiTransientError,
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "run-gemini-reconciliation.py"
 
@@ -47,23 +55,36 @@ class _FakeSession:
         documents: dict[str, list[Any]],
         delete_document: bool = True,
         fail_document_relist: bool = False,
+        fail_inventory_stage: str | None = None,
+        inventory_error: Exception | None = None,
     ) -> None:
         self.stores = stores
         self.files = files
         self.documents = documents
         self.delete_document_enabled = delete_document
         self.fail_document_relist = fail_document_relist
+        self.fail_inventory_stage = fail_inventory_stage
+        self.inventory_error = inventory_error
         self.document_lists = 0
         self.calls: list[tuple[str, str]] = []
 
     async def list_stores(self) -> tuple[Any, ...]:
+        if self.fail_inventory_stage == "store_list":
+            assert self.inventory_error is not None
+            raise self.inventory_error
         return tuple(self.stores)
 
     async def list_files(self) -> tuple[Any, ...]:
+        if self.fail_inventory_stage == "file_list":
+            assert self.inventory_error is not None
+            raise self.inventory_error
         return tuple(self.files)
 
     async def list_documents(self, store_name: str) -> tuple[Any, ...]:
         self.document_lists += 1
+        if self.fail_inventory_stage == "document_list" and self.document_lists == 1:
+            assert self.inventory_error is not None
+            raise self.inventory_error
         if self.fail_document_relist and self.document_lists == 2:
             raise RuntimeError("synthetic relist failure")
         return tuple(self.documents.get(store_name, ()))
@@ -87,6 +108,8 @@ def _owned_session(
     *,
     delete_document: bool = True,
     fail_document_relist: bool = False,
+    fail_inventory_stage: str | None = None,
+    inventory_error: Exception | None = None,
 ) -> _FakeSession:
     types = _sdk_types()
     token = "a" * 32
@@ -115,6 +138,8 @@ def _owned_session(
         documents={store_name: [types.Document(name=f"{store_name}/documents/owned")]},
         delete_document=delete_document,
         fail_document_relist=fail_document_relist,
+        fail_inventory_stage=fail_inventory_stage,
+        inventory_error=inventory_error,
     )
 
 
@@ -125,7 +150,7 @@ def test_reconciliation_deletes_only_exact_disposable_sdk_resources() -> None:
     record = asyncio.run(operator.reconcile_resources(session))
 
     assert record == {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "passed",
         "provider_operation_states": [
             "inventory_complete",
@@ -144,6 +169,8 @@ def test_reconciliation_deletes_only_exact_disposable_sdk_resources() -> None:
             "documents_inspected": 0,
         },
         "provider_cleanup_complete": True,
+        "inventory_failure_stage": "not_applicable",
+        "provider_error_category": "none",
         "warnings": [],
     }
     assert [item.name for item in session.stores] == ["fileSearchStores/foreign"]
@@ -193,7 +220,73 @@ def test_scope_cap_fails_before_any_mutation() -> None:
 
     assert record["status"] == "blocked"
     assert record["warnings"] == ["provider_reconciliation_scope_exceeded"]
+    assert record["inventory_failure_stage"] == "not_applicable"
+    assert record["provider_error_category"] == "none"
     assert session.calls == []
+
+
+@pytest.mark.parametrize(
+    ("stage", "category", "error"),
+    (
+        (
+            "store_list",
+            "authentication",
+            GeminiAuthenticationError(
+                "private authentication payload",
+                provider_status_code=401,
+                provider_request_id="private-request-id",
+            ),
+        ),
+        (
+            "file_list",
+            "quota",
+            GeminiQuotaError(
+                "private quota payload",
+                provider_status_code=429,
+                provider_request_id="private-request-id",
+            ),
+        ),
+        (
+            "document_list",
+            "transient",
+            GeminiTransientError(
+                "private transient payload",
+                provider_status_code=503,
+                provider_request_id="private-request-id",
+            ),
+        ),
+        (
+            "store_list",
+            "contract",
+            GeminiContractError("private contract payload"),
+        ),
+        (
+            "file_list",
+            "provider",
+            GeminiProviderError("private provider payload"),
+        ),
+    ),
+)
+def test_inventory_failure_reports_only_safe_stage_and_existing_error_category(
+    stage: str,
+    category: str,
+    error: Exception,
+) -> None:
+    operator = _load_operator()
+    session = _owned_session(fail_inventory_stage=stage, inventory_error=error)
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    assert record["schema_version"] == 2
+    assert record["status"] == "blocked"
+    assert record["provider_operation_states"] == ["inventory_failed"]
+    assert record["warnings"] == ["provider_reconciliation_incomplete"]
+    assert record["inventory_failure_stage"] == stage
+    assert record["provider_error_category"] == category
+    assert session.calls == []
+    serialized = json.dumps(record, sort_keys=True)
+    for forbidden in ("private", "request-id", "401", "429", "503"):
+        assert forbidden not in serialized
 
 
 @pytest.mark.parametrize("kind", ["store", "file", "document"])
@@ -348,9 +441,23 @@ def test_missing_opt_in_fails_before_key_or_provider(
     )
 
     assert record == {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "blocked",
         "provider_operation_states": ["reconciliation_failed"],
+        "inspected_counts": {"stores": 0, "files": 0, "documents": 0},
+        "matched_counts": {"stores": 0, "files": 0, "documents": 0},
+        "delete_attempt_counts": {"stores": 0, "files": 0, "documents": 0},
+        "remaining_counts": {
+            "stores": 0,
+            "files": 0,
+            "documents": 0,
+            "stores_inspected": 0,
+            "files_inspected": 0,
+            "documents_inspected": 0,
+        },
+        "provider_cleanup_complete": False,
+        "inventory_failure_stage": "not_applicable",
+        "provider_error_category": "none",
         "warnings": ["provider_reconciliation_not_authorized"],
     }
     assert secrets.calls == []
