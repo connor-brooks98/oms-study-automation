@@ -160,6 +160,7 @@
   font-size: clamp(1rem, 2.4vw, 1.12rem);
   font-weight: 500;
   line-height: 1.65;
+  white-space: pre-line;
 }
 
 .quiz-question-image {
@@ -169,6 +170,8 @@
 
 .quiz-question-image img {
   display: block;
+  width: auto;
+  height: auto;
   max-width: 100%;
   max-height: 28rem;
   margin: 0 auto;

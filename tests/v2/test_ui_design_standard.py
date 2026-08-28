@@ -213,7 +213,7 @@ def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
     lecture = source("lecture.html")
 
     assert ".upload-results, .upload-status, .upload-items, .upload-items li" in app_css
-    assert "grid-template-columns: minmax(0, 1fr) minmax(6.5rem, 40%)" in app_css
+    assert ".upload-items li { display: grid; grid-template-columns: minmax(0, 1fr);" in app_css
     assert ".upload-items li > span:nth-child(2)" in app_css
     assert ".upload-item-error { grid-column: 1 / -1; }" in app_css
     assert "overflow-wrap: anywhere" in app_css
@@ -503,6 +503,10 @@ def test_final_visual_corrections_preserve_locked_chrome() -> None:
         ".quiz-answer-row.is-selected .quiz-choice-letter {", 1
     )[1].split("}", 1)[0]
     assert "background: var(--brand);" in selected_medallion
+    question_image = player_css.split(".quiz-question-image img {", 1)[1].split("}", 1)[0]
+    assert "width: auto;" in question_image and "height: auto;" in question_image
+    question_text = player_css.split(".quiz-question {", 1)[1].split("}", 1)[0]
+    assert "white-space: pre-line;" in question_text
     assert "--quiz-brand-mid" not in selected_medallion
 
 
