@@ -7,7 +7,7 @@ import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import ValidationError
 
@@ -380,7 +380,7 @@ def _depth_controls(
 def _depth_control_evidence(
     source_index: CardCentricSourceIndex,
 ) -> list[dict[str, str]]:
-    evidence = []
+    evidence: list[dict[str, str]] = []
     for entity, depth in _depth_controls(source_index):
         needle = _normalized_entity_text(entity)
         if not re.search(r"\b(?:warning signs?|checklists?|criteria)\b", needle):
@@ -576,7 +576,7 @@ def _ledger_repair_context(
     depth_control_evidence: list[dict[str, str]],
 ) -> _LedgerRepairContext:
     document, raw_concepts = _parse_targetable_ledger(raw_text)
-    index_to_id = {}
+    index_to_id: dict[int, str] = {}
     defects: dict[str, list[str]] = {}
     valid_concepts: dict[str, CardConcept] = {}
     for index, raw in enumerate(raw_concepts):
@@ -838,7 +838,7 @@ def _merge_targeted_ledger_repair(
             )
     document = dict(context.document)
     document["concepts"] = merged_concepts
-    document["lecture_entity_count"] = int(document["lecture_entity_count"]) + len(
+    document["lecture_entity_count"] = cast(int, document["lecture_entity_count"]) + len(
         context.required_additions
     )
     try:
@@ -1428,7 +1428,7 @@ class CardCentricClassifier:
         model: str,
     ) -> ClassifierResult:
         _unique_card_ids(cards)
-        concept_definitions = tuple(
+        concept_definitions: tuple[dict[str, object], ...] = tuple(
             {
                 "concept_id": concept.concept_id,
                 "canonical_statement": concept.canonical_statement,
@@ -1536,7 +1536,7 @@ class CardCentricClassifier:
         fact_ids_by_concept = {
             str(concept["concept_id"]): tuple(
                 str(fact["fact_id"])
-                for fact in concept["facts"]
+                for fact in cast(list[dict[str, object]], concept["facts"])
                 if isinstance(fact, dict)
             )
             for concept in concept_definitions

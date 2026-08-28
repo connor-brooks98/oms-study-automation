@@ -199,7 +199,7 @@ from oms_hub.anki.scope_service import (
     ScopeReuseArtifact,
     ScopeService,
 )
-from oms_hub.anki.semantic.domain import EmbeddingClient
+from oms_hub.anki.semantic.domain import EmbeddingClient, FloatMatrix
 from oms_hub.anki.semantic.service import SemanticIndexService, normalize_semantic_text
 from oms_hub.anki.semantic.store import SemanticSnapshotStore
 from oms_hub.anki.source_index import (
@@ -4066,7 +4066,7 @@ class CurationServicesRunner:
             for note_id in sorted(existing_ids)
             if note_id in cards
         )
-        existing_document_vectors = None
+        existing_document_vectors: dict[int, FloatMatrix] = {}
         if existing_notes:
             if context.job.semantic_generation is None:
                 raise PinnedInputChanged("card-centric v2 job has no pinned semantic generation")

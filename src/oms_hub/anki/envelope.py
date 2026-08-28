@@ -184,7 +184,7 @@ class EnvelopeBuilder:
                     )
                 media_by_filename[filename] = media
         for filename, media in sorted(media_by_filename.items()):
-            payload = {
+            payload: dict[str, Any] = {
                 "filename": filename,
                 "content_base64": media["content_base64"],
                 "sha256": media["sha256"],
@@ -199,7 +199,9 @@ class EnvelopeBuilder:
                 StoreMediaOperation(
                     operation_id=operation_id,
                     content_sha256=digest,
-                    **payload,
+                    filename=filename,
+                    content_base64=media["content_base64"],
+                    sha256=media["sha256"],
                 )
             )
         removals: dict[str, list[int]] = defaultdict(list)
