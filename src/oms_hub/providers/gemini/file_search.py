@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterable, Iterable, Mapping
 from dataclasses import dataclass
 from importlib import import_module
@@ -26,6 +27,8 @@ from oms_hub.providers.gemini.errors import (
     GeminiProviderError,
     GeminiTransientError,
 )
+
+_IMPORT_STORE_NAME = re.compile(r"fileSearchStores/[A-Za-z0-9][A-Za-z0-9._~-]{0,255}\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,7 +371,7 @@ async def import_file_exact_wire(
     response = await _call_provider(
         request,
         "post",
-        f"{_required_text(store_name, 'store name')}:importFile",
+        f"{_import_store_name(store_name)}:importFile",
         body,
         None,
     )
@@ -387,6 +390,13 @@ async def import_file_exact_wire(
             "Gemini import response did not match the expected contract."
         )
     return payload
+
+
+def _import_store_name(value: object) -> str:
+    name = _required_text(value, "store name")
+    if _IMPORT_STORE_NAME.fullmatch(name) is None:
+        raise GeminiContractError("Gemini store name is invalid.")
+    return name
 
 
 def _import_metadata(metadata: object) -> list[dict[str, str]]:
