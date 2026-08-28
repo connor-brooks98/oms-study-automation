@@ -2415,6 +2415,8 @@ class _PrivateShadowSession:
         invalid_negative: bool = False,
         uncertain_upload: bool = False,
         uncertain_store: bool = False,
+        fail_reconciliation: bool = False,
+        unknown_primary: bool = False,
     ) -> None:
         self.smoke = smoke
         self.fail_cleanup = fail_cleanup
@@ -2422,6 +2424,8 @@ class _PrivateShadowSession:
         self.invalid_negative = invalid_negative
         self.uncertain_upload = uncertain_upload
         self.uncertain_store = uncertain_store
+        self.fail_reconciliation = fail_reconciliation
+        self.unknown_primary = unknown_primary
         self.calls: list[tuple[str, object]] = []
         self.live_files: dict[str, str] = {}
         self.live_stores: dict[str, str] = {}
@@ -2458,6 +2462,10 @@ class _PrivateShadowSession:
 
     async def find_files(self, display_names: tuple[str, ...]) -> tuple[str, ...]:
         self.calls.append(("find_files", display_names))
+        if self.fail_reconciliation and len(
+            [call for call in self.calls if call[0] == "find_files"]
+        ) == 3:
+            raise RuntimeError("raw reconciliation failure must not escape")
         return tuple(
             name
             for name, display_name in self.live_files.items()
@@ -2492,6 +2500,10 @@ class _PrivateShadowSession:
         del source_revision_id, manifest, file_bindings
         self.calls.append(("query_private", (store_name, prompt, scope)))
         if scope.lecture_id == "lecture-private":
+            if self.unknown_primary:
+                raise RuntimeError(
+                    "raw provider identity fileSearchStores/private-store must not escape"
+                )
             if self.fail_positive:
                 raise self.smoke.SmokeContractError(
                     "primary private query failed",
@@ -2733,6 +2745,156 @@ def test_private_shadow_primary_failure_precedes_cleanup_failure(
     assert len([call for call in session.calls if call[0] == "delete_document"]) == 4
     assert len([call for call in session.calls if call[0] == "delete_file"]) == 4
     assert len([call for call in session.calls if call[0] == "delete_store"]) == 1
+
+
+def test_private_shadow_primary_failure_retains_safe_cleanup_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    session = _PrivateShadowSession(smoke, fail_cleanup=True, fail_positive=True)
+    evidence: dict[str, object] = {}
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: session,
+                failure_evidence=evidence,
+            )
+        )
+
+    assert raised.value.reason == "private_citation_unresolved"
+    assert set(evidence) == {
+        "status",
+        "source_revision_hash",
+        "document_types",
+        "page_count",
+        "slide_count",
+        "provider_operation_states",
+        "byte_usage",
+        "failure_stage",
+        "provider_cleanup_outcome",
+        "provider_reconciliation_outcome",
+        "warnings",
+    }
+    assert evidence["status"] == "blocked"
+    assert evidence["failure_stage"] == "positive_query"
+    assert evidence["provider_cleanup_outcome"] == "failed"
+    assert evidence["provider_reconciliation_outcome"] == "unknown"
+    assert evidence["warnings"] == [
+        "private_citation_unresolved",
+        "private_cleanup_failed",
+    ]
+    states = evidence["provider_operation_states"]
+    assert isinstance(states, list)
+    assert states[-1] == "private_shadow_failed"
+    assert "file_reconciliation_empty" in states
+    assert "store_reconciliation_empty" in states
+    assert len([call for call in session.calls if call[0] == "delete_document"]) == 4
+    assert len([call for call in session.calls if call[0] == "delete_file"]) == 4
+    assert len([call for call in session.calls if call[0] == "delete_store"]) == 1
+    serialized = json.dumps(evidence, sort_keys=True)
+    assert "primary private query failed" not in serialized
+    assert "raw cleanup failure" not in serialized
+    assert "fileSearchStores/private-store" not in serialized
+    assert "stored-private-key" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("session_kwargs", "cleanup", "reconciliation", "warning"),
+    (
+        ({"fail_positive": True}, "complete", "empty", "private_citation_unresolved"),
+        (
+            {"fail_positive": True, "fail_reconciliation": True},
+            "unknown",
+            "unknown",
+            "private_citation_unresolved",
+        ),
+        ({"unknown_primary": True}, "complete", "empty", "private_shadow_failed"),
+    ),
+)
+def test_private_shadow_failure_evidence_is_conservative_and_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    session_kwargs: dict[str, bool],
+    cleanup: str,
+    reconciliation: str,
+    warning: str,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    session = _PrivateShadowSession(smoke, **session_kwargs)
+    evidence: dict[str, object] = {}
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(BaseException):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: session,
+                failure_evidence=evidence,
+            )
+        )
+
+    assert evidence["failure_stage"] == "positive_query"
+    assert evidence["provider_cleanup_outcome"] == cleanup
+    assert evidence["provider_reconciliation_outcome"] == reconciliation
+    assert evidence["warnings"][0] == warning
+    serialized = json.dumps(evidence, sort_keys=True)
+    assert "raw provider identity" not in serialized
+    assert "raw reconciliation failure" not in serialized
+    assert "fileSearchStores/private-store" not in serialized
+    assert "stored-private-key" not in serialized
+
+
+def test_private_shadow_cleanup_only_failure_retains_failed_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    session = _PrivateShadowSession(smoke, fail_cleanup=True)
+    evidence: dict[str, object] = {}
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: session,
+                failure_evidence=evidence,
+            )
+        )
+
+    assert raised.value.reason == "private_cleanup_failed"
+    assert evidence["failure_stage"] == "cleanup"
+    assert evidence["provider_cleanup_outcome"] == "failed"
+    assert evidence["provider_reconciliation_outcome"] == "unknown"
+    assert evidence["warnings"] == ["private_cleanup_failed"]
 
 
 def test_private_shadow_reconciles_uncertain_upload_before_primary_failure(
