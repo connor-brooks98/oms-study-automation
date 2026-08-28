@@ -70,15 +70,13 @@ else:
     reconciliation = "empty"
     warnings = ["private_shadow_failed"]
     states = ["prior_operator_state_empty"]
-    if stage != "prior_state_check":
+    if stage not in {"prior_state_check", "create_store"}:
         states.append("store_created")
-    if stage not in {"prior_state_check", "create_store", "upload_input"}:
-        states.append("inputs_uploaded:2")
     if stage not in {
         "prior_state_check", "create_store", "upload_input", "import_input",
         "wait_for_import",
     }:
-        states.append("inputs_imported:2")
+        states.extend(["inputs_uploaded:2", "inputs_imported:2"])
     if stage in {
         "negative_query", "negative_validation", "cleanup", "unknown",
     }:
