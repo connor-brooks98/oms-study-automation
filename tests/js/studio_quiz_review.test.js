@@ -53,6 +53,7 @@ class Element {
     if (selector === ".studio-review-choice") return element.className.split(" ").includes("studio-review-choice");
     if (selector === "details") return element.tagName === "details";
     if (selector === "summary") return element.tagName === "summary";
+    if (selector === "li") return element.tagName === "li";
     if (selector === 'input[name="choice"]') return element.tagName === "input" && element.name === "choice";
     if (selector === 'input[name="correct_index"]') return element.tagName === "input" && element.name === "correct_index";
     if (selector === "[data-choices]") return element.dataset.choices === "true";
@@ -512,6 +513,18 @@ test("blocking questions and ready questions render in editable tabs", () => {
   assert.equal(panels[1]["aria-labelledby"], tabs[1].id);
   assert.equal(tabs[0].tabIndex, 0);
   assert.equal(tabs[1].tabIndex, -1);
+  const readyCard = panels[1].querySelector("[data-question-id]");
+  const sourceDetails = readyCard.querySelectorAll("details[data-state-key]")
+    .find((details) => details.dataset.stateKey === "question:q2:sources");
+  assert.deepEqual(
+    sourceDetails.querySelectorAll("li").map((item) => item.textContent),
+    ["Answer provenance · source", "Extraction confidence · 1"],
+  );
+  const save = readyCard.querySelectorAll("[data-focus-key]")
+    .find((field) => field.dataset.focusKey === "question:q2:save");
+  assert.equal(save.textContent, "Save changes");
+  assert.equal(save.form, `${readyCard.id}-edit`);
+  assert.equal(save.dataset.state, "idle");
 
   review.setReviewTab(questions, "ready");
   assert.equal(panels[0].hidden, true);

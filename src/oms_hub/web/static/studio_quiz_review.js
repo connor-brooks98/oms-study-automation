@@ -228,13 +228,14 @@
     upload.className = "studio-review-image-upload";
     upload.enctype = "multipart/form-data";
     const uploadLabel = documentRef.createElement("label");
-    uploadLabel.append(text(documentRef, "span", "Use my own image", "sh-field-label"));
+    uploadLabel.className = "sh-btn sh-btn--secondary studio-review-file-picker";
     const uploadInput = documentRef.createElement("input");
     uploadInput.type = "file";
     uploadInput.name = "file";
     uploadInput.accept = "image/png,image/jpeg,image/webp";
     uploadInput.required = true;
-    uploadLabel.append(uploadInput);
+    uploadInput.className = "sr-only";
+    uploadLabel.append(uploadInput, text(documentRef, "span", "Choose image"));
     const uploadButton = documentRef.createElement("button");
     uploadButton.type = "submit";
     uploadButton.className = "sh-btn sh-btn--secondary";
@@ -273,8 +274,6 @@
     card.dataset.questionId = question.id;
     card.id = questionAnchor(question.id);
     card.append(text(documentRef, "h3", question.original_identifier ? `Question ${question.original_identifier}` : question.id));
-    card.append(text(documentRef, "p", `Answer provenance: ${question.provenance || "unresolved"}`, "sh-row__meta"));
-    card.append(text(documentRef, "p", `Extraction confidence: ${question.confidence}`, "sh-row__meta"));
     if (issues.length) {
       const blocking = issues.some((issue) => issue.role === "err");
       card.append(text(
@@ -296,12 +295,17 @@
     const refs = documentRef.createElement("ul");
     refs.className = "studio-review-sources";
     refs.setAttribute("aria-label", "Source references");
+    refs.append(
+      text(documentRef, "li", `Answer provenance · ${question.provenance || "unresolved"}`),
+      text(documentRef, "li", `Extraction confidence · ${question.confidence}`),
+    );
     question.source_refs.forEach((ref) => refs.append(text(documentRef, "li", `${ref.source_id} · ${ref.segment_key} · ${ref.locator}`)));
     sourceDetails.append(refs);
     card.append(sourceDetails);
     const form = documentRef.createElement("form");
     form.dataset.questionEdit = question.id;
     form.className = "studio-review-form";
+    form.id = `${card.id}-edit`;
     form.append(textarea(documentRef, "Question stem", "stem", question.stem, `question:${question.id}:stem`));
     const choices = documentRef.createElement("section");
     choices.className = "sh-card studio-review-choice-group";
@@ -329,17 +333,18 @@
     );
     classification.append(classificationFields);
     form.append(classification);
+    card.append(form, renderCandidates(documentRef, question));
     const save = documentRef.createElement("button");
     save.type = "submit";
-    save.className = "sh-btn sh-btn--primary";
+    save.setAttribute("form", form.id);
+    save.className = "sh-btn sh-btn--primary sh-btn--block sh-btn--stateful";
+    save.dataset.state = "idle";
     save.dataset.focusKey = `question:${question.id}:save`;
-    save.textContent = "Save question";
+    save.textContent = "Save changes";
     const status = text(documentRef, "p", "", "studio-review-question-message");
     status.dataset.questionMessage = "true";
     status.dataset.toastSource = "true";
     status.setAttribute("aria-live", "polite");
-    form.append(save, status);
-    card.append(form);
     if (question.verification_required) {
       const verify = documentRef.createElement("button");
       verify.type = "button";
@@ -350,7 +355,7 @@
       verify.disabled = Boolean(question.verified_at);
       card.append(verify);
     }
-    card.append(renderCandidates(documentRef, question));
+    card.append(status, save);
     return card;
   };
 
@@ -391,6 +396,8 @@
 
   const renderIssues = (documentRef, page, payload) => {
     const target = page.querySelector("[data-review-blockers]");
+    const checks = target.closest?.(".studio-review-checks");
+    const checkSummary = checks?.querySelector?.("[data-review-check-summary]");
     target.replaceChildren();
     const issues = payload.issues || payload.blockers.map((message) => ({
       question_id: message.split(":", 1)[0], display_label: message.split(":", 1)[0], type: "review", message, role: "err",
@@ -400,11 +407,16 @@
       && !(diagnostic.overridable && diagnostic.acknowledged)
     ));
     if (!issues.length && !hasBlockingRunDiagnostic) {
-      const ready = documentRef.createElement("section");
-      ready.className = "sh-empty";
-      ready.append(text(documentRef, "h3", "Ready for preview and publication.", "sh-empty__title"));
-      target.append(ready);
+      if (checkSummary) checkSummary.textContent = "Ready for preview";
+      if (checks) checks.open = false;
+      target.append(text(documentRef, "p", "Ready for preview and publication.", "studio-review-ready"));
       return;
+    }
+    if (checkSummary) {
+      const diagnosticCount = (payload.run_diagnostics || []).length;
+      checkSummary.textContent = issues.length
+        ? issueSummary(issues)
+        : `${diagnosticCount} publication ${diagnosticCount === 1 ? "check" : "checks"}`;
     }
     target.append(text(documentRef, "p", issueSummary(issues), "sh-pill sh-pill--bare"));
     groupIssues(issues).forEach((group) => {
@@ -628,7 +640,7 @@
         rationale: form.querySelector('[name="rationale"]').value, topic: form.querySelector('[name="topic"]').value,
         area: form.querySelector('[name="area"]').value, learning_objective: form.querySelector('[name="learning_objective"]').value,
       });
-      const localMessage = form.querySelector("[data-question-message]") || message;
+      const localMessage = form.closest?.("[data-question-id]")?.querySelector?.("[data-question-message]") || message;
       if (payload.choices.length < 2 || payload.choices.length > 8 || payload.correct_index < 0 || payload.correct_index >= payload.choices.length) {
         localMessage.textContent = "Provide two to eight choices and select the correct answer.";
         return;
@@ -643,6 +655,13 @@
       try {
         const updated = await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(form.dataset.questionEdit)}`, "PATCH", payload);
         const savedMessage = applyQuestionSave(documentRef, page, form, updated) || message;
+        const savedCard = savedMessage.closest?.("[data-question-id]");
+        const savedButton = savedCard?.querySelector?.('[data-focus-key$=":save"]');
+        if (savedButton) {
+          savedButton.disabled = false;
+          savedButton.dataset.state = "success";
+          root.setTimeout?.(() => { savedButton.dataset.state = "idle"; }, 1200);
+        }
         const remaining = (updated.issues || []).filter((issue) => issue.question_id === form.dataset.questionEdit);
         savedMessage.textContent = remaining.length
           ? `Question saved. Remaining: ${remaining.map((issue) => issue.message).join(" · ")}`

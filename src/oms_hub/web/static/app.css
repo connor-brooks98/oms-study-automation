@@ -1730,7 +1730,6 @@ code { overflow-wrap: anywhere; }
 .settings-disclosure[open] > summary {
   border-bottom: 1px solid var(--border);
 }
-.settings-disclosure[open] > summary > .sh-disclose { transform: rotate(90deg); }
 .settings-disclosure > summary:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--focus) 35%, transparent);
   outline-offset: -3px;
@@ -2013,11 +2012,11 @@ code { overflow-wrap: anywhere; }
 }
 [data-workflow-panel] .studio-runner form > label { margin-bottom: 0; }
 .studio-import-intake [data-import-source-form]:not(.sh-card) { padding: 1.1rem 1.25rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); }
-.studio-import-intake [data-import-source-list] { display: grid; gap: .7rem; margin: var(--sp-4) 0 0; padding: 0; list-style: none; }
+.studio-import-intake [data-import-source-list] { display: grid; gap: var(--sp-4); margin: var(--sp-6) 0 0; padding: 0; list-style: none; }
 .studio-import-intake [data-import-source-row] {
   display: grid;
   grid-template-columns: minmax(16rem, 1.15fr) minmax(14rem, 1fr) minmax(18rem, 1.1fr) auto;
-  align-items: center;
+  align-items: end;
   gap: var(--sp-4) var(--sp-5);
   padding: var(--sp-4);
   border: 1px solid var(--border);
@@ -2112,13 +2111,24 @@ code { overflow-wrap: anywhere; }
 
 /* Imported-question review keeps its JS hooks, while its controls use the
    locked field and card treatment. */
-.studio-review-checks [data-review-blockers] { display: grid; gap: var(--sp-3); margin-top: var(--sp-4); }
+.studio-review-checks { padding: 0; overflow: hidden; }
+.studio-review-checks > summary { min-height: 68px; padding: var(--sp-4) var(--sp-5); }
+.studio-review-checks > summary h2 { margin: 0; }
+.studio-review-checks [data-review-blockers] { display: grid; gap: var(--sp-3); padding: 0 var(--sp-5) var(--sp-5); }
+.studio-review-ready { margin: 0; color: var(--text-2); }
 .studio-review-issue-group { padding: 0; overflow: hidden; }
 .studio-review-issue-group > summary { padding: var(--sp-4) var(--sp-5); cursor: pointer; }
 .studio-review-issue-group ul { display: grid; gap: var(--sp-2); margin: 0; padding: 0 var(--sp-5) var(--sp-5); list-style: none; }
 .studio-review-issue-group li { display: flex; align-items: center; gap: var(--sp-3); }
-.studio-review-question { display: grid; min-width: 0; gap: var(--sp-4); overflow-wrap: anywhere; }
+.studio-review-tabs { display: grid; width: min(100%, 34rem); grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; margin: var(--sp-3) 0 var(--sp-5); }
+.studio-review-tabs .t-tab { width: 100%; min-width: 0; }
+[data-review-panel] { display: grid; gap: var(--sp-5); }
+.studio-review-question { display: grid; min-width: 0; gap: var(--sp-4); margin: 0; overflow-wrap: anywhere; }
+.studio-review-question > h3 { margin: 0; }
 .studio-review-form { display: grid; gap: var(--sp-4); }
+.studio-review-form textarea[name="stem"],
+.studio-review-form textarea[name="rationale"] { min-height: 11rem; }
+.studio-review-question-message { min-height: 1.4em; margin: 0; color: var(--text-2); }
 .studio-review-choice-group { display: grid; gap: var(--sp-3); }
 .studio-review-choice { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto 44px; align-items: center; gap: var(--sp-3); }
 .studio-review-choice .sh-check input[type="radio"] { width: 16px; height: 16px; margin: 0; accent-color: var(--brand); flex: none; }
@@ -2135,6 +2145,8 @@ code { overflow-wrap: anywhere; }
 .studio-review-classification > :last-child { grid-column: 1 / -1; }
 .studio-review-sources { display: grid; min-width: 0; gap: var(--sp-1); margin-block-start: var(--sp-2); padding-left: 1.2rem; color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); overflow-wrap: anywhere; }
 .studio-review-candidates { display: grid; min-width: 0; gap: var(--sp-3); }
+.studio-review-image-upload { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+.studio-review-file-picker { margin: 0; }
 .studio-review-candidate-list { display: grid; min-width: 0; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--sp-3); }
 .studio-review-candidate { display: grid; min-width: 0; overflow: hidden; gap: var(--sp-3); margin: 0; }
 .studio-review-candidate.is-selected { border-color: var(--st-ok-dot); background: var(--st-ok-bg); }
@@ -2410,10 +2422,7 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 }
 .settings-disclosure:last-of-type { border-bottom: 1px solid var(--border); }
 .settings-disclosure > summary { min-height: 88px; padding: var(--sp-5) var(--sp-6); }
-.settings-disclosure > summary > .sh-disclose {
-  order: 2;
-  margin-inline: auto var(--sp-3);
-}
+.settings-disclosure > summary::after { margin-inline-start: auto; }
 .settings-disclosure-title { margin: 0; font-size: var(--fs-h3); line-height: 1.25; }
 .settings-disclosure-content { padding: var(--sp-5) var(--sp-6) var(--sp-6); }
 .provider-card.sh-card { box-shadow: none; }

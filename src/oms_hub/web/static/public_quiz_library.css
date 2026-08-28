@@ -120,10 +120,10 @@
   max-width: calc(100vw - var(--sp-16));
   gap: var(--sp-1);
   padding: var(--sp-2);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-sm);
   background: var(--card);
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 0 0 1px var(--card), var(--shadow-dialog);
   max-height: min(36rem, calc(100dvh - var(--sp-16)));
   overflow-y: auto;
 }

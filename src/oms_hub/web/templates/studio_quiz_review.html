@@ -21,14 +21,17 @@
     </div>
   </div>
   <p data-review-message data-toast-source aria-live="polite"></p>
-  <section class="sh-card studio-review-checks" aria-labelledby="review-blockers-heading">
-    <h2 id="review-blockers-heading">Publication checks</h2>
+  <details class="sh-card studio-review-checks t-accordion" data-state-key="publication-checks" aria-labelledby="review-blockers-heading">
+    <summary>
+      <h2 id="review-blockers-heading">Publication checks</h2>
+      <span class="sh-pill sh-pill--bare" data-review-check-summary>Checking…</span>
+    </summary>
     <div data-review-blockers data-review-issues aria-live="polite"></div>
-  </section>
+  </details>
   <section aria-labelledby="review-questions-heading">
     <h2 id="review-questions-heading">Questions</h2>
     <div data-review-questions></div>
   </section>
 </section>
 {% endblock %}
-{% block scripts %}<script type="module" src="/static/studio_quiz_review.js?v=20260828.2"></script>{% endblock %}
+{% block scripts %}<script type="module" src="/static/studio_quiz_review.js?v=20260828.3"></script>{% endblock %}

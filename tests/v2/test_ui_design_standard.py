@@ -518,10 +518,12 @@ def test_sh_disclose_summaries_hide_only_the_native_marker() -> None:
         " { display: none; }"
     ) in app_css
 
-    for name in ("anki.html", "lecture.html", "settings.html"):
+    for name in ("anki.html", "lecture.html"):
         assert '<summary><span class="sh-disclose"' in source(name) or (
             '<summary>\n      <span class="sh-disclose"' in source(name)
         )
+    assert 'class="settings-disclosure t-accordion"' in source("settings.html")
+    assert '<span class="sh-disclose"' not in source("settings.html")
 
 
 def test_import_checks_and_image_rows_escape_late_legacy_cascade() -> None:
@@ -536,11 +538,23 @@ def test_import_checks_and_image_rows_escape_late_legacy_cascade() -> None:
     ) in app_css
     assert ".studio-import-intake label {" not in app_css
     assert ".studio-import-intake [data-import-source-row] label {" not in app_css
-
     assert ".studio-image-question-list li:not(.sh-row)" in app_css
     assert ".studio-image-question-list li.is-overridden:not(.sh-row)" in app_css
     assert ".studio-image-question-list li {" not in app_css
     assert ".studio-image-question-list li.is-overridden {" not in app_css
+
+
+def test_quiz_review_uses_compact_checks_equal_tabs_and_stacked_edit_sections() -> None:
+    review = static_source("studio_quiz_review.js")
+    template = source("studio_quiz_review.html")
+    app_css = (STATIC / "app.css").read_text(encoding="utf-8")
+
+    assert 'class="sh-card studio-review-checks t-accordion"' in template
+    assert 'data-review-check-summary' in template
+    assert 'grid-template-columns: repeat(2, minmax(0, 1fr))' in app_css
+    assert 'textarea[name="stem"]' in app_css and 'textarea[name="rationale"]' in app_css
+    assert 'textContent = "Save changes"' in review
+    assert 'card.append(form, renderCandidates(documentRef, question))' in review
 
 
 def test_quiz_review_candidate_media_cannot_expand_its_card() -> None:
