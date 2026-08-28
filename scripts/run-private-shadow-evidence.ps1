@@ -31,6 +31,10 @@ function Protect-PrivateShadowDirectory {
   if ($LASTEXITCODE -ne 0) {
     throw "Private-shadow DACL initialization failed."
   }
+  & icacls.exe $Path /verify | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Private-shadow DACL verification failed."
+  }
   $Acl = Get-Acl -LiteralPath $Path
   $Rules = @($Acl.GetAccessRules(
       $true, $false, [System.Security.Principal.SecurityIdentifier]
@@ -51,6 +55,36 @@ function Protect-PrivateShadowDirectory {
         [System.Security.AccessControl.PropagationFlags]::None) {
     throw "Private-shadow DACL was not current-user-only."
   }
+}
+
+function Resolve-PrivateShadowSafePath {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [switch]$ExistingLeaf
+  )
+  $FullPath = [System.IO.Path]::GetFullPath($Path)
+  $ExistingPath = if ($ExistingLeaf) {$FullPath} else {Split-Path -Parent $FullPath}
+  $RequiredType = if ($ExistingLeaf) {"Leaf"} else {"Container"}
+  if (-not (Test-Path -LiteralPath $ExistingPath -PathType $RequiredType)) {
+    throw "Private-shadow path input was unavailable."
+  }
+  $Cursor = $ExistingPath
+  while (-not [string]::IsNullOrEmpty($Cursor)) {
+    $Item = Get-Item -LiteralPath $Cursor -Force
+    if ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+      throw "Private-shadow path crossed a reparse point."
+    }
+    $Next = Split-Path -Parent $Cursor
+    if ([string]::IsNullOrEmpty($Next) -or $Next -ceq $Cursor) { break }
+    $Cursor = $Next
+  }
+  $CanonicalExisting = (Get-Item -LiteralPath $ExistingPath -Force).FullName
+  if ($ExistingLeaf) {
+    return [System.IO.Path]::GetFullPath($CanonicalExisting)
+  }
+  return [System.IO.Path]::GetFullPath(
+    (Join-Path $CanonicalExisting (Split-Path -Leaf $FullPath))
+  )
 }
 
 function Assert-PrivateShadowPathParents {
@@ -90,16 +124,33 @@ function Write-PrivateShadowStatus {
 }
 
 try {
-  foreach ($Required in @($PythonExecutable, $OperatorScript, $EvidenceScript)) {
-    if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
-      throw "Required private-shadow input was unavailable."
-    }
+  $PythonExecutable = Resolve-PrivateShadowSafePath `
+    -Path $PythonExecutable -ExistingLeaf
+  $OperatorScript = Resolve-PrivateShadowSafePath `
+    -Path $OperatorScript -ExistingLeaf
+  $EvidenceScript = Resolve-PrivateShadowSafePath `
+    -Path $EvidenceScript -ExistingLeaf
+  $DiagnosticRoot = Resolve-PrivateShadowSafePath -Path $DiagnosticRoot
+  $SafeResultPath = Resolve-PrivateShadowSafePath -Path $SafeResultPath
+  $SafeStatusPath = Resolve-PrivateShadowSafePath -Path $SafeStatusPath
+  $OperatorRoot = Split-Path -Parent $OperatorScript
+  if ($DiagnosticRoot -ceq $OperatorRoot -or $DiagnosticRoot.StartsWith(
+      $OperatorRoot + [System.IO.Path]::DirectorySeparatorChar,
+      [System.StringComparison]::OrdinalIgnoreCase
+  )) {
+    throw "Private-shadow diagnostic root must be outside the operator root."
   }
+  $RawStdout = Join-Path $DiagnosticRoot "operator.stdout"
+  $RawStderr = Join-Path $DiagnosticRoot "operator.stderr"
   Assert-PrivateShadowPathParents
   if (Test-Path -LiteralPath $DiagnosticRoot) {
     throw "Private-shadow diagnostic root must be newly created."
   }
   New-Item -ItemType Directory -Path $DiagnosticRoot | Out-Null
+  if ((Get-Item -LiteralPath $DiagnosticRoot -Force).Attributes -band
+      [System.IO.FileAttributes]::ReparsePoint) {
+    throw "Private-shadow diagnostic root was a reparse point."
+  }
   Protect-PrivateShadowDirectory -Path $DiagnosticRoot
   . $EvidenceScript
 

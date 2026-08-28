@@ -119,10 +119,26 @@ function Assert-PrivateShadowRecord {
   $Warnings = @($Record.warnings)
   if ($Record.status -ceq "passed") {
     $RateType = $Record.citation_resolution_rate.GetType().FullName
-    if ($ProcessExitCode -ne 0 -or $Warnings.Count -ne 0 -or
-        $States[-1] -ceq "private_shadow_failed" -or
-        $States -notcontains "file_reconciliation_empty" -or
-        $States -notcontains "store_reconciliation_empty" -or
+    if ($States.Count -ne 11 -or
+        $States[0] -cne "prior_operator_state_empty" -or
+        $States[1] -cne "store_created" -or
+        $States[2] -notmatch '^inputs_uploaded:([1-9][0-9]{0,4})$') {
+      throw "Passed private-shadow lifecycle was incomplete."
+    }
+    $InputCount = [int]$Matches[1]
+    if ($States[3] -notmatch '^inputs_imported:([1-9][0-9]{0,4})$' -or
+        [int]$Matches[1] -ne $InputCount -or
+        $States[4] -cne "positive_query_complete" -or
+        $States[5] -cne "wrong_scope_query_complete" -or
+        $States[6] -notmatch '^documents_delete_attempted:([1-9][0-9]{0,4})$' -or
+        [int]$Matches[1] -ne $InputCount -or
+        $States[7] -notmatch '^files_delete_attempted:([1-9][0-9]{0,4})$' -or
+        [int]$Matches[1] -ne $InputCount -or
+        $States[8] -cne "file_reconciliation_empty" -or
+        $States[9] -cne "stores_delete_attempted:1" -or
+        $States[10] -cne "store_reconciliation_empty" -or
+        $States -contains "private_shadow_failed" -or
+        $ProcessExitCode -ne 0 -or $Warnings.Count -ne 0 -or
         $RateType -notin @(
           "System.Decimal", "System.Double", "System.Single",
           "System.Int32", "System.Int64"
@@ -174,26 +190,125 @@ function Assert-PrivateShadowRecord {
       @($Warnings | Sort-Object -Unique).Count -ne $Warnings.Count) {
     throw "Blocked private-shadow evidence was invalid."
   }
+  $HasFileEmpty = $States -contains "file_reconciliation_empty"
+  $HasStoreEmpty = $States -contains "store_reconciliation_empty"
+  if ($Record.failure_stage -ceq "prior_state_check") {
+    if ($States.Count -ne 1) {
+      throw "Prior-state private-shadow failure carried impossible progress."
+    }
+  } else {
+    $CleanupIndex = -1
+    for ($Index = 0; $Index -lt $States.Count; $Index++) {
+      if ($States[$Index] -match '^documents_delete_attempted:') {
+        $CleanupIndex = $Index
+        break
+      }
+    }
+    if ($CleanupIndex -lt 1) {
+      throw "Private-shadow cleanup progress was absent."
+    }
+    $Progress = @($States[0..($CleanupIndex - 1)])
+    $CleanupStates = @($States[$CleanupIndex..($States.Count - 1)])
+    $Position = 0
+    if ($CleanupStates.Count -lt 4 -or
+        $CleanupStates[$Position++] -notmatch '^documents_delete_attempted:(0|[1-9][0-9]{0,4})$' -or
+        $CleanupStates[$Position++] -notmatch '^files_delete_attempted:(0|[1-9][0-9]{0,4})$') {
+      throw "Private-shadow cleanup progress was malformed."
+    }
+    if ($Position -lt $CleanupStates.Count -and
+        $CleanupStates[$Position] -ceq "file_reconciliation_empty") {
+      $Position++
+    }
+    if ($Position -ge $CleanupStates.Count -or
+        $CleanupStates[$Position++] -notmatch '^stores_delete_attempted:(0|[1-9][0-9]{0,4})$') {
+      throw "Private-shadow store cleanup progress was malformed."
+    }
+    if ($Position -lt $CleanupStates.Count -and
+        $CleanupStates[$Position] -ceq "store_reconciliation_empty") {
+      $Position++
+    }
+    if ($Position -ne $CleanupStates.Count - 1 -or
+        $CleanupStates[$Position] -cne "private_shadow_failed") {
+      throw "Private-shadow cleanup progress ordering was invalid."
+    }
+
+    $IsBeforeStore =
+      $Progress.Count -eq 1 -and
+      $Progress[0] -ceq "prior_operator_state_empty"
+    $IsAfterStore =
+      $Progress.Count -eq 2 -and $IsBeforeStore -eq $false -and
+      $Progress[0] -ceq "prior_operator_state_empty" -and
+      $Progress[1] -ceq "store_created"
+    $HasInputPair =
+      $Progress.Count -ge 4 -and
+      $Progress[0] -ceq "prior_operator_state_empty" -and
+      $Progress[1] -ceq "store_created" -and
+      $Progress[2] -match '^inputs_uploaded:([1-9][0-9]{0,4})$'
+    if ($HasInputPair) {
+      $InputCount = [int]$Matches[1]
+      $HasInputPair =
+        $Progress[3] -match '^inputs_imported:([1-9][0-9]{0,4})$' -and
+        [int]$Matches[1] -eq $InputCount
+    }
+    $IsAfterInputs = $Progress.Count -eq 4 -and $HasInputPair
+    $IsAfterPositive =
+      $Progress.Count -eq 5 -and $HasInputPair -and
+      $Progress[4] -ceq "positive_query_complete"
+    $IsAfterNegative =
+      $Progress.Count -eq 6 -and $HasInputPair -and
+      $Progress[4] -ceq "positive_query_complete" -and
+      $Progress[5] -ceq "wrong_scope_query_complete"
+    $ProgressValid = switch ($Record.failure_stage) {
+      "create_store" {$IsBeforeStore}
+      {$_ -in @("upload_input", "import_input", "wait_for_import")} {$IsAfterStore}
+      {$_ -in @("positive_query", "positive_validation")} {$IsAfterInputs}
+      {$_ -in @("negative_query", "negative_validation")} {$IsAfterPositive}
+      "cleanup" {$IsAfterNegative}
+      "unknown" {
+        $IsBeforeStore -or $IsAfterStore -or $IsAfterInputs -or
+        $IsAfterPositive -or $IsAfterNegative
+      }
+      default {$false}
+    }
+    if (-not $ProgressValid) {
+      throw "Private-shadow failure stage contradicted operation progress."
+    }
+  }
+
   if ($Record.provider_cleanup_outcome -ceq "complete" -and
-      ($Warnings -contains "private_cleanup_failed" -or
-       $Warnings -contains "private_cleanup_unknown")) {
-    throw "Completed private-shadow cleanup carried a cleanup warning."
+      $Record.provider_reconciliation_outcome -cne "empty") {
+    throw "Completed private-shadow cleanup was not reconciled empty."
   }
-  if ($Record.provider_cleanup_outcome -ceq "failed" -and
-      $Warnings -notcontains "private_cleanup_failed") {
-    throw "Failed private-shadow cleanup lacked its fixed warning."
-  }
-  if ($Record.provider_cleanup_outcome -ceq "unknown" -and
-      $Warnings -notcontains "private_cleanup_unknown") {
-    throw "Unknown private-shadow cleanup lacked its fixed warning."
+  if ($Record.provider_reconciliation_outcome -ceq "empty" -and
+      (-not $HasFileEmpty -or -not $HasStoreEmpty)) {
+    throw "Empty private-shadow reconciliation lacked final empty checks."
   }
   if ($Record.provider_reconciliation_outcome -ceq "not_empty" -and
-      $Record.provider_cleanup_outcome -cne "failed") {
-    throw "Nonempty private-shadow reconciliation was inconsistent."
+      $HasFileEmpty -and $HasStoreEmpty) {
+    throw "Nonempty private-shadow reconciliation contradicted final checks."
   }
-  if ($Record.failure_stage -ceq "cleanup" -and
-      $Warnings[0] -cne "private_cleanup_failed") {
-    throw "Cleanup-only private-shadow failure lost primary precedence."
+
+  if ($Record.failure_stage -ceq "cleanup") {
+    $ExpectedWarnings = if ($Record.provider_cleanup_outcome -ceq "failed") {
+      @("private_cleanup_failed")
+    } elseif ($Record.provider_cleanup_outcome -ceq "unknown") {
+      @("private_cleanup_failed", "private_cleanup_unknown")
+    } else {
+      @()
+    }
+  } else {
+    if ($Warnings[0] -in @("private_cleanup_failed", "private_cleanup_unknown")) {
+      throw "Private-shadow cleanup warning replaced the primary warning."
+    }
+    $ExpectedWarnings = @($Warnings[0])
+    if ($Record.provider_cleanup_outcome -ceq "failed") {
+      $ExpectedWarnings += "private_cleanup_failed"
+    } elseif ($Record.provider_cleanup_outcome -ceq "unknown") {
+      $ExpectedWarnings += "private_cleanup_unknown"
+    }
+  }
+  if (($Warnings -join "`n") -cne ($ExpectedWarnings -join "`n")) {
+    throw "Private-shadow warning order was inconsistent."
   }
 }
 
