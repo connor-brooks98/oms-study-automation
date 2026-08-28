@@ -193,11 +193,10 @@ def _blocked_inventory(
 def _blocked_provider_inventory(stage: str, error: Exception) -> dict[str, object]:
     translated = translate_gemini_error(error)
     category = translated.category
-    if category == "provider":
-        category = {
-            400: "provider_bad_request",
-            404: "provider_not_found",
-        }.get(translated.provider_status_code, category)
+    if category == "provider" and translated.provider_status_code == 400:
+        category = "provider_bad_request"
+    elif category == "provider" and translated.provider_status_code == 404:
+        category = "provider_not_found"
     return _blocked_inventory(
         "provider_reconciliation_incomplete",
         inventory_failure_stage=stage,
