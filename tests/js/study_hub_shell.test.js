@@ -48,3 +48,29 @@ test("button semantics reserve stateful motion for submissions and map action ic
   assert.equal(shell.buttonIcon("Continue"), "continue");
   assert.equal(shell.buttonIcon("Test connection"), "");
 });
+
+test("toast feedback deduplicates the same message and keeps its semantic tone", () => {
+  const region = {
+    children: [],
+    append(item) { item.isConnected = true; this.children.push(item); },
+    querySelectorAll() { return this.children; },
+    querySelector() { return this.children[0] || null; },
+  };
+  const documentRef = {
+    querySelector: () => region,
+    createElement: () => ({
+      dataset: {}, className: "", isConnected: false,
+      classList: { contains: () => false, add() {} },
+      setAttribute() {}, addEventListener() {},
+      append(...children) { this.children = children; },
+      remove() { this.isConnected = false; },
+    }),
+  };
+  const windowRef = { setTimeout() {} };
+  const first = shell.showToast(documentRef, "Question saved.", "success", windowRef);
+  const duplicate = shell.showToast(documentRef, "Question saved.", "success", windowRef);
+  assert.equal(first, duplicate);
+  assert.equal(first.dataset.tone, "success");
+  assert.equal(region.children.length, 1);
+  assert.equal(shell.toastTone("Review update failed.", { getAttribute: () => "alert" }), "error");
+});

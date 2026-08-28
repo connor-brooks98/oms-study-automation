@@ -221,6 +221,97 @@ body { overflow-x: clip; }
 .t-context-menu__panel :is(a, button, summary) { transition: color var(--dur-micro) var(--ease-out), background-color var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out); }
 .t-context-menu__panel :is(a, button, summary):where(:hover, :focus-visible) { background: var(--surface); transform: translateX(2px); }
 
+/* Balanced motion set: native details continuity, restrained page reveals,
+   count feedback, and compact async notifications. */
+@supports (interpolate-size: allow-keywords) {
+  :root { interpolate-size: allow-keywords; }
+  .t-accordion::details-content {
+    block-size: 0;
+    overflow: clip;
+    opacity: 0;
+    transform: translateY(-6px);
+    transition:
+      block-size 280ms var(--ease-out),
+      opacity 180ms var(--ease-out),
+      transform 240ms var(--ease-out),
+      content-visibility 280ms allow-discrete;
+  }
+  .t-accordion[open]::details-content {
+    block-size: auto;
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.t-accordion > summary { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); list-style: none; cursor: pointer; }
+.t-accordion > summary::-webkit-details-marker { display: none; }
+.t-accordion > summary::after {
+  content: "";
+  width: .65rem;
+  height: .65rem;
+  flex: none;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translate(-2px, -2px);
+  transition: transform 240ms var(--ease-out);
+}
+.t-accordion[open] > summary::after { transform: rotate(225deg) translate(-1px, -1px); }
+
+.t-skeleton { position: relative; overflow: hidden; animation: t-skeleton-pulse 1.5s ease-in-out infinite; }
+.t-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 30%, oklch(1 0 0 / .62) 48%, transparent 66%);
+  transform: translateX(-120%);
+  animation: t-skeleton-sweep 1.5s ease-in-out infinite;
+}
+@keyframes t-skeleton-pulse { 50% { opacity: .64; } }
+@keyframes t-skeleton-sweep { to { transform: translateX(120%); } }
+
+.t-page-enter { animation: t-page-enter 260ms var(--ease-out) both; }
+@keyframes t-page-enter { from { opacity: 0; transform: translateY(8px); filter: blur(3px); } to { opacity: 1; transform: translateY(0); filter: blur(0); } }
+
+.t-number { animation: t-number-pop 320ms var(--ease-out) both; transform-origin: center; }
+@keyframes t-number-pop { 0% { opacity: 0; transform: translateY(5px) scale(.92); filter: blur(2px); } 70% { transform: translateY(-1px) scale(1.03); } 100% { opacity: 1; transform: none; filter: blur(0); } }
+
+.t-list-settle { animation: t-list-settle 360ms var(--ease-out) both; }
+@keyframes t-list-settle { 0% { background: var(--brand-tint); transform: scale(.985); } 65% { transform: scale(1.008); } 100% { background: var(--card); transform: none; } }
+
+.t-toast-region {
+  position: fixed;
+  z-index: calc(var(--z-modal) + 1);
+  inset-block-end: var(--sp-5);
+  inset-inline-end: var(--sp-5);
+  width: min(24rem, calc(100vw - (2 * var(--sp-4))));
+  display: grid;
+  gap: var(--sp-2);
+  pointer-events: none;
+}
+.t-toast {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--text-1);
+  box-shadow: var(--shadow-dialog);
+  pointer-events: auto;
+  animation: t-toast-in 280ms var(--ease-out) both;
+}
+.t-toast::before { content: ""; width: 9px; height: 9px; margin-block-start: .35rem; border-radius: 50%; background: var(--st-info-dot); }
+.t-toast[data-tone="success"]::before { background: var(--st-ok-dot); }
+.t-toast[data-tone="error"]::before { background: var(--st-err-dot); }
+.t-toast[data-tone="warning"]::before { background: var(--st-warn-dot); }
+.t-toast.is-leaving { animation: t-toast-out 180ms var(--ease-in) both; }
+.t-toast__copy { min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-sm); line-height: 1.45; }
+.t-toast__close { min-width: 32px; min-height: 32px; border: 0; border-radius: var(--r-pill); background: transparent; color: var(--text-2); cursor: pointer; }
+@keyframes t-toast-in { from { opacity: 0; transform: translateY(12px) scale(.97); filter: blur(4px); } to { opacity: 1; transform: none; filter: blur(0); } }
+@keyframes t-toast-out { to { opacity: 0; transform: translateY(8px) scale(.98); filter: blur(3px); } }
+
 /* ---- Cards / panels (G-04, G-14, G-15): one grouping treatment ---- */
 .sh-card {
   background: var(--card); border: 1px solid var(--border);
@@ -579,4 +670,10 @@ body { overflow-x: clip; }
   .t-modal::backdrop,
   .t-tabs-pill,
   .t-tab { transition: none; }
+  .t-skeleton,
+  .t-skeleton::after,
+  .t-page-enter,
+  .t-number,
+  .t-list-settle,
+  .t-toast { animation: none; }
 }

@@ -77,6 +77,47 @@
     });
   }
 
+  function toastTone(message, source) {
+    const value = normalizeQuery(message);
+    if (source?.getAttribute?.("role") === "alert" || /\b(error|failed|rejected|unavailable|could not|cannot)\b/.test(value)) return "error";
+    if (/\b(warning|remaining|needs review)\b/.test(value)) return "warning";
+    if (/\b(saved|uploaded|selected|verified|acknowledged|published|ready|complete|reset)\b/.test(value)) return "success";
+    return "info";
+  }
+
+  function showToast(documentRef, message, tone = "info", windowRef) {
+    const region = documentRef?.querySelector?.("[data-toast-region]");
+    const value = String(message || "").trim();
+    if (!region || !value) return null;
+    const duplicate = Array.from(region.querySelectorAll?.(".t-toast") || [])
+      .find((toast) => toast.dataset.message === value);
+    if (duplicate) return duplicate;
+    const toast = documentRef.createElement("div");
+    toast.className = "t-toast";
+    toast.dataset.tone = tone;
+    toast.dataset.message = value;
+    const copy = documentRef.createElement("span");
+    copy.className = "t-toast__copy";
+    copy.textContent = value;
+    const close = documentRef.createElement("button");
+    close.type = "button";
+    close.className = "t-toast__close";
+    close.setAttribute("aria-label", "Dismiss notification");
+    close.textContent = "×";
+    const remove = () => {
+      if (!toast.isConnected || toast.classList.contains("is-leaving")) return;
+      toast.classList.add("is-leaving");
+      const finish = () => toast.remove();
+      (windowRef?.setTimeout || setTimeout)(finish, transitionDelay(windowRef, "--dur-short", 180));
+    };
+    close.addEventListener("click", remove);
+    toast.append(copy, close);
+    region.append(toast);
+    while ((region.querySelectorAll?.(".t-toast") || []).length > 3) region.querySelector(".t-toast")?.remove();
+    (windowRef?.setTimeout || setTimeout)(remove, 4500);
+    return toast;
+  }
+
   function initialize(documentRef, windowRef) {
     if (!documentRef) return;
     const win = windowRef || (typeof window !== "undefined" ? window : null);
@@ -99,12 +140,41 @@
         }
       });
     }) : null;
+    const liveValues = new WeakMap();
+    const toastSources = () => Array.from(documentRef.querySelectorAll?.("[data-toast-source]") || []);
+    const notifyToastSource = (source) => {
+      const value = String(source?.textContent || "").trim();
+      if (liveValues.get(source) === value) return;
+      liveValues.set(source, value);
+      if (!value || /(?:…|\.\.\.)$/.test(value)) return;
+      showToast(documentRef, value, toastTone(value, source), win);
+    };
+    toastSources().forEach((source) => liveValues.set(source, String(source.textContent || "").trim()));
+    const toastObserver = win?.MutationObserver ? new win.MutationObserver((records) => {
+      const sources = new Set();
+      records.forEach((record) => {
+        const source = record.target?.nodeType === 1
+          ? record.target.closest?.("[data-toast-source]")
+          : record.target?.parentElement?.closest?.("[data-toast-source]");
+        if (source) sources.add(source);
+        record.addedNodes?.forEach?.((node) => {
+          if (node.nodeType !== 1) return;
+          if (node.matches?.("[data-toast-source]")) sources.add(node);
+          node.querySelectorAll?.("[data-toast-source]").forEach((item) => sources.add(item));
+        });
+      });
+      sources.forEach(notifyToastSource);
+    }) : null;
 
     documentRef.querySelectorAll(".sh-btn").forEach(enhanceButton);
     buttonObserver?.observe(documentRef.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled"] });
+    toastObserver?.observe(documentRef.body, { childList: true, subtree: true, characterData: true });
     documentRef.addEventListener("submit", (event) => {
       const button = event.submitter;
-      if (button?.classList?.contains("sh-btn--stateful")) setButtonState(button, "loading");
+      if (
+        button?.classList?.contains("sh-btn--stateful")
+        && (!event.defaultPrevented || button.disabled)
+      ) setButtonState(button, "loading");
     });
 
     function restoreFocus(dialog) {
@@ -283,6 +353,6 @@
 
   return {
     initialize, matchesCommand, nextIndex, normalizeQuery, transitionDelay,
-    buttonIcon, enhanceButton, isStatefulAction, setButtonState,
+    buttonIcon, enhanceButton, isStatefulAction, setButtonState, showToast, toastTone,
   };
 });

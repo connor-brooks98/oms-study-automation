@@ -65,6 +65,12 @@
     const panel = button.ownerDocument.getElementById(button.getAttribute("aria-controls"));
     if (!panel) return;
     panel.hidden = !expanded;
+    if (expanded) {
+      panel.classList?.remove("t-page-enter");
+      void panel.offsetWidth;
+      panel.classList?.add("t-page-enter");
+      panel.addEventListener?.("animationend", () => panel.classList?.remove("t-page-enter"), { once: true });
+    }
     if (!expanded) {
       Array.from(panel.querySelectorAll?.(".disclosure[aria-expanded='true']") || [])
         .forEach((descendant) => setExpanded(descendant, false));
@@ -265,6 +271,25 @@
       : [];
   };
 
+  const applyReorder = (row, directions) => {
+    const parent = row?.parentElement;
+    if (!parent || typeof parent.insertBefore !== "function") return false;
+    for (const direction of directions) {
+      if (direction === "up") {
+        const previous = row.previousElementSibling;
+        if (previous) parent.insertBefore(row, previous);
+      } else if (direction === "down") {
+        const next = row.nextElementSibling;
+        if (next) parent.insertBefore(next, row);
+      }
+    }
+    row.classList?.remove("t-list-settle");
+    void row.offsetWidth;
+    row.classList?.add("t-list-settle");
+    row.addEventListener?.("animationend", () => row.classList?.remove("t-list-settle"), { once: true });
+    return true;
+  };
+
   const reorderRequest = async (
     documentRef,
     control,
@@ -289,7 +314,10 @@
         if (!response.ok) throw new Error(await errorMessage(response, "Quiz order could not be updated."));
         completedSteps += 1;
       }
-      root.location?.reload?.();
+      applyReorder(row, directions);
+      control.disabled = false;
+      control.focus?.({ preventScroll: true });
+      report(documentRef, "Quiz order updated.");
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Quiz order could not be updated.";
@@ -596,7 +624,7 @@
     bindPointerReorder,
     reorderFailureStorageKey, storeReorderFailure, consumeReorderFailure, keyboardReorderDirection,
     applyRenamedTitle, applyUnpublish, connectedFocusable, quizCountLabel, structuredPayload, readStructuredQuestions,
-    editorQuestion, loadPayloadEditor, openContextMenu,
+    editorQuestion, loadPayloadEditor, openContextMenu, applyReorder,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) bootstrap(root.document);

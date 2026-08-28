@@ -194,9 +194,16 @@
   };
 
   const renderCandidates = (documentRef, question) => {
-    const section = documentRef.createElement("section");
-    section.className = "studio-review-candidates";
-    section.append(text(documentRef, "h4", "Question image", "sh-section-label"));
+    const section = documentRef.createElement("details");
+    section.className = "studio-review-candidates studio-review-disclosure t-accordion";
+    section.dataset.stateKey = `question:${question.id}:images`;
+    section.open = Boolean(question.image_required && !question.image_not_needed);
+    const imageState = question.image_attached
+      ? "attached"
+      : question.image_required && !question.image_not_needed
+        ? "required"
+        : "optional";
+    section.append(text(documentRef, "summary", `Question image · ${imageState}`, "sh-section-label"));
     if (question.image_required) {
       const toggle = documentRef.createElement("button");
       toggle.type = "button";
@@ -277,11 +284,21 @@
         `sh-pill sh-pill--${blocking ? "err" : "warn"}`,
       ));
     }
+    const sourceDetails = documentRef.createElement("details");
+    sourceDetails.className = "studio-review-disclosure t-accordion";
+    sourceDetails.dataset.stateKey = `question:${question.id}:sources`;
+    sourceDetails.append(text(
+      documentRef,
+      "summary",
+      `Source context · ${question.source_refs.length} ${question.source_refs.length === 1 ? "reference" : "references"}`,
+      "sh-section-label",
+    ));
     const refs = documentRef.createElement("ul");
     refs.className = "studio-review-sources";
     refs.setAttribute("aria-label", "Source references");
     question.source_refs.forEach((ref) => refs.append(text(documentRef, "li", `${ref.source_id} · ${ref.segment_key} · ${ref.locator}`)));
-    card.append(refs);
+    sourceDetails.append(refs);
+    card.append(sourceDetails);
     const form = documentRef.createElement("form");
     form.dataset.questionEdit = question.id;
     form.className = "studio-review-form";
@@ -299,9 +316,19 @@
     add.textContent = "Add choice";
     choices.append(add);
     form.append(choices, textarea(documentRef, "Rationale", "rationale", question.rationale, `question:${question.id}:rationale`));
-    form.append(input(documentRef, "Topic", "topic", question.topic, "text", `question:${question.id}:topic`));
-    form.append(input(documentRef, "Area", "area", question.area, "text", `question:${question.id}:area`));
-    form.append(input(documentRef, "Learning objective", "learning_objective", question.learning_objective, "text", `question:${question.id}:learning-objective`));
+    const classification = documentRef.createElement("details");
+    classification.className = "studio-review-disclosure t-accordion";
+    classification.dataset.stateKey = `question:${question.id}:classification`;
+    classification.append(text(documentRef, "summary", "Classification details", "sh-section-label"));
+    const classificationFields = documentRef.createElement("div");
+    classificationFields.className = "studio-review-classification";
+    classificationFields.append(
+      input(documentRef, "Topic", "topic", question.topic, "text", `question:${question.id}:topic`),
+      input(documentRef, "Area", "area", question.area, "text", `question:${question.id}:area`),
+      input(documentRef, "Learning objective", "learning_objective", question.learning_objective, "text", `question:${question.id}:learning-objective`),
+    );
+    classification.append(classificationFields);
+    form.append(classification);
     const save = documentRef.createElement("button");
     save.type = "submit";
     save.className = "sh-btn sh-btn--primary";
@@ -309,6 +336,7 @@
     save.textContent = "Save question";
     const status = text(documentRef, "p", "", "studio-review-question-message");
     status.dataset.questionMessage = "true";
+    status.dataset.toastSource = "true";
     status.setAttribute("aria-live", "polite");
     form.append(save, status);
     card.append(form);
@@ -338,6 +366,13 @@
     Array.from(questions.querySelectorAll?.("[data-review-panel]") || []).forEach((panel) => {
       panel.hidden = panel.dataset.reviewPanel !== selected;
     });
+    const active = Array.from(questions.querySelectorAll?.("[data-review-tab]") || [])
+      .find((button) => button.dataset.reviewTab === selected);
+    const pill = questions.querySelector?.("[data-review-pill]");
+    if (active && pill && Number.isFinite(active.offsetWidth) && Number.isFinite(active.offsetLeft)) {
+      pill.style.width = `${active.offsetWidth}px`;
+      pill.style.transform = `translateX(${active.offsetLeft - pill.offsetLeft}px)`;
+    }
   };
 
   const moveReviewTab = (tab, key) => {
@@ -374,7 +409,7 @@
     target.append(text(documentRef, "p", issueSummary(issues), "sh-pill sh-pill--bare"));
     groupIssues(issues).forEach((group) => {
       const details = documentRef.createElement("details");
-      details.className = "studio-review-issue-group sh-card";
+      details.className = "studio-review-issue-group sh-card t-accordion";
       details.dataset.stateKey = `issue-group:${group.type}`;
       const summary = documentRef.createElement("summary");
       summary.dataset.focusKey = `${details.dataset.stateKey}:summary`;
@@ -420,7 +455,7 @@
     renderIssues(documentRef, page, payload);
     renderRunDiagnostics(documentRef, page, payload);
     const publish = page.querySelector("[data-publish-quiz]");
-    publish.disabled = !canPublish(payload.blockers);
+    if (publish) publish.disabled = !canPublish(payload.blockers);
     const preview = page.querySelector("[data-preview-link]");
     preview.hidden = !payload.preview_url;
     preview.href = payload.preview_url || "";
@@ -450,11 +485,15 @@
       if (card.dataset.dirty === "true") needsReview.push(card);
     });
     const tabs = documentRef.createElement("div");
-    tabs.className = "sh-seg studio-review-tabs";
+    tabs.className = "sh-seg studio-review-tabs t-tabs";
     tabs.setAttribute("role", "tablist");
+    const pill = documentRef.createElement("span");
+    pill.className = "t-tabs-pill";
+    pill.dataset.reviewPill = "true";
+    pill.setAttribute("aria-hidden", "true");
     const needsTab = documentRef.createElement("button");
     needsTab.type = "button";
-    needsTab.className = "sh-btn sh-btn--secondary sh-seg__btn";
+    needsTab.className = "sh-btn sh-btn--secondary sh-seg__btn t-tab t-number";
     needsTab.dataset.reviewTab = "needs-review";
     needsTab.setAttribute("role", "tab");
     needsTab.id = "studio-review-tab-needs-review";
@@ -462,13 +501,13 @@
     needsTab.textContent = `Needs review (${needsReview.length})`;
     const readyTab = documentRef.createElement("button");
     readyTab.type = "button";
-    readyTab.className = "sh-btn sh-btn--secondary sh-seg__btn";
+    readyTab.className = "sh-btn sh-btn--secondary sh-seg__btn t-tab t-number";
     readyTab.dataset.reviewTab = "ready";
     readyTab.setAttribute("role", "tab");
     readyTab.id = "studio-review-tab-ready";
     readyTab.setAttribute("aria-controls", "studio-review-panel-ready");
     readyTab.textContent = `Ready (${ready.length})`;
-    tabs.append(needsTab, readyTab);
+    tabs.append(pill, needsTab, readyTab);
     const needsPanel = documentRef.createElement("section");
     needsPanel.dataset.reviewPanel = "needs-review";
     needsPanel.setAttribute("role", "tabpanel");
@@ -484,7 +523,11 @@
     if (ready.length) readyPanel.append(...ready);
     else readyPanel.append(text(documentRef, "p", "Questions move here as their issues are resolved.", "sh-empty__text"));
     questions.replaceChildren(tabs, needsPanel, readyPanel);
-    setReviewTab(questions, questions.dataset.activeReviewTab || "needs-review");
+    const requestedTab = questions.dataset.activeReviewTab;
+    const activeTab = requestedTab === "needs-review" && needsReview.length === 0 && ready.length
+      ? "ready"
+      : requestedTab || (needsReview.length ? "needs-review" : "ready");
+    setReviewTab(questions, activeTab);
     restoreRenderState(page, state);
   };
 
@@ -546,6 +589,7 @@
       const imageUpload = event.target.closest?.("[data-image-upload]");
       if (imageUpload) {
         event.preventDefault();
+        const submitButton = event.submitter || imageUpload.querySelector('button[type="submit"]');
         const questionId = imageUpload.dataset.imageUpload;
         const file = imageUpload.querySelector('input[name="file"]')?.files?.[0];
         const localMessage = questionMessage(page, questionId) || message;
@@ -553,6 +597,7 @@
           localMessage.textContent = "Choose an image before uploading.";
           return;
         }
+        if (submitButton) submitButton.disabled = true;
         localMessage.textContent = "Uploading image…";
         try {
           const body = new root.FormData();
@@ -566,6 +611,10 @@
           (questionMessage(page, questionId) || message).textContent = "Image uploaded.";
         } catch (error) {
           localMessage.textContent = error instanceof Error ? error.message : "Image could not be uploaded.";
+          if (submitButton) {
+            submitButton.dataset.state = "error";
+            submitButton.disabled = false;
+          }
         }
         return;
       }
@@ -588,6 +637,8 @@
         localMessage.textContent = "Provide an answer rationale before saving.";
         return;
       }
+      const submitButton = event.submitter || form.querySelector('button[type="submit"]');
+      if (submitButton) submitButton.disabled = true;
       localMessage.textContent = "Saving…";
       try {
         const updated = await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(form.dataset.questionEdit)}`, "PATCH", payload);
@@ -598,6 +649,10 @@
           : "Question saved.";
       } catch (error) {
         localMessage.textContent = error instanceof Error ? error.message : "Question could not be saved.";
+        if (submitButton) {
+          submitButton.dataset.state = "error";
+          submitButton.disabled = false;
+        }
       }
     });
     const markDirty = (event) => {
@@ -638,7 +693,6 @@
       const imageOverride = event.target.closest?.("[data-image-override]");
       const acknowledgement = event.target.closest?.("[data-acknowledge-run-diagnostic]");
       const verify = event.target.closest?.("[data-verify-question]");
-      const publish = event.target.closest?.("[data-publish-quiz]");
       try {
         if (imageOverride) {
           const questionId = imageOverride.dataset.imageOverride;
@@ -660,10 +714,6 @@
           await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(verify.dataset.verifyQuestion)}/verify-answer`, "POST");
           await refresh();
           message.textContent = "Answer verified.";
-        } else if (publish) {
-          if (publish.disabled) return;
-          const result = await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/publication`, "POST");
-          if (result.published_url) root.location.assign(result.published_url);
         }
       } catch (error) {
         message.textContent = error instanceof Error ? error.message : "Review update failed.";

@@ -17,11 +17,10 @@
     </div>
     <div class="heading-actions">
       <a class="button secondary sh-btn sh-btn--secondary" href="/studio">Back to Quiz Builder</a>
-      <a class="button secondary sh-btn sh-btn--secondary" data-preview-link hidden>Preview quiz</a>
-      <button class="button primary sh-btn sh-btn--primary" type="button" data-publish-quiz disabled>Publish quiz</button>
+      <a class="button primary sh-btn sh-btn--primary sh-btn--continue" data-preview-link hidden>Preview and publish</a>
     </div>
   </div>
-  <p data-review-message aria-live="polite"></p>
+  <p data-review-message data-toast-source aria-live="polite"></p>
   <section class="sh-card studio-review-checks" aria-labelledby="review-blockers-heading">
     <h2 id="review-blockers-heading">Publication checks</h2>
     <div data-review-blockers data-review-issues aria-live="polite"></div>
@@ -32,4 +31,4 @@
   </section>
 </section>
 {% endblock %}
-{% block scripts %}<script type="module" src="/static/studio_quiz_review.js?v=20260828.1"></script>{% endblock %}
+{% block scripts %}<script type="module" src="/static/studio_quiz_review.js?v=20260828.2"></script>{% endblock %}

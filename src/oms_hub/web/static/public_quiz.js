@@ -520,7 +520,7 @@
         app.replaceChildren();
         if (state.currentIndex >= content.questions.length) {
           const summary = performanceSummary(content, state);
-          const result = element(documentRef, "section", "quiz-result");
+          const result = element(documentRef, "section", "quiz-result t-page-enter");
           result.append(
             element(documentRef, "p", "quiz-brand", "Study Hub"),
             element(documentRef, "h1", "sh-title", "Quiz complete"),
@@ -596,7 +596,7 @@
 
         const question = content.questions[state.currentIndex];
         const questionProgress = state.questions[question.id];
-        const shell = element(documentRef, "article", "quiz-shell");
+        const shell = element(documentRef, "article", "quiz-shell t-page-enter");
         const header = element(documentRef, "header", "quiz-header");
         const meta = element(documentRef, "div", "quiz-meta");
         const lectureLabel = content.lecture_number != null
@@ -617,7 +617,7 @@
           element(
             documentRef,
             "span",
-            "quiz-counter",
+            "quiz-counter t-number",
             `Question ${state.currentIndex + 1} of ${content.questions.length}`,
           ),
         );
@@ -958,7 +958,7 @@
           const information = element(
             documentRef,
             "details",
-            "quiz-information",
+            "quiz-information t-accordion",
           );
           information.dataset.questionInformation = question.id;
           information.open = informationOpen.get(question.id) === true;

@@ -23,7 +23,7 @@ def test_shared_stylesheet_is_the_approved_blue_workbench_source() -> None:
 
     assert installed.exists()
     assert (
-        "47bbd4f0409b46492262bd7270a421365f3759a9d46bc116661bb87c9b21589a"
+        "8b6cdae239dafb4cd875fd5830b32d810f52ea5770e2007a0139c321a1bd72f0"
         == sha256(installed.read_bytes()).hexdigest()
     )
 
@@ -52,12 +52,13 @@ def test_stylesheet_order_and_system_font_contract() -> None:
     for asset in ("reset.css", "tokens.css", "study-hub.css", "public_quiz.css"):
         assert f'/static/{asset}?v={{{{ player_asset_version }}}}' in preview
     assert '/static/public_quiz.js?v={{ player_asset_version }}' in preview
+    assert '/static/study_hub_shell.js?v={{ player_asset_version }}' in preview
 
 
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260828.2" %}' in base
+    assert '{% set shell_asset_version = "20260828.4" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'

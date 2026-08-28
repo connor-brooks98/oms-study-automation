@@ -93,6 +93,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: .75rem;
   padding: 1rem 1.2rem;
   margin-bottom: 1.2rem;
@@ -103,6 +104,9 @@
   background: var(--quiz-card);
 }
 .studio-preview-actions p { margin: 0; }
+.studio-preview-copy { min-width: min(100%, 24rem); display: grid; gap: var(--sp-1); }
+.studio-preview-copy .sh-eyebrow { margin: 0; }
+.studio-preview-copy [data-publish-message]:empty { display: none; }
 
 .quiz-meta {
   display: flex;
@@ -311,7 +315,7 @@
   font: 600 .72rem/1 "IBM Plex Mono", monospace;
 }
 
-.quiz-choice-text { line-height: 1.4; }
+.quiz-choice-text { min-width: 0; overflow-wrap: anywhere; line-height: 1.4; }
 
 .quiz-strike:not(.sh-iconbtn) {
   color: var(--quiz-muted);
@@ -423,6 +427,7 @@
 }
 
 .quiz-information-summary::marker { color: var(--quiz-brand-mid); }
+.quiz-information.t-accordion .quiz-information-summary::marker { content: ""; }
 
 .quiz-information .quiz-dimensions { margin: .65rem 0 .2rem; }
 

@@ -33,6 +33,8 @@
     const message = panel.querySelector("[data-publish-message]");
     button.addEventListener("click", async () => {
       button.disabled = true;
+      button.dataset.state = "loading";
+      button.setAttribute("aria-busy", "true");
       message.textContent = "Publishing…";
       try {
         const url = await publishQuiz(
@@ -40,9 +42,15 @@
           panel.dataset.publishUrl,
           csrf(documentRef),
         );
+        button.dataset.state = "success";
+        button.removeAttribute("aria-busy");
+        message.textContent = "Quiz published. Opening the released quiz.";
+        await new Promise((resolve) => (root.setTimeout || setTimeout)(resolve, 550));
         root.location.assign(url);
       } catch (error) {
         message.textContent = error instanceof Error ? error.message : "Quiz could not be published.";
+        button.dataset.state = "error";
+        button.removeAttribute("aria-busy");
         button.disabled = false;
       }
     });

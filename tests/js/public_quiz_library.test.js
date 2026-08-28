@@ -91,6 +91,28 @@ test("structured editor never shifts a selected answer past a blank choice", () 
   assert.deepEqual(result.choices, ["A", "", "C"]);
 });
 
+test("successful reorder settles the existing row in its new position", () => {
+  const rows = [{ id: "a" }, { id: "b" }, { id: "c" }];
+  const parent = {
+    children: rows,
+    insertBefore(item, before) {
+      this.children = this.children.filter((candidate) => candidate !== item);
+      this.children.splice(this.children.indexOf(before), 0, item);
+    },
+  };
+  rows.forEach((row) => {
+    row.parentElement = parent;
+    row.classList = { add() {}, remove() {} };
+    row.addEventListener = () => {};
+    Object.defineProperties(row, {
+      previousElementSibling: { get: () => parent.children[parent.children.indexOf(row) - 1] || null },
+      nextElementSibling: { get: () => parent.children[parent.children.indexOf(row) + 1] || null },
+    });
+  });
+  assert.equal(library.applyReorder(rows[0], ["down", "down"]), true);
+  assert.deepEqual(parent.children.map((row) => row.id), ["b", "c", "a"]);
+});
+
 test("course disclosures keep aria and the shared glyph state in sync", () => {
   const glyph = {
     states: [],
@@ -758,7 +780,8 @@ test("pointer drag marks its target and submits the required direction", async (
   }
 
   assert.deepEqual(requests, ["down"]);
-  assert.equal(reloads, 1);
+  assert.equal(reloads, 0);
+  assert.equal(documentRef.resetMessage.textContent, "Quiz order updated.");
   assert.equal(source.classList.contains("is-dragging"), false);
   assert.equal(target.classList.contains("is-drop-target"), false);
 });
@@ -790,7 +813,7 @@ test("failed drag reorder keeps the control usable and reports the server detail
   assert.equal(documentRef.resetMessage.textContent, "Order is no longer available");
 });
 
-test("successful multi-step reorder sends every direction and reloads once", async () => {
+test("successful multi-step reorder sends every direction without reloading", async () => {
   const control = new FakeLibraryElement();
   const row = { dataset: { orderUrl: "/api/published-quizzes/tok1/order" } };
   const documentRef = new FakeLibraryDocument({});
@@ -814,7 +837,8 @@ test("successful multi-step reorder sends every direction and reloads once", asy
     global.location = originalLocation;
   }
   assert.deepEqual(requests, ["down", "down"]);
-  assert.equal(reloads, 1);
+  assert.equal(reloads, 0);
+  assert.equal(documentRef.resetMessage.textContent, "Quiz order updated.");
 });
 
 test("partial reorder failure reloads authoritative state and restores its message", async () => {

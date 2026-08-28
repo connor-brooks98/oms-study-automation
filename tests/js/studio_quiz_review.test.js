@@ -151,7 +151,7 @@ test("run diagnostics render once and only overridable blockers can be acknowled
   );
   assert.equal(publish.disabled, true);
   assert.equal(
-    blockers.children.filter((item) => item.className === "studio-review-issue-group sh-card").length,
+    blockers.children.filter((item) => item.className.includes("studio-review-issue-group sh-card")).length,
     2,
   );
 });
@@ -531,4 +531,7 @@ test("blocking questions and ready questions render in editable tabs", () => {
   const updatedPanels = questions.querySelectorAll("[data-review-panel]");
   assert.deepEqual(updatedTabs.map((tab) => tab.textContent), ["Needs review (0)", "Ready (2)"]);
   assert.equal(updatedPanels[1].querySelectorAll("[data-question-id]").length, 2);
+  assert.equal(updatedTabs[1]["aria-selected"], "true");
+  assert.equal(updatedPanels[0].hidden, true);
+  assert.equal(updatedPanels[1].hidden, false);
 });

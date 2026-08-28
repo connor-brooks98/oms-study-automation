@@ -372,7 +372,7 @@ test("player puts navigation above the shell and question metadata in a disclosu
   }));
 
   assert.equal(app.children[0].className, "quiz-navigation quiz-navigation-card");
-  assert.equal(app.children[1].className, "quiz-shell");
+  assert.equal(app.children[1].className, "quiz-shell t-page-enter");
   assert.match(app.textContent, /Heme\/Lymph Lecture 12 · Exam 2 · Platelet Disorders/);
   const information = findByClass(app, "quiz-information");
   assert.ok(information, "expected a Question Information disclosure");
