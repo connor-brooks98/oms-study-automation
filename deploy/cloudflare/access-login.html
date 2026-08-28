@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Study Hub</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17243a;
+      --muted: #697386;
+      --line: #dce2ea;
+      --brand: #1d3e66;
+      --success: #2f8f57;
+      --error: #c43d4b;
+      --card: #fff;
+      --page: #f5f7fa;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      background: var(--page);
+    }
+
+    button, input { font: inherit; }
+
+    .auth-card {
+      width: min(100% - 2rem, 30rem);
+      min-height: 19rem;
+      padding: 2.5rem;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 1.5rem;
+      background: var(--card);
+      box-shadow: 0 1.25rem 3rem rgb(23 36 58 / 9%);
+    }
+
+    h1 {
+      margin: 0 0 2rem;
+      font-size: clamp(2rem, 8vw, 3rem);
+      line-height: 1;
+      letter-spacing: -.05em;
+    }
+
+    .auth-stage { display: grid; }
+
+    .auth-view {
+      grid-area: 1 / 1;
+      visibility: hidden;
+      opacity: 0;
+      transform: translateY(.75rem);
+      filter: blur(.35rem);
+      pointer-events: none;
+      transition: opacity .22s ease, transform .35s cubic-bezier(.22, 1, .36, 1), filter .22s ease, visibility 0s linear .35s;
+    }
+
+    .auth-view.is-active {
+      visibility: visible;
+      opacity: 1;
+      transform: translateY(0);
+      filter: blur(0);
+      pointer-events: auto;
+      transition-delay: 0s;
+    }
+
+    .email-control {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 3.25rem;
+      min-height: 3.5rem;
+      border: 1px solid var(--line);
+      border-radius: 1rem;
+      background: #fff;
+      transition: border-color .18s ease, box-shadow .18s ease;
+    }
+
+    .email-control:focus-within {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 .25rem rgb(29 62 102 / 12%);
+    }
+
+    .email-control input {
+      min-width: 0;
+      border: 0;
+      outline: 0;
+      padding: 0 0 0 1rem;
+      color: var(--ink);
+      background: transparent;
+    }
+
+    .email-control input::placeholder { color: #8791a2; }
+
+    .submit-arrow {
+      width: 2.65rem;
+      height: 2.65rem;
+      align-self: center;
+      justify-self: center;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--brand);
+      cursor: pointer;
+      transition: opacity .16s ease, transform .16s ease, background-color .16s ease;
+    }
+
+    .submit-arrow:hover { transform: translateX(.12rem); }
+    .submit-arrow:active { transform: scale(.96); }
+    .submit-arrow:focus-visible { outline: .2rem solid rgb(29 62 102 / 25%); outline-offset: .15rem; }
+    .email-control.is-resolved .submit-arrow { opacity: 0; transform: scale(.7) rotate(-25deg); pointer-events: none; }
+
+    .result-mark {
+      grid-column: 2;
+      grid-row: 1;
+      width: 2.65rem;
+      height: 2.65rem;
+      align-self: center;
+      justify-self: center;
+      display: grid;
+      place-items: center;
+      opacity: 0;
+      transform: scale(.65) rotate(-22deg);
+      filter: blur(.35rem);
+      pointer-events: none;
+    }
+
+    .email-control.is-resolved .result-mark {
+      opacity: 1;
+      transform: scale(1) rotate(0);
+      filter: blur(0);
+      transition: opacity .25s ease .1s, transform .5s cubic-bezier(.2, .9, .2, 1.25) .1s, filter .25s ease .1s;
+    }
+
+    .result-mark svg { width: 2rem; height: 2rem; overflow: visible; }
+    .result-ring { fill: none; stroke: currentColor; stroke-width: 2; opacity: .18; }
+    .result-path { fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 30; stroke-dashoffset: 30; }
+    .email-control.is-resolved .result-path { animation: draw-mark .42s ease-out .22s forwards; }
+    .result-mark.is-success { color: var(--success); }
+    .result-mark.is-error { color: var(--error); }
+
+    .status-message {
+      min-height: 1.4rem;
+      margin: .75rem .25rem 0;
+      color: var(--muted);
+      font-size: .875rem;
+    }
+
+    .otp-heading { margin: 0 0 .35rem; font-size: 1.1rem; }
+    .otp-help { margin: 0 0 1.4rem; color: var(--muted); font-size: .875rem; }
+
+    .otp-row {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: .5rem;
+    }
+
+    .otp-slot {
+      width: 100%;
+      aspect-ratio: 1;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: .8rem;
+      outline: 0;
+      color: var(--ink);
+      background: #fff;
+      text-align: center;
+      font-size: 1.35rem;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+      opacity: 0;
+      transform: translateY(.8rem) rotateX(35deg);
+      transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+      animation: slot-in .42s cubic-bezier(.22, 1, .36, 1) forwards;
+      animation-delay: calc(var(--slot) * 55ms);
+    }
+
+    .otp-slot:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 .22rem rgb(29 62 102 / 12%);
+    }
+
+    .otp-row.is-success .otp-slot { border-color: var(--success); background: #f1faf5; }
+    .otp-row.is-error { animation: shake .35s ease; }
+    .otp-row.is-error .otp-slot { border-color: var(--error); background: #fff4f5; }
+
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @keyframes draw-mark { to { stroke-dashoffset: 0; } }
+    @keyframes slot-in { to { opacity: 1; transform: translateY(0) rotateX(0); } }
+    @keyframes shake { 25% { transform: translateX(-.3rem); } 50% { transform: translateX(.25rem); } 75% { transform: translateX(-.12rem); } }
+
+    @media (max-width: 30rem) {
+      .auth-card { padding: 1.5rem; border-radius: 1.25rem; }
+      .otp-row { gap: .35rem; }
+      .otp-slot { border-radius: .65rem; font-size: 1.1rem; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-delay: 0ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="auth-card">
+    <h1>Study Hub</h1>
+    <div class="auth-stage">
+      <section class="auth-view is-active" id="email-view">
+        <form id="email-form" novalidate>
+          <label class="visually-hidden" id="email-label" for="email">School email</label>
+          <div class="email-control" id="email-control">
+            <input id="email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="Please enter school email to generate a OTP" required>
+            <button class="submit-arrow" type="submit" aria-label="Send one-time code">
+              <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M11 6l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <span class="result-mark" id="result-mark" aria-hidden="true">
+              <svg viewBox="0 0 36 36"><circle class="result-ring" cx="18" cy="18" r="15"/><path class="result-path" id="result-path"/></svg>
+            </span>
+          </div>
+          <p class="status-message" id="email-status" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <section class="auth-view" id="otp-view" aria-labelledby="otp-heading">
+        <h2 class="otp-heading" id="otp-heading">Enter your one-time code</h2>
+        <p class="otp-help">Check your email for the six-digit code.</p>
+        <form id="otp-form">
+          <div class="otp-row" id="otp-row" role="group" aria-label="One-time code">
+            <input class="otp-slot" style="--slot:0" aria-label="Digit 1 of 6" inputmode="numeric" autocomplete="one-time-code" maxlength="1" pattern="[0-9]*">
+            <input class="otp-slot" style="--slot:1" aria-label="Digit 2 of 6" inputmode="numeric" maxlength="1" pattern="[0-9]*">
+            <input class="otp-slot" style="--slot:2" aria-label="Digit 3 of 6" inputmode="numeric" maxlength="1" pattern="[0-9]*">
+            <input class="otp-slot" style="--slot:3" aria-label="Digit 4 of 6" inputmode="numeric" maxlength="1" pattern="[0-9]*">
+            <input class="otp-slot" style="--slot:4" aria-label="Digit 5 of 6" inputmode="numeric" maxlength="1" pattern="[0-9]*">
+            <input class="otp-slot" style="--slot:5" aria-label="Digit 6 of 6" inputmode="numeric" maxlength="1" pattern="[0-9]*">
+          </div>
+          <button class="visually-hidden" type="submit">Verify code</button>
+          <p class="status-message" id="otp-status" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const emailForm = document.querySelector("#email-form");
+      const emailInput = document.querySelector("#email");
+      const emailControl = document.querySelector("#email-control");
+      const emailStatus = document.querySelector("#email-status");
+      const resultMark = document.querySelector("#result-mark");
+      const resultPath = document.querySelector("#result-path");
+      const emailView = document.querySelector("#email-view");
+      const otpView = document.querySelector("#otp-view");
+      const otpForm = document.querySelector("#otp-form");
+      const otpRow = document.querySelector("#otp-row");
+      const slots = [...document.querySelectorAll(".otp-slot")];
+
+      const showEmailResult = (success) => {
+        emailControl.classList.add("is-resolved");
+        resultMark.classList.toggle("is-success", success);
+        resultMark.classList.toggle("is-error", !success);
+        resultPath.setAttribute("d", success ? "M10.5 18.5l5 5 10-11" : "M12.5 12.5l11 11m0-11-11 11");
+        emailStatus.textContent = success ? "Check your email for a one-time code." : "Enter a valid school email address.";
+      };
+
+      const showOtp = () => {
+        emailView.classList.remove("is-active");
+        otpView.classList.add("is-active");
+        window.setTimeout(() => slots[0].focus(), 350);
+      };
+
+      emailForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const valid = emailInput.checkValidity();
+        showEmailResult(valid);
+        if (valid) {
+          window.setTimeout(showOtp, 4000);
+        } else {
+          window.setTimeout(() => {
+            emailControl.classList.remove("is-resolved");
+            emailInput.focus();
+          }, 1600);
+        }
+      });
+
+      const code = () => slots.map((slot) => slot.value).join("");
+
+      slots.forEach((slot, index) => {
+        slot.addEventListener("input", () => {
+          slot.value = slot.value.replace(/\D/g, "").slice(-1);
+          otpRow.classList.remove("is-error", "is-success");
+          if (slot.value && slots[index + 1]) slots[index + 1].focus();
+          if (code().length === slots.length) otpForm.requestSubmit();
+        });
+
+        slot.addEventListener("keydown", (event) => {
+          if (event.key === "Backspace" && !slot.value && slots[index - 1]) slots[index - 1].focus();
+          if (event.key === "ArrowLeft" && slots[index - 1]) slots[index - 1].focus();
+          if (event.key === "ArrowRight" && slots[index + 1]) slots[index + 1].focus();
+        });
+
+        slot.addEventListener("paste", (event) => {
+          const pasted = event.clipboardData.getData("text").replace(/\D/g, "").slice(0, slots.length);
+          if (!pasted) return;
+          event.preventDefault();
+          [...pasted].forEach((digit, offset) => { if (slots[offset]) slots[offset].value = digit; });
+          slots[Math.min(pasted.length, slots.length) - 1].focus();
+          if (pasted.length === slots.length) otpForm.requestSubmit();
+        });
+      });
+
+      otpForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const complete = code().length === slots.length;
+        otpRow.classList.toggle("is-success", complete);
+        otpRow.classList.toggle("is-error", !complete);
+        document.querySelector("#otp-status").textContent = complete ? "Code ready for secure verification." : "Enter all six digits.";
+      });
+    })();
+  </script>
+</body>
+</html>
