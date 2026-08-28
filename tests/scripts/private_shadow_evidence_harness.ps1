@@ -158,7 +158,7 @@ function Invoke-PrivateShadowCase {
     Remove-Item Env:PRIVATE_SHADOW_FAKE_SECRET -ErrorAction SilentlyContinue
   }
   if ($ActualExit -ne $ExpectedExit) {
-    throw "Private-shadow wrapper exit was invalid for $Mode."
+    throw "Private-shadow wrapper exit was invalid for $Mode`: $ActualExit."
   }
   $Status = Get-Content -LiteralPath $SafeStatus -Raw | ConvertFrom-Json
   if ($Status.evidence_usable -ne $EvidenceUsable -or
