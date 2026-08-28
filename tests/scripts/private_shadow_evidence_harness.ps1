@@ -11,14 +11,21 @@ $Sandbox = Join-Path ([System.IO.Path]::GetTempPath()) (
 )
 $Utf8 = [System.Text.UTF8Encoding]::new($false, $true)
 New-Item -ItemType Directory -Path $Sandbox | Out-Null
-$Emitter = Join-Path $Sandbox "emit_private_shadow_json.py"
+$OperatorRoot = Join-Path $Sandbox "operator"
+$CasesRoot = Join-Path $Sandbox "cases"
+New-Item -ItemType Directory -Path $OperatorRoot,$CasesRoot | Out-Null
+$Emitter = Join-Path $OperatorRoot "emit_private_shadow_json.py"
 [System.IO.File]::WriteAllText(
   $Emitter,
   @'
 import json
 import os
+from pathlib import Path
 
 mode = os.environ.get("PRIVATE_SHADOW_FIXTURE_MODE", "success")
+launch_sentinel = os.environ.get("PRIVATE_SHADOW_LAUNCH_SENTINEL")
+if launch_sentinel is not None:
+    Path(launch_sentinel).write_text("launched", encoding="utf-8")
 base = {
     "source_revision_hash": "a" * 64,
     "document_types": ["markdown", "pdf"],
@@ -39,7 +46,7 @@ success_states = [
     "stores_delete_attempted:1",
     "store_reconciliation_empty",
 ]
-if mode == "success":
+if mode.startswith("success"):
     record = {
         "status": "passed",
         **base,
@@ -50,6 +57,13 @@ if mode == "success":
         "warnings": [],
     }
     exit_code = 0
+    if mode == "success_missing_state":
+        record["provider_operation_states"].remove("positive_query_complete")
+    elif mode == "success_out_of_order":
+        states = record["provider_operation_states"]
+        states[2], states[3] = states[3], states[2]
+    elif mode == "success_failure_marker":
+        record["provider_operation_states"].insert(2, "private_shadow_failed")
 else:
     stage = mode.removeprefix("stage_")
     cleanup = "complete"
@@ -108,6 +122,19 @@ else:
         cleanup = "unknown"
         reconciliation = "unknown"
         warnings = ["private_shadow_failed", "private_cleanup_unknown"]
+    elif mode == "reversed_warnings":
+        stage = "positive_query"
+        cleanup = "failed"
+        reconciliation = "unknown"
+        warnings = ["private_cleanup_failed", "private_citation_unresolved"]
+    elif mode == "stage_progress_contradiction":
+        stage = "create_store"
+        states = [*success_states, "private_shadow_failed"]
+    elif mode == "impossible_outcomes":
+        stage = "positive_query"
+        cleanup = "complete"
+        reconciliation = "unknown"
+        warnings = ["private_citation_unresolved"]
     record = {
         "status": "blocked",
         **base,
@@ -139,7 +166,7 @@ function Invoke-PrivateShadowCase {
     [Parameter(Mandatory = $true)][bool]$EvidenceUsable,
     [Parameter(Mandatory = $true)][int]$ExpectedExit
   )
-  $CaseRoot = Join-Path $Sandbox ([Guid]::NewGuid().ToString("N"))
+  $CaseRoot = Join-Path $CasesRoot ([Guid]::NewGuid().ToString("N"))
   $EvidenceRoot = Join-Path $CaseRoot "evidence"
   $DiagnosticRoot = Join-Path $CaseRoot "diagnostic"
   New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
@@ -182,6 +209,35 @@ function Invoke-PrivateShadowCase {
     throw "Private-shadow result retained forbidden content."
   }
   return $ResultText
+}
+
+function Assert-PrivateShadowBoundaryRejected {
+  param([Parameter(Mandatory = $true)][string]$DiagnosticRoot)
+  $CaseRoot = Join-Path $CasesRoot ([Guid]::NewGuid().ToString("N"))
+  $EvidenceRoot = Join-Path $CaseRoot "evidence"
+  New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
+  $SafeResult = Join-Path $EvidenceRoot "result.json"
+  $SafeStatus = Join-Path $EvidenceRoot "status.json"
+  $LaunchSentinel = Join-Path $CaseRoot "operator-launched"
+  $env:PRIVATE_SHADOW_FIXTURE_MODE = "success"
+  $env:PRIVATE_SHADOW_LAUNCH_SENTINEL = $LaunchSentinel
+  try {
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File $WrapperScript -PythonExecutable $PythonExecutable `
+      -OperatorScript $Emitter -DiagnosticRoot $DiagnosticRoot `
+      -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
+    $ActualExit = $LASTEXITCODE
+  } finally {
+    Remove-Item Env:PRIVATE_SHADOW_FIXTURE_MODE -ErrorAction SilentlyContinue
+    Remove-Item Env:PRIVATE_SHADOW_LAUNCH_SENTINEL -ErrorAction SilentlyContinue
+  }
+  $Status = Get-Content -LiteralPath $SafeStatus -Raw | ConvertFrom-Json
+  if ($ActualExit -ne 54 -or $Status.evidence_usable -or
+      (Test-Path -LiteralPath $SafeResult) -or
+      (Test-Path -LiteralPath $LaunchSentinel) -or
+      (Test-Path -LiteralPath $DiagnosticRoot)) {
+    throw "Private-shadow unsafe diagnostic boundary was not rejected."
+  }
 }
 
 try {
@@ -249,6 +305,24 @@ try {
     -EvidenceUsable $false -ExpectedExit 52 | Out-Null
   Invoke-PrivateShadowCase -Mode "raw_content" `
     -EvidenceUsable $false -ExpectedExit 51 | Out-Null
+
+  foreach ($Mode in @(
+      "success_missing_state", "success_out_of_order", "success_failure_marker",
+      "reversed_warnings", "stage_progress_contradiction", "impossible_outcomes"
+  )) {
+    Invoke-PrivateShadowCase -Mode $Mode `
+      -EvidenceUsable $false -ExpectedExit 52 | Out-Null
+  }
+
+  Assert-PrivateShadowBoundaryRejected `
+    -DiagnosticRoot (Join-Path $OperatorRoot "diagnostic")
+  $JunctionTarget = Join-Path $Sandbox "junction-target"
+  $JunctionParent = Join-Path $JunctionTarget "existing"
+  $Junction = Join-Path $Sandbox "junction"
+  New-Item -ItemType Directory -Path $JunctionParent | Out-Null
+  New-Item -ItemType Junction -Path $Junction -Target $JunctionTarget | Out-Null
+  Assert-PrivateShadowBoundaryRejected `
+    -DiagnosticRoot (Join-Path $Junction "existing/diagnostic")
   Write-Output "PRIVATE_SHADOW_EVIDENCE_HARNESS_VERIFIED"
 } finally {
   if (Test-Path -LiteralPath $Sandbox) {
