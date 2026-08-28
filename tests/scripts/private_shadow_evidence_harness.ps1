@@ -65,7 +65,15 @@ if mode.startswith("success"):
     elif mode == "success_failure_marker":
         record["provider_operation_states"].insert(2, "private_shadow_failed")
 else:
-    stage = mode.removeprefix("stage_")
+    stage = {
+        "preflight_failure": "prior_state_check",
+        "primary_over_cleanup": "positive_query",
+        "cleanup_failure": "cleanup",
+        "reconciliation_residue": "cleanup",
+        "reconciliation_unknown": "cleanup",
+        "reversed_warnings": "positive_query",
+        "impossible_outcomes": "positive_query",
+    }.get(mode, mode.removeprefix("stage_"))
     cleanup = "complete"
     reconciliation = "empty"
     warnings = ["private_shadow_failed"]
