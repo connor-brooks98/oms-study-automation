@@ -9,7 +9,8 @@ def test_access_login_preview_is_school_agnostic_and_accessible() -> None:
     page = LOGIN_PAGE.read_text(encoding="utf-8")
 
     assert "Study Hub" in page
-    assert "Please enter school email to generate a OTP" in page
+    assert "Enter school email to generate a OTP" in page
+    assert "Please enter school email" not in page
     assert "autocomplete=\"email\"" in page
     assert "autocomplete=\"one-time-code\"" in page
     assert page.count("class=\"otp-slot\"") == 6
@@ -17,7 +18,7 @@ def test_access_login_preview_is_school_agnostic_and_accessible() -> None:
     assert "@keyframes otp-success" in page
     assert 'window.location.assign(successUrl)' in page
     assert 'class="email-action"' in page
-    assert "1800" in page
+    assert "2000" in page
     assert "prefers-reduced-motion: reduce" in page
     assert "aria-live=\"polite\"" in page
     assert "LMU" not in page

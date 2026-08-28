@@ -98,7 +98,7 @@
       min-width: 0;
       border: 0;
       outline: 0;
-      padding: 0 0 0 1rem;
+      padding: 0 1rem;
       color: var(--ink);
       background: transparent;
     }
@@ -204,9 +204,10 @@
     }
 
     .otp-row.is-success .otp-slot {
-      border-width: 2px;
-      border-color: var(--success);
-      background: #e2f7ea;
+      border: 2px solid var(--success);
+      outline: 2px solid rgb(47 143 87 / 22%);
+      outline-offset: 2px;
+      background: #dcf5e6;
       animation: otp-success .48s cubic-bezier(.22, 1, .36, 1) both;
       animation-delay: calc(var(--slot) * 70ms);
     }
@@ -228,9 +229,9 @@
     @keyframes draw-mark { to { stroke-dashoffset: 0; } }
     @keyframes slot-in { to { opacity: 1; transform: translateY(0) rotateX(0); } }
     @keyframes otp-success {
-      0% { transform: scale(1); box-shadow: 0 0 0 0 rgb(47 143 87 / 0%); }
-      55% { transform: translateY(-.15rem) scale(1.05); background: #caefd9; box-shadow: 0 0 0 .3rem rgb(47 143 87 / 26%); }
-      100% { transform: scale(1); background: #e2f7ea; box-shadow: 0 0 0 .16rem rgb(47 143 87 / 18%); }
+      0% { transform: scale(.96); outline-color: transparent; box-shadow: 0 0 0 0 rgb(47 143 87 / 0%); }
+      55% { transform: translateY(-.15rem) scale(1.06); outline-color: rgb(47 143 87 / 35%); background: #bfeace; box-shadow: 0 0 0 .38rem rgb(47 143 87 / 28%); }
+      100% { transform: scale(1); outline-color: rgb(47 143 87 / 22%); background: #dcf5e6; box-shadow: 0 0 0 .22rem rgb(47 143 87 / 20%); }
     }
     @keyframes shake { 25% { transform: translateX(-.3rem); } 50% { transform: translateX(.25rem); } 75% { transform: translateX(-.12rem); } }
 
@@ -254,7 +255,7 @@
           <label class="visually-hidden" id="email-label" for="email">School email</label>
           <div class="email-row" id="email-row">
             <div class="email-control">
-              <input id="email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="Please enter school email to generate a OTP" required>
+              <input id="email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="Enter school email to generate a OTP" required>
             </div>
             <div class="email-action">
               <button class="submit-arrow" type="submit" aria-label="Send one-time code">
@@ -367,7 +368,7 @@
         otpRow.classList.toggle("is-success", accepted);
         otpRow.classList.toggle("is-error", !accepted);
         document.querySelector("#otp-status").textContent = accepted ? "Code accepted." : "The code was not accepted.";
-        if (accepted) window.setTimeout(() => window.location.assign(successUrl), 1800);
+        if (accepted) window.setTimeout(() => window.location.assign(successUrl), 2000);
       });
     })();
   </script>
