@@ -402,6 +402,72 @@ def test_real_sdk_store_request_projects_only_safe_provider_status(
         assert forbidden not in serialized
 
 
+def test_real_sdk_store_list_respects_provider_page_limit_and_paginates() -> None:
+    from google import genai
+    from google.genai import types
+
+    operator = _load_operator()
+    requests: list[tuple[str, str, dict[str, str], bytes]] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            (
+                request.method,
+                request.url.path,
+                dict(request.url.params),
+                request.content,
+            )
+        )
+        if request.url.params.get("pageToken") is None:
+            return httpx.Response(
+                200,
+                json={
+                    "fileSearchStores": [{"name": "fileSearchStores/one"}],
+                    "nextPageToken": "synthetic-next-page",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"fileSearchStores": [{"name": "fileSearchStores/two"}]},
+        )
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    sdk_client = genai.Client(
+        api_key="synthetic-key",
+        http_options=types.HttpOptions(
+            api_version="v1beta",
+            base_url="https://unit.invalid",
+            httpx_async_client=async_client,
+        ),
+    )
+    session = object.__new__(operator.GoogleGenaiReconciliationSession)
+    session._clients = operator.GeminiClientFactory(
+        operator.GeminiConfig(api_key=operator.SecretStr("synthetic-key")),
+        sdk_factory=lambda **kwargs: sdk_client,
+    )
+
+    stores = asyncio.run(session.list_stores())
+
+    assert [store.name for store in stores] == [
+        "fileSearchStores/one",
+        "fileSearchStores/two",
+    ]
+    assert requests == [
+        (
+            "GET",
+            "/v1beta/fileSearchStores",
+            {"pageSize": "20"},
+            b"",
+        ),
+        (
+            "GET",
+            "/v1beta/fileSearchStores",
+            {"pageSize": "20", "pageToken": "synthetic-next-page"},
+            b"",
+        ),
+    ]
+
+
 def test_store_close_failure_is_categorized_after_successful_collection() -> None:
     operator = _load_operator()
 
@@ -567,7 +633,7 @@ def test_live_session_awaits_pinned_sdk_lists_and_uses_exact_delete_shapes(
     asyncio.run(session.delete_store("store"))
 
     assert calls == [
-        ("list_stores", {"page_size": 100}),
+        ("list_stores", {"page_size": 20}),
         ("list_files", {"page_size": 100}),
         ("list_documents", "fileSearchStores/one"),
         ("delete_document", {"name": "document", "config": {"force": True}}),
