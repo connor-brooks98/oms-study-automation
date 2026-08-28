@@ -56,7 +56,7 @@ if mode == "blocked":
         status="blocked",
         provider_operation_states=["inventory_failed"],
         provider_cleanup_complete=False,
-        inventory_failure_stage="store_list",
+        inventory_failure_stage="store_request",
         provider_error_category="transient",
         warnings=["provider_reconciliation_incomplete"],
     )
@@ -302,6 +302,26 @@ server.server_close()
     throw "Valid Python JSON was not accepted."
   }
 
+  foreach ($StoreStage in @("store_client", "store_request", "store_close")) {
+    $StoreStagePath = Join-Path $Sandbox ("store-stage-{0}.stdout" -f $StoreStage)
+    $StoreStageRecord = Get-Content -LiteralPath $Raw -Raw | ConvertFrom-Json
+    $StoreStageRecord.status = "blocked"
+    $StoreStageRecord.provider_operation_states = @("inventory_failed")
+    $StoreStageRecord.provider_cleanup_complete = $false
+    $StoreStageRecord.inventory_failure_stage = $StoreStage
+    $StoreStageRecord.provider_error_category = "provider"
+    $StoreStageRecord.warnings = @("provider_reconciliation_incomplete")
+    $StoreStageRecord | ConvertTo-Json -Compress -Depth 5 |
+      Set-Content -LiteralPath $StoreStagePath -Encoding UTF8
+    $StoreStageResult = Convert-GeminiReconciliationEvidence `
+      -RawStdoutPath $StoreStagePath `
+      -SafeResultPath ($StoreStagePath + ".safe") `
+      -StageMarkerPath ($StoreStagePath + ".stage")
+    if ($StoreStageResult.ExitCode -ne 0 -or -not $StoreStageResult.EvidenceUsable) {
+      throw "Fixed store lifecycle stage was rejected."
+    }
+  }
+
   $PrefixRaw = Join-Path $Sandbox "prefix.stdout"
   $PrefixSafe = Join-Path $Sandbox "prefix-safe.json"
   $PrefixStage = Join-Path $Sandbox "prefix-stage.json"
@@ -351,7 +371,8 @@ server.server_close()
 
   foreach ($InvalidPair in @(
       @{Stage="unknown_stage";Category="provider"},
-      @{Stage="store_list";Category="unknown_category"}
+      @{Stage="store_list";Category="provider"},
+      @{Stage="file_list";Category="unknown_category"}
   )) {
     $InvalidPairPath = Join-Path $Sandbox (
       "invalid-pair-{0}.stdout" -f [Guid]::NewGuid().ToString("N")

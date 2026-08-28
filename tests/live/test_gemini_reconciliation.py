@@ -4,7 +4,7 @@ import asyncio
 import importlib.util
 import json
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -68,7 +68,7 @@ class _FakeSession:
         self.calls: list[tuple[str, str]] = []
 
     async def list_stores(self) -> tuple[Any, ...]:
-        if self.fail_inventory_stage == "store_list":
+        if self.fail_inventory_stage == "store_untagged":
             assert self.inventory_error is not None
             raise self.inventory_error
         return tuple(self.stores)
@@ -228,11 +228,6 @@ def test_scope_cap_fails_before_any_mutation() -> None:
     ("stage", "category", "error"),
     (
         (
-            "store_list",
-            "authentication",
-            _SdkError("private authentication payload", status_code=401),
-        ),
-        (
             "file_list",
             "quota",
             _SdkError("private quota payload", status_code=429),
@@ -241,11 +236,6 @@ def test_scope_cap_fails_before_any_mutation() -> None:
             "document_list",
             "transient",
             TimeoutError("private transient payload"),
-        ),
-        (
-            "store_list",
-            "contract",
-            TypeError("private contract payload"),
         ),
         (
             "file_list",
@@ -274,6 +264,154 @@ def test_inventory_failure_reports_only_safe_stage_and_existing_error_category(
     serialized = json.dumps(record, sort_keys=True)
     for forbidden in ("private", "request-id", "401", "429", "503"):
         assert forbidden not in serialized
+
+
+def _real_factory_session(
+    operator: ModuleType,
+    *,
+    list_stores: Callable[..., Any],
+    close: Callable[[], Any],
+) -> Any:
+    aio = SimpleNamespace(
+        file_search_stores=SimpleNamespace(list=list_stores),
+        aclose=close,
+    )
+    clients = operator.GeminiClientFactory(
+        operator.GeminiConfig(api_key=operator.SecretStr("synthetic-key")),
+        sdk_factory=lambda **kwargs: SimpleNamespace(aio=aio),
+    )
+    session = object.__new__(operator.GoogleGenaiReconciliationSession)
+    session._clients = clients
+    return session
+
+
+def _assert_safe_store_failure(record: dict[str, object], stage: str, category: str) -> None:
+    assert record["schema_version"] == 2
+    assert record["status"] == "blocked"
+    assert record["provider_operation_states"] == ["inventory_failed"]
+    assert record["inventory_failure_stage"] == stage
+    assert record["provider_error_category"] == category
+    assert record["delete_attempt_counts"] == {"stores": 0, "files": 0, "documents": 0}
+    serialized = json.dumps(record, sort_keys=True)
+    for forbidden in ("private", "request-id", "401", "429", "503"):
+        assert forbidden not in serialized
+
+
+def test_store_client_construction_failure_is_categorized_without_payload() -> None:
+    operator = _load_operator()
+
+    def fail_construction(**kwargs: object) -> object:
+        raise _SdkError("private construction payload", status_code=401)
+
+    clients = operator.GeminiClientFactory(
+        operator.GeminiConfig(api_key=operator.SecretStr("synthetic-key")),
+        sdk_factory=fail_construction,
+    )
+    session = object.__new__(operator.GoogleGenaiReconciliationSession)
+    session._clients = clients
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    _assert_safe_store_failure(record, "store_client", "authentication")
+
+
+@pytest.mark.parametrize("failure_site", ["request", "pager"])
+def test_store_request_and_pager_failures_share_request_stage(failure_site: str) -> None:
+    operator = _load_operator()
+    calls: list[str] = []
+
+    async def failing_pager() -> AsyncIterator[object]:
+        calls.append("pager")
+        raise TimeoutError("private pager payload")
+        yield object()
+
+    async def list_stores(**kwargs: object) -> object:
+        calls.append("request")
+        if failure_site == "request":
+            raise TimeoutError("private request payload")
+        return failing_pager()
+
+    async def close() -> None:
+        calls.append("close")
+
+    session = _real_factory_session(operator, list_stores=list_stores, close=close)
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    _assert_safe_store_failure(record, "store_request", "transient")
+    assert calls[-1] == "close"
+
+
+def test_store_close_failure_is_categorized_after_successful_collection() -> None:
+    operator = _load_operator()
+
+    async def empty_pager() -> AsyncIterator[object]:
+        if False:
+            yield object()
+
+    async def list_stores(**kwargs: object) -> object:
+        return empty_pager()
+
+    async def close() -> None:
+        raise RuntimeError("private close payload")
+
+    session = _real_factory_session(operator, list_stores=list_stores, close=close)
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    _assert_safe_store_failure(record, "store_close", "provider")
+
+
+def test_store_close_failure_does_not_mask_primary_request_failure() -> None:
+    operator = _load_operator()
+
+    async def list_stores(**kwargs: object) -> object:
+        raise TimeoutError("private primary payload")
+
+    async def close() -> None:
+        raise RuntimeError("private close payload")
+
+    session = _real_factory_session(operator, list_stores=list_stores, close=close)
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    _assert_safe_store_failure(record, "store_request", "transient")
+
+
+def test_store_collection_overflow_preserves_scope_failure() -> None:
+    operator = _load_operator()
+
+    async def oversized_pager() -> AsyncIterator[object]:
+        for _ in range(1_001):
+            yield object()
+
+    async def list_stores(**kwargs: object) -> object:
+        return oversized_pager()
+
+    async def close() -> None:
+        return None
+
+    session = _real_factory_session(operator, list_stores=list_stores, close=close)
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    assert record["warnings"] == ["provider_reconciliation_scope_exceeded"]
+    assert record["inventory_failure_stage"] == "not_applicable"
+    assert record["provider_error_category"] == "none"
+
+
+def test_untagged_store_failure_fails_closed_without_invented_stage() -> None:
+    operator = _load_operator()
+    session = _owned_session(
+        fail_inventory_stage="store_untagged",
+        inventory_error=RuntimeError("private untagged payload"),
+    )
+
+    record = asyncio.run(operator.reconcile_resources(session))
+
+    assert record["warnings"] == ["provider_reconciliation_contract_invalid"]
+    assert record["inventory_failure_stage"] == "not_applicable"
+    assert record["provider_error_category"] == "none"
 
 
 @pytest.mark.parametrize("kind", ["store", "file", "document"])
