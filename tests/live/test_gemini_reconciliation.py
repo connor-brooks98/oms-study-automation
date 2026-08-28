@@ -12,16 +12,15 @@ from typing import Any
 
 import pytest
 
-from oms_hub.providers.gemini.errors import (
-    GeminiAuthenticationError,
-    GeminiContractError,
-    GeminiProviderError,
-    GeminiQuotaError,
-    GeminiTransientError,
-)
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "run-gemini-reconciliation.py"
+
+
+class _SdkError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.headers = {"x-request-id": "private-request-id"}
 
 
 def _sdk_types() -> Any:
@@ -231,39 +230,27 @@ def test_scope_cap_fails_before_any_mutation() -> None:
         (
             "store_list",
             "authentication",
-            GeminiAuthenticationError(
-                "private authentication payload",
-                provider_status_code=401,
-                provider_request_id="private-request-id",
-            ),
+            _SdkError("private authentication payload", status_code=401),
         ),
         (
             "file_list",
             "quota",
-            GeminiQuotaError(
-                "private quota payload",
-                provider_status_code=429,
-                provider_request_id="private-request-id",
-            ),
+            _SdkError("private quota payload", status_code=429),
         ),
         (
             "document_list",
             "transient",
-            GeminiTransientError(
-                "private transient payload",
-                provider_status_code=503,
-                provider_request_id="private-request-id",
-            ),
+            TimeoutError("private transient payload"),
         ),
         (
             "store_list",
             "contract",
-            GeminiContractError("private contract payload"),
+            TypeError("private contract payload"),
         ),
         (
             "file_list",
             "provider",
-            GeminiProviderError("private provider payload"),
+            RuntimeError("private provider payload"),
         ),
     ),
 )

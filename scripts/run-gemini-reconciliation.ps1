@@ -189,6 +189,9 @@ try {
     $SafeRecord = Get-Content -LiteralPath $SafeResultPath -Raw | ConvertFrom-Json
     $ProviderCleanupComplete =
       [bool]$SafeRecord.operator_result.provider_cleanup_complete
+    if ($SafeRecord.operator_result.status -cne "passed") {
+      $RetainRaw = $true
+    }
   }
 } catch {
   $RetainRaw = $true

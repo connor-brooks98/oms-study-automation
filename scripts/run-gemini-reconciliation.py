@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from oms_hub.providers.gemini.client import GeminiClientFactory
+from oms_hub.providers.gemini.client import GeminiClientFactory, translate_gemini_error
 from oms_hub.providers.gemini.models import GeminiConfig
 from oms_hub.security.secret_store import KeyringSecretStore, SecretStore
 
@@ -120,9 +120,11 @@ def _full_result(
     remaining: dict[str, int],
     cleanup_complete: bool,
     warnings: list[str],
+    inventory_failure_stage: str = "not_applicable",
+    provider_error_category: str = "none",
 ) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": status,
         "provider_operation_states": states,
         "inspected_counts": inspected,
@@ -130,11 +132,18 @@ def _full_result(
         "delete_attempt_counts": attempted,
         "remaining_counts": remaining,
         "provider_cleanup_complete": cleanup_complete,
+        "inventory_failure_stage": inventory_failure_stage,
+        "provider_error_category": provider_error_category,
         "warnings": warnings,
     }
 
 
-def _blocked_inventory(warning: str) -> dict[str, object]:
+def _blocked_inventory(
+    warning: str,
+    *,
+    inventory_failure_stage: str = "not_applicable",
+    provider_error_category: str = "none",
+) -> dict[str, object]:
     return _full_result(
         status="blocked",
         states=["inventory_failed"],
@@ -151,6 +160,16 @@ def _blocked_inventory(warning: str) -> dict[str, object]:
         },
         cleanup_complete=False,
         warnings=[warning],
+        inventory_failure_stage=inventory_failure_stage,
+        provider_error_category=provider_error_category,
+    )
+
+
+def _blocked_provider_inventory(stage: str, error: Exception) -> dict[str, object]:
+    return _blocked_inventory(
+        "provider_reconciliation_incomplete",
+        inventory_failure_stage=stage,
+        provider_error_category=translate_gemini_error(error).category,
     )
 
 
@@ -159,7 +178,17 @@ async def reconcile_resources(session: Any) -> dict[str, object]:
 
     try:
         stores = await session.list_stores()
+    except OverflowError:
+        return _blocked_inventory("provider_reconciliation_scope_exceeded")
+    except Exception as error:
+        return _blocked_provider_inventory("store_list", error)
+    try:
         files = await session.list_files()
+    except OverflowError:
+        return _blocked_inventory("provider_reconciliation_scope_exceeded")
+    except Exception as error:
+        return _blocked_provider_inventory("file_list", error)
+    try:
         owned_stores = _owned(stores, _STORE_NAME)
         owned_files = _owned(files, _FILE_NAME)
         if len(owned_stores) > _MAX_STORES or len(owned_files) > _MAX_FILES:
@@ -167,7 +196,12 @@ async def reconcile_resources(session: Any) -> dict[str, object]:
         documents: dict[str, tuple[object, ...]] = {}
         for store in owned_stores:
             store_name = _identity(store)
-            documents[store_name] = await session.list_documents(store_name)
+            try:
+                documents[store_name] = await session.list_documents(store_name)
+            except OverflowError:
+                return _blocked_inventory("provider_reconciliation_scope_exceeded")
+            except Exception as error:
+                return _blocked_provider_inventory("document_list", error)
         owned_documents = [item for values in documents.values() for item in values]
         if len(owned_documents) > _MAX_DOCUMENTS:
             return _blocked_inventory("provider_reconciliation_scope_exceeded")
@@ -178,7 +212,7 @@ async def reconcile_resources(session: Any) -> dict[str, object]:
     except (AttributeError, TypeError, ValueError):
         return _blocked_inventory("provider_reconciliation_contract_invalid")
     except Exception:
-        return _blocked_inventory("provider_reconciliation_incomplete")
+        return _blocked_inventory("provider_reconciliation_contract_invalid")
 
     inspected = {
         "stores": len(stores),
@@ -271,12 +305,23 @@ async def run_authorized_reconciliation(
     """Cross the credential/provider boundary only after exact local opt-in."""
 
     if os.getenv("RUN_GEMINI_RECONCILIATION") != "1":
-        return {
-            "schema_version": 1,
-            "status": "blocked",
-            "provider_operation_states": ["reconciliation_failed"],
-            "warnings": ["provider_reconciliation_not_authorized"],
-        }
+        return _full_result(
+            status="blocked",
+            states=["reconciliation_failed"],
+            inspected={"stores": 0, "files": 0, "documents": 0},
+            matched={"stores": 0, "files": 0, "documents": 0},
+            attempted={"stores": 0, "files": 0, "documents": 0},
+            remaining={
+                "stores": 0,
+                "files": 0,
+                "documents": 0,
+                "stores_inspected": 0,
+                "files_inspected": 0,
+                "documents_inspected": 0,
+            },
+            cleanup_complete=False,
+            warnings=["provider_reconciliation_not_authorized"],
+        )
     if importlib.metadata.version("google-genai") != _SDK_VERSION:
         return _blocked_inventory("provider_reconciliation_sdk_mismatch")
     secrets = secret_store if secret_store is not None else KeyringSecretStore()

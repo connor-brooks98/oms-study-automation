@@ -67,12 +67,19 @@ function Assert-ReconciliationRecord {
   Assert-ReconciliationKeys -Value $Record -Expected @(
     "schema_version", "status", "provider_operation_states", "inspected_counts",
     "matched_counts", "delete_attempt_counts", "remaining_counts",
-    "provider_cleanup_complete", "warnings"
+    "provider_cleanup_complete", "inventory_failure_stage",
+    "provider_error_category", "warnings"
   )
   if ($Record.schema_version.GetType().FullName -notin @("System.Int32", "System.Int64") -or
-      $Record.schema_version -ne 1 -or
+      $Record.schema_version -ne 2 -or
       $Record.status -notin @("passed", "blocked") -or
-      $Record.provider_cleanup_complete -isnot [bool]) {
+      $Record.provider_cleanup_complete -isnot [bool] -or
+      $Record.inventory_failure_stage -notin @(
+        "not_applicable", "store_list", "file_list", "document_list"
+      ) -or
+      $Record.provider_error_category -notin @(
+        "none", "authentication", "quota", "transient", "contract", "provider"
+      )) {
     throw "Reconciliation evidence header was invalid."
   }
   Assert-ReconciliationCountMap -Value $Record.inspected_counts `
@@ -99,17 +106,37 @@ function Assert-ReconciliationRecord {
     "provider_reconciliation_incomplete",
     "provider_reconciliation_sdk_mismatch",
     "provider_reconciliation_model_mismatch",
-    "provider_reconciliation_failed"
+    "provider_reconciliation_failed",
+    "provider_reconciliation_not_authorized"
   )
+  $StateVector = $States -join "`n"
+  $IsProviderInventoryFailure =
+    $StateVector -ceq "inventory_failed" -and
+    $Warnings.Count -eq 1 -and
+    $Warnings[0] -ceq "provider_reconciliation_incomplete"
+  $HasProviderInventoryDiagnostic =
+    $Record.inventory_failure_stage -in @("store_list", "file_list", "document_list") -and
+    $Record.provider_error_category -in @(
+      "authentication", "quota", "transient", "contract", "provider"
+    )
   if ($Record.status -ceq "passed") {
     if (-not $Record.provider_cleanup_complete -or $Warnings.Count -ne 0 -or
-        ($States -join "`n") -cne ($PassedStates -join "`n")) {
+        $StateVector -cne ($PassedStates -join "`n") -or
+        $Record.inventory_failure_stage -cne "not_applicable" -or
+        $Record.provider_error_category -cne "none") {
       throw "Passed reconciliation evidence was inconsistent."
     }
   } elseif ($Record.provider_cleanup_complete -or $Warnings.Count -ne 1 -or
             $Warnings[0] -notin $AllowedWarnings -or
-            (($States -join "`n") -cne ($BlockedStates -join "`n") -and
-             ($States -join "`n") -cne "inventory_failed")) {
+            ($StateVector -cne ($BlockedStates -join "`n") -and
+             $StateVector -cne "inventory_failed" -and
+             $StateVector -cne "reconciliation_failed") -or
+            ($IsProviderInventoryFailure -and -not $HasProviderInventoryDiagnostic) -or
+            (-not $IsProviderInventoryFailure -and
+             ($Record.inventory_failure_stage -cne "not_applicable" -or
+              $Record.provider_error_category -cne "none")) -or
+            ($StateVector -ceq "reconciliation_failed" -and
+             $Warnings[0] -cne "provider_reconciliation_not_authorized")) {
     throw "Blocked reconciliation evidence was inconsistent."
   }
 }
