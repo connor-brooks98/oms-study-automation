@@ -48,6 +48,7 @@
       font-size: clamp(2rem, 8vw, 3rem);
       line-height: 1;
       letter-spacing: -.05em;
+      text-align: center;
     }
 
     .auth-stage { display: grid; }
@@ -74,7 +75,7 @@
     .email-control {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 3.25rem;
-      min-height: 3.5rem;
+      height: 3rem;
       border: 1px solid var(--line);
       border-radius: 1rem;
       background: #fff;
@@ -87,6 +88,8 @@
     }
 
     .email-control input {
+      grid-column: 1;
+      grid-row: 1;
       min-width: 0;
       border: 0;
       outline: 0;
@@ -98,8 +101,10 @@
     .email-control input::placeholder { color: #8791a2; }
 
     .submit-arrow {
-      width: 2.65rem;
-      height: 2.65rem;
+      grid-column: 2;
+      grid-row: 1;
+      width: 2.75rem;
+      height: 2.75rem;
       align-self: center;
       justify-self: center;
       display: grid;
@@ -154,8 +159,8 @@
       font-size: .875rem;
     }
 
-    .otp-heading { margin: 0 0 .35rem; font-size: 1.1rem; }
-    .otp-help { margin: 0 0 1.4rem; color: var(--muted); font-size: .875rem; }
+    .otp-heading { margin: 0 0 .35rem; font-size: 1.1rem; text-align: center; }
+    .otp-help { margin: 0 0 1.4rem; color: var(--muted); font-size: .875rem; text-align: center; }
 
     .otp-row {
       display: grid;
@@ -188,7 +193,12 @@
       box-shadow: 0 0 0 .22rem rgb(29 62 102 / 12%);
     }
 
-    .otp-row.is-success .otp-slot { border-color: var(--success); background: #f1faf5; }
+    .otp-row.is-success .otp-slot {
+      border-color: var(--success);
+      background: #f1faf5;
+      animation: otp-success .48s cubic-bezier(.22, 1, .36, 1) both;
+      animation-delay: calc(var(--slot) * 70ms);
+    }
     .otp-row.is-error { animation: shake .35s ease; }
     .otp-row.is-error .otp-slot { border-color: var(--error); background: #fff4f5; }
 
@@ -206,6 +216,11 @@
 
     @keyframes draw-mark { to { stroke-dashoffset: 0; } }
     @keyframes slot-in { to { opacity: 1; transform: translateY(0) rotateX(0); } }
+    @keyframes otp-success {
+      0% { transform: scale(1); box-shadow: 0 0 0 0 rgb(47 143 87 / 0%); }
+      55% { transform: translateY(-.15rem) scale(1.04); box-shadow: 0 0 0 .22rem rgb(47 143 87 / 16%); }
+      100% { transform: scale(1); box-shadow: 0 0 0 .08rem rgb(47 143 87 / 10%); }
+    }
     @keyframes shake { 25% { transform: translateX(-.3rem); } 50% { transform: translateX(.25rem); } 75% { transform: translateX(-.12rem); } }
 
     @media (max-width: 30rem) {
@@ -252,7 +267,7 @@
             <input class="otp-slot" style="--slot:5" aria-label="Digit 6 of 6" inputmode="numeric" maxlength="1" pattern="[0-9]*">
           </div>
           <button class="visually-hidden" type="submit">Verify code</button>
-          <p class="status-message" id="otp-status" role="status" aria-live="polite"></p>
+          <p class="visually-hidden" id="otp-status" role="status" aria-live="polite"></p>
         </form>
       </section>
     </div>
@@ -273,6 +288,8 @@
       const otpForm = document.querySelector("#otp-form");
       const otpRow = document.querySelector("#otp-row");
       const slots = [...document.querySelectorAll(".otp-slot")];
+      const previewCode = new URLSearchParams(window.location.search).get("preview-code");
+      const successUrl = new URLSearchParams(window.location.search).get("success-url") || "/";
 
       const showEmailResult = (success) => {
         emailControl.classList.add("is-resolved");
@@ -331,9 +348,11 @@
       otpForm.addEventListener("submit", (event) => {
         event.preventDefault();
         const complete = code().length === slots.length;
-        otpRow.classList.toggle("is-success", complete);
-        otpRow.classList.toggle("is-error", !complete);
-        document.querySelector("#otp-status").textContent = complete ? "Code ready for secure verification." : "Enter all six digits.";
+        const accepted = complete && previewCode !== null && code() === previewCode;
+        otpRow.classList.toggle("is-success", accepted);
+        otpRow.classList.toggle("is-error", !accepted);
+        document.querySelector("#otp-status").textContent = accepted ? "Code accepted." : "The code was not accepted.";
+        if (accepted) window.setTimeout(() => window.location.assign(successUrl), 950);
       });
     })();
   </script>
