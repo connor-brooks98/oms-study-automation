@@ -14,7 +14,7 @@ from pydantic import SecretStr
 
 from oms_hub.db import Database
 from oms_hub.providers.gemini.client import GeminiClientFactory
-from oms_hub.providers.gemini.errors import GeminiTransientError
+from oms_hub.providers.gemini.errors import GeminiContractError, GeminiTransientError
 from oms_hub.providers.gemini.file_search import (
     CompletedOperation,
     GeminiFileSearchAdmin,
@@ -221,6 +221,31 @@ def test_real_sdk_import_uses_exact_normalized_markdown_wire_body() -> None:
             },
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "store_name",
+    (
+        "fileSearchStores/course-1/foreign",
+        "fileSearchStores/course-1?alt=foreign",
+        "fileSearchStores/course-1#import",
+        "fileSearchStores/course-1:delete",
+    ),
+)
+def test_import_rejects_noncanonical_store_before_transport(store_name: str) -> None:
+    admin, client = admin_bundle()
+
+    with pytest.raises(GeminiContractError, match="store name is invalid"):
+        run(
+            admin.import_file(
+                store_name,
+                "files/normalized-markdown",
+                [{"key": "input_key", "string_value": "normalized_markdown"}],
+                None,
+            )
+        )
+
+    assert client.file_search_stores.transport_calls == []
 
 
 def test_wait_polls_persisted_name_with_bounded_exponential_backoff(
