@@ -91,16 +91,19 @@ else:
         states.append("positive_query_complete")
     if stage in {"cleanup", "unknown"}:
         states.append("wrong_scope_query_complete")
-    states.extend(
-        [
-            "documents_delete_attempted:2",
-            "files_delete_attempted:2",
-            "file_reconciliation_empty",
-            "stores_delete_attempted:1",
-            "store_reconciliation_empty",
-            "private_shadow_failed",
-        ]
-    )
+    if stage == "prior_state_check":
+        states = ["private_shadow_failed"]
+    else:
+        states.extend(
+            [
+                "documents_delete_attempted:2",
+                "files_delete_attempted:2",
+                "file_reconciliation_empty",
+                "stores_delete_attempted:1",
+                "store_reconciliation_empty",
+                "private_shadow_failed",
+            ]
+        )
     if mode == "primary_over_cleanup":
         stage = "positive_query"
         cleanup = "failed"
