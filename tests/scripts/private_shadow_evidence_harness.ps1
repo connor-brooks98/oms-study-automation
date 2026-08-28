@@ -243,9 +243,12 @@ try {
     throw "Private-shadow cleanup/reconciliation outcomes were invalid."
   }
 
-  foreach ($Mode in @("malformed", "extra_key", "raw_content")) {
-    Invoke-PrivateShadowCase -Mode $Mode -EvidenceUsable $false -ExpectedExit 52 | Out-Null
-  }
+  Invoke-PrivateShadowCase -Mode "malformed" `
+    -EvidenceUsable $false -ExpectedExit 51 | Out-Null
+  Invoke-PrivateShadowCase -Mode "extra_key" `
+    -EvidenceUsable $false -ExpectedExit 52 | Out-Null
+  Invoke-PrivateShadowCase -Mode "raw_content" `
+    -EvidenceUsable $false -ExpectedExit 51 | Out-Null
   Write-Output "PRIVATE_SHADOW_EVIDENCE_HARNESS_VERIFIED"
 } finally {
   if (Test-Path -LiteralPath $Sandbox) {
