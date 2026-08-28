@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Path $Sandbox | Out-Null
 . $EvidenceScript
 
 try {
-  foreach ($Mode in @("corrected", "fallback")) {
+  foreach ($Mode in @("corrected", "fallback", "close_failure", "cleanup_failure")) {
     $Raw = Join-Path $Sandbox "$Mode.raw.json"
     $Safe = Join-Path $Sandbox "$Mode.safe.json"
     $Start = [Diagnostics.ProcessStartInfo]::new()
