@@ -11,7 +11,8 @@ $Sandbox = Join-Path ([System.IO.Path]::GetTempPath()) (
 )
 $Utf8 = [System.Text.UTF8Encoding]::new($false, $true)
 New-Item -ItemType Directory -Path $Sandbox | Out-Null
-$OperatorRoot = Join-Path $Sandbox "operator"
+$ProjectRoot = Join-Path $Sandbox "project"
+$OperatorRoot = Join-Path $ProjectRoot "scripts"
 $CasesRoot = Join-Path $Sandbox "cases"
 New-Item -ItemType Directory -Path $OperatorRoot,$CasesRoot | Out-Null
 $Emitter = Join-Path $OperatorRoot "emit_private_shadow_json.py"
@@ -64,6 +65,8 @@ if mode.startswith("success"):
         states[2], states[3] = states[3], states[2]
     elif mode == "success_failure_marker":
         record["provider_operation_states"].insert(2, "private_shadow_failed")
+    elif mode == "success_null_warnings":
+        record["warnings"] = None
 else:
     stage = {
         "preflight_failure": "prior_state_check",
@@ -73,6 +76,8 @@ else:
         "reconciliation_unknown": "cleanup",
         "reversed_warnings": "positive_query",
         "impossible_outcomes": "positive_query",
+        "cleanup_count_mismatch": "positive_query",
+        "store_count_mismatch": "upload_input",
     }.get(mode, mode.removeprefix("stage_"))
     cleanup = "complete"
     reconciliation = "empty"
@@ -144,6 +149,18 @@ else:
         cleanup = "complete"
         reconciliation = "unknown"
         warnings = ["private_citation_unresolved"]
+    elif mode == "cleanup_count_mismatch":
+        states = [
+            state.replace("documents_delete_attempted:2", "documents_delete_attempted:0")
+            .replace("files_delete_attempted:2", "files_delete_attempted:0")
+            .replace("stores_delete_attempted:1", "stores_delete_attempted:0")
+            for state in states
+        ]
+    elif mode == "store_count_mismatch":
+        states = [
+            state.replace("stores_delete_attempted:1", "stores_delete_attempted:0")
+            for state in states
+        ]
     record = {
         "status": "blocked",
         **base,
@@ -185,7 +202,7 @@ function Invoke-PrivateShadowCase {
   $env:PRIVATE_SHADOW_FAKE_SECRET = "must-not-be-read-or-retained"
   try {
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-      -File $WrapperScript -PythonExecutable $PythonExecutable `
+      -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $ProjectRoot `
       -OperatorScript $Emitter -DiagnosticRoot $DiagnosticRoot `
       -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
     $ActualExit = $LASTEXITCODE
@@ -232,7 +249,7 @@ function Assert-PrivateShadowBoundaryRejected {
   $env:PRIVATE_SHADOW_LAUNCH_SENTINEL = $LaunchSentinel
   try {
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-      -File $WrapperScript -PythonExecutable $PythonExecutable `
+      -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $ProjectRoot `
       -OperatorScript $Emitter -DiagnosticRoot $DiagnosticRoot `
       -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
     $ActualExit = $LASTEXITCODE
@@ -317,7 +334,8 @@ try {
 
   foreach ($Mode in @(
       "success_missing_state", "success_out_of_order", "success_failure_marker",
-      "reversed_warnings", "stage_progress_contradiction", "impossible_outcomes"
+      "success_null_warnings", "reversed_warnings", "stage_progress_contradiction",
+      "impossible_outcomes", "cleanup_count_mismatch", "store_count_mismatch"
   )) {
     Invoke-PrivateShadowCase -Mode $Mode `
       -EvidenceUsable $false -ExpectedExit 52 | Out-Null
@@ -325,6 +343,8 @@ try {
 
   Assert-PrivateShadowBoundaryRejected `
     -DiagnosticRoot (Join-Path $OperatorRoot "diagnostic")
+  Assert-PrivateShadowBoundaryRejected `
+    -DiagnosticRoot (Join-Path $ProjectRoot "diagnostic")
   $JunctionTarget = Join-Path $Sandbox "junction-target"
   $JunctionParent = Join-Path $JunctionTarget "existing"
   $Junction = Join-Path $Sandbox "junction"
