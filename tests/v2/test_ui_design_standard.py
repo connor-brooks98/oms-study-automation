@@ -57,7 +57,7 @@ def test_stylesheet_order_and_system_font_contract() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260818.2" %}' in base
+    assert '{% set shell_asset_version = "20260827.1" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
@@ -97,7 +97,7 @@ def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260826.2" %}' in base
+    assert '{% set shell_asset_version = "20260827.1" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
@@ -263,19 +263,38 @@ def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
     assert ".file-card .lecture-card-actions" in app_css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in app_css
     assert ".lecture-card-actions .sh-btn" in app_css
+    assert ".file-card .lecture-card-actions--single" in app_css
+    assert ".lecture-regenerate" in app_css
     assert "white-space: normal" in app_css
-    assert lecture.count('class="file-actions lecture-card-actions"') == 4
-    assert lecture.index("Open Lecture PDF") < lecture.index("Upload Lecture PPTX")
-    assert lecture.index("Open Cleaned Transcript") < lecture.index(
-        "Upload Lecture Transcript"
-    )
+    assert lecture.count('class="file-actions lecture-card-actions') == 4
+    assert lecture.index("Open Lecture PDF") < lecture.index("Download PPTX")
+    assert lecture.index("Open Transcript") < lecture.index("Download Transcript")
     assert lecture.index("Open Lecture Outline") < lecture.index(
         "Download Lecture Outline"
     )
-    assert lecture.index("Take Lecture Quiz") < lecture.index("Generate Quiz")
+    assert "Upload Lecture PPTX" not in lecture
+    assert "Upload Lecture Transcript" not in lecture
+    assert (
+        'secondary sh-btn sh-btn--secondary" href="/artifacts/'
+        '{{ slide_revision.id }}/pdf">Open Lecture PDF'
+    ) in lecture
+    assert (
+        'primary sh-btn sh-btn--primary" href="/artifacts/'
+        '{{ slide_revision.id }}/pptx">Download PPTX'
+    ) in lecture
+    assert (
+        'secondary sh-btn sh-btn--secondary" href="/artifacts/'
+        '{{ transcript_revision.id }}/cleaned">Open Transcript'
+    ) in lecture
+    assert (
+        'primary sh-btn sh-btn--primary" href="/artifacts/'
+        '{{ transcript_revision.id }}/cleaned/download">Download Transcript'
+    ) in lecture
+    assert "Regenerate lecture outline" in lecture
+    assert "Regenerate lecture quiz" in lecture
     assert "touch-action: none" in library_css
     assert "uploads.js?v=20260818.2" in uploads
-    assert "Download Cleaned Transcript" in lecture
+    assert "Download Transcript" in lecture
     assert "Download Lecture Outline" in lecture
 
 

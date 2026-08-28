@@ -433,6 +433,10 @@ button.exam-toggle {
   align-items: stretch;
 }
 .file-card .lecture-card-actions > * { min-width: 0; }
+.file-card .lecture-card-actions--single {
+  grid-template-columns: minmax(0, 20rem);
+  justify-content: center;
+}
 .lecture-card-actions .sh-btn {
   width: 100%;
   min-height: 3.25rem;
@@ -442,6 +446,15 @@ button.exam-toggle {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+[data-generation-card] { position: relative; }
+[data-generation-card].ready .file-card-title { padding-right: 3.25rem; }
+.lecture-regenerate {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  color: var(--brand);
+}
+.lecture-regenerate:disabled { cursor: wait; opacity: .55; }
 .file-actions .button:not(.sh-btn) { min-height: var(--control-h); padding: .55rem .75rem; font-size: .78rem; }
 .checklist-card { padding: 1.25rem; margin-bottom: 1rem; }
 .section-heading { display: flex; justify-content: space-between; margin-bottom: 1rem; }

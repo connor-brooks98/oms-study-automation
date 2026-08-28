@@ -93,7 +93,7 @@ def test_lecture_page_offers_cleaned_download_instead_of_raw_transcript(tmp_path
     response = client.get(f"/lectures/{lecture_id}")
 
     assert response.status_code == 200
-    assert "Download Cleaned Transcript" in response.text
+    assert "Download Transcript" in response.text
     assert f'href="/artifacts/{revision_id}/cleaned/download"' in response.text
     assert "Open Raw Transcript" not in response.text
 

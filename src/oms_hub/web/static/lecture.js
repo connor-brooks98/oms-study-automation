@@ -25,22 +25,45 @@
       ready: "Ready to generate.",
     };
     message.textContent = labels[status.state] || "Status updated.";
-    card.querySelector("[data-generate]").disabled = active;
+    const generate = card.querySelector("[data-generate]");
+    generate.disabled = active;
     if (status.url) {
+      const actions = card.querySelector(".file-actions");
       let link = card.querySelector("[data-generation-link]");
       if (!link) {
         link = card.ownerDocument.createElement("a");
-        link.className = "button primary sh-btn sh-btn--primary";
         link.dataset.generationLink = "";
-        card.querySelector(".file-actions").prepend(link);
+        actions.prepend(link);
       }
       link.href = status.url;
       if (card.dataset.kind === "quiz") {
+        link.className = "button primary sh-btn sh-btn--primary";
         link.textContent = "Take Lecture Quiz";
         link.target = "_blank";
         link.rel = "noopener noreferrer";
       } else {
+        link.className = "button secondary sh-btn sh-btn--secondary";
         link.textContent = "Open Lecture Outline";
+        actions.classList.remove("lecture-card-actions--single");
+        let download = card.querySelector("[data-generation-download]");
+        if (!download) {
+          download = card.ownerDocument.createElement("a");
+          download.className = "button primary sh-btn sh-btn--primary";
+          download.dataset.generationDownload = "";
+          actions.append(download);
+        }
+        download.href = `${status.url}/download`;
+        download.textContent = "Download Lecture Outline";
+      }
+      card.classList.add("ready");
+      card.classList.remove("missing");
+      if (!generate.className.split(" ").includes("lecture-regenerate")) {
+        generate.className = "lecture-regenerate sh-iconbtn";
+        generate.textContent = "↻";
+        const label = `Regenerate lecture ${card.dataset.kind}`;
+        generate.setAttribute("aria-label", label);
+        generate.title = label;
+        card.append(generate);
       }
     }
     return active;

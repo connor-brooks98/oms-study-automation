@@ -25,22 +25,16 @@ def test_lecture_page_shows_separate_outline_and_quiz_controls(tmp_path):
     page = TestClient(app).get(f"/lectures/{lecture_id}")
 
     assert page.status_code == 200
-    assert "Generate Outline" in page.text
-    assert "Generate Quiz" in page.text
+    assert page.text.count("Generate Lecture Outline") == 1
+    assert page.text.count("Generate Lecture Quiz") == 1
     assert "Lecture Outline (PDF)" in page.text
     assert "Lecture Quiz" in page.text
     assert "Built from this lecture's PDF and cleaned transcript only." in page.text
     assert "Gemini Quiz Gem" not in page.text
-    assert (
-        f'href="/uploads/slides?lecture_id={lecture_id}"'
-        in page.text
-    )
-    assert "Upload Lecture PPTX" in page.text
-    assert (
-        f'href="/uploads/transcripts?lecture_id={lecture_id}"'
-        in page.text
-    )
-    assert "Upload Lecture Transcript" in page.text
+    assert f'href="/uploads/slides?lecture_id={lecture_id}"' not in page.text
+    assert "Upload Lecture PPTX" not in page.text
+    assert f'href="/uploads/transcripts?lecture_id={lecture_id}"' not in page.text
+    assert "Upload Lecture Transcript" not in page.text
     assert "Lecture Summary" in page.text
     assert "Lecture Quiz Generation" in page.text
 

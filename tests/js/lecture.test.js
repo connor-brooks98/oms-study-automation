@@ -8,10 +8,25 @@ const lecture = require("../../src/oms_hub/web/static/lecture.js");
 class FakeLectureElement {
   constructor() {
     this.dataset = {};
+    this.className = "";
     this.textContent = "";
     this.disabled = false;
+    this.attributes = {};
     this._listeners = {};
     this._children = {};
+    this.classList = {
+      add: (name) => {
+        if (!this.className.split(" ").includes(name)) {
+          this.className = `${this.className} ${name}`.trim();
+        }
+      },
+      remove: (name) => {
+        this.className = this.className
+          .split(" ")
+          .filter((item) => item && item !== name)
+          .join(" ");
+      },
+    };
   }
 
   addEventListener(type, handler) {
@@ -20,6 +35,14 @@ class FakeLectureElement {
 
   querySelector(selector) {
     return this._children[selector] || null;
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = value;
+  }
+
+  append(node) {
+    this.appended = node;
   }
 }
 
@@ -62,6 +85,8 @@ test("runtime generation links use the shared primary button classes", () => {
   const { card } = buildCard("quiz");
   const actions = {
     prepend(node) { this.node = node; },
+    append(node) { this.appended = node; },
+    classList: { remove() {} },
   };
   card._children[".file-actions"] = actions;
   card.ownerDocument = {
@@ -75,6 +100,34 @@ test("runtime generation links use the shared primary button classes", () => {
   assert.equal(actions.node.className, "button primary sh-btn sh-btn--primary");
   assert.equal(actions.node.dataset.generationLink, "");
   assert.equal(actions.node.textContent, "Take Lecture Quiz");
+  assert.equal(card.appended.className, "lecture-regenerate sh-iconbtn");
+  assert.equal(card.appended.attributes["aria-label"], "Regenerate lecture quiz");
+});
+
+test("completed outline adds white open, blue download, and regenerate controls", () => {
+  const { card } = buildCard("outline");
+  const actions = {
+    prepend(node) { this.node = node; },
+    append(node) { this.appended = node; },
+    classList: {
+      remove(name) { this.removed = name; },
+    },
+  };
+  card._children[".file-actions"] = actions;
+  card.ownerDocument = {
+    createElement() {
+      return { dataset: {} };
+    },
+  };
+
+  lecture.render(card, { state: "complete", url: "/artifacts/outlines/7" });
+
+  assert.equal(actions.node.className, "button secondary sh-btn sh-btn--secondary");
+  assert.equal(actions.node.textContent, "Open Lecture Outline");
+  assert.equal(actions.appended.className, "button primary sh-btn sh-btn--primary");
+  assert.equal(actions.appended.href, "/artifacts/outlines/7/download");
+  assert.equal(actions.classList.removed, "lecture-card-actions--single");
+  assert.equal(card.appended.attributes["aria-label"], "Regenerate lecture outline");
 });
 
 // The real setTimeout, saved before any monkeypatching below, used only to
