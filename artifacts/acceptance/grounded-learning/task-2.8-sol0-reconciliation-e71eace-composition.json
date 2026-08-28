@@ -1,6 +1,9 @@
 {
   "schema_version": 1,
-  "status": "composed_not_executed_review_pending",
+  "status": "composed_not_executed_reviewed_ship",
+  "initial_composition_commit": "07cb08f2240a8ac5c7c38a67610c5112f87de4a2",
+  "reviewed_composition_commit": "2a799fb098ed790029b358385658b2be13207d58",
+  "reviewed_composition_tree": "16be009238a11c11d1a9c72f5fffb7ab67bb5a5f",
   "source_commit": "e71eacec05c085409aa41ce4f06b1809630e9124",
   "source_tree": "11d800734e961ffe26e45de51f14838427d689ee",
   "required_private_composition_review": "2873dca02d1be09072bf79d67f14b547d89b3c1f",
@@ -57,6 +60,9 @@
   "prior_authorization_used": false,
   "production_mutated": false,
   "gate_2b_mutated": false,
-  "specification_review": "pending",
-  "quality_security_review": "pending"
+  "initial_review_finding": "authorization_wording_did_not_separately_name_document_store_and_file_mutation_scopes",
+  "specification_review": "SHIP",
+  "specification_review_commit": "2a799fb098ed790029b358385658b2be13207d58",
+  "quality_security_review": "SHIP",
+  "quality_security_review_commit": "2a799fb098ed790029b358385658b2be13207d58"
 }
