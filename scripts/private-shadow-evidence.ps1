@@ -106,6 +106,8 @@ function Assert-PrivateShadowRecord {
   $FailureKeys = @(
     "status", "source_revision_hash", "document_types", "page_count",
     "slide_count", "provider_operation_states", "byte_usage", "failure_stage",
+    "failure_input_identity", "provider_error_category", "provider_status_code",
+    "provider_reason",
     "provider_cleanup_outcome", "provider_reconciliation_outcome", "warnings"
   )
   if ($Record.status -ceq "passed") {
@@ -182,14 +184,42 @@ function Assert-PrivateShadowRecord {
     "usage_input_absent", "usage_input_invalid", "usage_output_absent",
     "usage_output_invalid", "usage_count_invalid"
   )
+  $InputIdentities = @(
+    "none", "pptx", "pdf", "normalized_markdown", "visual_asset", "unknown"
+  )
+  $ProviderCategories = @(
+    "none", "authentication", "quota", "transient", "contract", "provider"
+  )
+  $ProviderReasons = @(
+    "none", "sdk_contract", "timeout", "transport_error", "unknown_provider"
+  )
   if ($ProcessExitCode -eq 0 -or $States[-1] -cne "private_shadow_failed" -or
       $Record.failure_stage -notin $FailureStages -or
+      $Record.failure_input_identity -notin $InputIdentities -or
+      $Record.provider_error_category -notin $ProviderCategories -or
+      $Record.provider_reason -notin $ProviderReasons -or
       $Record.provider_cleanup_outcome -notin @("complete", "failed", "unknown") -or
       $Record.provider_reconciliation_outcome -notin @("empty", "not_empty", "unknown") -or
       $Warnings.Count -lt 1 -or $Warnings.Count -gt 2 -or
       @($Warnings | Where-Object {$_ -notin $AllowedWarnings}).Count -ne 0 -or
       @($Warnings | Sort-Object -Unique).Count -ne $Warnings.Count) {
     throw "Blocked private-shadow evidence was invalid."
+  }
+  if ($null -ne $Record.provider_status_code) {
+    Assert-PrivateShadowInteger `
+      -Value $Record.provider_status_code -Minimum 100 -Maximum 599
+  }
+  if ($Record.provider_error_category -ceq "none" -and
+      ($null -ne $Record.provider_status_code -or
+       $Record.provider_reason -cne "none")) {
+    throw "Absent private-shadow provider diagnostics were inconsistent."
+  }
+  $InputStage = $Record.failure_stage -in @(
+    "upload_input", "import_input", "wait_for_import"
+  )
+  if (($InputStage -and $Record.failure_input_identity -ceq "none") -or
+      (-not $InputStage -and $Record.failure_input_identity -cne "none")) {
+    throw "Private-shadow failure input identity contradicted its stage."
   }
   $HasFileEmpty = $States -contains "file_reconciliation_empty"
   $HasStoreEmpty = $States -contains "store_reconciliation_empty"
@@ -348,6 +378,10 @@ function ConvertTo-PrivateShadowOrderedRecord {
   } else {
     $Common.byte_usage = [ordered]@{index_inputs=$Record.byte_usage.index_inputs}
     $Common.failure_stage = $Record.failure_stage
+    $Common.failure_input_identity = $Record.failure_input_identity
+    $Common.provider_error_category = $Record.provider_error_category
+    $Common.provider_status_code = $Record.provider_status_code
+    $Common.provider_reason = $Record.provider_reason
     $Common.provider_cleanup_outcome = $Record.provider_cleanup_outcome
     $Common.provider_reconciliation_outcome = $Record.provider_reconciliation_outcome
   }

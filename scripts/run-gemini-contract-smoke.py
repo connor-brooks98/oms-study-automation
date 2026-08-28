@@ -35,6 +35,7 @@ from oms_hub.providers.gemini.client import (
     translate_gemini_error,
 )
 from oms_hub.providers.gemini.errors import GeminiProviderError
+from oms_hub.providers.gemini.file_search import import_file_exact_wire
 from oms_hub.providers.gemini.models import GeminiConfig
 from oms_hub.source_trust_schema29 import project_schema29_index_input
 
@@ -89,6 +90,15 @@ _PRIVATE_FAILURE_STAGES = frozenset(
 )
 _PRIVATE_CLEANUP_OUTCOMES = frozenset({"complete", "failed", "unknown"})
 _PRIVATE_RECONCILIATION_OUTCOMES = frozenset({"empty", "not_empty", "unknown"})
+_PRIVATE_INPUT_IDENTITIES = frozenset(
+    {"none", "pptx", "pdf", "normalized_markdown", "visual_asset", "unknown"}
+)
+_PRIVATE_PROVIDER_CATEGORIES = frozenset(
+    {"none", "authentication", "quota", "transient", "contract", "provider"}
+)
+_PRIVATE_PROVIDER_REASONS = frozenset(
+    {"none", "sdk_contract", "timeout", "transport_error", "unknown_provider"}
+)
 
 
 class SmokeContractError(RuntimeError):
@@ -722,19 +732,17 @@ class GoogleGenaiSmokeSession:
         metadata: tuple[tuple[str, str], ...],
         chunking: object | None,
     ) -> str:
-        config: dict[str, object] = {
-            "custom_metadata": [
-                {"key": key, "string_value": value} for key, value in metadata
-            ]
-        }
-        if chunking is not None:
-            config["chunking_config"] = chunking
         async with self._clients.client() as client:
             operation = await _provider_call(
-                lambda: client.file_search_stores.import_file(
-                    file_search_store_name=store_name,
-                    file_name=file_name,
-                    config=config,
+                lambda: import_file_exact_wire(
+                    client.file_search_stores,
+                    store_name,
+                    file_name,
+                    [
+                        {"key": key, "string_value": value}
+                        for key, value in metadata
+                    ],
+                    chunking,
                 )
             )
         return _provider_identity(operation, "operation")
@@ -2211,6 +2219,14 @@ def _private_shadow_metadata(view: IndexInputView, item: Any) -> tuple[tuple[str
     )
 
 
+def _private_shadow_input_identity(input_key: object) -> str:
+    if input_key in {"pptx", "pdf", "normalized_markdown"}:
+        return str(input_key)
+    if isinstance(input_key, str) and re.fullmatch(r"image\.[0-9a-f]{64}", input_key):
+        return "visual_asset"
+    return "unknown"
+
+
 def _private_shadow_failure_record(
     preflight: Mapping[str, object],
     error: BaseException,
@@ -2219,6 +2235,7 @@ def _private_shadow_failure_record(
     states: list[str],
     cleanup_outcome: str,
     reconciliation_outcome: str,
+    input_identity: str = "none",
 ) -> dict[str, object]:
     safe_stage = (
         failure_stage if failure_stage in _PRIVATE_FAILURE_STAGES else "unknown"
@@ -2231,6 +2248,23 @@ def _private_shadow_failure_record(
         if reconciliation_outcome in _PRIVATE_RECONCILIATION_OUTCOMES
         else "unknown"
     )
+    safe_input_identity = (
+        input_identity if input_identity in _PRIVATE_INPUT_IDENTITIES else "unknown"
+    )
+    category = "none"
+    status_code: int | None = None
+    reason = "none"
+    if isinstance(error, GeminiProviderError):
+        if error.category in _PRIVATE_PROVIDER_CATEGORIES:
+            category = error.category
+        if (
+            not isinstance(error.provider_status_code, bool)
+            and isinstance(error.provider_status_code, int)
+            and 100 <= error.provider_status_code <= 599
+        ):
+            status_code = error.provider_status_code
+        if error.diagnostic_code in _PRIVATE_PROVIDER_REASONS:
+            reason = error.diagnostic_code
     warning = (
         error.reason
         if isinstance(error, SmokeContractError) and error.reason is not None
@@ -2252,6 +2286,10 @@ def _private_shadow_failure_record(
         "provider_operation_states": [*states, "private_shadow_failed"],
         "byte_usage": preflight["byte_usage"],
         "failure_stage": safe_stage,
+        "failure_input_identity": safe_input_identity,
+        "provider_error_category": category,
+        "provider_status_code": status_code,
+        "provider_reason": reason,
         "provider_cleanup_outcome": safe_cleanup,
         "provider_reconciliation_outcome": safe_reconciliation,
         "warnings": warnings,
@@ -2277,6 +2315,7 @@ async def _run_private_shadow_sequence(
     failure: BaseException | None = None
     failure_stage = "unknown"
     active_stage = "prior_state_check"
+    active_input_identity = "none"
     cleanup_failed = False
     cleanup_unknown = False
     document_cleanup_failed = False
@@ -2337,6 +2376,7 @@ async def _run_private_shadow_sequence(
         stores.append(store_name)
         states.append("store_created")
         for item, display_name in zip(manifest.inputs, display_names, strict=True):
+            active_input_identity = _private_shadow_input_identity(item.input_key)
             active_stage = "upload_input"
             file_name = await session.upload_input(
                 display_name,
@@ -2366,6 +2406,7 @@ async def _run_private_shadow_sequence(
         states.extend(
             (f"inputs_uploaded:{len(files)}", f"inputs_imported:{len(documents)}")
         )
+        active_input_identity = "none"
         file_bindings = tuple(files)
         active_stage = "positive_query"
         positive = await session.query_private(
@@ -2510,6 +2551,7 @@ async def _run_private_shadow_sequence(
                     states=states,
                     cleanup_outcome=cleanup_outcome,
                     reconciliation_outcome=reconciliation_outcome,
+                    input_identity=active_input_identity,
                 )
             )
         raise failure
@@ -2527,6 +2569,7 @@ async def _run_private_shadow_sequence(
                     states=states,
                     cleanup_outcome=cleanup_outcome,
                     reconciliation_outcome=reconciliation_outcome,
+                    input_identity="none",
                 )
             )
         raise cleanup_error from None

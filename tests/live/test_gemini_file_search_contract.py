@@ -134,6 +134,7 @@ class _SdkStores:
         self.calls: list[tuple[str, object]] = []
         self.documents = _SdkDocuments()
         self.listed_stores: tuple[object, ...] = ()
+        self._api_client = self
 
     async def create(self, *, config: object) -> object:
         self.calls.append(("create", config))
@@ -148,6 +149,16 @@ class _SdkStores:
     ) -> object:
         self.calls.append(("import_file", (file_search_store_name, file_name, config)))
         return SimpleNamespace(name="operations/sdk-operation")
+
+    async def async_request(
+        self,
+        method: str,
+        path: str,
+        body: object,
+        http_options: object,
+    ) -> object:
+        self.calls.append(("import_request", (method, path, body, http_options)))
+        return SimpleNamespace(body='{"name":"operations/sdk-operation"}')
 
     async def delete(self, *, name: str, config: object) -> None:
         self.calls.append(("delete", (name, config)))
@@ -758,13 +769,26 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
         for client in clients
         if client.aio.file_search_stores.calls
     )
-    assert import_call[0] == "import_file"
-    assert import_call[1][2]["chunking_config"] == {
-        "white_space_config": {
-            "max_tokens_per_chunk": 700,
-            "max_overlap_tokens": 100,
-        }
-    }
+    assert import_call == (
+        "import_request",
+        (
+            "post",
+            "fileSearchStores/private-store:importFile",
+            {
+                "fileName": "files/sdk-file",
+                "customMetadata": [
+                    {"key": "input_key", "stringValue": "normalized_markdown"}
+                ],
+                "chunkingConfig": {
+                    "whiteSpaceConfig": {
+                        "maxTokensPerChunk": 700,
+                        "maxOverlapTokens": 100,
+                    }
+                },
+            },
+            None,
+        ),
+    )
     assert set(interactions.calls[0]) == {"input", "model", "store", "tools"}
     assert set(interactions.calls[1]) == {
         "input",

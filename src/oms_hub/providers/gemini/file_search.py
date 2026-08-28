@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterable, Iterable, Mapping
 from dataclasses import dataclass
 from importlib import import_module
@@ -190,15 +191,13 @@ class GeminiFileSearchAdmin:
     ) -> OperationRef:
         store_name = _required_text(store_name, "store name")
         file_name = _required_text(file_name, "file name")
-        config = {"custom_metadata": metadata}
-        if chunking is not None:
-            config["chunking_config"] = chunking
         async with self.client_factory.client() as client:
-            operation = await _call_provider(
-                _stores_api(client).import_file,
-                file_search_store_name=store_name,
-                file_name=file_name,
-                config=config,
+            operation = await import_file_exact_wire(
+                _stores_api(client),
+                store_name,
+                file_name,
+                metadata,
+                chunking,
             )
         return OperationRef(_provider_identity(operation, "operation"))
 
@@ -345,6 +344,99 @@ async def _call_provider(method: Any, *args: object, **kwargs: object) -> Any:
         raise
     except Exception as error:
         raise _translate(error) from None
+
+
+async def import_file_exact_wire(
+    stores: object,
+    store_name: str,
+    file_name: str,
+    metadata: object,
+    chunking: object | None,
+) -> Mapping[str, object]:
+    """Send the pinned SDK's import request with its nested REST keys corrected."""
+
+    api_client = _safe_attr(stores, "_api_client")
+    request = _safe_attr(api_client, "async_request")
+    if not callable(request):
+        raise GeminiContractError("Gemini SDK import transport is unavailable.")
+    body: dict[str, object] = {
+        "fileName": _required_text(file_name, "file name"),
+        "customMetadata": _import_metadata(metadata),
+    }
+    if chunking is not None:
+        body["chunkingConfig"] = _import_chunking(chunking)
+    response = await _call_provider(
+        request,
+        "post",
+        f"{_required_text(store_name, 'store name')}:importFile",
+        body,
+        None,
+    )
+    payload = _value(response, "body")
+    try:
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8", errors="strict")
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise GeminiContractError(
+            "Gemini import response did not match the expected contract."
+        ) from None
+    if not isinstance(payload, Mapping):
+        raise GeminiContractError(
+            "Gemini import response did not match the expected contract."
+        )
+    return payload
+
+
+def _import_metadata(metadata: object) -> list[dict[str, str]]:
+    if isinstance(metadata, (str, bytes, Mapping)) or not isinstance(metadata, Iterable):
+        raise GeminiContractError("Gemini import metadata is invalid.")
+    entries = list(metadata)
+    if not entries or len(entries) > 100:
+        raise GeminiContractError("Gemini import metadata is invalid.")
+    result: list[dict[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping) or set(entry) != {"key", "string_value"}:
+            raise GeminiContractError("Gemini import metadata is invalid.")
+        result.append(
+            {
+                "key": _required_text(entry["key"], "metadata key"),
+                "stringValue": _required_text(
+                    entry["string_value"], "metadata value"
+                ),
+            }
+        )
+    return result
+
+
+def _import_chunking(chunking: object) -> dict[str, object]:
+    if not isinstance(chunking, Mapping) or set(chunking) != {"white_space_config"}:
+        raise GeminiContractError("Gemini import chunking configuration is invalid.")
+    white_space = chunking["white_space_config"]
+    if not isinstance(white_space, Mapping) or set(white_space) != {
+        "max_tokens_per_chunk",
+        "max_overlap_tokens",
+    }:
+        raise GeminiContractError("Gemini import chunking configuration is invalid.")
+    maximum = white_space["max_tokens_per_chunk"]
+    overlap = white_space["max_overlap_tokens"]
+    if (
+        isinstance(maximum, bool)
+        or not isinstance(maximum, int)
+        or maximum < 1
+        or isinstance(overlap, bool)
+        or not isinstance(overlap, int)
+        or overlap < 0
+        or overlap >= maximum
+    ):
+        raise GeminiContractError("Gemini import chunking configuration is invalid.")
+    return {
+        "whiteSpaceConfig": {
+            "maxTokensPerChunk": maximum,
+            "maxOverlapTokens": overlap,
+        }
+    }
 
 
 def _translate(error: Exception) -> GeminiProviderError:
