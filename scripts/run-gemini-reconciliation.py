@@ -57,7 +57,7 @@ class GoogleGenaiReconciliationSession:
             async with self._clients.client() as client:
                 entered = True
                 try:
-                    listed = await client.file_search_stores.list(config={"page_size": 100})
+                    listed = await client.file_search_stores.list(config={"page_size": 20})
                     stores = await _collect(listed)
                 except OverflowError:
                     raise
