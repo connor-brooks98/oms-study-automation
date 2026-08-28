@@ -204,6 +204,7 @@
     }
 
     .otp-row.is-success .otp-slot {
+      opacity: 1;
       border: 2px solid var(--success);
       outline: 2px solid rgb(47 143 87 / 22%);
       outline-offset: 2px;
@@ -229,7 +230,7 @@
     @keyframes draw-mark { to { stroke-dashoffset: 0; } }
     @keyframes slot-in { to { opacity: 1; transform: translateY(0) rotateX(0); } }
     @keyframes otp-success {
-      0% { transform: scale(.96); outline-color: transparent; box-shadow: 0 0 0 0 rgb(47 143 87 / 0%); }
+      0% { opacity: 1; transform: scale(.96); outline-color: transparent; box-shadow: 0 0 0 0 rgb(47 143 87 / 0%); }
       55% { transform: translateY(-.15rem) scale(1.06); outline-color: rgb(47 143 87 / 35%); background: #bfeace; box-shadow: 0 0 0 .38rem rgb(47 143 87 / 28%); }
       100% { transform: scale(1); outline-color: rgb(47 143 87 / 22%); background: #dcf5e6; box-shadow: 0 0 0 .22rem rgb(47 143 87 / 20%); }
     }

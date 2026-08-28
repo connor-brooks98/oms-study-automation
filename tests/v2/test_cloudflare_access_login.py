@@ -16,6 +16,7 @@ def test_access_login_preview_is_school_agnostic_and_accessible() -> None:
     assert page.count("class=\"otp-slot\"") == 6
     assert "grid-template-columns: minmax(0, 1fr) auto" in page
     assert "@keyframes otp-success" in page
+    assert ".otp-row.is-success .otp-slot {\n      opacity: 1;" in page
     assert 'window.location.assign(successUrl)' in page
     assert 'class="email-action"' in page
     assert "2000" in page
