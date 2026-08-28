@@ -29,12 +29,83 @@
     return raw.endsWith("s") && !raw.endsWith("ms") ? value * 1000 : value;
   }
 
+  function buttonIcon(label) {
+    const text = normalizeQuery(label);
+    if (/\b(download|export)\b/.test(text)) return "download";
+    if (/\b(remove|delete|discard|trash)\b/.test(text)) return "trash";
+    if (/^(continue|next|open|take|start|review|preview|apply|approve|browse|go to)\b/.test(text)) return "continue";
+    return "";
+  }
+
+  function isStatefulAction(button) {
+    if (!button?.matches?.("button.sh-btn")) return false;
+    if (button.matches?.('[role="tab"], .sh-seg__btn')) return false;
+    if ((button.getAttribute("type") || "submit").toLocaleLowerCase() === "submit") return true;
+    return /^(save|submit|publish|apply|approve|assign|attach|upload|queue|generate|process|stage|connect)\b/.test(
+      normalizeQuery(button.textContent),
+    );
+  }
+
+  function setButtonState(button, state = "idle") {
+    if (!button) return;
+    button.classList.add("sh-btn--stateful");
+    button.dataset.state = state;
+    if (state === "loading") button.setAttribute("aria-busy", "true");
+    else button.removeAttribute("aria-busy");
+  }
+
+  function enhanceButton(button) {
+    if (!button?.classList?.contains("sh-btn") || button.dataset.motionButton === "true") return;
+    button.dataset.motionButton = "true";
+    const icon = buttonIcon(button.textContent);
+    if (icon) button.classList.add(`sh-btn--${icon}`);
+    if (isStatefulAction(button)) {
+      button.classList.add("sh-btn--stateful");
+      button.dataset.state ||= "idle";
+    }
+    button.addEventListener("pointerdown", (event) => {
+      if (button.disabled || button.classList.contains("is-disabled")) return;
+      const rect = button.getBoundingClientRect();
+      const ripple = button.ownerDocument.createElement("span");
+      const size = Math.max(rect.width, rect.height) * 2;
+      ripple.className = "sh-btn__ripple";
+      ripple.style.setProperty("--ripple-x", `${event.clientX - rect.left}px`);
+      ripple.style.setProperty("--ripple-y", `${event.clientY - rect.top}px`);
+      ripple.style.setProperty("--ripple-size", `${size}px`);
+      ripple.addEventListener("animationend", () => ripple.remove(), { once: true });
+      button.append(ripple);
+    });
+  }
+
   function initialize(documentRef, windowRef) {
     if (!documentRef) return;
     const win = windowRef || (typeof window !== "undefined" ? window : null);
     const invokers = new Map();
     const dropdownTimers = new WeakMap();
     const dialogTimers = new WeakMap();
+    const buttonObserver = win?.MutationObserver ? new win.MutationObserver((records) => {
+      records.forEach((record) => {
+        if (record.type === "childList") {
+          record.addedNodes.forEach((node) => {
+            if (node.nodeType !== 1) return;
+            if (node.matches?.(".sh-btn")) enhanceButton(node);
+            node.querySelectorAll?.(".sh-btn").forEach(enhanceButton);
+          });
+        }
+        if (record.type === "attributes" && record.target.matches?.(".sh-btn--stateful")) {
+          const button = record.target;
+          if (button.disabled && button.dataset.state === "idle") setButtonState(button, "loading");
+          else if (!button.disabled && button.dataset.state === "loading") setButtonState(button, "idle");
+        }
+      });
+    }) : null;
+
+    documentRef.querySelectorAll(".sh-btn").forEach(enhanceButton);
+    buttonObserver?.observe(documentRef.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled"] });
+    documentRef.addEventListener("submit", (event) => {
+      const button = event.submitter;
+      if (button?.classList?.contains("sh-btn--stateful")) setButtonState(button, "loading");
+    });
 
     function restoreFocus(dialog) {
       const invoker = invokers.get(dialog);
@@ -210,5 +281,8 @@
     else initialize(document);
   }
 
-  return { initialize, matchesCommand, nextIndex, normalizeQuery, transitionDelay };
+  return {
+    initialize, matchesCommand, nextIndex, normalizeQuery, transitionDelay,
+    buttonIcon, enhanceButton, isStatefulAction, setButtonState,
+  };
 });

@@ -18,8 +18,8 @@ from oms_hub.document_processing.domain import (
     ParsedSegment,
     SegmentKind,
 )
-from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher, walk_shapes_with_paths
 from oms_hub.document_processing.ocr import LocalOcr
+from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher, walk_shapes_with_paths
 from oms_hub.document_processing.presentation_render import PresentationRenderer
 from oms_hub.files.office import OfficeUnavailableError
 from tests.document_processing.pptx_factory import SlideFixture, build_pptx, snapshot_for

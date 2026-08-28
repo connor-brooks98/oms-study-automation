@@ -1,5 +1,5 @@
-from types import SimpleNamespace
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException

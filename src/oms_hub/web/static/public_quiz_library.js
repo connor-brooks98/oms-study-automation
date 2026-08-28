@@ -107,6 +107,7 @@
     input.dataset.choice = "true"; input.required = true; input.value = value;
     const remove = documentRef.createElement("button");
     remove.type = "button"; remove.dataset.removeChoice = "true"; remove.textContent = "Remove choice";
+    remove.className = "sh-btn sh-btn--danger";
     label.append(radio, input, remove);
     return label;
   };
@@ -126,8 +127,8 @@
     (question.choices || ["", ""]).forEach((choice, index) => {
       choices.append(editorChoiceRow(documentRef, choice, index === Number(question.correct_index || 0)));
     });
-    const add = documentRef.createElement("button"); add.type = "button"; add.dataset.addChoice = "true"; add.textContent = "Add choice";
-    const remove = documentRef.createElement("button"); remove.type = "button"; remove.dataset.removeQuestion = "true"; remove.textContent = "Remove question";
+    const add = documentRef.createElement("button"); add.type = "button"; add.dataset.addChoice = "true"; add.textContent = "Add choice"; add.className = "sh-btn sh-btn--secondary";
+    const remove = documentRef.createElement("button"); remove.type = "button"; remove.dataset.removeQuestion = "true"; remove.textContent = "Remove question"; remove.className = "sh-btn sh-btn--danger";
     fieldset.append(choices, add, remove); return fieldset;
   };
 
@@ -312,6 +313,18 @@
   const closeOverflow = (element) => {
     const menu = element.closest?.("[data-quiz-overflow]");
     if (menu) menu.open = false;
+  };
+
+  const openContextMenu = (documentRef, row, event) => {
+    const menu = row?.querySelector?.("[data-quiz-overflow]");
+    if (!menu) return false;
+    event.preventDefault?.();
+    documentRef.querySelectorAll?.("[data-quiz-overflow][open]").forEach((open) => {
+      if (open !== menu) open.open = false;
+    });
+    menu.open = true;
+    menu.querySelector?.("summary")?.setAttribute?.("aria-expanded", "true");
+    return true;
   };
 
   const setProgressPill = (row, label) => {
@@ -535,9 +548,10 @@
         if (!menu.contains?.(event.target)) menu.open = false;
       });
     });
-    documentRef.addEventListener?.("click", (event) => {
-      documentRef.querySelectorAll?.("[data-quiz-overflow][open]").forEach((menu) => {
-        if (!menu.contains?.(event.target)) menu.open = false;
+    documentRef.querySelectorAll?.("[data-context-trigger]").forEach((row) => {
+      row.addEventListener?.("contextmenu", (event) => {
+        if (event.target?.closest?.("input, textarea, select")) return;
+        openContextMenu(documentRef, row, event);
       });
     });
     documentRef.querySelectorAll("[data-move-quiz-library]").forEach((button) => {
@@ -582,7 +596,7 @@
     bindPointerReorder,
     reorderFailureStorageKey, storeReorderFailure, consumeReorderFailure, keyboardReorderDirection,
     applyRenamedTitle, applyUnpublish, connectedFocusable, quizCountLabel, structuredPayload, readStructuredQuestions,
-    editorQuestion, loadPayloadEditor,
+    editorQuestion, loadPayloadEditor, openContextMenu,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) bootstrap(root.document);

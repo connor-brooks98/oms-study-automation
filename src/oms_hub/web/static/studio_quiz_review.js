@@ -172,7 +172,7 @@
     correct.setAttribute("aria-label", `Correct choice ${index + 1}`);
     correctLabel.append(correct, text(documentRef, "span", "Correct"));
     const overflow = documentRef.createElement("details");
-    overflow.className = "studio-review-choice-overflow";
+    overflow.className = "studio-review-choice-overflow t-context-menu";
     const summary = text(documentRef, "summary", "⋯", "sh-iconbtn");
     if (questionId) {
       overflow.dataset.stateKey = `question:${questionId}:choice:${index}:overflow`;
@@ -185,7 +185,10 @@
     if (questionId) remove.dataset.focusKey = `question:${questionId}:choice:${index}:remove`;
     remove.className = "sh-btn sh-btn--danger";
     remove.textContent = "Remove choice";
-    overflow.append(summary, remove);
+    const menu = documentRef.createElement("div");
+    menu.className = "studio-review-choice-menu t-context-menu__panel";
+    menu.append(remove);
+    overflow.append(summary, menu);
     row.append(choiceInput, correctLabel, overflow);
     return row;
   };

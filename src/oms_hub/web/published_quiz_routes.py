@@ -9,8 +9,8 @@ from oms_hub.study_generation.domain import (
     PublishedQuizLibrarySection,
     PublishedQuizOrderDirection,
 )
-from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.native_quiz import serialize_native_quiz
+from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.csrf import require_form_csrf
 

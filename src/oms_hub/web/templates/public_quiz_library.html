@@ -95,7 +95,7 @@
             </button>
             <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" hidden>
               {% for row in exam.quizzes %}
-              <article class="lecture-row sh-row" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}" {% if management_mode %}data-quiz-order-row data-order-url="/api/published-quizzes/{{ row.token }}/order"{% endif %}>
+              <article class="lecture-row sh-row" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}" {% if management_mode %}data-quiz-order-row data-order-url="/api/published-quizzes/{{ row.token }}/order" data-context-trigger{% endif %}>
                 {% if management_mode %}
                 <button
                   class="sh-iconbtn quiz-drag-handle"
@@ -126,9 +126,9 @@
                     title="Restart {{ row.title }}"
                   >↻</button>
                   {% if row.outline_url or management_mode %}
-                  <details class="quiz-overflow" data-quiz-overflow>
+                  <details class="quiz-overflow t-context-menu" data-quiz-overflow>
                     <summary class="sh-iconbtn" data-quiz-title-for="{{ row.token }}" aria-label="More actions for {{ row.title }}" title="More actions">⋯</summary>
-                    <div class="quiz-overflow__menu">
+                    <div class="quiz-overflow__menu t-context-menu__panel">
                       {% if row.outline_url %}
                       <a class="button outline-button sh-btn sh-btn--secondary" href="{{ row.outline_url }}" target="_blank" rel="noopener">Lecture Outline</a>
                       {% endif %}
@@ -157,7 +157,7 @@
                     <form data-payload-form data-payload-url="/api/published-quizzes/{{ row.token }}/payload" hidden>
                       <input type="hidden" data-payload-title value="{{ row.title }}">
                       <div data-payload-questions></div>
-                      <button type="button" data-add-question>Add question</button>
+                      <button class="sh-btn sh-btn--secondary" type="button" data-add-question>Add question</button>
                       <button class="sh-btn sh-btn--primary" type="submit">Save questions</button>
                     </form>
                   </details>
@@ -191,7 +191,7 @@
     {% endif %}
     <p class="reset-message" data-reset-message aria-live="polite"></p>
   </main>
-  {% if owner_navigation %}<script src="/static/study_hub_shell.js?v=20260825.12" defer></script>{% endif %}
+  {% if owner_navigation %}<script src="/static/study_hub_shell.js?v=20260828.2" defer></script>{% endif %}
   {% if management_mode %}
   <script src="/static/public_quiz_library.js?v={{ library_asset_version }}" defer></script>
   {% else %}

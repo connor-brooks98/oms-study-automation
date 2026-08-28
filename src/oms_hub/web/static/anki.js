@@ -821,7 +821,7 @@
         const row = element(documentRef, "li", "anki-deck-priority-item");
         row.append(element(documentRef, "span", "", `${index + 1}. ${deck}`));
         [["↑", -1], ["↓", 1]].forEach(([label, offset]) => {
-          const button = element(documentRef, "button", "button secondary anki-compact-button", label);
+          const button = element(documentRef, "button", "button secondary anki-compact-button sh-btn sh-btn--secondary", label);
           button.type = "button";
           button.disabled = index + offset < 0 || index + offset >= deckPriorities.length;
           button.addEventListener("click", () => {
@@ -830,7 +830,7 @@
           });
           row.append(button);
         });
-        const remove = element(documentRef, "button", "button secondary anki-compact-button", "Remove");
+        const remove = element(documentRef, "button", "button secondary anki-compact-button sh-btn sh-btn--secondary", "Remove");
         remove.type = "button";
         remove.addEventListener("click", () => {
           deckPriorities = deckPriorities.filter((_, itemIndex) => itemIndex !== index);

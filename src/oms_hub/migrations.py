@@ -1290,7 +1290,9 @@ def _validate_existing_artifact_graph(database: "Database", *, version: int) -> 
         else "NULL AS audit_source, a.slide_sha256 AS audit_pdf,"
     )
     outline_slide_columns = (
-        "o.slide_source_sha256 AS outline_source," if modern_slide_identity else "NULL AS outline_source,"
+        "o.slide_source_sha256 AS outline_source,"
+        if modern_slide_identity
+        else "NULL AS outline_source,"
     )
     with database.engine.connect() as connection:
         foreign_key_errors = connection.execute(text("PRAGMA foreign_key_check")).first()

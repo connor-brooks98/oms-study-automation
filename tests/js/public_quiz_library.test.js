@@ -3,6 +3,16 @@ const assert = require("node:assert/strict");
 
 const library = require("../../src/oms_hub/web/static/public_quiz_library.js");
 
+test("right click opens the row overflow menu without replacing the three-dot trigger", () => {
+  const menu = { open: false, querySelector: () => ({ setAttribute() {} }) };
+  const row = { querySelector: () => menu };
+  let prevented = false;
+  const documentRef = { querySelectorAll: () => [] };
+  assert.equal(library.openContextMenu(documentRef, row, { preventDefault: () => { prevented = true; } }), true);
+  assert.equal(menu.open, true);
+  assert.equal(prevented, true);
+});
+
 test("progress key matches the quiz player's versioned key", () => {
   assert.equal(
     library.progressKey("token", 4),

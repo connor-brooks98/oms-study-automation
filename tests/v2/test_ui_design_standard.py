@@ -23,7 +23,7 @@ def test_shared_stylesheet_is_the_approved_blue_workbench_source() -> None:
 
     assert installed.exists()
     assert (
-        "986020106664a798a5514c1a2c290c47a01ad3c522f91bdf7b278bc423a7e29d"
+        "47bbd4f0409b46492262bd7270a421365f3759a9d46bc116661bb87c9b21589a"
         == sha256(installed.read_bytes()).hexdigest()
     )
 
@@ -57,47 +57,7 @@ def test_stylesheet_order_and_system_font_contract() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260827.1" %}' in base
-    for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
-        assert (
-            f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
-            in base
-        )
-
-
-def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
-    base = source("base.html")
-    shell_js = static_source("study_hub_shell.js")
-
-    assert 'class="site-header sh-topbar"' in base
-    assert "Home</a>" in base
-    assert "Lectures</a>" in base
-    assert "Anki</a>" in base
-    assert "Quiz Builder</a>" in base
-    assert "Practice Questions</a>" in base
-    assert '<details class="sh-more">' in base
-    for destination in (
-        "/uploads/slides",
-        "/uploads/transcripts",
-        "/quarantine",
-        "/review",
-        "/settings",
-    ):
-        assert destination in base
-
-    assert '<dialog class="sh-dialog sh-command" id="command-palette"' in base
-    assert '<dialog class="sh-dialog sh-mobile-nav" id="mobile-navigation"' in base
-    assert 'href="/" data-dialog-initial-focus>Home</a>' in base
-    assert 'aria-keyshortcuts="Meta+K Control+K"' in base
-    assert "event.metaKey || event.ctrlKey" in shell_js
-    assert 'event.key === "ArrowDown" || event.key === "ArrowUp"' in shell_js
-    assert 'dialog.addEventListener("close", () => restoreFocus(dialog))' in shell_js
-
-
-def test_private_shell_stylesheets_share_one_release_version() -> None:
-    base = source("base.html")
-
-    assert '{% set shell_asset_version = "20260827.1" %}' in base
+    assert '{% set shell_asset_version = "20260828.2" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'

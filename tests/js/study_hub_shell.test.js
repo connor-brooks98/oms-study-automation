@@ -26,3 +26,25 @@ test("transition timing honors CSS units and reduced-motion preferences", () => 
   windowRef.matchMedia = () => ({ matches: true });
   assert.equal(shell.transitionDelay(windowRef, "--modal-duration"), 0);
 });
+
+test("button semantics reserve stateful motion for submissions and map action icons", () => {
+  const submission = {
+    matches: (selector) => selector === "button.sh-btn",
+    getAttribute: () => "submit",
+    textContent: "Save changes",
+  };
+  const download = { ...submission, getAttribute: () => "button", textContent: "Download lecture" };
+  const tab = {
+    ...submission,
+    matches: (selector) => selector === "button.sh-btn" || selector === '[role="tab"], .sh-seg__btn',
+    getAttribute: () => "button",
+    textContent: "Generate Quiz",
+  };
+  assert.equal(shell.isStatefulAction(submission), true);
+  assert.equal(shell.isStatefulAction(download), false);
+  assert.equal(shell.isStatefulAction(tab), false);
+  assert.equal(shell.buttonIcon(download.textContent), "download");
+  assert.equal(shell.buttonIcon("Remove source"), "trash");
+  assert.equal(shell.buttonIcon("Continue"), "continue");
+  assert.equal(shell.buttonIcon("Test connection"), "");
+});

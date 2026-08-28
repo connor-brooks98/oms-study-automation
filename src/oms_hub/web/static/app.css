@@ -2125,7 +2125,8 @@ code { overflow-wrap: anywhere; }
 .studio-review-choice-overflow { position: relative; }
 .studio-review-choice-overflow > summary { list-style: none; padding: 0; }
 .studio-review-choice-overflow > summary::-webkit-details-marker { display: none; }
-.studio-review-choice-overflow > .sh-btn { position: absolute; z-index: 2; right: 0; top: calc(100% + var(--sp-1)); white-space: nowrap; }
+.studio-review-choice-menu { position: absolute; z-index: 2; right: 0; top: calc(100% + var(--sp-1)); padding: var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--card); box-shadow: var(--shadow-dialog); }
+.studio-review-choice-menu > .sh-btn { white-space: nowrap; }
 .studio-review-sources { display: grid; gap: var(--sp-1); margin: 0; padding-left: 1.2rem; color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); }
 .studio-review-candidates { display: grid; min-width: 0; gap: var(--sp-3); }
 .studio-review-candidate-list { display: grid; min-width: 0; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--sp-3); }

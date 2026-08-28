@@ -578,7 +578,7 @@
           const review = element(
             documentRef,
             "button",
-            "quiz-secondary quiz-review sh-btn sh-btn--secondary",
+            "quiz-secondary quiz-review sh-btn sh-btn--secondary sh-btn--continue",
             "Review answers",
             "result-review",
           );
@@ -867,15 +867,18 @@
           const submit = element(
             documentRef,
             "button",
-            "quiz-primary quiz-submit sh-btn sh-btn--primary sh-btn--block",
+            "quiz-primary quiz-submit sh-btn sh-btn--primary sh-btn--block sh-btn--stateful",
             "Submit Answer",
             "submit",
           );
           submit.type = "button";
+          submit.dataset.state = "idle";
           submit.disabled = !questionProgress.selectedChoiceId;
           submit.addEventListener("click", async () => {
             pendingFocusKey = "forward";
             submit.disabled = true;
+            submit.dataset.state = "loading";
+            submit.setAttribute("aria-busy", "true");
             submit.textContent = "Checking…";
             try {
               const feedbackResult = await answerRequest(
@@ -886,11 +889,14 @@
                 csrfToken(documentRef),
               );
               state = recordFeedback(state, question.id, feedbackResult);
+              submit.dataset.state = "success";
               persist();
               render();
             } catch (error) {
               pendingFocusKey = undefined;
               submit.disabled = false;
+              submit.dataset.state = "error";
+              submit.removeAttribute("aria-busy");
               submit.textContent = "Submit Answer";
               const message = element(
                 documentRef,
@@ -927,10 +933,10 @@
         const forward = element(
           documentRef,
           "button",
-          "quiz-secondary sh-btn sh-btn--secondary",
+          "quiz-secondary sh-btn sh-btn--secondary sh-btn--continue",
           state.currentIndex === content.questions.length - 1
-            ? "See results →"
-            : "Next →",
+            ? "See results"
+            : "Next",
           "forward",
         );
         forward.type = "button";

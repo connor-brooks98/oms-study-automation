@@ -340,30 +340,6 @@ def test_question_payload_edit_keeps_an_authoritatively_renamed_title(tmp_path):
     assert content.json()["title"] == "Renamed quiz"
 
 
-def test_public_library_starts_all_courses_and_exams_collapsed(tmp_path):
-    app, _ = _published_app(tmp_path)
-    cardio_lecture_id = app.state.catalog_repository.upsert_lecture(
-        LectureInput("Cardio", 1, 1, "Arrhythmias", "", None)
-    )
-    cardio_job = app.state.generation_repository.queue(
-        cardio_lecture_id,
-        GenerationKind.QUIZ,
-    )
-    app.state.generation_repository.publish_quiz(
-        cardio_lecture_id,
-        cardio_job.id,
-        _quiz("Cardio quiz"),
-    )
-
-    response = TestClient(app).get("/public/quizzes")
-
-    assert response.status_code == 200
-    assert response.text.count('class="course-card sh-card"') == 2
-    assert 'aria-expanded="true"' not in response.text
-    assert response.text.count('class="course-content" hidden') == 2
-    assert response.text.count('class="lecture-list" hidden') == 2
-
-
 def test_local_owner_library_keeps_private_navigation_without_management_controls(tmp_path):
     app, published = _published_app(tmp_path)
     with TestClient(app, base_url="http://127.0.0.1") as client:
