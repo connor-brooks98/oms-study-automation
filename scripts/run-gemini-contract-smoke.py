@@ -625,7 +625,7 @@ class GoogleGenaiSmokeSession:
     async def find_stores(self, display_name: str) -> tuple[str, ...]:
         async with self._clients.client() as client:
             listed = await _provider_call(
-                lambda: client.file_search_stores.list(config={"page_size": 100})
+                lambda: client.file_search_stores.list(config={"page_size": 20})
             )
             if not isinstance(listed, AsyncIterable):
                 raise SmokeContractError(
