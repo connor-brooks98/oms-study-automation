@@ -72,6 +72,23 @@ _CITATION_CHECKS = (
 _PRIVATE_SLIDE_COORDINATE = re.compile(
     r"(?:slide )?([1-9][0-9]*)(?::[1-9][0-9]*)?\Z"
 )
+_PRIVATE_FAILURE_STAGES = frozenset(
+    {
+        "prior_state_check",
+        "create_store",
+        "upload_input",
+        "import_input",
+        "wait_for_import",
+        "positive_query",
+        "positive_validation",
+        "negative_query",
+        "negative_validation",
+        "cleanup",
+        "unknown",
+    }
+)
+_PRIVATE_CLEANUP_OUTCOMES = frozenset({"complete", "failed", "unknown"})
+_PRIVATE_RECONCILIATION_OUTCOMES = frozenset({"empty", "not_empty", "unknown"})
 
 
 class SmokeContractError(RuntimeError):
@@ -2194,12 +2211,60 @@ def _private_shadow_metadata(view: IndexInputView, item: Any) -> tuple[tuple[str
     )
 
 
+def _private_shadow_failure_record(
+    preflight: Mapping[str, object],
+    error: BaseException,
+    *,
+    failure_stage: str,
+    states: list[str],
+    cleanup_outcome: str,
+    reconciliation_outcome: str,
+) -> dict[str, object]:
+    safe_stage = (
+        failure_stage if failure_stage in _PRIVATE_FAILURE_STAGES else "unknown"
+    )
+    safe_cleanup = (
+        cleanup_outcome if cleanup_outcome in _PRIVATE_CLEANUP_OUTCOMES else "unknown"
+    )
+    safe_reconciliation = (
+        reconciliation_outcome
+        if reconciliation_outcome in _PRIVATE_RECONCILIATION_OUTCOMES
+        else "unknown"
+    )
+    warning = (
+        error.reason
+        if isinstance(error, SmokeContractError) and error.reason is not None
+        else "private_shadow_failed"
+    )
+    warnings = [warning]
+    cleanup_warning = {
+        "failed": "private_cleanup_failed",
+        "unknown": "private_cleanup_unknown",
+    }.get(safe_cleanup)
+    if cleanup_warning is not None and cleanup_warning not in warnings:
+        warnings.append(cleanup_warning)
+    return {
+        "status": "blocked",
+        "source_revision_hash": preflight["source_revision_hash"],
+        "document_types": preflight["document_types"],
+        "page_count": preflight["page_count"],
+        "slide_count": preflight["slide_count"],
+        "provider_operation_states": [*states, "private_shadow_failed"],
+        "byte_usage": preflight["byte_usage"],
+        "failure_stage": safe_stage,
+        "provider_cleanup_outcome": safe_cleanup,
+        "provider_reconciliation_outcome": safe_reconciliation,
+        "warnings": warnings,
+    }
+
+
 async def _run_private_shadow_sequence(
     session: PrivateShadowSession,
     view: IndexInputView,
     preflight: dict[str, object],
     *,
     clock: Callable[[], float],
+    failure_evidence: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if session.model_contract != PRIVATE_SHADOW_MODEL_CONTRACT:
         raise LiveSmokeBlocked("private shadow model contract mismatch")
@@ -2210,7 +2275,15 @@ async def _run_private_shadow_sequence(
     documents: list[str] = []
     states: list[str] = []
     failure: BaseException | None = None
+    failure_stage = "unknown"
+    active_stage = "prior_state_check"
     cleanup_failed = False
+    cleanup_unknown = False
+    document_cleanup_failed = False
+    reconciliation_unknown = False
+    reconciliation_not_empty = False
+    file_reconciliation_empty = False
+    store_reconciliation_empty = False
     positive: PrivateShadowQueryAudit | None = None
     negative: PrivateShadowQueryAudit | None = None
     run_token = uuid4().hex
@@ -2220,12 +2293,43 @@ async def _run_private_shadow_sequence(
     )
     store_display_name = f"task-2-8-private-{run_token}"
     started = clock()
-    if await session.find_stores(store_display_name) or await session.find_files(
-        display_names
-    ):
-        raise LiveSmokeBlocked("private shadow prior operator state mismatch")
+    try:
+        prior_state_present = bool(
+            await session.find_stores(store_display_name)
+            or await session.find_files(display_names)
+        )
+    except BaseException as prior_check_error:
+        if failure_evidence is not None:
+            failure_evidence.update(
+                _private_shadow_failure_record(
+                    preflight,
+                    prior_check_error,
+                    failure_stage=active_stage,
+                    states=states,
+                    cleanup_outcome="unknown",
+                    reconciliation_outcome="unknown",
+                )
+            )
+        raise
+    if prior_state_present:
+        prior_state_mismatch = LiveSmokeBlocked(
+            "private shadow prior operator state mismatch"
+        )
+        if failure_evidence is not None:
+            failure_evidence.update(
+                _private_shadow_failure_record(
+                    preflight,
+                    prior_state_mismatch,
+                    failure_stage=active_stage,
+                    states=states,
+                    cleanup_outcome="unknown",
+                    reconciliation_outcome="not_empty",
+                )
+            )
+        raise prior_state_mismatch
     states.append("prior_operator_state_empty")
     try:
+        active_stage = "create_store"
         store_name = await session.create_store(
             store_display_name,
             PRIVATE_SHADOW_MODEL_CONTRACT[2],
@@ -2233,6 +2337,7 @@ async def _run_private_shadow_sequence(
         stores.append(store_name)
         states.append("store_created")
         for item, display_name in zip(manifest.inputs, display_names, strict=True):
+            active_stage = "upload_input"
             file_name = await session.upload_input(
                 display_name,
                 item.path,
@@ -2249,17 +2354,20 @@ async def _run_private_shadow_sequence(
                 if item.input_key == "normalized_markdown"
                 else None
             )
+            active_stage = "import_input"
             operation = await session.import_input(
                 store_name,
                 file_name,
                 _private_shadow_metadata(view, item),
                 chunking,
             )
+            active_stage = "wait_for_import"
             documents.append(await session.wait_for_import(operation))
         states.extend(
             (f"inputs_uploaded:{len(files)}", f"inputs_imported:{len(documents)}")
         )
         file_bindings = tuple(files)
+        active_stage = "positive_query"
         positive = await session.query_private(
             store_name,
             (
@@ -2271,6 +2379,7 @@ async def _run_private_shadow_sequence(
             manifest=manifest,
             file_bindings=file_bindings,
         )
+        active_stage = "positive_validation"
         if (
             positive.citation_count < 1
             or positive.resolved_citation_count != positive.citation_count
@@ -2282,6 +2391,7 @@ async def _run_private_shadow_sequence(
         states.append("positive_query_complete")
         if view.lecture_id == PRIVATE_SHADOW_WRONG_LECTURE_ID:
             raise LiveSmokeBlocked("private shadow wrong-scope identity collided")
+        active_stage = "negative_query"
         negative = await session.query_private(
             store_name,
             (
@@ -2294,6 +2404,7 @@ async def _run_private_shadow_sequence(
             file_bindings=file_bindings,
             require_structured_no_result=True,
         )
+        active_stage = "negative_validation"
         if (
             negative.citation_count != 0
             or negative.supported is not False
@@ -2306,17 +2417,20 @@ async def _run_private_shadow_sequence(
         states.append("wrong_scope_query_complete")
     except BaseException as error:
         failure = error
+        failure_stage = active_stage
     finally:
         for document_name in reversed(documents):
             try:
                 await session.delete_document(document_name)
             except BaseException:
                 cleanup_failed = True
-        states.append(f"documents_deleted:{len(documents)}")
+                document_cleanup_failed = True
+        states.append(f"documents_delete_attempted:{len(documents)}")
         try:
             discovered = await session.find_files(display_names)
         except BaseException:
             cleanup_failed = True
+            cleanup_unknown = True
         else:
             known = {file_name for file_name, _ in files}
             files.extend(
@@ -2329,18 +2443,24 @@ async def _run_private_shadow_sequence(
                 await session.delete_file(file_name)
             except BaseException:
                 cleanup_failed = True
-        states.append(f"files_deleted:{len(files)}")
+        states.append(f"files_delete_attempted:{len(files)}")
         try:
-            if await session.find_files(display_names):
+            remaining_files = await session.find_files(display_names)
+            if remaining_files:
                 cleanup_failed = True
+                reconciliation_not_empty = True
             else:
+                file_reconciliation_empty = True
                 states.append("file_reconciliation_empty")
         except BaseException:
             cleanup_failed = True
+            cleanup_unknown = True
+            reconciliation_unknown = True
         try:
             discovered_stores = await session.find_stores(store_display_name)
         except BaseException:
             cleanup_failed = True
+            cleanup_unknown = True
         else:
             known_stores = set(stores)
             stores.extend(
@@ -2351,21 +2471,65 @@ async def _run_private_shadow_sequence(
                 await session.delete_store(current_store)
             except BaseException:
                 cleanup_failed = True
-        states.append(f"stores_deleted:{len(stores)}")
+        states.append(f"stores_delete_attempted:{len(stores)}")
         try:
-            if await session.find_stores(store_display_name):
+            remaining_stores = await session.find_stores(store_display_name)
+            if remaining_stores:
                 cleanup_failed = True
+                reconciliation_not_empty = True
             else:
+                store_reconciliation_empty = True
                 states.append("store_reconciliation_empty")
         except BaseException:
             cleanup_failed = True
+            cleanup_unknown = True
+            reconciliation_unknown = True
+    cleanup_outcome = (
+        "unknown"
+        if cleanup_unknown
+        else "failed"
+        if cleanup_failed
+        else "complete"
+    )
+    reconciliation_outcome = (
+        "unknown"
+        if reconciliation_unknown or document_cleanup_failed
+        else "not_empty"
+        if reconciliation_not_empty
+        else "empty"
+        if file_reconciliation_empty and store_reconciliation_empty
+        else "unknown"
+    )
     if failure is not None:
+        if failure_evidence is not None:
+            failure_evidence.update(
+                _private_shadow_failure_record(
+                    preflight,
+                    failure,
+                    failure_stage=failure_stage,
+                    states=states,
+                    cleanup_outcome=cleanup_outcome,
+                    reconciliation_outcome=reconciliation_outcome,
+                )
+            )
         raise failure
     if cleanup_failed:
-        raise SmokeContractError(
+        cleanup_error = SmokeContractError(
             "private shadow cleanup failed",
             reason="private_cleanup_failed",
-        ) from None
+        )
+        if failure_evidence is not None:
+            failure_evidence.update(
+                _private_shadow_failure_record(
+                    preflight,
+                    cleanup_error,
+                    failure_stage="cleanup",
+                    states=states,
+                    cleanup_outcome=cleanup_outcome,
+                    reconciliation_outcome=reconciliation_outcome,
+                )
+            )
+        raise cleanup_error from None
     assert positive is not None and negative is not None
     return {
         **preflight,
@@ -2393,7 +2557,10 @@ async def run_authorized_private_shadow(
     session_factory: Callable[[str], PrivateShadowSession] | None = None,
     parser: Any | None = None,
     clock: Callable[[], float] = monotonic,
+    failure_evidence: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    if failure_evidence is not None:
+        failure_evidence.clear()
     if os.getenv("RUN_PRIVATE_GEMINI_SHADOW") != "1":
         raise LiveSmokeBlocked(
             "RUN_PRIVATE_GEMINI_SHADOW=1 is required for a private shadow"
@@ -2439,7 +2606,13 @@ async def run_authorized_private_shadow(
         if session_factory is None
         else session_factory(normalized_key)
     )
-    return await _run_private_shadow_sequence(session, view, preflight, clock=clock)
+    return await _run_private_shadow_sequence(
+        session,
+        view,
+        preflight,
+        clock=clock,
+        failure_evidence=failure_evidence,
+    )
 
 
 async def run_authorized_live_smoke(

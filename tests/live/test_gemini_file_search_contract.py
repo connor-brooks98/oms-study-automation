@@ -2838,8 +2838,11 @@ def test_private_shadow_failure_evidence_is_conservative_and_redacted(
     monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
     monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
     approved = smoke._private_shadow_preflight_from_view(view)
+    expected_error = (
+        RuntimeError if session_kwargs.get("unknown_primary") else smoke.SmokeContractError
+    )
 
-    with pytest.raises(BaseException):
+    with pytest.raises(expected_error):
         asyncio.run(
             smoke.run_authorized_private_shadow(
                 "29",
