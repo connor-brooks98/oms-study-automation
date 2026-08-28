@@ -140,14 +140,20 @@ def main() -> int:
     except BaseException:
         record = _resolve_failure_record(failure_evidence)
     finally:
+        cleanup_failed = False
         if database is not None:
-            database.close()
+            try:
+                database.close()
+            except BaseException:
+                cleanup_failed = True
         if scratch_valid:
             try:
                 reviewed._cleanup(scratch)
                 scratch.rmdir()
             except BaseException:
-                record = _fail_closed_record()
+                cleanup_failed = True
+        if cleanup_failed:
+            record = _fail_closed_record()
     print(json.dumps(record, sort_keys=True))
     return 0 if record["status"] == "passed" else 1
 
