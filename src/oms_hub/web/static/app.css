@@ -514,15 +514,16 @@ select:not(.sh-select):not(.sh-control) {
 }
 .selected-files { display: grid; gap: .35rem; margin-top: .7rem; }
 .selected-file {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7ch auto;
+  align-items: center;
   gap: 1rem;
   padding: .6rem .75rem;
   border-radius: .45rem;
   background: var(--surface);
   font-size: .78rem;
 }
-.selected-file-size { color: var(--text-3-strong); font-family: "IBM Plex Mono", monospace; }
+.selected-file-size { color: var(--text-3-strong); font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .upload-submit { margin-top: .2rem; }
 .upload-results { padding: 1.2rem; margin-top: 1rem; }
 .upload-results h2 { margin-bottom: .55rem; }
@@ -2330,7 +2331,6 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 .upload-progress::-webkit-progress-value { background: var(--processing); border-radius: var(--r-pill); }
 .selected-file { min-width: 0; }
 .selected-file-name { min-width: 0; overflow-wrap: anywhere; }
-.selected-file-size { color: var(--text-3-strong); flex: none; }
 .duplicate-actions { flex-wrap: wrap; }
 
 .review-section { padding-block: var(--sp-5); border-top: 1px solid var(--border); }

@@ -258,6 +258,8 @@ def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
     assert "overflow-wrap: anywhere" in app_css
     assert ".selected-file-name" in app_css
     assert ".selected-file-size" in app_css
+    assert "grid-template-columns: minmax(0, 1fr) 7ch auto" in app_css
+    assert "font-variant-numeric: tabular-nums" in app_css
     assert ".file-card .lecture-card-actions" in app_css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in app_css
     assert ".lecture-card-actions .sh-btn" in app_css
