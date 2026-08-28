@@ -87,7 +87,8 @@ function Assert-PrivateShadowCommonRecord {
   Assert-PrivateShadowInteger `
     -Value $Record.byte_usage.index_inputs -Minimum 1 -Maximum 1099511627776
   Assert-PrivateShadowStates -States @($Record.provider_operation_states)
-  if (@($Record.warnings | Where-Object {$_ -isnot [string]}).Count -ne 0) {
+  if ($null -eq $Record.warnings -or
+      @($Record.warnings | Where-Object {$_ -isnot [string]}).Count -ne 0) {
     throw "Private-shadow warnings were invalid."
   }
 }
@@ -211,10 +212,14 @@ function Assert-PrivateShadowRecord {
     $CleanupStates = @($States[$CleanupIndex..($States.Count - 1)])
     $Position = 0
     if ($CleanupStates.Count -lt 4 -or
-        $CleanupStates[$Position++] -notmatch '^documents_delete_attempted:(0|[1-9][0-9]{0,4})$' -or
-        $CleanupStates[$Position++] -notmatch '^files_delete_attempted:(0|[1-9][0-9]{0,4})$') {
+        $CleanupStates[$Position++] -notmatch '^documents_delete_attempted:(0|[1-9][0-9]{0,4})$') {
       throw "Private-shadow cleanup progress was malformed."
     }
+    $DocumentDeleteCount = [int]$Matches[1]
+    if ($CleanupStates[$Position++] -notmatch '^files_delete_attempted:(0|[1-9][0-9]{0,4})$') {
+      throw "Private-shadow cleanup progress was malformed."
+    }
+    $FileDeleteCount = [int]$Matches[1]
     if ($Position -lt $CleanupStates.Count -and
         $CleanupStates[$Position] -ceq "file_reconciliation_empty") {
       $Position++
@@ -223,6 +228,7 @@ function Assert-PrivateShadowRecord {
         $CleanupStates[$Position++] -notmatch '^stores_delete_attempted:(0|[1-9][0-9]{0,4})$') {
       throw "Private-shadow store cleanup progress was malformed."
     }
+    $StoreDeleteCount = [int]$Matches[1]
     if ($Position -lt $CleanupStates.Count -and
         $CleanupStates[$Position] -ceq "store_reconciliation_empty") {
       $Position++
@@ -272,6 +278,15 @@ function Assert-PrivateShadowRecord {
     }
     if (-not $ProgressValid) {
       throw "Private-shadow failure stage contradicted operation progress."
+    }
+    if ($HasInputPair -and
+        ($DocumentDeleteCount -ne $InputCount -or
+         $FileDeleteCount -ne $InputCount -or
+         $StoreDeleteCount -ne 1)) {
+      throw "Private-shadow completed-input cleanup counts were invalid."
+    }
+    if ($IsAfterStore -and $StoreDeleteCount -ne 1) {
+      throw "Private-shadow post-store cleanup count was invalid."
     }
   }
 

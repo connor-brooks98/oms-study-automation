@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$PythonExecutable,
+  [Parameter(Mandatory = $true)][string]$ProjectRoot,
   [Parameter(Mandatory = $true)][string]$OperatorScript,
   [Parameter(Mandatory = $true)][string]$DiagnosticRoot,
   [Parameter(Mandatory = $true)][string]$SafeResultPath,
@@ -10,6 +11,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $Utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+$ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
 $DiagnosticRoot = [System.IO.Path]::GetFullPath($DiagnosticRoot)
 $SafeResultPath = [System.IO.Path]::GetFullPath($SafeResultPath)
 $SafeStatusPath = [System.IO.Path]::GetFullPath($SafeStatusPath)
@@ -60,10 +62,15 @@ function Protect-PrivateShadowDirectory {
 function Resolve-PrivateShadowSafePath {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
-    [switch]$ExistingLeaf
+    [switch]$ExistingLeaf,
+    [switch]$ExistingContainer
   )
   $FullPath = [System.IO.Path]::GetFullPath($Path)
-  $ExistingPath = if ($ExistingLeaf) {$FullPath} else {Split-Path -Parent $FullPath}
+  $ExistingPath = if ($ExistingLeaf -or $ExistingContainer) {
+    $FullPath
+  } else {
+    Split-Path -Parent $FullPath
+  }
   $RequiredType = if ($ExistingLeaf) {"Leaf"} else {"Container"}
   if (-not (Test-Path -LiteralPath $ExistingPath -PathType $RequiredType)) {
     throw "Private-shadow path input was unavailable."
@@ -79,7 +86,7 @@ function Resolve-PrivateShadowSafePath {
     $Cursor = $Next
   }
   $CanonicalExisting = (Get-Item -LiteralPath $ExistingPath -Force).FullName
-  if ($ExistingLeaf) {
+  if ($ExistingLeaf -or $ExistingContainer) {
     return [System.IO.Path]::GetFullPath($CanonicalExisting)
   }
   return [System.IO.Path]::GetFullPath(
@@ -126,6 +133,8 @@ function Write-PrivateShadowStatus {
 try {
   $PythonExecutable = Resolve-PrivateShadowSafePath `
     -Path $PythonExecutable -ExistingLeaf
+  $ProjectRoot = Resolve-PrivateShadowSafePath `
+    -Path $ProjectRoot -ExistingContainer
   $OperatorScript = Resolve-PrivateShadowSafePath `
     -Path $OperatorScript -ExistingLeaf
   $EvidenceScript = Resolve-PrivateShadowSafePath `
@@ -133,12 +142,18 @@ try {
   $DiagnosticRoot = Resolve-PrivateShadowSafePath -Path $DiagnosticRoot
   $SafeResultPath = Resolve-PrivateShadowSafePath -Path $SafeResultPath
   $SafeStatusPath = Resolve-PrivateShadowSafePath -Path $SafeStatusPath
-  $OperatorRoot = Split-Path -Parent $OperatorScript
-  if ($DiagnosticRoot -ceq $OperatorRoot -or $DiagnosticRoot.StartsWith(
-      $OperatorRoot + [System.IO.Path]::DirectorySeparatorChar,
+  $ProjectPrefix = $ProjectRoot.TrimEnd('\', '/') +
+    [System.IO.Path]::DirectorySeparatorChar
+  if (-not $OperatorScript.StartsWith(
+      $ProjectPrefix, [System.StringComparison]::OrdinalIgnoreCase
+  )) {
+    throw "Private-shadow operator must be inside the project root."
+  }
+  if ($DiagnosticRoot -ceq $ProjectRoot -or $DiagnosticRoot.StartsWith(
+      $ProjectPrefix,
       [System.StringComparison]::OrdinalIgnoreCase
   )) {
-    throw "Private-shadow diagnostic root must be outside the operator root."
+    throw "Private-shadow diagnostic root must be outside the project root."
   }
   $RawStdout = Join-Path $DiagnosticRoot "operator.stdout"
   $RawStderr = Join-Path $DiagnosticRoot "operator.stderr"
