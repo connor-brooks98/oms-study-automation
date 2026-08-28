@@ -6,10 +6,10 @@ import json
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 
-def _load_reviewed_operator():
+def _load_reviewed_operator() -> ModuleType:
     path = Path(__file__).with_name("private-shadow-operator-reviewed.py")
     spec = importlib.util.spec_from_file_location("task_2_8_reviewed_private_operator", path)
     if spec is None or spec.loader is None:

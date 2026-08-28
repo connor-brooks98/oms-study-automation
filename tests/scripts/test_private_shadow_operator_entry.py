@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import ModuleType
 
 from tests.scripts.private_shadow_entrypoint_fixture import corrected_blocked_record
 
@@ -29,7 +30,7 @@ FAILURE_KEYS = {
 }
 
 
-def _load_entrypoint():
+def _load_entrypoint() -> ModuleType:
     assert ENTRYPOINT.is_file(), "composition entrypoint must be committed"
     spec = importlib.util.spec_from_file_location("task_2_8_composition_entrypoint", ENTRYPOINT)
     assert spec is not None and spec.loader is not None
