@@ -1055,6 +1055,26 @@ def test_authorized_entrypoint_reads_stored_key_once_without_retaining_it(
     assert "stored-synthetic-key" not in json.dumps(record, sort_keys=True)
 
 
+def test_authorized_entrypoint_uses_shared_manifest_import_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _load_smoke()
+
+    class LegacyPdfSession(_FakeSession):
+        async def import_input(self, *args: object, **kwargs: object) -> str:
+            del args, kwargs
+            raise RuntimeError("shared-import-sentinel")
+
+    monkeypatch.setenv("RUN_LIVE_GEMINI_TESTS", "1")
+    with pytest.raises(RuntimeError, match="shared-import-sentinel"):
+        asyncio.run(
+            smoke.run_authorized_live_smoke(
+                secret_store=_FakeSecrets("stored-synthetic-key"),
+                session_factory=lambda _: LegacyPdfSession(smoke),
+            )
+        )
+
+
 def test_authorized_entrypoint_fails_closed_when_stored_key_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
