@@ -66,13 +66,13 @@ function Initialize-CleanupFixture {
 function New-CleanupTaskFixture {
   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   [pscustomobject]@{
-    TaskName = $taskName
-    TaskPath = $taskPath
+    TaskName = $script:taskName
+    TaskPath = $script:taskPath
     State = $global:CleanupTaskState
     Actions = @([pscustomobject]@{
-      Execute = $expectedExecutable
-      Arguments = $expectedArguments
-      WorkingDirectory = $root
+      Execute = $script:expectedExecutable
+      Arguments = $script:expectedArguments
+      WorkingDirectory = $script:root
     })
     Principal = [pscustomobject]@{
       UserId = $sid
