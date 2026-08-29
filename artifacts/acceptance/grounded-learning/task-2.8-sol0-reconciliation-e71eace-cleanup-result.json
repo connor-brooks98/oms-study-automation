@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "cleanup_passed_review_pending",
+  "status": "cleanup_passed_reviewed_ship",
   "authorization": {
     "authorized_by": "Connor",
     "composition_commit": "f9f3adc70f9f678ec4e5014130d19319018784c4",
@@ -74,6 +74,11 @@
     "production_or_gate_mutated": false,
     "merge_push_or_deploy_performed": false
   },
-  "specification_review": "PENDING",
-  "quality_security_review": "PENDING"
+  "independent_reviews": {
+    "reviewed_result_commit": "2cef97899a371ba5e72d831e31194ce14e07b387",
+    "reviewed_result_tree": "b8b9d3392609b9c7501fd48189903256c66a46fe",
+    "specification": "SHIP_no_findings",
+    "quality_security": "SHIP_no_findings",
+    "review_boundary": "repository_only_no_external_access"
+  }
 }
