@@ -97,7 +97,15 @@ _PRIVATE_PROVIDER_CATEGORIES = frozenset(
     {"none", "authentication", "quota", "transient", "contract", "provider"}
 )
 _PRIVATE_PROVIDER_REASONS = frozenset(
-    {"none", "sdk_contract", "timeout", "transport_error", "unknown_provider"}
+    {
+        "invalid_argument",
+        "none",
+        "sdk_contract",
+        "timeout",
+        "transport_error",
+        "unknown_provider",
+        "unsupported_mime_type",
+    }
 )
 
 

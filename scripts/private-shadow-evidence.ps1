@@ -191,7 +191,8 @@ function Assert-PrivateShadowRecord {
     "none", "authentication", "quota", "transient", "contract", "provider"
   )
   $ProviderReasons = @(
-    "none", "sdk_contract", "timeout", "transport_error", "unknown_provider"
+    "none", "invalid_argument", "sdk_contract", "timeout", "transport_error",
+    "unknown_provider", "unsupported_mime_type"
   )
   if ($ProcessExitCode -eq 0 -or $States[-1] -cne "private_shadow_failed" -or
       $Record.failure_stage -notin $FailureStages -or

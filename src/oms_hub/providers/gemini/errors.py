@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 _SAFE_DIAGNOSTIC_CODES = frozenset(
-    {"sdk_contract", "timeout", "transport_error", "unknown_provider"}
+    {
+        "invalid_argument",
+        "sdk_contract",
+        "timeout",
+        "transport_error",
+        "unknown_provider",
+        "unsupported_mime_type",
+    }
 )
 
 

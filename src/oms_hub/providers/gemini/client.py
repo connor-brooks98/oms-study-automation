@@ -28,6 +28,8 @@ _REQUEST_ID_HEADERS = frozenset(
         "x-generation-id",
     }
 )
+_INVALID_ARGUMENT = "INVALID_ARGUMENT"
+_UNSUPPORTED_MIME_PREFIX = "Unsupported MIME type:"
 
 
 def _official_sdk_factory(
@@ -164,7 +166,7 @@ def translate_gemini_error(exc: Exception) -> GeminiProviderError:
         "Gemini provider request failed.",
         provider_status_code=status_code,
         provider_request_id=request_id,
-        diagnostic_code="unknown_provider",
+        diagnostic_code=_safe_provider_diagnostic(exc),
     )
 
 
@@ -187,6 +189,15 @@ def _safe_status_code(exc: Exception) -> int | None:
                 if 100 <= parsed <= 599:
                     return parsed
     return None
+
+
+def _safe_provider_diagnostic(exc: Exception) -> str:
+    if _safe_attr(exc, "status") != _INVALID_ARGUMENT:
+        return "unknown_provider"
+    message = _safe_attr(exc, "message")
+    if type(message) is str and message.startswith(_UNSUPPORTED_MIME_PREFIX):
+        return "unsupported_mime_type"
+    return "invalid_argument"
 
 
 def _safe_request_id(exc: Exception) -> str | None:
