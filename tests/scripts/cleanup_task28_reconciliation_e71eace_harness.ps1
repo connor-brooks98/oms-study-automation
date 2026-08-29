@@ -67,6 +67,8 @@ function Initialize-CleanupFixture {
   )
   $payload = Join-Path $root 'payload.txt'
   [IO.File]::WriteAllText($payload,'bound cleanup payload')
+  $fixtureLauncher = Join-Path $root 'reconciliation-launcher.ps1'
+  [IO.File]::WriteAllText($fixtureLauncher,'fixture reconciliation launcher')
 
   $privateFiles = [ordered]@{
     'source-manifest.sha256' = ((1..674 | ForEach-Object {
@@ -90,9 +92,12 @@ function Initialize-CleanupFixture {
   }
   $payloadHash = (Microsoft.PowerShell.Utility\Get-FileHash `
     -LiteralPath $payload -Algorithm SHA256).Hash.ToLowerInvariant()
+  $launcherHash = (Microsoft.PowerShell.Utility\Get-FileHash `
+    -LiteralPath $fixtureLauncher -Algorithm SHA256).Hash.ToLowerInvariant()
   [IO.File]::WriteAllText(
     $rootManifest,
-    $payloadHash + '  payload.txt' + [char]10,
+    $payloadHash + '  payload.txt' + [char]10 +
+      $launcherHash + '  reconciliation-launcher.ps1' + [char]10,
     [Text.UTF8Encoding]::new($false)
   )
   $manifestHash = (Microsoft.PowerShell.Utility\Get-FileHash `
