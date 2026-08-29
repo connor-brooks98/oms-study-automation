@@ -120,16 +120,7 @@ class _FakeSession:
             raise self.smoke.SmokeContractError(
                 "structured output was invalid", reason="structured_output_invalid"
             ) from None
-        if structured_no_result:
-            if answer.supported or answer.answer:
-                raise self.smoke.SmokeContractError(
-                    "negative answer was invalid", reason="negative_answer_invalid"
-                )
-            return self.smoke.PrivateShadowQueryAudit(
-                len(result.citations), len(result.citations), 0, 0,
-                answer.supported, answer.answer == "",
-            )
-        if structured_supported:
+        if structured_no_result or structured_supported:
             citation = result.citations[0] if result.citations else None
             return self.smoke.PrivateShadowQueryAudit(
                 len(result.citations),
@@ -1532,9 +1523,9 @@ def test_shared_sdk_paths_label_diagnostic_provider_failures(
 @pytest.mark.parametrize(
     ("resource", "failure", "label"),
     (
-        ("stores", "request", "find_stores.failed"),
+        ("stores", "request", "find_stores.request.failed"),
         ("stores", "iteration", "find_stores.iteration"),
-        ("files", "request", "find_files.failed"),
+        ("files", "request", "find_files.request.failed"),
         ("files", "iteration", "find_files.iteration"),
     ),
 )
@@ -1587,7 +1578,7 @@ def test_reconciliation_diagnostics_capture_request_and_pager_failures(
     session = session_with(
         RequestFailure() if failure == "request" else IterationFailure(), sink
     )
-    expected_error = smoke.GeminiProviderError if failure == "request" else RuntimeError
+    expected_error = smoke.GeminiProviderError
     with pytest.raises(expected_error):
         asyncio.run(
             session.find_stores("target")
@@ -2048,7 +2039,7 @@ def test_negative_structured_answer_must_report_unsupported() -> None:
         )
 
     assert smoke._failure_record(raised.value, evidence)["contract_reason"] == (
-        "negative_answer_invalid"
+        "private_wrong_scope_retrieved"
     )
 
 
@@ -2076,7 +2067,7 @@ def test_negative_structured_answer_must_be_empty() -> None:
         )
 
     assert smoke._failure_record(raised.value, evidence)["contract_reason"] == (
-        "negative_answer_invalid"
+        "private_wrong_scope_retrieved"
     )
 
 

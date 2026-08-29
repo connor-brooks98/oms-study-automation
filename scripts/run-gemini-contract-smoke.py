@@ -633,7 +633,9 @@ class GoogleGenaiSmokeSession:
     async def find_stores(self, display_name: str) -> tuple[str, ...]:
         async with self._clients.client() as client:
             listed = await _provider_call(
-                lambda: client.file_search_stores.list(config={"page_size": 20})
+                lambda: client.file_search_stores.list(config={"page_size": 20}),
+                diagnostic_sink=self._diagnostic_sink,
+                label="find_stores.request",
             )
             if not isinstance(listed, AsyncIterable):
                 raise SmokeContractError(
@@ -642,33 +644,23 @@ class GoogleGenaiSmokeSession:
                 )
             matched: list[str] = []
             inspected = 0
-            async for item in listed:
-                inspected += 1
-                if inspected > 1000:
-                    raise SmokeContractError(
-                        "private shadow store reconciliation exceeded its bound",
-                        reason="private_reconciliation_failed",
-                    )
-                if _field(item, "display_name") == display_name:
-                    matched.append(_provider_identity(item, "store"))
+            try:
+                async for item in listed:
+                    inspected += 1
+                    if inspected > 1000:
+                        raise SmokeContractError(
+                            "private shadow store reconciliation exceeded its bound",
+                            reason="private_reconciliation_failed",
+                        )
+                    if _field(item, "display_name") == display_name:
+                        matched.append(_provider_identity(item, "store"))
+            except Exception as error:
+                if self._diagnostic_sink is not None:
+                    self._diagnostic_sink.capture_exception("find_stores.iteration", error)
+                if isinstance(error, (GeminiProviderError, SmokeContractError)):
+                    raise
+                raise translate_gemini_error(error) from None
         return tuple(sorted(set(matched)))
-
-    async def upload_pdf(self, display_name: str, content: bytes) -> str:
-        async with self._clients.client() as client:
-            uploaded = await _provider_call(
-                lambda: client.files.upload(
-                    file=BytesIO(content),
-                    config={
-                        "display_name": display_name,
-                        "mime_type": "application/pdf",
-                    },
-                ),
-                diagnostic_sink=self._diagnostic_sink,
-                label="upload_pdf",
-            )
-        file_name = _provider_identity(uploaded, "file")
-        self._file_name = file_name
-        return file_name
 
     async def upload_input(
         self,
@@ -685,27 +677,6 @@ class GoogleGenaiSmokeSession:
             )
         self._file_name = _provider_identity(uploaded, "file")
         return self._file_name
-
-    async def import_file(
-        self,
-        store_name: str,
-        file_name: str,
-        metadata: tuple[tuple[str, str], ...],
-    ) -> str:
-        async with self._clients.client() as client:
-            operation = await _provider_call(
-                lambda: client.file_search_stores.import_file(
-                    file_search_store_name=store_name,
-                    file_name=file_name,
-                    config=build_import_file_config(
-                        [{"key": key, "string_value": value} for key, value in metadata],
-                        None,
-                    ),
-                ),
-                diagnostic_sink=self._diagnostic_sink,
-                label="import_file",
-            )
-        return _provider_identity(operation, "operation")
 
     async def import_input(
         self,
@@ -739,22 +710,31 @@ class GoogleGenaiSmokeSession:
         inspected = 0
         async with self._clients.client() as client:
             listed = await _provider_call(
-                lambda: client.files.list(config={"page_size": 100})
+                lambda: client.files.list(config={"page_size": 100}),
+                diagnostic_sink=self._diagnostic_sink,
+                label="find_files.request",
             )
             if not isinstance(listed, AsyncIterable):
                 raise SmokeContractError(
                     "private shadow file reconciliation was unavailable",
                     reason="private_reconciliation_failed",
                 )
-            async for item in listed:
-                inspected += 1
-                if inspected > 1000:
-                    raise SmokeContractError(
-                        "private shadow file reconciliation exceeded its bound",
-                        reason="private_reconciliation_failed",
-                    )
-                if _field(item, "display_name") in expected:
-                    matched.append(_provider_identity(item, "file"))
+            try:
+                async for item in listed:
+                    inspected += 1
+                    if inspected > 1000:
+                        raise SmokeContractError(
+                            "private shadow file reconciliation exceeded its bound",
+                            reason="private_reconciliation_failed",
+                        )
+                    if _field(item, "display_name") in expected:
+                        matched.append(_provider_identity(item, "file"))
+            except Exception as error:
+                if self._diagnostic_sink is not None:
+                    self._diagnostic_sink.capture_exception("find_files.iteration", error)
+                if isinstance(error, (GeminiProviderError, SmokeContractError)):
+                    raise
+                raise translate_gemini_error(error) from None
         return tuple(sorted(set(matched)))
 
     async def wait_for_import(self, operation_name: str) -> str:
