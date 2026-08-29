@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "diagnostic_composed_hash_verified_not_executed_review_pending_audit_hold",
+  "status": "diagnostic_composed_hash_verified_not_executed_reviewed_ship_audit_hold",
   "recorded_at": "2026-08-29T10:14:47-04:00",
   "composition_identity": "0a1eb105de153e0ad97a724756635f9b",
   "composition_root": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-private-shadow-0a1eb105de153e0ad97a724756635f9b",
@@ -49,7 +49,7 @@
   },
   "verification": {
     "focused": "13 passed",
-    "affected": "passed with 1 intentional live skip",
+    "affected": "236 passed, 1 intentional live skip",
     "ruff": "passed",
     "strict_mypy": "passed on 3 changed production files; unavailable optional pdf_inspector import explicitly suppressed",
     "python_bytecode": "passed",
@@ -85,8 +85,10 @@
     "merged_pushed_or_deployed": false
   },
   "reviews": {
-    "specification": "pending exact-head review",
-    "quality_security": "pending exact-head review"
+    "reviewed_commit": "24d2f52dc2121c628f6a4034a99ac76789dcd0b9",
+    "reviewed_tree": "def5a3e854f35edd2489e350f4b734d6e48d072d",
+    "specification": "SHIP: no findings; independent 676-file and diagnostic-contract replay",
+    "quality_security": "SHIP: no findings; zero source-manifest mismatches and fail-closed boundary replay"
   },
   "process_state": "audit hold; no live authorization requested or consumed"
 }
