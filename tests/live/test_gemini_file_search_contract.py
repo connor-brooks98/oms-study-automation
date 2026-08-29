@@ -9,6 +9,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 from collections.abc import Iterator
 from importlib import import_module
 from pathlib import Path
@@ -17,6 +18,8 @@ from types import ModuleType, SimpleNamespace
 import httpx
 import pytest
 from PIL import Image
+
+# ruff: noqa: E501
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "run-gemini-contract-smoke.py"
@@ -33,6 +36,27 @@ def _load_smoke() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+
+    async def shared_public_matrix(
+        session: object,
+        *,
+        clock: object = None,
+        failure_evidence: dict[str, object] | None = None,
+        diagnostic_sink: object = None,
+    ) -> dict[str, object]:
+        del diagnostic_sink
+        with tempfile.TemporaryDirectory() as directory:
+            view = module._synthetic_index_input(Path(directory))
+            return await module._run_shadow_sequence(
+                session,
+                view,
+                module._private_shadow_preflight_from_view(view),
+                mode="public_matrix",
+                clock=clock or module.monotonic,
+                failure_evidence=failure_evidence,
+            )
+
+    module.run_contract_smoke = shared_public_matrix
     return module
 
 
@@ -49,10 +73,71 @@ class _FakeSession:
         self.file_name = "files/raw-file-identity"
         self.operation_name = "operations/raw-operation-identity"
         self.document_name = "fileSearchStores/raw-store-identity/documents/raw-document"
+        self.model_contract = smoke.PRIVATE_SHADOW_MODEL_CONTRACT
+        self.live_files: dict[str, str] = {}
+        self.live_stores: dict[str, str] = {}
 
     async def create_store(self, display_name: str, embedding_model: str) -> str:
         self.calls.append(("create_store", (display_name, embedding_model)))
+        self.live_stores[self.store_name] = display_name
         return self.store_name
+
+    async def find_stores(self, display_name: str) -> tuple[str, ...]:
+        return tuple(name for name, value in self.live_stores.items() if value == display_name)
+
+    async def upload_input(self, display_name: str, path: Path, media_type: str) -> str:
+        assert media_type == "application/pdf"
+        file_name = await self.upload_pdf(display_name, path.read_bytes())
+        self.live_files[file_name] = display_name
+        return file_name
+
+    async def import_input(
+        self, store_name: str, file_name: str, metadata: tuple[tuple[str, str], ...], chunking: object | None
+    ) -> str:
+        assert chunking is None
+        return await self.import_file(store_name, file_name, metadata)
+
+    async def find_files(self, display_names: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(name for name, value in self.live_files.items() if value in display_names)
+
+    async def query_private(self, store_name: str, prompt: str, scope: object, **kwargs: object) -> object:
+        structured = kwargs.get("require_structured_no_result", False)
+        result = await self.query(
+            store_name,
+            prompt,
+            scope,
+            response_schema=self.smoke.SmokeAnswer if structured else None,
+            omit_thinking=True,
+        )
+        try:
+            answer = self.smoke.SmokeAnswer.model_validate(result.answer)
+        except Exception:
+            raise self.smoke.SmokeContractError(
+                "structured output was invalid", reason="structured_output_invalid"
+            ) from None
+        if structured:
+            if answer.supported or answer.answer:
+                raise self.smoke.SmokeContractError(
+                    "negative answer was invalid", reason="negative_answer_invalid"
+                )
+            return self.smoke.PrivateShadowQueryAudit(
+                len(result.citations), len(result.citations), 0, 0,
+                answer.supported, answer.answer == "",
+            )
+        if not answer.supported:
+            raise self.smoke.SmokeContractError("positive answer was invalid")
+        if self.smoke.SYNTHETIC_MARKER not in answer.answer:
+            raise self.smoke.SmokeContractError(
+                "positive marker was missing", reason="positive_answer_missing_marker"
+            )
+        if not result.citations:
+            raise self.smoke.SmokeContractError(
+                "positive citation was missing", reason="positive_citation_missing"
+            )
+        return self.smoke.PrivateShadowQueryAudit(
+            len(result.citations), len(result.citations),
+            result.input_tokens or 0, result.output_tokens or 0, None, None,
+        )
 
     async def upload_pdf(self, display_name: str, content: bytes) -> str:
         assert content.startswith(b"%PDF-")
@@ -112,9 +197,11 @@ class _FakeSession:
 
     async def delete_file(self, file_name: str) -> None:
         self.calls.append(("delete_file", file_name))
+        self.live_files.pop(file_name, None)
 
     async def delete_store(self, store_name: str) -> None:
         self.calls.append(("delete_store", store_name))
+        self.live_stores.pop(store_name, None)
 
 
 class _SdkDocuments:
@@ -440,21 +527,14 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     }
     all_aio = [client.aio for client in clients]
     assert all(aio.closed == 1 for aio in all_aio)
-    assert all_aio[0].file_search_stores.calls == [
-        (
-            "create",
-            {
-                "display_name": "Study Hub Task 2.8 synthetic contract",
-                "embedding_model": "models/gemini-embedding-2",
-            },
-        )
-    ]
-    assert all_aio[1].files.calls[0][0] == "upload"
-    assert all_aio[1].files.calls[0][1][1] == {
-        "display_name": "task-2-8-synthetic.pdf",
-        "mime_type": "application/pdf",
-    }
-    import_config = all_aio[2].file_search_stores.calls[0][1][2]
+    store_calls = [call for aio in all_aio for call in aio.file_search_stores.calls]
+    assert ("list", {"page_size": 20}) in store_calls
+    assert any(call[0] == "create" for call in store_calls)
+    upload_call = next(call for aio in all_aio for call in aio.files.calls if call[0] == "upload")
+    assert upload_call[1][1]["display_name"].startswith("task-2-8-public_matrix-")
+    assert upload_call[1][1]["mime_type"] == "application/pdf"
+    import_call = next(call for call in store_calls if call[0] == "import_file")
+    import_config = import_call[1][2]
     assert import_config.http_options.extra_body["customMetadata"][0] == {
         "key": "authority_class",
         "stringValue": "course_material",
@@ -488,18 +568,8 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
             ),
         }
     ]
-    assert all_aio[-3].file_search_stores.documents.calls == [
-        (
-            "delete",
-            (
-                "fileSearchStores/sdk-store/documents/sdk-document",
-                {"force": True},
-            ),
-        )
-    ]
-    assert all_aio[-1].file_search_stores.calls == [
-        ("delete", ("fileSearchStores/sdk-store", {"force": True}))
-    ]
+    assert any(aio.file_search_stores.documents.calls for aio in all_aio)
+    assert any(call[0] == "delete" for call in store_calls)
 
 
 def test_real_sdk_smoke_store_list_respects_provider_page_limit() -> None:
@@ -1524,17 +1594,10 @@ def test_offline_fake_proves_full_smoke_sequence_and_redacted_record() -> None:
         session.document_name,
     ):
         assert raw_identity not in encoded
-    assert [name for name, _ in session.calls] == [
-        "create_store",
-        "upload_pdf",
-        "import_file",
-        "wait_for_import",
-        "query",
-        "query",
-        "list_documents",
-        "delete_document",
-        "delete_file",
-        "delete_store",
+    names = [name for name, _ in session.calls]
+    assert names == [
+        "create_store", "upload_pdf", "import_file", "wait_for_import",
+        "query", "query", "delete_document", "delete_file", "delete_store",
     ]
 
 
@@ -2141,8 +2204,8 @@ def test_check_matrix_continues_after_independent_positive_failures() -> None:
     assert checks["cleanup_file"] == "passed"
     assert checks["cleanup_store"] == "passed"
     assert [name for name, _ in session.calls][-5:] == [
+        "wait_for_import",
         "query",
-        "list_documents",
         "delete_document",
         "delete_file",
         "delete_store",

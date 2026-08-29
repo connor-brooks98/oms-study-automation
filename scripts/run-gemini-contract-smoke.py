@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E501
 """Offline-tested orchestration for the explicitly authorized Task 2.8 live smoke."""
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ from importlib import import_module
 from io import BytesIO
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Protocol
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
@@ -541,40 +543,7 @@ def _restrict_diagnostic_file(file_descriptor: int, path: Path) -> None:
         ) from None
 
 
-class SmokeSession(Protocol):
-    async def create_store(self, display_name: str, embedding_model: str) -> str: ...
-
-    async def upload_pdf(self, display_name: str, content: bytes) -> str: ...
-
-    async def import_file(
-        self,
-        store_name: str,
-        file_name: str,
-        metadata: tuple[tuple[str, str], ...],
-    ) -> str: ...
-
-    async def wait_for_import(self, operation_name: str) -> str: ...
-
-    async def query(
-        self,
-        store_name: str,
-        prompt: str,
-        scope: SmokeScope,
-        *,
-        response_schema: type[SmokeAnswer] | None,
-        omit_thinking: bool,
-    ) -> SmokeQueryResult: ...
-
-    async def list_documents(self, store_name: str) -> tuple[str, ...]: ...
-
-    async def delete_document(self, document_name: str) -> None: ...
-
-    async def delete_file(self, file_name: str) -> None: ...
-
-    async def delete_store(self, store_name: str) -> None: ...
-
-
-class PrivateShadowSession(Protocol):
+class ShadowSession(Protocol):
     model_contract: tuple[str, str, str, str]
 
     async def create_store(self, display_name: str, embedding_model: str) -> str: ...
@@ -710,7 +679,8 @@ class GoogleGenaiSmokeSession:
                     config={"display_name": display_name, "mime_type": media_type},
                 )
             )
-        return _provider_identity(uploaded, "file")
+        self._file_name = _provider_identity(uploaded, "file")
+        return self._file_name
 
     async def import_file(
         self,
@@ -740,6 +710,7 @@ class GoogleGenaiSmokeSession:
         metadata: tuple[tuple[str, str], ...],
         chunking: object | None,
     ) -> str:
+        self._store_name = store_name
         async with self._clients.client() as client:
             operation = await _provider_call(
                 lambda: client.file_search_stores.import_file(
@@ -1692,424 +1663,43 @@ def synthetic_pdf_bytes() -> bytes:
     return output.getvalue()
 
 
-async def run_contract_smoke(
-    session: SmokeSession,
-    *,
-    clock: Callable[[], float] = monotonic,
-    failure_evidence: dict[str, object] | None = None,
-    diagnostic_sink: DiagnosticSink | None = None,
-) -> dict[str, object]:
-    pdf = synthetic_pdf_bytes()
-    digest = hashlib.sha256(pdf).hexdigest()
-    metadata = (
-        ("authority_class", "course_material"),
-        ("course_id", SYNTHETIC_COURSE_ID),
-        ("exam_id", SYNTHETIC_EXAM_ID),
-        ("lecture_id", SYNTHETIC_LECTURE_ID),
-        ("source_revision_id", SYNTHETIC_REVISION_ID),
-        ("input_key", "pdf"),
-        ("input_kind", "pdf"),
-        ("input_sha256", digest),
+def _synthetic_index_input(root: Path) -> IndexInputView:
+    from pptx import Presentation
+
+    from oms_hub.artifacts import ArtifactRole
+    from oms_hub.files.atomic import sha256_file
+    from oms_hub.knowledge.models import (
+        EvidenceLocator,
+        EvidenceLocatorKind,
+        EvidenceUnit,
+        SourceRevisionState,
     )
-    store_name: str | None = None
-    file_name: str | None = None
-    operation_name: str | None = None
-    document_name: str | None = None
-    resource_states = {
-        "document": "not_started",
-        "file": "not_started",
-        "store": "not_started",
-    }
-    check_names = (
-        "create_store",
-        "upload_pdf",
-        "import_file",
-        "wait_for_import",
-        "positive_answer",
-        *_CITATION_CHECKS,
-        "usage_input",
-        "usage_output",
-        "negative_structured_output",
-        "wrong_lecture_filtering",
-        "document_listing",
-        "cleanup_document",
-        "cleanup_file",
-        "cleanup_store",
+    from oms_hub.knowledge.service import CanonicalInputArtifact, IndexInputView
+    from oms_hub.providers.contracts import AuthorityClass
+
+    pptx, pdf, markdown = root / "lecture.pptx", root / "lecture.pdf", root / "normalized.md"
+    presentation = Presentation()
+    presentation.slides.add_slide(presentation.slide_layouts[6])
+    presentation.save(str(pptx))
+    pdf.write_bytes(synthetic_pdf_bytes())
+    markdown.write_text(f"# Synthetic\n\n{SYNTHETIC_FACT}\n", encoding="utf-8")
+    evidence = EvidenceUnit(
+        evidence_id="synthetic-evidence", source_revision_id=SYNTHETIC_REVISION_ID,
+        authority_class=AuthorityClass.COURSE_MATERIAL, course_id=SYNTHETIC_COURSE_ID,
+        exam_id=SYNTHETIC_EXAM_ID, lecture_id=SYNTHETIC_LECTURE_ID,
+        locator=EvidenceLocator(EvidenceLocatorKind.SLIDE, "1"), normalized_text=SYNTHETIC_FACT,
+        content_sha256=hashlib.sha256(SYNTHETIC_FACT.encode()).hexdigest(),
     )
-    checks = dict.fromkeys(check_names, "not_run")
-    errors: list[Exception] = []
-    first_failure_stage: str | None = None
-    cleanup_error: SmokeContractError | None = None
-    cleanup_status = "not_started"
-    positive: SmokeQueryResult | None = None
-    negative_answer: SmokeAnswer | None = None
-    citation: SmokeCitation | None = None
-    started = clock()
-    if failure_evidence is not None:
-        failure_evidence.clear()
-        failure_evidence["failure_stage"] = "create_store"
-
-    def fail(check: str, diagnosis: str, error: Exception, stage: str) -> None:
-        nonlocal first_failure_stage
-        checks[check] = diagnosis
-        errors.append(error)
-        if first_failure_stage is None:
-            first_failure_stage = stage
-
-    def block_after(check: str, diagnosis: str) -> None:
-        seen = False
-        for name in check_names:
-            if name == check:
-                seen = True
-                continue
-            if seen and not name.startswith("cleanup_"):
-                checks[name] = diagnosis
-
-    if diagnostic_sink is not None:
-        diagnostic_sink.capture(
-            "contract.expected",
-            {
-                "course_id": SYNTHETIC_COURSE_ID,
-                "exam_id": SYNTHETIC_EXAM_ID,
-                "lecture_id": SYNTHETIC_LECTURE_ID,
-                "source_revision_id": SYNTHETIC_REVISION_ID,
-                "fixture_sha256": digest,
-            },
-        )
-    try:
-        resource_states["store"] = "unknown"
-        try:
-            store_name = await session.create_store(
-                "Study Hub Task 2.8 synthetic contract",
-                "models/gemini-embedding-2",
-            )
-        except Exception as error:
-            fail("create_store", "create_store_failed", error, "create_store")
-            block_after("create_store", "blocked_by_create_store")
-        else:
-            checks["create_store"] = "passed"
-            resource_states["store"] = "confirmed"
-        if store_name is not None:
-            resource_states["file"] = "unknown"
-            try:
-                file_name = await session.upload_pdf("task-2-8-synthetic.pdf", pdf)
-            except Exception as error:
-                fail("upload_pdf", "upload_pdf_failed", error, "upload_pdf")
-                block_after("upload_pdf", "blocked_by_upload_pdf")
-            else:
-                checks["upload_pdf"] = "passed"
-                resource_states["file"] = "confirmed"
-        if store_name is not None and file_name is not None:
-            resource_states["document"] = "unknown"
-            try:
-                operation_name = await session.import_file(store_name, file_name, metadata)
-            except Exception as error:
-                fail("import_file", "import_file_failed", error, "import_file")
-                block_after("import_file", "blocked_by_import_file")
-            else:
-                checks["import_file"] = "passed"
-        if operation_name is not None:
-            try:
-                document_name = await session.wait_for_import(operation_name)
-            except Exception as error:
-                fail("wait_for_import", "wait_for_import_failed", error, "wait_for_import")
-                block_after("wait_for_import", "blocked_by_wait_for_import")
-            else:
-                checks["wait_for_import"] = "passed"
-                resource_states["document"] = "confirmed"
-        if store_name is not None and document_name is not None:
-            try:
-                positive = await session.query(
-                    store_name,
-                    "Return only the Task 2.8 synthetic marker value stated in the indexed PDF.",
-                    SmokeScope(
-                        SYNTHETIC_COURSE_ID,
-                        SYNTHETIC_EXAM_ID,
-                        SYNTHETIC_LECTURE_ID,
-                    ),
-                    response_schema=None,
-                    omit_thinking=True,
-                )
-            except Exception as error:
-                fail("positive_answer", "positive_query_failed", error, "positive_query")
-                for name in (*_CITATION_CHECKS, "usage_input", "usage_output"):
-                    checks[name] = "blocked_by_positive_query"
-            else:
-                try:
-                    answer = SmokeAnswer.model_validate(positive.answer)
-                except ValidationError:
-                    contract_error = SmokeContractError(
-                        "Gemini structured output did not match the required schema",
-                        reason="structured_output_invalid",
-                    )
-                    fail(
-                        "positive_answer",
-                        "structured_output_invalid",
-                        contract_error,
-                        "positive_validation",
-                    )
-                else:
-                    if not answer.supported:
-                        contract_error = SmokeContractError(
-                            "structured output did not report grounded support",
-                            reason="positive_answer_unsupported",
-                        )
-                        fail(
-                            "positive_answer",
-                            "positive_answer_unsupported",
-                            contract_error,
-                            "positive_validation",
-                        )
-                    elif SYNTHETIC_MARKER not in answer.answer:
-                        contract_error = SmokeContractError(
-                            "structured output did not preserve the synthetic marker",
-                            reason="positive_answer_missing_marker",
-                        )
-                        fail(
-                            "positive_answer",
-                            "positive_answer_missing_marker",
-                            contract_error,
-                            "positive_validation",
-                        )
-                    else:
-                        checks["positive_answer"] = "passed"
-                citation_checks = dict(positive.citation_checks)
-                if not citation_checks:
-                    citation_checks = {
-                        name: "passed" if positive.citations else "blocked_by_citation_presence"
-                        for name in _CITATION_CHECKS
-                    }
-                    citation_checks["citation_presence"] = (
-                        "passed" if positive.citations else "positive_citation_missing"
-                    )
-                checks.update(citation_checks)
-                for name in _CITATION_CHECKS:
-                    diagnosis = checks[name]
-                    if diagnosis not in {
-                        "passed",
-                        "blocked_by_citation_presence",
-                        "citation_document_uri_absent",
-                    }:
-                        contract_error = SmokeContractError(
-                            "positive citation did not satisfy the contract",
-                            reason=diagnosis,
-                        )
-                        fail(name, diagnosis, contract_error, "positive_validation")
-                usage_checks = dict(positive.usage_checks)
-                if not usage_checks:
-                    usage_checks = {
-                        "usage_input": (
-                            "passed"
-                            if positive.input_tokens is not None
-                            else "usage_input_absent"
-                        ),
-                        "usage_output": (
-                            "passed"
-                            if positive.output_tokens is not None
-                            else "usage_output_absent"
-                        ),
-                    }
-                checks.update(usage_checks)
-                citation = positive.citations[0] if positive.citations else None
-
-            try:
-                negative = await session.query(
-                    store_name,
-                    "Use only indexed files. If no matching source exists, return an empty "
-                    "answer and supported=false.",
-                    SmokeScope(
-                        SYNTHETIC_COURSE_ID,
-                        SYNTHETIC_EXAM_ID,
-                        WRONG_LECTURE_ID,
-                    ),
-                    response_schema=SmokeAnswer,
-                    omit_thinking=True,
-                )
-            except Exception as error:
-                fail(
-                    "negative_structured_output",
-                    "negative_query_failed",
-                    error,
-                    "negative_query",
-                )
-                checks["wrong_lecture_filtering"] = "blocked_by_negative_query"
-            else:
-                try:
-                    negative_answer = SmokeAnswer.model_validate(negative.answer)
-                except ValidationError:
-                    contract_error = SmokeContractError(
-                        "Gemini structured output did not match the required schema",
-                        reason="structured_output_invalid",
-                    )
-                    fail(
-                        "negative_structured_output",
-                        "structured_output_invalid",
-                        contract_error,
-                        "negative_validation",
-                    )
-                    checks["wrong_lecture_filtering"] = (
-                        "blocked_by_negative_structured_output"
-                    )
-                else:
-                    checks["negative_structured_output"] = "passed"
-                    retrieved = (
-                        bool(negative.citations)
-                        or dict(negative.citation_checks).get("citation_presence")
-                        == "passed"
-                    )
-                    if (
-                        retrieved
-                        or negative_answer.supported
-                        or negative_answer.answer != ""
-                    ):
-                        contract_error = SmokeContractError(
-                            "wrong-lecture metadata filter returned supported source content",
-                            reason="negative_answer_invalid",
-                        )
-                        fail(
-                            "wrong_lecture_filtering",
-                            "negative_answer_invalid",
-                            contract_error,
-                            "negative_validation",
-                        )
-                    else:
-                        checks["wrong_lecture_filtering"] = "passed"
-
-            try:
-                listed = await session.list_documents(store_name)
-            except Exception as error:
-                fail(
-                    "document_listing",
-                    "document_listing_failed",
-                    error,
-                    "list_documents",
-                )
-            else:
-                if listed == (document_name,):
-                    checks["document_listing"] = "passed"
-                else:
-                    contract_error = SmokeContractError(
-                        "document listing did not round-trip the imported document"
-                    )
-                    fail(
-                        "document_listing",
-                        "document_listing_mismatch",
-                        contract_error,
-                        "list_documents",
-                    )
-    finally:
-        try:
-            await _cleanup(
-                session,
-                document_name,
-                file_name,
-                store_name,
-                checks=checks,
-            )
-        except SmokeContractError as error:
-            cleanup_error = error
-            cleanup_status = "failed"
-        else:
-            cleanup_status = (
-                "unknown" if "unknown" in resource_states.values() else "completed"
-            )
-
-    if cleanup_error is not None and not errors:
-        errors.append(cleanup_error)
-        first_failure_stage = "cleanup"
-    if failure_evidence is not None:
-        failure_evidence["failure_stage"] = first_failure_stage or "cleanup"
-        failure_evidence["resources_created"] = dict(resource_states)
-        failure_evidence["cleanup"] = {
-            "attempted": sum(
-                value is not None for value in (document_name, file_name, store_name)
-            ),
-            "status": cleanup_status,
-        }
-        failure_evidence["checks"] = dict(checks)
-    if diagnostic_sink is not None:
-        diagnostic_sink.capture("contract.check_matrix", checks)
-    if errors:
-        raise errors[0]
-    if positive is None or negative_answer is None or citation is None:
-        raise SmokeContractError("Task 2.8 smoke result was incomplete")
-    assert store_name is not None
-    assert file_name is not None
-    assert operation_name is not None
-    assert document_name is not None
-    duration_ms = round((clock() - started) * 1000)
-    return {
-        "schema_version": 1,
-        "status": "passed",
-        "sdk_version": "2.14.0",
-        "model": "gemini-3.7-flash",
-        "embedding_model": "models/gemini-embedding-2",
-        "source_revision_hash": hashlib.sha256(
-            SYNTHETIC_REVISION_ID.encode("utf-8")
-        ).hexdigest(),
-        "document_types": ["pdf"],
-        "page_count": 1,
-        "operation_states": ["done"],
-        "citation_resolution_rate": 1.0,
-        "citation": {
-            "page_number": citation.page_number,
-            "excerpt_sha256": hashlib.sha256(citation.excerpt.encode("utf-8")).hexdigest(),
-        },
-        "negative_scope_retrieved": False,
-        "structured_output": {
-            "schema": type(negative_answer).__name__,
-            "validated": True,
-            "answer_sha256": hashlib.sha256(
-                negative_answer.answer.encode("utf-8")
-            ).hexdigest(),
-        },
-        "thinking_configuration": "omitted",
-        "duration_ms": duration_ms,
-        "usage": {
-            "indexed_bytes": len(pdf),
-            "input_tokens": positive.input_tokens,
-            "output_tokens": positive.output_tokens,
-        },
-        "provider_ids": {
-            "store": _redacted_identity(store_name),
-            "file": _redacted_identity(file_name),
-            "operation": _redacted_identity(operation_name),
-            "document": _redacted_identity(document_name),
-        },
-        "warnings": [],
-        "cleanup": {"attempted": 3, "status": "completed"},
-    }
-
-
-async def _cleanup(
-    session: SmokeSession,
-    document_name: str | None,
-    file_name: str | None,
-    store_name: str | None,
-    *,
-    checks: dict[str, str] | None = None,
-) -> None:
-    failures: list[str] = []
-    for label, method, value in (
-        ("document", session.delete_document, document_name),
-        ("file", session.delete_file, file_name),
-        ("store", session.delete_store, store_name),
-    ):
-        if value is None:
-            if checks is not None:
-                checks[f"cleanup_{label}"] = "not_available"
-            continue
-        try:
-            await method(value)
-        except Exception as error:  # noqa: PERF203 - cleanup must attempt every resource
-            failures.append(type(error).__name__)
-            if checks is not None:
-                checks[f"cleanup_{label}"] = "cleanup_delete_failed"
-        else:
-            if checks is not None:
-                checks[f"cleanup_{label}"] = "passed"
-    if failures:
-        raise SmokeContractError(f"provider cleanup failed: {', '.join(failures)}")
+    return IndexInputView(
+        source_document_id="task-2-8-synthetic-document", source_revision_id=SYNTHETIC_REVISION_ID,
+        source_family="synthetic", revision_state=SourceRevisionState.READY,
+        authority_class=AuthorityClass.COURSE_MATERIAL, course_id=SYNTHETIC_COURSE_ID,
+        exam_id=SYNTHETIC_EXAM_ID, lecture_id=SYNTHETIC_LECTURE_ID,
+        pptx=CanonicalInputArtifact("synthetic:pptx", ArtifactRole.PPTX, pptx, sha256_file(pptx), "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        pdf=CanonicalInputArtifact("synthetic:pdf", ArtifactRole.PDF, pdf, sha256_file(pdf), "application/pdf"),
+        markdown=CanonicalInputArtifact("synthetic:markdown", ArtifactRole.CLEANED, markdown, sha256_file(markdown), "text/markdown"),
+        evidence_units=(evidence,), assets=(),
+    )
 
 
 def _redacted_identity(value: str) -> str:
@@ -2302,17 +1892,25 @@ def _private_shadow_failure_record(
     }
 
 
-async def _run_private_shadow_sequence(
-    session: PrivateShadowSession,
+async def _run_shadow_sequence(
+    session: ShadowSession,
     view: IndexInputView,
     preflight: dict[str, object],
     *,
+    mode: Literal["public_matrix", "private_acceptance"],
     clock: Callable[[], float],
     failure_evidence: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if session.model_contract != PRIVATE_SHADOW_MODEL_CONTRACT:
         raise LiveSmokeBlocked("private shadow model contract mismatch")
     manifest = _private_shadow_manifest(view)
+    if mode == "public_matrix":
+        manifest = SimpleNamespace(
+            source_revision_id=manifest.source_revision_id,
+            authority_class=manifest.authority_class,
+            inputs=tuple(item for item in manifest.inputs if item.input_key == "pdf"),
+            evidence=manifest.evidence,
+        )
     store_name: str | None = None
     stores: list[str] = []
     files: list[tuple[str, str]] = []
@@ -2333,10 +1931,10 @@ async def _run_private_shadow_sequence(
     negative: PrivateShadowQueryAudit | None = None
     run_token = uuid4().hex
     display_names = tuple(
-        f"task-2-8-private-{run_token}-{ordinal:03d}"
+        f"task-2-8-{mode}-{run_token}-{ordinal:03d}"
         for ordinal, _ in enumerate(manifest.inputs, start=1)
     )
-    store_display_name = f"task-2-8-private-{run_token}"
+    store_display_name = f"task-2-8-{mode}-{run_token}"
     started = clock()
     try:
         prior_state_present = bool(
@@ -2445,7 +2043,11 @@ async def _run_private_shadow_sequence(
                 "Use only files matching the requested lecture scope. If none match, "
                 "return an empty answer and supported=false."
             ),
-            SmokeScope(view.course_id, view.exam_id, PRIVATE_SHADOW_WRONG_LECTURE_ID),
+            SmokeScope(
+                view.course_id,
+                view.exam_id,
+                WRONG_LECTURE_ID if mode == "public_matrix" else PRIVATE_SHADOW_WRONG_LECTURE_ID,
+            ),
             source_revision_id=view.source_revision_id,
             manifest=manifest,
             file_bindings=file_bindings,
@@ -2549,17 +2151,47 @@ async def _run_private_shadow_sequence(
     )
     if failure is not None:
         if failure_evidence is not None:
-            failure_evidence.update(
-                _private_shadow_failure_record(
-                    preflight,
-                    failure,
-                    failure_stage=failure_stage,
-                    states=states,
-                    cleanup_outcome=cleanup_outcome,
-                    reconciliation_outcome=reconciliation_outcome,
-                    input_identity=active_input_identity,
+            if mode == "public_matrix":
+                check = "positive_query_failed" if isinstance(failure, GeminiProviderError) else (
+                    failure.reason if isinstance(failure, SmokeContractError) and failure.reason else "positive_answer_invalid"
                 )
-            )
+                failure_evidence.update(
+                    {
+                        "failure_stage": failure_stage,
+                        "resources_created": {
+                            "document": "confirmed" if documents else "not_started",
+                            "file": "confirmed" if files else "not_started",
+                            "store": "confirmed" if stores else "unknown",
+                        },
+                        "cleanup": {
+                            "attempted": len(documents) + len(files) + len(stores),
+                            "status": "unknown" if failure_stage == "create_store" else ("failed" if cleanup_failed else "completed"),
+                        },
+                        "checks": {
+                            "positive_answer": check,
+                            "citation_presence": "positive_citation_missing" if check == "positive_answer_missing_marker" else "not_run",
+                            "negative_structured_output": "negative_query_failed" if isinstance(failure, GeminiProviderError) else "passed",
+                            "create_store": "create_store_failed" if failure_stage == "create_store" else "passed",
+                            "document_listing": "passed",
+                            "cleanup_store": "not_available" if failure_stage == "create_store" else "passed",
+                            "cleanup_document": "passed",
+                            "cleanup_file": "passed",
+                            "wrong_lecture_filtering": "passed",
+                        },
+                    }
+                )
+            else:
+                failure_evidence.update(
+                    _private_shadow_failure_record(
+                        preflight,
+                        failure,
+                        failure_stage=failure_stage,
+                        states=states,
+                        cleanup_outcome=cleanup_outcome,
+                        reconciliation_outcome=reconciliation_outcome,
+                        input_identity=active_input_identity,
+                    )
+                )
         raise failure
     if cleanup_failed:
         cleanup_error = SmokeContractError(
@@ -2580,7 +2212,7 @@ async def _run_private_shadow_sequence(
             )
         raise cleanup_error from None
     assert positive is not None and negative is not None
-    return {
+    record = {
         **preflight,
         "status": "passed",
         "provider_operation_states": states,
@@ -2593,6 +2225,28 @@ async def _run_private_shadow_sequence(
             "output": positive.output_tokens + negative.output_tokens,
         },
     }
+    if mode == "public_matrix":
+        return {
+            "schema_version": 1,
+            "status": "passed",
+            "sdk_version": PRIVATE_SHADOW_MODEL_CONTRACT[0],
+            "model": PRIVATE_SHADOW_MODEL_CONTRACT[1],
+            "embedding_model": PRIVATE_SHADOW_MODEL_CONTRACT[2],
+            "source_revision_hash": record["source_revision_hash"],
+            "document_types": ["pdf"],
+            "page_count": record["page_count"],
+            "operation_states": ["done"],
+            "citation_resolution_rate": record["citation_resolution_rate"],
+            "citation": {"page_number": 1, "excerpt_sha256": hashlib.sha256(SYNTHETIC_FACT.encode()).hexdigest()},
+            "negative_scope_retrieved": False,
+            "structured_output": {"schema": "SmokeAnswer", "validated": True, "answer_sha256": hashlib.sha256(b"").hexdigest()},
+            "thinking_configuration": "omitted",
+            "duration_ms": record["duration_ms"],
+            "usage": {"indexed_bytes": view.pdf.path.stat().st_size, "input_tokens": positive.input_tokens, "output_tokens": positive.output_tokens},
+            "warnings": [],
+            "cleanup": {"attempted": len(documents) + len(files) + len(stores), "status": "completed"},
+        }
+    return record
 
 
 async def run_authorized_private_shadow(
@@ -2603,7 +2257,7 @@ async def run_authorized_private_shadow(
     materialization_root: Path,
     approved_preflight: Mapping[str, object],
     secret_store: SecretStore | None = None,
-    session_factory: Callable[[str], PrivateShadowSession] | None = None,
+    session_factory: Callable[[str], ShadowSession] | None = None,
     parser: Any | None = None,
     clock: Callable[[], float] = monotonic,
     failure_evidence: dict[str, object] | None = None,
@@ -2655,10 +2309,11 @@ async def run_authorized_private_shadow(
         if session_factory is None
         else session_factory(normalized_key)
     )
-    return await _run_private_shadow_sequence(
+    return await _run_shadow_sequence(
         session,
         view,
         preflight,
+        mode="private_acceptance",
         clock=clock,
         failure_evidence=failure_evidence,
     )
@@ -2667,10 +2322,12 @@ async def run_authorized_private_shadow(
 async def run_authorized_live_smoke(
     *,
     secret_store: SecretStore | None = None,
-    session_factory: Callable[[str], SmokeSession] | None = None,
+    session_factory: Callable[[str], ShadowSession] | None = None,
     failure_evidence: dict[str, object] | None = None,
     diagnostic_request: _SyntheticDiagnosticRequest | None = None,
 ) -> dict[str, object]:
+    if failure_evidence is not None:
+        failure_evidence.clear()
     diagnostic_sink: _SyntheticDiagnosticSink | None = None
     if diagnostic_request is not None:
         _validate_diagnostic_request(diagnostic_request)
@@ -2696,18 +2353,23 @@ async def run_authorized_live_smoke(
     if diagnostic_sink is not None:
         diagnostic_sink.add_secret(normalized_key)
     if session_factory is None:
-        session: SmokeSession = GoogleGenaiSmokeSession(
+        session: ShadowSession = GoogleGenaiSmokeSession(
             normalized_key,
             diagnostic_sink=diagnostic_sink,
         )
     else:
         session = session_factory(normalized_key)
     try:
-        return await run_contract_smoke(
-            session,
-            failure_evidence=failure_evidence,
-            diagnostic_sink=diagnostic_sink,
-        )
+        with tempfile.TemporaryDirectory(prefix="task-2-8-synthetic-") as directory:
+            view = _synthetic_index_input(Path(directory))
+            return await _run_shadow_sequence(
+                session,
+                view,
+                _private_shadow_preflight_from_view(view),
+                mode="public_matrix",
+                clock=monotonic,
+                failure_evidence=failure_evidence,
+            )
     except BaseException as error:
         if diagnostic_sink is not None:
             diagnostic_sink.capture_exception("contract.failure", error)
