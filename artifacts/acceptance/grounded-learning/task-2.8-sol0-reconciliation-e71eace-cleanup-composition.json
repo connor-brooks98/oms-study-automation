@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "status": "composed_not_executed_review_pending",
+  "owner_amendment_handoff": "037d4032d07b748df97198eb9f1baec7079de005",
+  "owner_amendment_candidate": "9e89bccb4fec5cd09e00eed27266ea423ed33ba0",
+  "owner_amendment_tree": "2781062a5936c4fecb20493faf601e4dfa49c95c",
+  "offline_candidate": "cdb064cad1d42e8c1cd46b01cf448c5d42b20c6f",
+  "offline_candidate_tree": "d1d53df23025ed723c09cd7292d1ae0a8120b511",
+  "tdd": {
+    "red": "7254b64",
+    "green": "06c5eea",
+    "review_red": "6118cd2",
+    "review_green": "cdb064c",
+    "test_corrections": ["a822612", "16b738d"]
+  },
+  "hashes": {
+    "cleanup_script_sha256": "342f9c83d0bc90c17ef1979f68266abb8a8c0e9ab60225b118fc481433272bde",
+    "root_manifest_sha256": "ea671e594d9494aec7be240e322baa382dc954bab8f1de9ca196c24052887184",
+    "audit_sink_initial_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "safe_result_sha256": "bd26cc4b7b3eeb34e875caaa043b4118bea375bc4473a3dab34dd65dffdf5a7d",
+    "safe_status_sha256": "e5ec9fcf1fb790b62a18939d78d350ea1572a903e02fae6e4e916ad5f4661c3f",
+    "system_powershell_sha256": "7600ffe12da441fe89d035b13801e8e91d064bc544a27b19a5cf49f6ab8b18f5",
+    "tombstone_source_manifest_sha256": "d36c6a64ef342ff0d4e88c370c794a2add46ef2f98fbdfb9dcabd6bd86f702b0",
+    "tombstone_runtime_manifest_sha256": "ad8e00b852d32c3b1216452e25e62160a68fb07745f3589321b20fec3ccfc5a7",
+    "tombstone_controller_sha256": "5a955d65feb3adf03759bd62c8e2f842b2e81a27abfc5c9e10b8912c72796587",
+    "tombstone_launcher_sha256": "0795af225426707b9a49454b19538b6b0eb420a9f05ab74280d1d541fd87fffa",
+    "tombstone_entrypoint_sha256": "96c77c083d665fe945cde5a31265d83276fe07778a1bb732bccee1b28f1acad2"
+  },
+  "reconciliation_root": {
+    "manifest_files": 12560,
+    "total_files": 12564,
+    "top_level_entries": 15,
+    "acl": "protected_current_sid_only_allow_fullcontrol_oi_ci",
+    "reparse_points": 0,
+    "diagnostic_absent": true
+  },
+  "audit_sink": {
+    "path": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-reconciliation-e71eace-audit\\cleanup-failure.json",
+    "files": 1,
+    "initial_length": 0,
+    "acl": "protected_current_sid_only_allow_fullcontrol_oi_ci",
+    "reparse_points": 0,
+    "canonical_and_disjoint_from_reconciliation_and_tombstone": true,
+    "atomic_failure_schema_fields": 7,
+    "allowed_failure_stages": 6
+  },
+  "system_powershell": {
+    "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "length": 454656,
+    "version": "10.0.26100.8875 (WinBuild.160101.0800)",
+    "signature_status": "Valid",
+    "signer_subject": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+    "signer_thumbprint": "DC91E564D5BC1E3A8E02D6A8508682ABEA8A2443"
+  },
+  "retained_task": {
+    "name": "OMS Sol0 Task28 Reconciliation e71eace",
+    "path": "\\",
+    "state": "Ready",
+    "enabled": true,
+    "run_level": "Limited",
+    "logon_type": "Interactive",
+    "execution_time_limit": "PT0S",
+    "last_result": 0,
+    "last_run_utc": "2026-08-28T23:52:37.0000000Z",
+    "execute": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "arguments": "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-reconciliation-e71eace\\reconciliation-launcher.ps1\"",
+    "working_directory": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-reconciliation-e71eace"
+  },
+  "verification": {
+    "focused_and_affected": "136 passed, 1 intentional live skip",
+    "real_powershell_5_1": "TASK28_RECONCILIATION_CLEANUP_HARNESS_VERIFIED",
+    "ruff": "passed",
+    "strict_mypy": "passed",
+    "offline_specification": "SHIP_cdb064c",
+    "offline_quality_security": "SHIP_cdb064c",
+    "hub_task": "Running",
+    "health_8765": "ok_schema29",
+    "health_8788": "ok_schema29"
+  },
+  "boundaries": {
+    "cleanup_script_invoked": false,
+    "cleanup_executed": false,
+    "task_unregistered": false,
+    "reconciliation_root_removed": false,
+    "audit_written": false,
+    "private_roots_inspected_or_mutated_during_composition": false,
+    "private_evidence_read_or_mutated": false,
+    "key_or_provider_or_private_source_accessed": false,
+    "retry_performed": false,
+    "production_or_gate_mutated": false,
+    "authorization_consumed": false
+  },
+  "composition_specification_review": "PENDING",
+  "composition_quality_security_review": "PENDING"
+}
