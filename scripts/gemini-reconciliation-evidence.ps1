@@ -159,7 +159,10 @@ function Write-ReconciliationSafeResult {
   if (-not (Test-Path -LiteralPath $Parent -PathType Container)) {
     throw "Safe result parent does not exist."
   }
-  $Warnings = if ($PrefixLineCount -gt 0) {@("unexpected_stdout_prefix")} else {@()}
+  [object[]]$Warnings = @()
+  if ($PrefixLineCount -gt 0) {
+    $Warnings = @("unexpected_stdout_prefix")
+  }
   $Envelope = [ordered]@{
     schema_version = 1
     evidence_usable = $true
