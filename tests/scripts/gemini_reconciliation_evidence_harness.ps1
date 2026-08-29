@@ -199,11 +199,16 @@ server.server_close()
     throw "Committed wrapper rejected valid Python JSON."
   }
   $WrapperStatusRecord = Get-Content -LiteralPath $WrapperStatus -Raw | ConvertFrom-Json
+  $WrapperSafeRecord = Get-Content -LiteralPath $WrapperSafe -Raw | ConvertFrom-Json
   if (-not $WrapperStatusRecord.evidence_usable -or
       -not $WrapperStatusRecord.provider_cleanup_complete -or
       -not $WrapperStatusRecord.operator_artifacts_deleted -or
       $WrapperStatusRecord.raw_diagnostic_retained) {
     throw "Committed wrapper did not separate evidence and cleanup state."
+  }
+  if ($WrapperSafeRecord.wrapper_warnings -isnot [array] -or
+      @($WrapperSafeRecord.wrapper_warnings).Count -ne 0) {
+    throw "Empty wrapper warnings were not serialized as a JSON array."
   }
 
   $BlockedWrapperSafe = Join-Path $Sandbox "blocked-wrapper-safe.json"
