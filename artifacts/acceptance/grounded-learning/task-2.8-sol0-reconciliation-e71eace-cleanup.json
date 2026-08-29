@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "status": "offline_reviewed_ship_composition_blocked",
+  "baseline_result_handoff_commit": "896ded575f8ec44256152592b84ad7774e482d45",
+  "reviewed_offline_candidate_commit": "2a0a0fc9f6548a980d5c7ff7234ba501a270e524",
+  "reviewed_offline_candidate_tree": "ba288fc37bd91d6f51eff6d51d6eaebd5aa1ba03",
+  "serializer_red_commit": "7b463fb510ad32e79a2654adb7b1ce09c6f632b5",
+  "serializer_green_commit": "df9e6f256e465f914488a3e5dec4751e244aabc6",
+  "cleanup_red_commit": "c08325c9b73b4a700712c3729ffe3fc21151b895",
+  "cleanup_initial_green_commit": "8e1dc6d7f18cdb9c76de6fb0bc5fb8ef888310f4",
+  "cleanup_review_red_commit": "235eaf689cf4c50b6940e8f4812a41807f79b397",
+  "cleanup_review_green_commit": "2a0a0fc9f6548a980d5c7ff7234ba501a270e524",
+  "test_fixture_commits": [
+    "ad26bdd83b6796c3c05beb6e84ee8ddbae2c3d20",
+    "bca6dc6076c733a3db1de08c0ee799a7d9b265e2",
+    "f50380222037c0265d920554de8db722878e212c",
+    "1dff76540d70cec558c3b030f23687694ca0c213",
+    "a0c88d094124d7f6b2b9d8964e0c49c89a41fceb",
+    "b5b5afa6b686d1fd6bdfc49992795d34bd886a7c"
+  ],
+  "hashes": {
+    "safe_result_sha256": "bd26cc4b7b3eeb34e875caaa043b4118bea375bc4473a3dab34dd65dffdf5a7d",
+    "safe_status_sha256": "e5ec9fcf1fb790b62a18939d78d350ea1572a903e02fae6e4e916ad5f4661c3f",
+    "serializer_sha256": "a0f0800e51885a6c8a7abe3c655639a57505192a6bee75932d8bdc7e5c1c8254",
+    "reconciliation_evidence_harness_sha256": "eec4df8fd52ee962432cc71d69d6a05159abee7639c63ccd97a8f144118d95ed",
+    "cleanup_script_sha256": "61214964551ab86572712284dbd471a672232b3d4638faf14e656a7450aeee01",
+    "cleanup_harness_sha256": "6e2249042ecd7477dcf60fbca1a9e7f420c375615f9f2a9a558d6791b9f6e8b8",
+    "cleanup_python_test_sha256": "8defb91bd0feb666cf299f0f523075e9f3b23f761e96b0b88d279efa7a966a36",
+    "cleanup_root_manifest_sha256": "ea671e594d9494aec7be240e322baa382dc954bab8f1de9ca196c24052887184"
+  },
+  "cleanup_root_manifest_file_count": 12560,
+  "tests": {
+    "focused": "29 passed",
+    "affected": "332 passed, 1 intentional live skip",
+    "ruff": "passed",
+    "strict_mypy": "passed",
+    "diff_hygiene": "passed",
+    "powershell_reconciliation_evidence_harness": "RECONCILIATION_EVIDENCE_HARNESS_VERIFIED",
+    "powershell_cleanup_harness": "TASK28_RECONCILIATION_CLEANUP_HARNESS_VERIFIED"
+  },
+  "offline_contract": {
+    "future_empty_wrapper_warnings_serializes_as_array": true,
+    "legacy_zero_property_pscustomobject_is_exactly_scoped": true,
+    "legacy_evidence_rewrite_permitted": false,
+    "ambiguous_state_retains_task_and_root": true,
+    "provider_or_key_access_present": false
+  },
+  "exact_cleanup_target": {
+    "task_name": "OMS Sol0 Task28 Reconciliation e71eace",
+    "task_path": "\\",
+    "reconciliation_root": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-reconciliation-e71eace"
+  },
+  "composition_preflight": {
+    "cleanup_script_staged": false,
+    "cleanup_executed": false,
+    "cleanup_authorization_consumed": false,
+    "reconciliation_root_exists": true,
+    "safe_result_hash_matches": true,
+    "safe_status_hash_matches": true,
+    "task_count": 1,
+    "task_state": "Ready",
+    "diagnostic_present": false,
+    "private_9097851_root_exists": true,
+    "private_9097851_evidence_directory_exists": false,
+    "private_06848e2_root_exists": true,
+    "private_06848e2_evidence_directory_exists": true,
+    "private_06848e2_evidence_file_count": 1,
+    "hub_task": "Running",
+    "hub_health": [
+      {"port": 8765, "status": "ok", "schema_version": 29},
+      {"port": 8788, "status": "ok", "schema_version": 29}
+    ]
+  },
+  "independent_reviews": {
+    "specification": "SHIP_offline_candidate_BLOCK_exact_composition",
+    "quality_security": "SHIP_offline_candidate_BLOCK_exact_composition",
+    "reviewed_commit": "2a0a0fc9f6548a980d5c7ff7234ba501a270e524",
+    "blocker": "The protected 9097851 root exists but its evidence directory is absent, contradicting the exact retained-root invariant recorded by the baseline handoff."
+  },
+  "required_owner_action": {
+    "owner": "Sol-2 private-shadow evidence owner",
+    "action": "Provide a durable independently reviewed disposition for the absent 9097851 evidence directory without reading or mutating retained evidence. If absence becomes the approved invariant, Sol-0 must add fresh offline RED/GREEN for it and rebuild and review the cleanup composition. Restoration requires separate explicit authorization."
+  },
+  "cleanup_authorization_ready": false,
+  "provider_retry_authorized": false,
+  "additional_key_read_authorized": false,
+  "private_roots_read_or_mutated": false,
+  "gate_2b_mutated": false,
+  "production_mutated": false
+}
