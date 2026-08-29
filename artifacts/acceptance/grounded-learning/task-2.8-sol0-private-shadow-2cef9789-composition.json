@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "status": "composed_hash_verified_not_executed_review_pending",
+  "recorded_at": "2026-08-28T23:04:48-04:00",
+  "composition_identity": "2cef97899a371ba5e72d831e31194ce1",
+  "composition_root": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-private-shadow-2cef97899a371ba5e72d831e31194ce1",
+  "task_name": "OMS Sol0 Task28 Private Shadow 2cef97899a371ba5e72d831e31194ce1",
+  "source_handoff": "909785131b113fb5b2083b74bd2757c2fc0dbf4b",
+  "source_tree": "d7eb0dae14d915d24b47a6a865ffe6eb31ab5c6a",
+  "entrypoint_review_green": "4bc82fbb258cb1192323fe16f1123c8b2a5fdb82",
+  "entrypoint_review_tree": "df0871b3777c65f76ca93cc9385591793e481e86",
+  "entrypoint_handoff": "0d3cd447b2abbacf9236aaec1c8f09970f5e2c71",
+  "scheduled_task_contract_source": "76d876ec43ee90074650c2eb11bc68329ea71575",
+  "scheduled_task_contract_handoff": "e1ca2720eea5b0b80b9bee69e50849317d3b9093",
+  "cleanup_result_handoff": "9b36301726b1dfd068aee549654f3c9adcee7d57",
+  "cleanup_reviewed_result": "2cef97899a371ba5e72d831e31194ce14e07b387",
+  "hashes": {
+    "source_archive_sha256": "389f70b675477ef15fe581903693395f93913ed7951a293d08cd138e18dd92a6",
+    "requirements_lock_sha256": "c6bd5cbebb0d87841f66b506f034ed39b8b18c1ec8973e738f258f95afd6758a",
+    "source_manifest_sha256": "d36c6a64ef342ff0d4e88c370c794a2add46ef2f98fbdfb9dcabd6bd86f702b0",
+    "runtime_manifest_sha256": "ce88fe3f371b0e2ca7938d8156d784c99094274d6c750fea35ca1a7700ec1ded",
+    "controller_sha256": "f272c205aed8607c7ca9a7a106d7758c127d8f89ee5060120dce7d03f48bbedf",
+    "launcher_sha256": "791c853dde1d13d0549b8efc42a695d9c78ef5e1a1f9b295d0f56419cbf7ffac",
+    "entrypoint_sha256": "96c77c083d665fe945cde5a31265d83276fe07778a1bb732bccee1b28f1acad2",
+    "reviewed_operator_sha256": "86809d1e4a45d4f0920c1d85e072e9b7cccbbe1548edc53f2982ec040677ac8d",
+    "entrypoint_fixture_sha256": "e78b8681cfdc066cd244db1d8e3df9a8aacad07d1ca9cf9dcdeeef117254a124",
+    "entrypoint_harness_sha256": "942be010290e323301774941a603ac69c9094184d15a3a4d63bbbd6313381858",
+    "entrypoint_test_sha256": "1ebcc475c921d55f12d841d70afd655bdf6271fe67d8ae9e325307fd72e49011",
+    "shared_adapter_sha256": "10c5fd206aa926e883d00bc970a82c11273dae8fb57f7145b33cff6613e392eb",
+    "smoke_operator_sha256": "ef4f74cd39ae4a272a1164246e0ba58989ae849bea2102d922c0e76e3069c489",
+    "evidence_validator_sha256": "6220323896c4b6d9d5eae62bc4d69e2efcdba046d633df99afbcc0b6ba557c72",
+    "evidence_wrapper_sha256": "b4bb9422dd101bcc4ccebbdeef16380226f4f76e5d9706d6100a7a6876a090c9",
+    "scheduled_task_contract_sha256": "013fb6a834514ef15cd7ae0e738288446aa1a8e83bfe70f8c3dc46de27600e23",
+    "scheduled_task_harness_sha256": "6e5958882b0948841ad9a6eb00da962b92c6d1cb4428d769c724dba86b88a3bc",
+    "reconciliation_evidence_serializer_sha256": "a0f0800e51885a6c8a7abe3c655639a57505192a6bee75932d8bdc7e5c1c8254",
+    "reconciliation_evidence_harness_sha256": "eec4df8fd52ee962432cc71d69d6a05159abee7639c63ccd97a8f144118d95ed"
+  },
+  "manifests": {
+    "source_file_count": 674,
+    "runtime_file_count": 11868,
+    "top_level_entry_count": 19
+  },
+  "runtime_pins": {
+    "google-genai": "2.14.0",
+    "pydantic": "2.13.4",
+    "httpx": "0.28.1",
+    "keyring": "25.7.0"
+  },
+  "offline_contracts": {
+    "normalized_markdown_import_fix_present": true,
+    "blocked_evidence_key_count": 15,
+    "blocked_evidence_fallback": "fail_closed_blocked_sentinel_cleanup_unknown",
+    "empty_wrapper_warnings_serializes_as_array": true,
+    "pre_registration_task_absence_assertion_present": true,
+    "in_task_exact_limited_interactive_assertion_present": true,
+    "scratch_key_source_provider_boundaries_after_task_assertion": true
+  },
+  "windows_powershell_5_1_markers": [
+    "SCHEDULED_TASK_RUN_CONTRACT_HARNESS_VERIFIED",
+    "PRIVATE_SHADOW_EVIDENCE_HARNESS_VERIFIED",
+    "PRIVATE_SHADOW_ENTRYPOINT_HARNESS_VERIFIED",
+    "RECONCILIATION_EVIDENCE_HARNESS_VERIFIED"
+  ],
+  "local_verification": {
+    "focused": "155 passed, 1 intentional live skip",
+    "affected": "250 passed, 1 intentional live skip",
+    "ruff": "passed",
+    "strict_mypy": "passed on 5 source files",
+    "python_ast": "passed",
+    "powershell_parse": "passed on Windows PowerShell 5.1"
+  },
+  "protected_state": {
+    "root_acl": "current_sid_only_full_control_oi_ci_inheritance_disabled",
+    "evidence_acl": "current_sid_only_full_control_oi_ci_inheritance_disabled",
+    "reparse_points": 0,
+    "evidence_empty": true,
+    "task_absent": true,
+    "scratch_absent": true,
+    "diagnostic_absent": true,
+    "retained_9097851_root_present_disjoint_unread_unmodified": true,
+    "retained_06848e2_root_present_disjoint_unread_unmodified": true,
+    "hub_task": "Running",
+    "health_8765": "ok/schema29",
+    "health_8788": "ok/schema29"
+  },
+  "boundaries": {
+    "launcher_executed": false,
+    "task_registered_or_started": false,
+    "credential_read": false,
+    "private_source_or_evidence_accessed": false,
+    "provider_contacted": false,
+    "cleanup_or_reconciliation_executed": false,
+    "prior_authorization_used": false,
+    "retained_roots_mutated": false,
+    "production_or_gate_mutated": false,
+    "merged_pushed_or_deployed": false
+  },
+  "reviews": {
+    "specification": "pending exact-composition review",
+    "quality_security": "pending exact-composition review"
+  }
+}
