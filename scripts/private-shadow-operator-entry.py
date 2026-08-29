@@ -21,7 +21,16 @@ def _load_reviewed_operator() -> ModuleType:
 
 
 def _load_hash_bound_evidence(project: Path) -> ModuleType:
-    path = (project / "src" / "oms_hub" / "providers" / "gemini" / "evidence.py").resolve()
+    try:
+        canonical_project = project.resolve(strict=True)
+        source_root = (canonical_project / "src").resolve(strict=True)
+        path = (source_root / "oms_hub" / "providers" / "gemini" / "evidence.py").resolve(
+            strict=True
+        )
+    except (OSError, RuntimeError) as error:
+        raise RuntimeError("private_shadow_evidence_binding_invalid") from error
+    if not source_root.is_relative_to(canonical_project) or not path.is_relative_to(source_root):
+        raise RuntimeError("private_shadow_evidence_binding_invalid")
     spec = importlib.util.spec_from_file_location("task_2_8_hash_bound_evidence", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("private_shadow_evidence_unavailable")

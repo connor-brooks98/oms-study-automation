@@ -110,6 +110,7 @@ _WARNINGS = frozenset(
         "usage_count_invalid",
     }
 )
+_MAX_INDEX_INPUT_BYTES = 1_099_511_627_776
 
 
 def _validate_common(record: PrivateShadowPassed | PrivateShadowBlocked) -> None:
@@ -118,6 +119,9 @@ def _validate_common(record: PrivateShadowPassed | PrivateShadowBlocked) -> None
         raise ValueError("document types must be sorted and unique")
     if set(record.byte_usage) != {"index_inputs"}:
         raise ValueError("byte usage keys are invalid")
+    index_inputs = record.byte_usage["index_inputs"]
+    if type(index_inputs) is not int or index_inputs < 1 or index_inputs > _MAX_INDEX_INPUT_BYTES:
+        raise ValueError("index input byte usage is invalid")
     if any(warning not in _WARNINGS for warning in record.warnings):
         raise ValueError("warnings are not allowlisted")
     if len(set(record.warnings)) != len(record.warnings):
@@ -255,9 +259,7 @@ class PrivateShadowBlocked(BaseModel):
             "invalid_argument",
             "provider_bad_request",
             "unsupported_mime_type",
-        } and (
-            self.provider_error_category != "provider" or self.provider_status_code != 400
-        ):
+        } and (self.provider_error_category != "provider" or self.provider_status_code != 400):
             raise ValueError("bad-request diagnostics require provider HTTP 400")
         input_stage = self.failure_stage in {"upload_input", "import_input", "wait_for_import"}
         if input_stage != (self.failure_input_identity != "none"):
@@ -460,33 +462,35 @@ def failure_record(
         "byte_usage": {"index_inputs": 1},
     }
     source = fallback if preflight is None else preflight
-    return PrivateShadowBlocked.model_validate({
-        "status": "blocked",
-        "source_revision_hash": source["source_revision_hash"],
-        "document_types": source["document_types"],
-        "page_count": source["page_count"],
-        "slide_count": source["slide_count"],
-        "provider_operation_states": [*states, "private_shadow_failed"],
-        "byte_usage": source["byte_usage"],
-        "failure_stage": failure_stage if failure_stage in _FAILURE_STAGES else "unknown",
-        "failure_input_identity": (
-            input_identity if input_identity in _INPUT_IDENTITIES else "unknown"
-        ),
-        "provider_error_category": category,
-        "provider_status_code": status_code,
-        "provider_reason": reason,
-        "provider_cleanup_outcome": (
-            cleanup_outcome
-            if cleanup_outcome in {"complete", "failed", "unknown"}
-            else "unknown"
-        ),
-        "provider_reconciliation_outcome": (
-            reconciliation_outcome
-            if reconciliation_outcome in {"empty", "not_empty", "unknown"}
-            else "unknown"
-        ),
-        "warnings": warnings,
-    })
+    return PrivateShadowBlocked.model_validate(
+        {
+            "status": "blocked",
+            "source_revision_hash": source["source_revision_hash"],
+            "document_types": source["document_types"],
+            "page_count": source["page_count"],
+            "slide_count": source["slide_count"],
+            "provider_operation_states": [*states, "private_shadow_failed"],
+            "byte_usage": source["byte_usage"],
+            "failure_stage": failure_stage if failure_stage in _FAILURE_STAGES else "unknown",
+            "failure_input_identity": (
+                input_identity if input_identity in _INPUT_IDENTITIES else "unknown"
+            ),
+            "provider_error_category": category,
+            "provider_status_code": status_code,
+            "provider_reason": reason,
+            "provider_cleanup_outcome": (
+                cleanup_outcome
+                if cleanup_outcome in {"complete", "failed", "unknown"}
+                else "unknown"
+            ),
+            "provider_reconciliation_outcome": (
+                reconciliation_outcome
+                if reconciliation_outcome in {"empty", "not_empty", "unknown"}
+                else "unknown"
+            ),
+            "warnings": warnings,
+        }
+    )
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -494,9 +498,12 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--process-exit-code", required=True, type=int)
     arguments = parser.parse_args(argv)
     try:
-        raw = sys.stdin.buffer.read().decode("utf-8")
+        raw_bytes = sys.stdin.buffer.read(200 * 1024 + 1)
+        if len(raw_bytes) > 200 * 1024:
+            return 51
+        raw = raw_bytes.decode("utf-8")
         value = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, MemoryError, OverflowError, RecursionError):
         return 51
     try:
         canonical = validate_private_shadow_record(value, arguments.process_exit_code)

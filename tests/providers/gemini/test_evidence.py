@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -105,9 +106,7 @@ def test_private_shadow_evidence_accepts_known_generic_bad_request() -> None:
     ("category", "status"),
     (("quota", 400), ("provider", 404)),
 )
-def test_private_shadow_bad_request_requires_provider_400(
-    category: str, status: int
-) -> None:
+def test_private_shadow_bad_request_requires_provider_400(category: str, status: int) -> None:
     with pytest.raises(ValueError):
         validate_private_shadow_record(_blocked_record(category=category, status=status), 1)
 
@@ -118,7 +117,7 @@ def test_private_shadow_bad_request_requires_provider_400(
     (-1, 0, MAX_INDEX_INPUT_BYTES + 1, 10**1000),
 )
 def test_private_shadow_byte_usage_rejects_invalid_bounds(
-    factory: object, byte_count: int
+    factory: Callable[[], dict[str, object]], byte_count: int
 ) -> None:
     record = factory()
     record["byte_usage"] = {"index_inputs": byte_count}
@@ -130,7 +129,7 @@ def test_private_shadow_byte_usage_rejects_invalid_bounds(
 @pytest.mark.parametrize("factory", (_passed_record, _blocked_record))
 @pytest.mark.parametrize("byte_count", (1, MAX_INDEX_INPUT_BYTES))
 def test_private_shadow_byte_usage_accepts_exact_bounds(
-    factory: object, byte_count: int
+    factory: Callable[[], dict[str, object]], byte_count: int
 ) -> None:
     record = factory()
     record["byte_usage"] = {"index_inputs": byte_count}
@@ -142,20 +141,39 @@ def test_private_shadow_byte_usage_accepts_exact_bounds(
 
 def test_private_shadow_model_rejects_lifecycle_warning_and_count_contradictions() -> None:
     lifecycle = _passed_record()
-    lifecycle["provider_operation_states"][2] = "inputs_imported:1"
+    lifecycle["provider_operation_states"] = [
+        "prior_operator_state_empty",
+        "store_created",
+        "inputs_imported:1",
+        "inputs_imported:1",
+        "positive_query_complete",
+        "wrong_scope_query_complete",
+        "documents_delete_attempted:1",
+        "files_delete_attempted:1",
+        "file_reconciliation_empty",
+        "stores_delete_attempted:1",
+        "store_reconciliation_empty",
+    ]
     warnings = _blocked_record()
     warnings["warnings"] = ["private_cleanup_unknown", "private_shadow_failed"]
     counts = _blocked_record()
-    counts["failure_stage"] = "create_store"
+    counts["failure_stage"] = "upload_input"
+    counts["failure_input_identity"] = "pptx"
     counts["provider_operation_states"] = [
         "prior_operator_state_empty",
+        "store_created",
         "documents_delete_attempted:0",
         "files_delete_attempted:0",
         "stores_delete_attempted:0",
         "private_shadow_failed",
     ]
 
-    for record, exit_code in ((lifecycle, 0), (warnings, 1), (counts, 1)):
+    cases: tuple[tuple[dict[str, object], int], ...] = (
+        (lifecycle, 0),
+        (warnings, 1),
+        (counts, 1),
+    )
+    for record, exit_code in cases:
         with pytest.raises(ValueError):
             validate_private_shadow_record(record, exit_code)
 
@@ -165,9 +183,9 @@ def test_private_shadow_evidence_cli_is_canonical_utf8_and_maps_errors() -> None
 
     assert valid.returncode == 0
     assert valid.stderr == ""
-    assert valid.stdout == json.dumps(
-        _blocked_record(), sort_keys=True, separators=(",", ":")
-    ) + "\n"
+    assert (
+        valid.stdout == json.dumps(_blocked_record(), sort_keys=True, separators=(",", ":")) + "\n"
+    )
 
     invalid = _cli({"status": "blocked"}, 1)
 

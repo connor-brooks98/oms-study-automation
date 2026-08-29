@@ -137,6 +137,8 @@ try {
     -Path $ProjectRoot -ExistingContainer
   $SourceRoot = Resolve-PrivateShadowSafePath `
     -Path (Join-Path $ProjectRoot "src") -ExistingContainer
+  $EvidenceModule = Resolve-PrivateShadowSafePath `
+    -Path (Join-Path $SourceRoot "oms_hub/providers/gemini/evidence.py") -ExistingLeaf
   $OperatorScript = Resolve-PrivateShadowSafePath `
     -Path $OperatorScript -ExistingLeaf
   $EvidenceScript = Resolve-PrivateShadowSafePath `
@@ -155,6 +157,13 @@ try {
       $ProjectPrefix, [System.StringComparison]::OrdinalIgnoreCase
   )) {
     throw "Private-shadow source root must be inside the project root."
+  }
+  $SourcePrefix = $SourceRoot.TrimEnd('\\', '/') +
+    [System.IO.Path]::DirectorySeparatorChar
+  if (-not $EvidenceModule.StartsWith(
+      $SourcePrefix, [System.StringComparison]::OrdinalIgnoreCase
+  )) {
+    throw "Private-shadow evidence module must be inside the source root."
   }
   if ($DiagnosticRoot -ceq $ProjectRoot -or $DiagnosticRoot.StartsWith(
       $ProjectPrefix,
@@ -209,7 +218,7 @@ try {
     $Evidence = Convert-PrivateShadowEvidence `
       -RawStdoutPath $RawStdout -SafeResultPath $SafeResultPath `
       -ProcessExitCode $OperatorExit -PythonExecutable $PythonExecutable `
-      -SourceRoot $SourceRoot
+      -SourceRoot $SourceRoot -EvidenceModule $EvidenceModule
     $EvidenceUsable = $Evidence.EvidenceUsable
     $WrapperStage = $Evidence.Stage
     $ExitCode = if ($Evidence.ExitCode -ne 0) {$Evidence.ExitCode} else {$OperatorExit}

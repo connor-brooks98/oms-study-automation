@@ -31,7 +31,8 @@ function Convert-PrivateShadowEvidence {
     [Parameter(Mandatory = $true)][string]$SafeResultPath,
     [Parameter(Mandatory = $true)][int]$ProcessExitCode,
     [Parameter(Mandatory = $true)][string]$PythonExecutable,
-    [Parameter(Mandatory = $true)][string]$SourceRoot
+    [Parameter(Mandatory = $true)][string]$SourceRoot,
+    [Parameter(Mandatory = $true)][string]$EvidenceModule
   )
   try {
     $Raw = [IO.File]::ReadAllText($RawStdoutPath, $script:PrivateShadowUtf8).TrimEnd("`r", "`n")
@@ -42,6 +43,15 @@ function Convert-PrivateShadowEvidence {
     return New-PrivateShadowEvidenceResult $script:PrivateShadowParseExit "parse" $false
   }
   try {
+    $ExpectedEvidenceModule = [IO.Path]::GetFullPath(
+      (Join-Path $SourceRoot "oms_hub/providers/gemini/evidence.py")
+    )
+    if (-not [string]::Equals(
+        [IO.Path]::GetFullPath($EvidenceModule), $ExpectedEvidenceModule,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+      return New-PrivateShadowEvidenceResult $script:PrivateShadowValidationExit "validation" $false
+    }
     $Start = [Diagnostics.ProcessStartInfo]::new()
     $Start.FileName = $PythonExecutable
     $Start.Arguments = "-m oms_hub.providers.gemini.evidence --process-exit-code $ProcessExitCode"
