@@ -35,7 +35,6 @@ from oms_hub.providers.gemini.client import (
     translate_gemini_error,
 )
 from oms_hub.providers.gemini.errors import GeminiProviderError
-from oms_hub.providers.gemini.file_search import import_file_exact_wire
 from oms_hub.providers.gemini.models import GeminiConfig
 from oms_hub.source_trust_schema29 import project_schema29_index_input
 
@@ -740,17 +739,19 @@ class GoogleGenaiSmokeSession:
         metadata: tuple[tuple[str, str], ...],
         chunking: object | None,
     ) -> str:
+        config: dict[str, object] = {
+            "custom_metadata": [
+                {"key": key, "string_value": value} for key, value in metadata
+            ]
+        }
+        if chunking is not None:
+            config["chunking_config"] = chunking
         async with self._clients.client() as client:
             operation = await _provider_call(
-                lambda: import_file_exact_wire(
-                    client.file_search_stores,
-                    store_name,
-                    file_name,
-                    [
-                        {"key": key, "string_value": value}
-                        for key, value in metadata
-                    ],
-                    chunking,
+                lambda: client.file_search_stores.import_file(
+                    file_search_store_name=store_name,
+                    file_name=file_name,
+                    config=config,
                 )
             )
         return _provider_identity(operation, "operation")
