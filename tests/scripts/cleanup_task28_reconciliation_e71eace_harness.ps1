@@ -114,7 +114,7 @@ function Get-ScheduledTask {
 function Get-FileHash {
   [CmdletBinding()]
   param([string]$LiteralPath,[string]$Algorithm)
-  if ([IO.Path]::GetFullPath($LiteralPath) -ceq [IO.Path]::GetFullPath($script:rootManifest)) {
+  if ((Split-Path -Leaf $LiteralPath) -ceq 'cleanup-root-manifest.sha256') {
     return [pscustomobject]@{
       Hash='ea671e594d9494aec7be240e322baa382dc954bab8f1de9ca196c24052887184'
     }
