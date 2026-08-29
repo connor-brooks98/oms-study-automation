@@ -10,6 +10,7 @@ import os
 import stat
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from importlib import import_module
 from pathlib import Path
@@ -271,6 +272,36 @@ class _FiveInputSession:
     async def delete_store(self, store_name: str) -> None:
         self.calls.append(("delete_store", store_name))
         self.live_stores.pop(store_name, None)
+
+
+class _OneTimeResponseLossSession(_FiveInputSession):
+    def __init__(self, smoke: ModuleType, failure_stage: str) -> None:
+        super().__init__(smoke, "")
+        self.failure_stage = failure_stage
+        self.failed = False
+
+    def _fail_once(self) -> None:
+        if not self.failed:
+            self.failed = True
+            raise self.smoke.GeminiProviderError("synthetic response loss")
+
+    async def upload_input(self, *args: object, **kwargs: object) -> str:
+        value = await super().upload_input(*args, **kwargs)
+        if self.failure_stage == "upload_input":
+            self._fail_once()
+        return value
+
+    async def import_input(self, *args: object, **kwargs: object) -> str:
+        value = await super().import_input(*args, **kwargs)
+        if self.failure_stage == "import_input":
+            self._fail_once()
+        return value
+
+    async def wait_for_import(self, *args: object, **kwargs: object) -> str:
+        value = await super().wait_for_import(*args, **kwargs)
+        if self.failure_stage == "wait_for_import":
+            self._fail_once()
+        return value
 
 
 class _SdkDocuments:
@@ -934,6 +965,67 @@ def test_public_synthetic_index_input_contains_the_ordered_five_media_matrix(
         with Image.open(asset.path) as image:
             assert image.size == (asset.width, asset.height)
             image.verify()
+
+
+def test_public_synthetic_fixtures_are_byte_identical_across_clock_seconds(
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    first = smoke._synthetic_index_input(first_root)
+    time.sleep(2)
+    second = smoke._synthetic_index_input(second_root)
+
+    assert (
+        first.pptx.sha256,
+        first.pdf.sha256,
+        first.markdown.sha256,
+        *(asset.sha256 for asset in first.assets),
+    ) == (
+        second.pptx.sha256,
+        second.pdf.sha256,
+        second.markdown.sha256,
+        *(asset.sha256 for asset in second.assets),
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "unknown_resource", "cleanup", "reconciliation"),
+    (
+        ("upload_input", "file", "completed", "empty"),
+        ("import_input", "document", "unknown", "unknown"),
+        ("wait_for_import", "document", "unknown", "unknown"),
+    ),
+)
+def test_public_matrix_one_time_response_loss_keeps_resource_truth_sticky(
+    failure_stage: str,
+    unknown_resource: str,
+    cleanup: str,
+    reconciliation: str,
+) -> None:
+    smoke = _load_smoke()
+    session = _OneTimeResponseLossSession(smoke, failure_stage)
+    evidence: dict[str, object] = {}
+
+    with pytest.raises(smoke.GeminiProviderError, match="synthetic response loss"):
+        asyncio.run(smoke.run_contract_smoke(session, failure_evidence=evidence))
+
+    names = [name for name, _ in session.calls]
+    assert names.count("upload_input") == 5
+    expected_imports = 4 if failure_stage == "upload_input" else 5
+    assert names.count("import_input") == expected_imports
+    expected_waits = 4 if failure_stage in {"upload_input", "import_input"} else 5
+    assert names.count("wait_for_import") == expected_waits
+    assert names.count("query_private") == 0
+    assert evidence["resources_created"][unknown_resource] == "unknown"
+    assert evidence["cleanup"]["status"] == cleanup
+    assert evidence["reconciliation"] == reconciliation
+    assert len(evidence["input_results"]) == 5
+    assert json.dumps(evidence, sort_keys=True).find("files/synthetic-") == -1
+    assert json.dumps(evidence, sort_keys=True).find("fileSearchStores/synthetic") == -1
 
 
 def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
