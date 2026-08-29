@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "status": "post_blocker_composed_hash_verified_not_executed_review_pending",
+  "recorded_at": "2026-08-29T08:53:30-04:00",
+  "composition_identity": "980b0967fca0b9138a83d210505882ea",
+  "composition_root": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-private-shadow-980b0967fca0b9138a83d210505882ea",
+  "task_name": "OMS Sol0 Task28 Private Shadow 980b0967fca0b9138a83d210505882ea",
+  "post_blocker_handoff": "980b0967fca0b9138a83d210505882ead7b60cc5",
+  "source_handoff": "909785131b113fb5b2083b74bd2757c2fc0dbf4b",
+  "source_tree": "d7eb0dae14d915d24b47a6a865ffe6eb31ab5c6a",
+  "entrypoint_review_green": "4bc82fbb258cb1192323fe16f1123c8b2a5fdb82",
+  "entrypoint_handoff": "0d3cd447b2abbacf9236aaec1c8f09970f5e2c71",
+  "scheduled_task_contract_source": "76d876ec43ee90074650c2eb11bc68329ea71575",
+  "scheduled_task_contract_handoff": "e1ca2720eea5b0b80b9bee69e50849317d3b9093",
+  "hashes": {
+    "source_archive_sha256": "389f70b675477ef15fe581903693395f93913ed7951a293d08cd138e18dd92a6",
+    "requirements_lock_sha256": "c6bd5cbebb0d87841f66b506f034ed39b8b18c1ec8973e738f258f95afd6758a",
+    "source_manifest_sha256": "d36c6a64ef342ff0d4e88c370c794a2add46ef2f98fbdfb9dcabd6bd86f702b0",
+    "runtime_manifest_sha256": "cf1344be7003a65d7e4863b0dfbbccc34f56d21c93e0bb7ff6d126df827b2a42",
+    "controller_sha256": "6846d7053a61e0b4c674aa72c19e275a8d1d18884bd55a19fb296834cfa0a17b",
+    "launcher_sha256": "7bde9f7391d0970196c1f76d9365835da4537cb03f463a83cf89df9879c6ab09",
+    "entrypoint_sha256": "96c77c083d665fe945cde5a31265d83276fe07778a1bb732bccee1b28f1acad2",
+    "composition_bound_operator_sha256": "9ab7703f02c5338379bf02279716b98f43e13eae4f51176c25d8761e73ccc3d3",
+    "scratch_binding_test_sha256": "82999619aa2161e98e2a73995e16f47e4eb9ec2050b4f4c51ef50d88047bcdf5",
+    "evidence_directory_contract_harness_sha256": "af1dbc3d1e520916428d48bdc300f9b00fdaf23a751b22e268c131abbdfce776",
+    "evidence_validator_sha256": "6220323896c4b6d9d5eae62bc4d69e2efcdba046d633df99afbcc0b6ba557c72",
+    "evidence_wrapper_sha256": "b4bb9422dd101bcc4ccebbdeef16380226f4f76e5d9706d6100a7a6876a090c9",
+    "scheduled_task_contract_sha256": "013fb6a834514ef15cd7ae0e738288446aa1a8e83bfe70f8c3dc46de27600e23"
+  },
+  "manifests": {
+    "source_file_count": 674,
+    "runtime_file_count": 11868,
+    "top_level_entry_count": 21
+  },
+  "runtime_pins": {
+    "google-genai": "2.14.0",
+    "pydantic": "2.13.4",
+    "httpx": "0.28.1",
+    "keyring": "25.7.0"
+  },
+  "post_blocker_contract": {
+    "controller_requires_evidence_directory_before_registration": true,
+    "launcher_requires_evidence_directory_before_task_contract": true,
+    "controller_and_launcher_require_top_level_count_21": true,
+    "guard_never_creates_or_repairs_evidence_directory": true,
+    "stale_missing_scheduled_task_handoff_assertion_removed": true,
+    "scheduled_task_contract_and_harness_remain_hash_bound": true,
+    "red": "PowerShell 5.1 rejected prior controller with evidence_directory_guard_missing_or_late",
+    "green": "PRIVATE_SHADOW_EVIDENCE_DIRECTORY_CONTRACT_VERIFIED"
+  },
+  "build_observation": {
+    "initial_new_root_evidence_disappeared_before_first_full_verification": true,
+    "guard_failed_closed_before_any_executable_boundary": true,
+    "scp_disposable_probe_preserved_empty_protected_directory": true,
+    "matching_name_disposable_probe_preserved_empty_protected_directory": true,
+    "final_evidence_directory_created_only_inside_unreviewed_new_build_root": true,
+    "final_full_verification_passed": true
+  },
+  "windows_powershell_5_1_markers": [
+    "PRIVATE_SHADOW_EVIDENCE_DIRECTORY_CONTRACT_VERIFIED",
+    "PRIVATE_SHADOW_SCRATCH_BINDING_VERIFIED",
+    "SCHEDULED_TASK_RUN_CONTRACT_HARNESS_VERIFIED",
+    "PRIVATE_SHADOW_EVIDENCE_HARNESS_VERIFIED",
+    "PRIVATE_SHADOW_ENTRYPOINT_HARNESS_VERIFIED"
+  ],
+  "local_verification": {
+    "focused": "155 passed, 1 intentional live skip",
+    "affected": "250 passed, 1 intentional live skip",
+    "ruff": "passed",
+    "strict_mypy": "passed on 5 source files",
+    "python_ast": "passed",
+    "powershell_parse": "passed on Windows PowerShell 5.1"
+  },
+  "protected_state": {
+    "root_acl": "current_sid_only_full_control_oi_ci_inheritance_disabled",
+    "evidence_present": true,
+    "evidence_empty": true,
+    "evidence_acl": "current_sid_only_full_control_oi_ci_inheritance_disabled",
+    "reparse_points": 0,
+    "task_absent": true,
+    "scratch_absent": true,
+    "diagnostic_absent": true,
+    "prior_roots_present_disjoint_root_only": 3,
+    "hub_task": "Running",
+    "health_8765": "ok/schema29",
+    "health_8788": "ok/schema29"
+  },
+  "boundaries": {
+    "controller_or_launcher_executed": false,
+    "task_registered_or_started": false,
+    "credential_read": false,
+    "private_source_or_evidence_accessed": false,
+    "provider_contacted": false,
+    "prior_root_contents_inspected_or_mutated": false,
+    "live_retry_performed": false,
+    "production_or_gate_mutated": false,
+    "merged_pushed_or_deployed": false
+  },
+  "reviews": {
+    "specification": "pending exact-head review",
+    "quality_security": "pending exact-head review"
+  }
+}
