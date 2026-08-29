@@ -47,16 +47,10 @@ class FakeFiles:
 class FakeStores:
     def __init__(self) -> None:
         self.import_calls: list[dict[str, object]] = []
-        self.transport_calls: list[tuple[object, ...]] = []
-        self._api_client = self
 
     async def import_file(self, **kwargs: object) -> object:
         self.import_calls.append(kwargs)
         return SimpleNamespace(name="operations/import-1")
-
-    async def async_request(self, *args: object) -> object:
-        self.transport_calls.append(args)
-        return SimpleNamespace(body='{"name":"operations/import-1"}')
 
 
 class FakeOperations:
@@ -140,32 +134,64 @@ def test_upload_import_and_cleanup_use_exact_async_sdk_contract(tmp_path: Path) 
     assert client.files.upload_calls == [
         {"file": source, "config": {"display_name": "lecture.pptx"}}
     ]
-    assert client.file_search_stores.import_calls == []
-    assert client.file_search_stores.transport_calls == [
-        (
-            "post",
-            "fileSearchStores/course-1:importFile",
-            {
-                "fileName": "files/provider-1",
-                "customMetadata": [
-                    {"key": "authority_class", "stringValue": "course_material"},
-                    {"key": "source_revision_id", "stringValue": "sr_1"},
-                ],
-                "chunkingConfig": {
-                    "whiteSpaceConfig": {
-                        "maxTokensPerChunk": 700,
-                        "maxOverlapTokens": 100,
-                    }
-                },
+    assert client.file_search_stores.import_calls == [
+        {
+            "file_search_store_name": "fileSearchStores/course-1",
+            "file_name": "files/provider-1",
+            "config": {
+                "custom_metadata": metadata,
+                "chunking_config": chunking,
             },
-            None,
-        )
+        }
     ]
     assert client.files.delete_calls == [{"name": "files/provider-1"}]
     assert client.close_calls == 3
 
 
-def test_real_sdk_import_uses_exact_normalized_markdown_wire_body() -> None:
+@pytest.mark.parametrize(
+    ("file_name", "metadata", "chunking", "expected"),
+    (
+        (
+            "files/lecture-pdf",
+            [{"key": "input_key", "string_value": "lecture_pdf"}],
+            None,
+            {
+                "fileName": "files/lecture-pdf",
+                "customMetadata": [
+                    {"key": "input_key", "string_value": "lecture_pdf"}
+                ],
+            },
+        ),
+        (
+            "files/normalized-markdown",
+            [{"key": "input_key", "string_value": "normalized_markdown"}],
+            {
+                "white_space_config": {
+                    "max_tokens_per_chunk": 700,
+                    "max_overlap_tokens": 100,
+                }
+            },
+            {
+                "fileName": "files/normalized-markdown",
+                "customMetadata": [
+                    {"key": "input_key", "string_value": "normalized_markdown"}
+                ],
+                "chunkingConfig": {
+                    "white_space_config": {
+                        "max_tokens_per_chunk": 700,
+                        "max_overlap_tokens": 100,
+                    }
+                },
+            },
+        ),
+    ),
+)
+def test_real_sdk_import_preserves_public_config_wire_body(
+    file_name: str,
+    metadata: list[dict[str, str]],
+    chunking: dict[str, object] | None,
+    expected: dict[str, object],
+) -> None:
     sdk = import_module("google.genai")
     captured: list[dict[str, object]] = []
 
@@ -199,32 +225,14 @@ def test_real_sdk_import_uses_exact_normalized_markdown_wire_body() -> None:
     operation = run(
         admin.import_file(
             "fileSearchStores/course-1",
-            "files/normalized-markdown",
-            [{"key": "input_key", "string_value": "normalized_markdown"}],
-            {
-                "white_space_config": {
-                    "max_tokens_per_chunk": 700,
-                    "max_overlap_tokens": 100,
-                }
-            },
+            file_name,
+            metadata,
+            chunking,
         )
     )
 
     assert operation == OperationRef(name="operations/import-1")
-    assert captured == [
-        {
-            "fileName": "files/normalized-markdown",
-            "customMetadata": [
-                {"key": "input_key", "stringValue": "normalized_markdown"}
-            ],
-            "chunkingConfig": {
-                "whiteSpaceConfig": {
-                    "maxTokensPerChunk": 700,
-                    "maxOverlapTokens": 100,
-                }
-            },
-        }
-    ]
+    assert captured == [expected]
 
 
 @pytest.mark.parametrize(
@@ -316,7 +324,7 @@ def test_import_rejects_noncanonical_store_before_transport(store_name: str) -> 
             )
         )
 
-    assert client.file_search_stores.transport_calls == []
+    assert client.file_search_stores.import_calls == []
 
 
 def test_wait_polls_persisted_name_with_bounded_exponential_backoff(
