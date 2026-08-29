@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "composed_hash_verified_not_executed_review_pending",
+  "status": "corrected_composed_hash_verified_not_executed_review_pending",
   "recorded_at": "2026-08-28T23:04:48-04:00",
   "composition_identity": "2cef97899a371ba5e72d831e31194ce1",
   "composition_root": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-private-shadow-2cef97899a371ba5e72d831e31194ce1",
@@ -19,10 +19,12 @@
     "requirements_lock_sha256": "c6bd5cbebb0d87841f66b506f034ed39b8b18c1ec8973e738f258f95afd6758a",
     "source_manifest_sha256": "d36c6a64ef342ff0d4e88c370c794a2add46ef2f98fbdfb9dcabd6bd86f702b0",
     "runtime_manifest_sha256": "ce88fe3f371b0e2ca7938d8156d784c99094274d6c750fea35ca1a7700ec1ded",
-    "controller_sha256": "f272c205aed8607c7ca9a7a106d7758c127d8f89ee5060120dce7d03f48bbedf",
-    "launcher_sha256": "791c853dde1d13d0549b8efc42a695d9c78ef5e1a1f9b295d0f56419cbf7ffac",
+    "controller_sha256": "b5e56187978c155b1925925aeb840766a85241599ef21be103eead130cd08279",
+    "launcher_sha256": "ccdff556d4880fa93762facd662ec797d00da2bea9746a1f463139d23446ff90",
     "entrypoint_sha256": "96c77c083d665fe945cde5a31265d83276fe07778a1bb732bccee1b28f1acad2",
-    "reviewed_operator_sha256": "86809d1e4a45d4f0920c1d85e072e9b7cccbbe1548edc53f2982ec040677ac8d",
+    "composition_bound_operator_sha256": "ff80bb0fcbe48853394ac61bdbabbc92e11a3e65fb9fb303a2795e1175b9580f",
+    "reviewed_operator_parent_sha256": "86809d1e4a45d4f0920c1d85e072e9b7cccbbe1548edc53f2982ec040677ac8d",
+    "scratch_binding_test_sha256": "e561388902da485f8e77ea4f2582938d2aa9897eb0efbd0f8d686ae398bcdd3c",
     "entrypoint_fixture_sha256": "e78b8681cfdc066cd244db1d8e3df9a8aacad07d1ca9cf9dcdeeef117254a124",
     "entrypoint_harness_sha256": "942be010290e323301774941a603ac69c9094184d15a3a4d63bbbd6313381858",
     "entrypoint_test_sha256": "1ebcc475c921d55f12d841d70afd655bdf6271fe67d8ae9e325307fd72e49011",
@@ -38,7 +40,7 @@
   "manifests": {
     "source_file_count": 674,
     "runtime_file_count": 11868,
-    "top_level_entry_count": 19
+    "top_level_entry_count": 20
   },
   "runtime_pins": {
     "google-genai": "2.14.0",
@@ -53,12 +55,14 @@
     "empty_wrapper_warnings_serializes_as_array": true,
     "pre_registration_task_absence_assertion_present": true,
     "in_task_exact_limited_interactive_assertion_present": true,
-    "scratch_key_source_provider_boundaries_after_task_assertion": true
+    "scratch_key_source_provider_boundaries_after_task_assertion": true,
+    "exact_launcher_operator_scratch_binding": "sol2-task28-private-live-2cef97899a371ba5e72d831e31194ce1"
   },
   "windows_powershell_5_1_markers": [
     "SCHEDULED_TASK_RUN_CONTRACT_HARNESS_VERIFIED",
     "PRIVATE_SHADOW_EVIDENCE_HARNESS_VERIFIED",
     "PRIVATE_SHADOW_ENTRYPOINT_HARNESS_VERIFIED",
+    "PRIVATE_SHADOW_SCRATCH_BINDING_VERIFIED",
     "RECONCILIATION_EVIDENCE_HARNESS_VERIFIED"
   ],
   "local_verification": {
@@ -96,7 +100,11 @@
     "merged_pushed_or_deployed": false
   },
   "reviews": {
-    "specification": "pending exact-composition review",
-    "quality_security": "pending exact-composition review"
+    "prior_review_commit": "5bd97796a8c29b2bf84049487b0f47fd6302c21c",
+    "prior_specification": "BLOCK: obsolete reviewed-operator scratch identity mismatched fresh launcher",
+    "prior_quality_security": "BLOCK: exact launcher-to-operator integration would fail closed before private boundary",
+    "correction": "composition-bound operator scratch identity aligned; real validator exercised with launcher-equivalent ACL initialization",
+    "specification": "pending fresh exact-composition review",
+    "quality_security": "pending fresh exact-composition review"
   }
 }
