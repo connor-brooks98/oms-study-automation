@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "blocked_before_controller_invocation",
+  "status": "blocked_before_controller_invocation_reviewed_ship",
   "recorded_at": "2026-08-29T07:55:45-04:00",
   "authorized_composition_commit": "427d1dd573f9f0d07b1f9c7267a87f428e9792f3",
   "authorized_composition_tree": "5d6b1eec45ff5d32a273094d89b1425d0967a6cc",
@@ -37,5 +37,11 @@
     "retry_performed": false
   },
   "blocker": "required protected evidence directory missing before controller invocation",
-  "required_owner_action": "Program Sol-0 must build and independently review a fresh protected composition state; a later live attempt requires fresh exact-composition authorization"
+  "required_owner_action": "Program Sol-0 must build and independently review a fresh protected composition state; a later live attempt requires fresh exact-composition authorization",
+  "reviews": {
+    "reviewed_commit": "a90e076f4ff56410f41a4149673456a1dab9d14a",
+    "reviewed_tree": "fa989290bf3484020d90d86be4708c403ff21910",
+    "specification": "SHIP: no findings",
+    "quality_security": "SHIP: no findings"
+  }
 }
