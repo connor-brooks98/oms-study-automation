@@ -28,8 +28,8 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen.canvas import Canvas
+from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
+from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from oms_hub.providers.gemini.client import (
     GeminiClientFactory,
