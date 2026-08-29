@@ -14,7 +14,11 @@ from pydantic import SecretStr
 
 from oms_hub.db import Database
 from oms_hub.providers.gemini.client import GeminiClientFactory
-from oms_hub.providers.gemini.errors import GeminiContractError, GeminiTransientError
+from oms_hub.providers.gemini.errors import (
+    GeminiContractError,
+    GeminiProviderError,
+    GeminiTransientError,
+)
 from oms_hub.providers.gemini.file_search import (
     CompletedOperation,
     GeminiFileSearchAdmin,
@@ -221,6 +225,73 @@ def test_real_sdk_import_uses_exact_normalized_markdown_wire_body() -> None:
             },
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_reason"),
+    (
+        ("Unsupported MIME type: text/markdown", "unsupported_mime_type"),
+        ("private provider argument detail", "invalid_argument"),
+    ),
+)
+def test_real_sdk_import_retains_only_fixed_invalid_argument_diagnostic(
+    message: str,
+    expected_reason: str,
+) -> None:
+    sdk = import_module("google.genai")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": 400,
+                    "message": message,
+                    "status": "INVALID_ARGUMENT",
+                }
+            },
+            request=request,
+        )
+
+    def sdk_factory(**kwargs: object) -> object:
+        assert kwargs["api_key"] == "provider-secret"
+        return sdk.Client(
+            api_key="provider-secret",
+            http_options={
+                "api_version": "v1beta",
+                "base_url": "https://unit.invalid",
+                "httpx_async_client": httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler)
+                ),
+            },
+        )
+
+    admin = GeminiFileSearchAdmin(
+        Database("sqlite://"),
+        GeminiClientFactory(
+            GeminiConfig(api_key=SecretStr("provider-secret")),
+            sdk_factory=sdk_factory,
+        ),
+    )
+
+    with pytest.raises(GeminiProviderError) as raised:
+        run(
+            admin.import_file(
+                "fileSearchStores/course-1",
+                "files/normalized-markdown",
+                [{"key": "input_key", "string_value": "normalized_markdown"}],
+                {
+                    "white_space_config": {
+                        "max_tokens_per_chunk": 700,
+                        "max_overlap_tokens": 100,
+                    }
+                },
+            )
+        )
+
+    assert raised.value.provider_status_code == 400
+    assert raised.value.diagnostic_code == expected_reason
+    assert message not in str(raised.value)
 
 
 @pytest.mark.parametrize(

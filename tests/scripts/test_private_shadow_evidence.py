@@ -49,6 +49,8 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
         assert f'"{stage}"' in evidence
     for outcome in ("complete", "failed", "empty", "not_empty", "unknown"):
         assert f'"{outcome}"' in evidence
+    for reason in ("invalid_argument", "unsupported_mime_type"):
+        assert f'"{reason}"' in evidence
     for forbidden in (
         "gemini-api-key",
         "Lecture 13",
