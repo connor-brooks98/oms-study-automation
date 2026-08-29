@@ -1588,6 +1588,74 @@ def test_reconciliation_diagnostics_capture_request_and_pager_failures(
     assert sink.labels == [label]
 
 
+def test_reconciliation_pagers_never_capture_successful_resource_values() -> None:
+    smoke = _load_smoke()
+    store_id = "fileSearchStores/raw-store-sentinel"
+    store_display_name = "raw-store-display-sentinel"
+    file_id = "files/raw-file-sentinel"
+    file_display_name = "raw-file-display-sentinel"
+
+    class Sink:
+        def __init__(self) -> None:
+            self.values: list[object] = []
+
+        def capture(self, label: str, value: object) -> None:
+            del label
+            self.values.append(value)
+
+        def capture_exception(self, label: str, error: BaseException) -> None:
+            del label, error
+
+    class Pager:
+        def __init__(self, item: object, raw: str) -> None:
+            self.item = item
+            self.raw = raw
+
+        def __repr__(self) -> str:
+            return self.raw
+
+        def __aiter__(self) -> object:
+            async def entries() -> object:
+                yield self.item
+
+            return entries()
+
+    class Stores:
+        async def list(self, *, config: object) -> object:
+            del config
+            return Pager(
+                SimpleNamespace(name=store_id, display_name=store_display_name),
+                f"{store_id}:{store_display_name}",
+            )
+
+    class Files:
+        async def list(self, *, config: object) -> object:
+            del config
+            return Pager(
+                SimpleNamespace(name=file_id, display_name=file_display_name),
+                f"{file_id}:{file_display_name}",
+            )
+
+    client = _SdkClient(smoke)
+    client.aio.file_search_stores = Stores()
+    client.aio.files = Files()
+    sink = Sink()
+    session = smoke.GoogleGenaiSmokeSession(
+        "synthetic-sdk-key",
+        sdk_factory=lambda **kwargs: client,
+        diagnostic_sink=sink,
+    )
+
+    assert asyncio.run(session.find_stores(store_display_name)) == (store_id,)
+    assert asyncio.run(session.find_files((file_display_name,))) == (file_id,)
+    assert sink.values == []
+    assert all(
+        sentinel not in repr(value)
+        for sentinel in (store_id, store_display_name, file_id, file_display_name)
+        for value in sink.values
+    )
+
+
 def test_authorized_entrypoint_fails_closed_when_stored_key_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
