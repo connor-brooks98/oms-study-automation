@@ -925,8 +925,12 @@ class GoogleGenaiSmokeSession:
                 answer = SmokeAnswer.model_validate_json(output_text)
             except ValidationError:
                 raise SmokeContractError(
-                    "private shadow negative answer was invalid",
-                    reason="negative_answer_invalid",
+                    "private shadow structured answer was invalid",
+                    reason=(
+                        "negative_answer_invalid"
+                        if require_structured_no_result
+                        else "structured_output_invalid"
+                    ),
                 ) from None
             supported = answer.supported
             answer_empty = answer.answer == ""
@@ -1950,6 +1954,7 @@ async def _run_shadow_sequence(
             "wrong_lecture_filtering",
         )
     }
+    resource_states = {"document": "not_started", "file": "not_started", "store": "not_started"}
     cleanup_attempts = {"document": 0, "file": 0, "store": 0}
     cleanup_successes = {"document": 0, "file": 0, "store": 0}
     cleanup_failures = {"document": False, "file": False, "store": False}
@@ -1974,7 +1979,16 @@ async def _run_shadow_sequence(
     store_display_name = f"task-2-8-{mode}-{run_token}"
     started = clock()
     if diagnostic_sink is not None and mode == "public_matrix":
-        diagnostic_sink.capture("contract.expected", {"source_revision_id": view.source_revision_id})
+        diagnostic_sink.capture(
+            "contract.expected",
+            {
+                "course_id": view.course_id,
+                "exam_id": view.exam_id,
+                "lecture_id": view.lecture_id,
+                "source_revision_id": view.source_revision_id,
+                "fixture_sha256": hashlib.sha256(view.pdf.path.read_bytes()).hexdigest(),
+            },
+        )
     try:
         prior_state_present = bool(
             await session.find_stores(store_display_name)
@@ -1986,11 +2000,7 @@ async def _run_shadow_sequence(
                 failure_evidence.update(
                     {
                         "failure_stage": active_stage,
-                        "resources_created": {
-                            "document": "not_started",
-                            "file": "not_started",
-                            "store": "not_started",
-                        },
+                        "resources_created": dict(resource_states),
                         "cleanup": {"attempted": 0, "status": "not_started"},
                         "checks": dict(public_checks),
                     }
@@ -2018,11 +2028,7 @@ async def _run_shadow_sequence(
                 failure_evidence.update(
                     {
                         "failure_stage": active_stage,
-                        "resources_created": {
-                            "document": "not_started",
-                            "file": "not_started",
-                            "store": "not_started",
-                        },
+                        "resources_created": dict(resource_states),
                         "cleanup": {"attempted": 0, "status": "not_started"},
                         "checks": dict(public_checks),
                     }
@@ -2044,23 +2050,30 @@ async def _run_shadow_sequence(
     states.append("prior_operator_state_empty")
     try:
         active_stage = "create_store"
+        if mode == "public_matrix":
+            resource_states["store"] = "unknown"
         store_name = await session.create_store(
             store_display_name,
             PRIVATE_SHADOW_MODEL_CONTRACT[2],
         )
         stores.append(store_name)
         if mode == "public_matrix":
+            resource_states["store"] = "confirmed"
             public_checks["create_store"] = "passed"
         states.append("store_created")
         for item, display_name in zip(manifest.inputs, display_names, strict=True):
             active_input_identity = _private_shadow_input_identity(item.input_key)
             active_stage = "upload_input"
+            if mode == "public_matrix":
+                resource_states["file"] = "unknown"
             file_name = await session.upload_input(
                 display_name,
                 item.path,
                 item.media_type,
             )
             files.append((file_name, item.input_key))
+            if mode == "public_matrix":
+                resource_states["file"] = "confirmed"
             chunking = (
                 {
                     "white_space_config": {
@@ -2072,6 +2085,8 @@ async def _run_shadow_sequence(
                 else None
             )
             active_stage = "import_input"
+            if mode == "public_matrix":
+                resource_states["document"] = "unknown"
             operation = await session.import_input(
                 store_name,
                 file_name,
@@ -2080,7 +2095,10 @@ async def _run_shadow_sequence(
             )
             operations.append(operation)
             active_stage = "wait_for_import"
-            documents.append(await session.wait_for_import(operation))
+            document_name = await session.wait_for_import(operation)
+            documents.append(document_name)
+            if mode == "public_matrix":
+                resource_states["document"] = "confirmed"
         states.extend(
             (f"inputs_uploaded:{len(files)}", f"inputs_imported:{len(documents)}")
         )
@@ -2102,19 +2120,56 @@ async def _run_shadow_sequence(
         active_stage = "positive_validation"
         if mode == "public_matrix":
             public_checks["positive_answer"] = (
-                "passed"
-                if positive.supported is True
-                and positive.answer is not None
-                and SYNTHETIC_MARKER in positive.answer
+                "positive_answer_unsupported"
+                if positive.supported is not True
                 else "positive_answer_missing_marker"
+                if positive.answer is None or SYNTHETIC_MARKER not in positive.answer
+                else "passed"
             )
             public_checks["citation_presence"] = (
-                "passed"
-                if positive.citation_count > 0
-                and positive.resolved_citation_count == positive.citation_count
-                else "positive_citation_missing"
+                "positive_citation_missing"
+                if positive.citation_count == 0
+                else "positive_citation_unresolved"
+                if positive.resolved_citation_count != positive.citation_count
+                else "citation_page_absent"
+                if public_checks["positive_answer"] == "passed"
+                and positive.citation_page is None
+                else "citation_excerpt_absent"
+                if public_checks["positive_answer"] == "passed"
+                and not positive.citation_excerpt
+                else "passed"
             )
-        if (
+            if positive.supported is not True:
+                raise SmokeContractError(
+                    "public smoke answer was unsupported",
+                    reason="positive_answer_unsupported",
+                )
+            if positive.answer is None or SYNTHETIC_MARKER not in positive.answer:
+                raise SmokeContractError(
+                    "public smoke marker was invalid",
+                    reason="positive_answer_missing_marker",
+                )
+            if positive.citation_count == 0:
+                raise SmokeContractError(
+                    "public smoke citation was missing",
+                    reason="positive_citation_missing",
+                )
+            if positive.resolved_citation_count != positive.citation_count:
+                raise SmokeContractError(
+                    "public smoke citation was unresolved",
+                    reason="positive_citation_unresolved",
+                )
+            if positive.citation_page is None:
+                raise SmokeContractError(
+                    "public smoke citation page was absent",
+                    reason="citation_page_absent",
+                )
+            if not positive.citation_excerpt:
+                raise SmokeContractError(
+                    "public smoke citation excerpt was absent",
+                    reason="citation_excerpt_absent",
+                )
+        elif (
             positive.citation_count < 1
             or positive.resolved_citation_count != positive.citation_count
         ):
@@ -2299,14 +2354,16 @@ async def _run_shadow_sequence(
                 failure_evidence.update(
                     {
                         "failure_stage": failure_stage,
-                        "resources_created": {
-                            "document": "confirmed" if documents else "not_started",
-                            "file": "confirmed" if files else "not_started",
-                            "store": "confirmed" if stores else "unknown",
-                        },
+                        "resources_created": dict(resource_states),
                         "cleanup": {
                             "attempted": len(documents) + len(files) + len(stores),
-                            "status": "unknown" if failure_stage == "create_store" else ("failed" if cleanup_failed else "completed"),
+                            "status": (
+                                "unknown"
+                                if failure_stage == "create_store"
+                                else "completed"
+                                if cleanup_outcome == "complete"
+                                else cleanup_outcome
+                            ),
                         },
                         "checks": dict(public_checks),
                     }
@@ -2336,14 +2393,10 @@ async def _run_shadow_sequence(
                 failure_evidence.update(
                     {
                         "failure_stage": "cleanup",
-                        "resources_created": {
-                            "document": "confirmed" if documents else "not_started",
-                            "file": "confirmed" if files else "not_started",
-                            "store": "confirmed" if stores else "unknown",
-                        },
+                        "resources_created": dict(resource_states),
                         "cleanup": {
                             "attempted": len(documents) + len(files) + len(stores),
-                            "status": "failed",
+                            "status": "completed" if cleanup_outcome == "complete" else cleanup_outcome,
                         },
                         "checks": dict(public_checks),
                     }

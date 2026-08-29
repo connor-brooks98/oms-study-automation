@@ -1275,7 +1275,7 @@ def test_public_runner_rejects_provider_unsupported_positive_audit() -> None:
                 return audit
             return dataclasses.replace(audit, supported=False)
 
-    with pytest.raises(smoke.SmokeContractError, match="marker"):
+    with pytest.raises(smoke.SmokeContractError, match="unsupported"):
         asyncio.run(smoke.run_contract_smoke(UnsupportedAudit(smoke)))
 
 
