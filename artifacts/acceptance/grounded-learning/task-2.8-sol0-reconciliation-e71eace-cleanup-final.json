@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "status": "cleanup_composition_reviewed_ship_not_executed",
+  "owner_amendment_handoff": "037d4032d07b748df97198eb9f1baec7079de005",
+  "owner_amendment_candidate": "9e89bccb4fec5cd09e00eed27266ea423ed33ba0",
+  "offline_candidate": "cdb064cad1d42e8c1cd46b01cf448c5d42b20c6f",
+  "offline_candidate_tree": "d1d53df23025ed723c09cd7292d1ae0a8120b511",
+  "composition_commit": "f9f3adc70f9f678ec4e5014130d19319018784c4",
+  "composition_tree": "32f16029c0620c7db0cd4741f18ca4e6c2e25aee",
+  "composition_record_sha256": "32f35c2396fc142952fd5911c59d509f82ab91b98142ea2188b10301a8e49d5e",
+  "hashes": {
+    "cleanup_script_sha256": "342f9c83d0bc90c17ef1979f68266abb8a8c0e9ab60225b118fc481433272bde",
+    "root_manifest_sha256": "ea671e594d9494aec7be240e322baa382dc954bab8f1de9ca196c24052887184",
+    "audit_sink_initial_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "safe_result_sha256": "bd26cc4b7b3eeb34e875caaa043b4118bea375bc4473a3dab34dd65dffdf5a7d",
+    "safe_status_sha256": "e5ec9fcf1fb790b62a18939d78d350ea1572a903e02fae6e4e916ad5f4661c3f",
+    "system_powershell_sha256": "7600ffe12da441fe89d035b13801e8e91d064bc544a27b19a5cf49f6ab8b18f5"
+  },
+  "counts": {
+    "root_manifest_files": 12560,
+    "root_files": 12564,
+    "root_top_level_entries": 15,
+    "audit_files": 1,
+    "exact_tasks": 1,
+    "exact_actions": 1
+  },
+  "tdd": {
+    "red": "7254b64",
+    "green": "06c5eea",
+    "review_red": "6118cd2",
+    "review_green": "cdb064c",
+    "test_corrections": ["a822612", "16b738d"]
+  },
+  "verification": {
+    "affected": "136 passed, 1 intentional live skip",
+    "powershell_5_1": "TASK28_RECONCILIATION_CLEANUP_HARNESS_VERIFIED",
+    "ruff": "passed",
+    "strict_mypy": "passed",
+    "offline_specification": "SHIP_cdb064c",
+    "offline_quality_security": "SHIP_cdb064c",
+    "composition_specification": "SHIP_f9f3adc",
+    "composition_quality_security": "SHIP_f9f3adc",
+    "hub": "Running",
+    "health_8765": "ok_schema29",
+    "health_8788": "ok_schema29"
+  },
+  "review_boundary": {
+    "tombstone_state_source": "reviewed_owner_amendment_037d403",
+    "private_root_reinspection_performed": false,
+    "runtime_revalidates_tombstone_before_every_mutation_or_audit_write": true,
+    "composition_writes_canonical_and_disjoint": true
+  },
+  "execution": {
+    "cleanup_invoked": false,
+    "task_unregistered": false,
+    "root_removed": false,
+    "audit_written": false,
+    "authorization_consumed": false,
+    "retry_performed": false,
+    "key_provider_or_private_source_accessed": false,
+    "production_or_gate_mutated": false
+  },
+  "fresh_one_shot_authorization_required": true
+}
