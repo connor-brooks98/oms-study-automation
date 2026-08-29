@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "status": "blocked_before_controller_invocation",
+  "recorded_at": "2026-08-29T07:55:45-04:00",
+  "authorized_composition_commit": "427d1dd573f9f0d07b1f9c7267a87f428e9792f3",
+  "authorized_composition_tree": "5d6b1eec45ff5d32a273094d89b1425d0967a6cc",
+  "final_composition_handoff": "1dc4333e88f0c87cf5f1504150f87537fa191e20",
+  "composition_root": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-private-shadow-2cef97899a371ba5e72d831e31194ce1",
+  "preflight_sha256": "799dc8608b2552b16e84d14f9e299719e1732456fdd8c52ecd0652cf82658afb",
+  "expected": {
+    "top_level_entry_count": 20,
+    "evidence_directory_present": true,
+    "evidence_directory_empty": true,
+    "evidence_acl": "current_sid_only_full_control_oi_ci_inheritance_disabled"
+  },
+  "observed": {
+    "top_level_entry_count": 19,
+    "evidence_directory_present": false,
+    "controller_sha256": "b5e56187978c155b1925925aeb840766a85241599ef21be103eead130cd08279",
+    "launcher_sha256": "ccdff556d4880fa93762facd662ec797d00da2bea9746a1f463139d23446ff90",
+    "task_absent": true,
+    "scratch_absent": true,
+    "diagnostic_absent": true,
+    "hub_task": "Running",
+    "health_8765": "ok/schema29",
+    "health_8788": "ok/schema29"
+  },
+  "boundary": {
+    "controller_invoked": false,
+    "authorization_consumed": false,
+    "task_registered_or_started": false,
+    "credential_read": false,
+    "private_source_or_evidence_accessed": false,
+    "provider_contacted": false,
+    "provider_or_production_mutation": false,
+    "prior_private_roots_accessed_or_mutated": false,
+    "retry_performed": false
+  },
+  "blocker": "required protected evidence directory missing before controller invocation",
+  "required_owner_action": "Program Sol-0 must build and independently review a fresh protected composition state; a later live attempt requires fresh exact-composition authorization"
+}
