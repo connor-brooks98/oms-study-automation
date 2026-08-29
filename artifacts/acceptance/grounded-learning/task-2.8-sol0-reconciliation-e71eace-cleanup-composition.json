@@ -50,7 +50,10 @@
     "version": "10.0.26100.8875 (WinBuild.160101.0800)",
     "signature_status": "Valid",
     "signer_subject": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
-    "signer_thumbprint": "DC91E564D5BC1E3A8E02D6A8508682ABEA8A2443"
+    "signer_thumbprint": "DC91E564D5BC1E3A8E02D6A8508682ABEA8A2443",
+    "final_handle_resolved_path_exact": true,
+    "trusted_system_base": "C:\\Windows",
+    "trusted_ancestor_reparse_points": 0
   },
   "retained_task": {
     "name": "OMS Sol0 Task28 Reconciliation e71eace",
@@ -64,7 +67,27 @@
     "last_run_utc": "2026-08-28T23:52:37.0000000Z",
     "execute": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     "arguments": "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-reconciliation-e71eace\\reconciliation-launcher.ps1\"",
-    "working_directory": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-reconciliation-e71eace"
+    "working_directory": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-reconciliation-e71eace",
+    "exact_task_count": 1,
+    "exact_action_count": 1,
+    "principal_sid_matches_current": true
+  },
+  "terminal_tombstone": {
+    "verification_source": "reviewed_owner_amendment_037d403",
+    "composition_time_reinspection_performed": false,
+    "root_present": true,
+    "evidence_path_absent": true,
+    "permanent_non_executable": true,
+    "restoration_forbidden": true,
+    "source_files": 674,
+    "runtime_files": 11868,
+    "top_level_entries": 19,
+    "acl_exact": true,
+    "reparse_points": 0,
+    "private_task_absent": true,
+    "diagnostic_absent": true,
+    "scratch_absent": true,
+    "unchanged_by_composition": true
   },
   "verification": {
     "focused_and_affected": "136 passed, 1 intentional live skip",
@@ -83,7 +106,7 @@
     "task_unregistered": false,
     "reconciliation_root_removed": false,
     "audit_written": false,
-    "private_roots_inspected_or_mutated_during_composition": false,
+    "private_root_metadata_or_hashes_reinspected_during_composition": false,
     "private_evidence_read_or_mutated": false,
     "key_or_provider_or_private_source_accessed": false,
     "retry_performed": false,
