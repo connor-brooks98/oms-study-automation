@@ -28,8 +28,8 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
-from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
-from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen.canvas import Canvas
 
 from oms_hub.providers.gemini.client import (
     GeminiClientFactory,
@@ -2252,6 +2252,10 @@ async def _run_shadow_sequence(
         },
     }
     if mode == "public_matrix":
+        assert store_name is not None
+        assert files and operations and documents
+        assert positive.citation_page is not None
+        assert positive.citation_excerpt is not None
         return {
             "schema_version": 1,
             "status": "passed",
@@ -2263,7 +2267,12 @@ async def _run_shadow_sequence(
             "page_count": record["page_count"],
             "operation_states": ["done"],
             "citation_resolution_rate": record["citation_resolution_rate"],
-            "citation": {"page_number": positive.citation_page, "excerpt_sha256": hashlib.sha256(positive.citation_excerpt.encode()).hexdigest()},
+            "citation": {
+                "page_number": positive.citation_page,
+                "excerpt_sha256": hashlib.sha256(
+                    positive.citation_excerpt.encode()
+                ).hexdigest(),
+            },
             "negative_scope_retrieved": False,
             "structured_output": {"schema": "SmokeAnswer", "validated": True, "answer_sha256": hashlib.sha256(b"").hexdigest()},
             "thinking_configuration": "omitted",
