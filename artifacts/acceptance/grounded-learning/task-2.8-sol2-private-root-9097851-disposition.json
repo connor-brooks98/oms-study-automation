@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "status": "owner_disposition_review_pending",
+  "owner": "sol2_private_shadow_evidence",
+  "source_handoff": "909785131b113fb5b2083b74bd2757c2fc0dbf4b",
+  "baseline_handoff": "896ded575f8ec44256152592b84ad7774e482d45",
+  "blocked_sol0_handoff": "dcc603c1077cbb6dd01a0477312a924692903b4c",
+  "current_state": {
+    "protected_root_exists": true,
+    "protected_root_acl_exact": true,
+    "evidence_directory_exists": false,
+    "evidence_file_count": null,
+    "reparse_points": 0,
+    "source_files": 674,
+    "runtime_files": 11868,
+    "top_level_entries": 19,
+    "source_manifest_sha256": "d36c6a64ef342ff0d4e88c370c794a2add46ef2f98fbdfb9dcabd6bd86f702b0",
+    "runtime_manifest_sha256": "ad8e00b852d32c3b1216452e25e62160a68fb07745f3589321b20fec3ccfc5a7",
+    "controller_sha256": "5a955d65feb3adf03759bd62c8e2f842b2e81a27abfc5c9e10b8912c72796587",
+    "launcher_sha256": "0795af225426707b9a49454b19538b6b0eb420a9f05ab74280d1d541fd87fffa",
+    "entrypoint_sha256": "96c77c083d665fe945cde5a31265d83276fe07778a1bb732bccee1b28f1acad2",
+    "private_task_count": 0,
+    "diagnostic_exists": false,
+    "scratch_exists": false,
+    "hub_task": "Running",
+    "hub_health": [
+      {
+        "port": 8765,
+        "status": "ok",
+        "schema_version": 29
+      },
+      {
+        "port": 8788,
+        "status": "ok",
+        "schema_version": 29
+      }
+    ]
+  },
+  "inspection_boundary": {
+    "private_or_retained_evidence_content_read": false,
+    "protected_root_or_directory_mutated": false,
+    "protected_directory_recreated": false,
+    "protected_root_removed": false,
+    "task_mutated": false,
+    "credential_read": false,
+    "provider_or_private_source_access": false,
+    "production_or_gate_mutation": false
+  },
+  "invariant_decision": {
+    "absence_approved_as_terminal_non_executable_tombstone": true,
+    "absence_approved_as_executable_or_post_run_evidence_invariant": false,
+    "restoration_required": false,
+    "restoration_permitted_by_this_disposition": false,
+    "root_reuse_permitted": false,
+    "private_cleanup_or_acceptance_proven": false,
+    "provider_state": "unknown"
+  },
+  "rationale": [
+    "The reviewed controller and launcher require an existing protected evidence directory before registration or any credential, private-source, or provider boundary.",
+    "The durable wrapper requires the evidence directory as the existing parent for its safe result and status files and never removes that directory.",
+    "The 9097851 controller and launcher were never executed, and baseline 896ded5 recorded the directory empty, so no durable 9097851 result exists to restore.",
+    "Recreating an empty directory would manufacture new filesystem provenance without restoring the reviewed staged state.",
+    "Keeping the root with evidence absent makes it fail closed and permanently non-executable while allowing a separate cleanup composition to prove it did not touch the root."
+  ],
+  "required_sol0_red_green": [
+    "Commit a failing fixture for the exact 9097851 root-present and evidence-directory-absent retained state.",
+    "Accept that state only for the exact 9097851 tombstone and only as a precondition for cleanup of the separately named reconciliation task and root.",
+    "Reject a missing 9097851 root, any present evidence path, any 9097851 task, diagnostic or scratch residue, ACL mismatch, reparse point, hash mismatch, source/runtime count mismatch, top-level inventory mismatch, or unhealthy Hub.",
+    "Bind the exact five published hashes, 674/11868 file counts, 19 top-level entries, current-SID-only root ACL, zero reparse points, task absence, diagnostic/scratch absence, and both schema-29 health endpoints before and after cleanup.",
+    "Prove the cleanup never creates, removes, reads, or writes the 9097851 evidence path or any other part of the 9097851 root.",
+    "Fail closed if the evidence path reappears or any bound metadata changes; require a new owner disposition instead of adapting in place."
+  ],
+  "downstream_contract": {
+    "allowed_next_composition": "fresh_hash_bound_reconciliation_cleanup_only",
+    "cleanup_target": "separate_e71eace_reconciliation_task_and_root_only",
+    "private_9097851_root_action": "observe_unchanged_only",
+    "private_9097851_evidence_action": "require_absent_before_and_after",
+    "private_9097851_controller_or_launcher_execution": false,
+    "private_9097851_root_future_reuse": false,
+    "private_9097851_root_removal_requires_separate_authorization": true,
+    "fresh_private_attempt_requires_new_root_and_separate_authorization": true,
+    "provider_or_key_access_authorized": false,
+    "gate_2b_open": false
+  },
+  "independent_reviews": {
+    "specification": "PENDING",
+    "quality_security": "PENDING"
+  }
+}
