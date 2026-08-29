@@ -22,6 +22,8 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     assert "ReadAllText" in evidence
     assert "WriteAllText" in evidence
     assert "File]::Move" in evidence
+    assert "oms_hub/providers/gemini/evidence.py" in wrapper
+    assert "$EvidenceModule" in wrapper
     assert "Assert-PrivateShadowRecord" not in evidence
     assert "ProviderReasons" not in evidence
     for forbidden in (
@@ -39,6 +41,8 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
         assert forbidden not in harness
     assert "PRIVATE_SHADOW_EVIDENCE_HARNESS_VERIFIED" in harness
     assert "provider_bad_request" in harness
+    assert "PRIVATE_SHADOW_ENTRYPOINT_CONVERTER_VERIFIED" in harness
+    assert "safe_result_write" in harness
     assert "operator_artifacts_deleted" in wrapper
     assert "raw_content_retained" in wrapper
 

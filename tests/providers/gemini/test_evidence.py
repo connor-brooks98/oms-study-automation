@@ -11,6 +11,7 @@ import pytest
 from oms_hub.providers.gemini.evidence import validate_private_shadow_record
 
 ROOT = Path(__file__).resolve().parents[3]
+MAX_INDEX_INPUT_BYTES = 1_099_511_627_776
 
 
 def _blocked_record(*, category: str = "provider", status: int | None = 400) -> dict[str, object]:
@@ -33,6 +34,34 @@ def _blocked_record(*, category: str = "provider", status: int | None = 400) -> 
     }
 
 
+def _passed_record() -> dict[str, object]:
+    return {
+        "status": "passed",
+        "source_revision_hash": "a" * 64,
+        "document_types": ["markdown"],
+        "page_count": 1,
+        "slide_count": 1,
+        "provider_operation_states": [
+            "prior_operator_state_empty",
+            "store_created",
+            "inputs_uploaded:1",
+            "inputs_imported:1",
+            "positive_query_complete",
+            "wrong_scope_query_complete",
+            "documents_delete_attempted:1",
+            "files_delete_attempted:1",
+            "file_reconciliation_empty",
+            "stores_delete_attempted:1",
+            "store_reconciliation_empty",
+        ],
+        "citation_resolution_rate": 1.0,
+        "duration_ms": 1,
+        "byte_usage": {"index_inputs": 1},
+        "token_usage": {"input": 0, "output": 0},
+        "warnings": [],
+    }
+
+
 def _cli(record: object, process_exit_code: int) -> subprocess.CompletedProcess[str]:
     environment = os.environ | {"PYTHONPATH": str(ROOT / "src")}
     return subprocess.run(
@@ -44,6 +73,19 @@ def _cli(record: object, process_exit_code: int) -> subprocess.CompletedProcess[
             str(process_exit_code),
         ],
         input=json.dumps(record, separators=(",", ":")) + "\n",
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+        env=environment,
+    )
+
+
+def _raw_cli(raw: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ | {"PYTHONPATH": str(ROOT / "src")}
+    return subprocess.run(
+        [sys.executable, "-m", "oms_hub.providers.gemini.evidence", "--process-exit-code", "1"],
+        input=raw,
         text=True,
         capture_output=True,
         check=False,
@@ -70,6 +112,54 @@ def test_private_shadow_bad_request_requires_provider_400(
         validate_private_shadow_record(_blocked_record(category=category, status=status), 1)
 
 
+@pytest.mark.parametrize("factory", (_passed_record, _blocked_record))
+@pytest.mark.parametrize(
+    "byte_count",
+    (-1, 0, MAX_INDEX_INPUT_BYTES + 1, 10**1000),
+)
+def test_private_shadow_byte_usage_rejects_invalid_bounds(
+    factory: object, byte_count: int
+) -> None:
+    record = factory()
+    record["byte_usage"] = {"index_inputs": byte_count}
+
+    with pytest.raises(ValueError):
+        validate_private_shadow_record(record, 0 if record["status"] == "passed" else 1)
+
+
+@pytest.mark.parametrize("factory", (_passed_record, _blocked_record))
+@pytest.mark.parametrize("byte_count", (1, MAX_INDEX_INPUT_BYTES))
+def test_private_shadow_byte_usage_accepts_exact_bounds(
+    factory: object, byte_count: int
+) -> None:
+    record = factory()
+    record["byte_usage"] = {"index_inputs": byte_count}
+
+    assert validate_private_shadow_record(record, 0 if record["status"] == "passed" else 1)[
+        "byte_usage"
+    ] == {"index_inputs": byte_count}
+
+
+def test_private_shadow_model_rejects_lifecycle_warning_and_count_contradictions() -> None:
+    lifecycle = _passed_record()
+    lifecycle["provider_operation_states"][2] = "inputs_imported:1"
+    warnings = _blocked_record()
+    warnings["warnings"] = ["private_cleanup_unknown", "private_shadow_failed"]
+    counts = _blocked_record()
+    counts["failure_stage"] = "create_store"
+    counts["provider_operation_states"] = [
+        "prior_operator_state_empty",
+        "documents_delete_attempted:0",
+        "files_delete_attempted:0",
+        "stores_delete_attempted:0",
+        "private_shadow_failed",
+    ]
+
+    for record, exit_code in ((lifecycle, 0), (warnings, 1), (counts, 1)):
+        with pytest.raises(ValueError):
+            validate_private_shadow_record(record, exit_code)
+
+
 def test_private_shadow_evidence_cli_is_canonical_utf8_and_maps_errors() -> None:
     valid = _cli(_blocked_record(), 1)
 
@@ -84,3 +174,20 @@ def test_private_shadow_evidence_cli_is_canonical_utf8_and_maps_errors() -> None
     assert invalid.returncode == 52
     assert invalid.stdout == ""
     assert invalid.stderr == ""
+
+
+@pytest.mark.parametrize("raw", ("PRIVATE SOURCE CONTENT", "{"))
+def test_private_shadow_evidence_cli_silently_rejects_malformed_input(raw: str) -> None:
+    result = _raw_cli(raw)
+
+    assert result.returncode == 51
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_private_shadow_evidence_cli_silently_rejects_deep_json() -> None:
+    result = _raw_cli("[" * 100_000 + "0" + "]" * 100_000)
+
+    assert result.returncode == 51
+    assert result.stdout == ""
+    assert result.stderr == ""
