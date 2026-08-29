@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "post_blocker_corrected_hash_verified_not_executed_review_pending",
+  "status": "post_blocker_corrected_reviewed_ship_not_authorized_not_executed",
   "recorded_at": "2026-08-29T08:53:30-04:00",
   "composition_identity": "980b0967fca0b9138a83d210505882ea",
   "composition_root": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-private-shadow-980b0967fca0b9138a83d210505882ea",
@@ -99,12 +99,22 @@
     "production_or_gate_mutated": false,
     "merged_pushed_or_deployed": false
   },
+  "authorization": {
+    "fresh_exact_authorization_required": true,
+    "prior_authorization_reusable": false,
+    "authorization_consumed": false,
+    "reviewed_composition_commit": "ba141f403ed54335ce6282adbdcfa86524fb74e9",
+    "reviewed_composition_tree": "dfaac0883464d8767982460c82eed19162ed715d",
+    "permitted_invocations": 0
+  },
   "reviews": {
     "prior_review_commit": "b1fa7817db31aadc5731390aa80d2a67dc9fa7d2",
     "prior_specification": "SHIP: no findings",
     "prior_quality_security": "BLOCK: evidence state could drift after initial check and consume authorization at registration",
     "correction": "shared no-self-heal evidence-state contract called initially and immediately before registration/current-task boundaries",
-    "specification": "pending exact-head review",
-    "quality_security": "pending exact-head review"
+    "reviewed_commit": "ba141f403ed54335ce6282adbdcfa86524fb74e9",
+    "reviewed_tree": "dfaac0883464d8767982460c82eed19162ed715d",
+    "specification": "SHIP: no findings",
+    "quality_security": "SHIP: no findings"
   }
 }
