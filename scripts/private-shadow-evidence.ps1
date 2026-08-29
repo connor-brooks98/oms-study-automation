@@ -215,6 +215,12 @@ function Assert-PrivateShadowRecord {
        $Record.provider_reason -cne "none")) {
     throw "Absent private-shadow provider diagnostics were inconsistent."
   }
+  $ArgumentReasons = @("invalid_argument", "unsupported_mime_type")
+  if ($Record.provider_reason -in $ArgumentReasons -and
+      ($Record.provider_error_category -cne "provider" -or
+       $Record.provider_status_code -ne 400)) {
+    throw "Private-shadow argument diagnostics were inconsistent."
+  }
   $InputStage = $Record.failure_stage -in @(
     "upload_input", "import_input", "wait_for_import"
   )
