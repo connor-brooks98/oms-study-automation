@@ -789,11 +789,14 @@ def test_real_sdk_pdf_import_wire_contract() -> None:
         sdk_factory=sdk_factory,
     )
 
+    assert not hasattr(session, "upload_pdf")
+    assert not hasattr(session, "import_file")
     operation = asyncio.run(
-        session.import_file(
+        session.import_input(
             "fileSearchStores/synthetic",
             "files/lecture-pdf",
             (("input_key", "lecture_pdf"),),
+            None,
         )
     )
 
@@ -1526,6 +1529,74 @@ def test_shared_sdk_paths_label_diagnostic_provider_failures(
     assert captures == ["upload_input", "import_input", "query_private"]
 
 
+@pytest.mark.parametrize(
+    ("resource", "failure", "label"),
+    (
+        ("stores", "request", "find_stores.failed"),
+        ("stores", "iteration", "find_stores.iteration"),
+        ("files", "request", "find_files.failed"),
+        ("files", "iteration", "find_files.iteration"),
+    ),
+)
+def test_reconciliation_diagnostics_capture_request_and_pager_failures(
+    resource: str,
+    failure: str,
+    label: str,
+) -> None:
+    smoke = _load_smoke()
+
+    class Sink:
+        def __init__(self) -> None:
+            self.labels: list[str] = []
+
+        def capture(self, label: str, value: object) -> None:
+            del label, value
+
+        def capture_exception(self, label: str, error: BaseException) -> None:
+            del error
+            self.labels.append(label)
+
+    class RequestFailure:
+        async def list(self, *, config: object) -> object:
+            del config
+            raise RuntimeError("synthetic request failure")
+
+    class IterationFailure:
+        async def list(self, *, config: object) -> object:
+            del config
+
+            async def entries() -> object:
+                raise RuntimeError("synthetic pager failure")
+                yield SimpleNamespace()
+
+            return entries()
+
+    def session_with(resource_api: object, sink: Sink) -> object:
+        client = _SdkClient(smoke)
+        if resource == "stores":
+            client.aio.file_search_stores = resource_api
+        else:
+            client.aio.files = resource_api
+        return smoke.GoogleGenaiSmokeSession(
+            "synthetic-sdk-key",
+            sdk_factory=lambda **kwargs: client,
+            diagnostic_sink=sink,
+        )
+
+    sink = Sink()
+    session = session_with(
+        RequestFailure() if failure == "request" else IterationFailure(), sink
+    )
+    expected_error = smoke.GeminiProviderError if failure == "request" else RuntimeError
+    with pytest.raises(expected_error):
+        asyncio.run(
+            session.find_stores("target")
+            if resource == "stores"
+            else session.find_files(("target",))
+        )
+    assert sink.labels == [label]
+
+
 def test_authorized_entrypoint_fails_closed_when_stored_key_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1879,6 +1950,77 @@ def test_public_positive_adapter_returns_provider_audit_for_runner_validation() 
     assert session.schemas == [smoke.SmokeAnswer]
     assert audit == smoke.PrivateShadowQueryAudit(
         0, 0, 11, 7, False, False, "wrong-marker", None, None
+    )
+
+
+def test_negative_adapter_returns_provider_audit_for_runner_validation() -> None:
+    smoke = _load_smoke()
+
+    class ProviderShape(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            return smoke.SmokeQueryResult(
+                answer={"answer": "unexpected", "supported": True},
+                citations=(),
+                input_tokens=11,
+                output_tokens=7,
+            )
+
+    session = ProviderShape(smoke)
+    audit = asyncio.run(
+        session.query_private(
+            session.store_name,
+            "safe negative prompt",
+            smoke.SmokeScope(
+                smoke.SYNTHETIC_COURSE_ID,
+                smoke.SYNTHETIC_EXAM_ID,
+                smoke.WRONG_LECTURE_ID,
+            ),
+            source_revision_id=smoke.SYNTHETIC_REVISION_ID,
+            manifest=SimpleNamespace(),
+            file_bindings=(),
+            require_structured_no_result=True,
+        )
+    )
+
+    assert audit == smoke.PrivateShadowQueryAudit(
+        0, 0, 11, 7, True, False, "unexpected", None, None
+    )
+
+
+def test_public_runner_rejects_negative_policy_after_adapter_audit() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class InvalidNegative(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id == smoke.WRONG_LECTURE_ID:
+                return smoke.SmokeQueryResult(
+                    answer={"answer": "unexpected", "supported": True},
+                    citations=(),
+                    input_tokens=11,
+                    output_tokens=7,
+                )
+            return result
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        with tempfile.TemporaryDirectory() as directory:
+            view = smoke._synthetic_index_input(Path(directory))
+            asyncio.run(
+                smoke._run_shadow_sequence(
+                    InvalidNegative(smoke),
+                    view,
+                    smoke._private_shadow_preflight_from_view(view),
+                    mode="public_matrix",
+                    clock=smoke.monotonic,
+                    failure_evidence=evidence,
+                )
+            )
+
+    assert smoke._failure_record(raised.value, evidence)["contract_reason"] == (
+        "private_wrong_scope_retrieved"
     )
 
 
