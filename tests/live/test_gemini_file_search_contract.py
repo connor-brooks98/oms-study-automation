@@ -550,8 +550,14 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     assert set(query_bodies[0]) == {
         "input",
         "model",
+        "response_format",
         "store",
         "tools",
+    }
+    assert query_bodies[0]["response_format"] == {
+        "type": "text",
+        "mime_type": "application/json",
+        "schema": smoke.SmokeAnswer.model_json_schema(),
     }
     assert query_bodies[1]["response_format"] == {
         "type": "text",
@@ -860,7 +866,7 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
     assert positive == smoke.PrivateShadowQueryAudit(
         1, 1, 19, 6, True, False, "private response discarded by adapter", 1, "Do not emit this text."
     )
-    assert negative == smoke.PrivateShadowQueryAudit(0, 0, 19, 6, False, True, '{"answer":"","supported":false}')
+    assert negative == smoke.PrivateShadowQueryAudit(0, 0, 19, 6, False, True, "")
     assert operation == "operations/sdk-operation"
     assert reconciled == ("files/reconciled",)
     assert reconciled_stores == ("fileSearchStores/reconciled",)
@@ -1288,16 +1294,18 @@ def test_public_cleanup_only_failure_has_public_observed_evidence() -> None:
         "document": "confirmed", "file": "confirmed", "store": "confirmed"
     }
     assert evidence["cleanup"]["status"] == "failed"
+    assert evidence["checks"]["cleanup_document"] == "passed"
+    assert evidence["checks"]["cleanup_file"] == "cleanup_delete_failed"
+    assert evidence["checks"]["cleanup_store"] == "passed"
 
 
 def test_public_runner_forwards_contract_diagnostic_lifecycle_events() -> None:
     smoke = _load_smoke()
-    captured: list[str] = []
+    captured: dict[str, object] = {}
 
     class Sink:
         def capture(self, label: str, value: object) -> None:
-            del value
-            captured.append(label)
+            captured[label] = value
 
         def capture_exception(self, label: str, error: BaseException) -> None:
             del label, error
@@ -1305,7 +1313,17 @@ def test_public_runner_forwards_contract_diagnostic_lifecycle_events() -> None:
     asyncio.run(smoke.run_contract_smoke(_FakeSession(smoke), diagnostic_sink=Sink()))
 
     assert "contract.expected" in captured
-    assert "contract.check_matrix" in captured
+    assert captured["contract.check_matrix"] == {
+        "positive_answer": "passed",
+        "citation_presence": "passed",
+        "negative_structured_output": "passed",
+        "create_store": "passed",
+        "document_listing": "not_run",
+        "cleanup_store": "passed",
+        "cleanup_document": "passed",
+        "cleanup_file": "passed",
+        "wrong_lecture_filtering": "passed",
+    }
 
 
 def test_shared_sdk_paths_label_diagnostic_provider_failures(
@@ -1473,7 +1491,7 @@ def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> 
         "cleanup": {"attempted": 3, "status": "completed"},
     }
     assert record["checks"]["positive_answer"] == "positive_query_failed"
-    assert record["checks"]["negative_structured_output"] == "negative_query_failed"
+    assert record["checks"]["negative_structured_output"] == "not_run"
     assert record["checks"]["document_listing"] == "not_run"
     encoded = json.dumps(record, sort_keys=True)
     assert "private-query-payload" not in encoded
@@ -1778,6 +1796,8 @@ def test_offline_fake_proves_full_smoke_sequence_and_redacted_record() -> None:
     assert record["structured_output"] == {
         "schema": "SmokeAnswer",
         "validated": True,
+        "supported": True,
+        "marker_present": True,
         "answer_sha256": hashlib.sha256(b"").hexdigest(),
     }
     assert smoke.SYNTHETIC_FACT not in encoded
@@ -2399,8 +2419,8 @@ def test_check_matrix_continues_after_independent_positive_failures() -> None:
     checks = evidence["checks"]
     assert checks["positive_answer"] == "positive_answer_missing_marker"
     assert checks["citation_presence"] == "positive_citation_missing"
-    assert checks["negative_structured_output"] == "passed"
-    assert checks["wrong_lecture_filtering"] == "passed"
+    assert checks["negative_structured_output"] == "not_run"
+    assert checks["wrong_lecture_filtering"] == "not_run"
     assert checks["document_listing"] == "not_run"
     assert checks["cleanup_document"] == "passed"
     assert checks["cleanup_file"] == "passed"
@@ -2940,8 +2960,9 @@ class _PrivateShadowSession:
         manifest: object,
         file_bindings: tuple[tuple[str, str], ...],
         require_structured_no_result: bool = False,
+        require_structured_supported: bool = False,
     ) -> object:
-        del source_revision_id, manifest, file_bindings
+        del source_revision_id, manifest, file_bindings, require_structured_supported
         self.calls.append(("query_private", (store_name, prompt, scope)))
         if scope.lecture_id == "lecture-private":
             if self.unknown_primary:

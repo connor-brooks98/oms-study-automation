@@ -1936,6 +1936,23 @@ async def _run_shadow_sequence(
     documents: list[str] = []
     operations: list[str] = []
     states: list[str] = []
+    public_checks = {
+        name: "not_run"
+        for name in (
+            "positive_answer",
+            "citation_presence",
+            "negative_structured_output",
+            "create_store",
+            "document_listing",
+            "cleanup_store",
+            "cleanup_document",
+            "cleanup_file",
+            "wrong_lecture_filtering",
+        )
+    }
+    cleanup_attempts = {"document": 0, "file": 0, "store": 0}
+    cleanup_successes = {"document": 0, "file": 0, "store": 0}
+    cleanup_failures = {"document": False, "file": False, "store": False}
     failure: BaseException | None = None
     failure_stage = "unknown"
     active_stage = "prior_state_check"
@@ -1965,32 +1982,64 @@ async def _run_shadow_sequence(
         )
     except BaseException as prior_check_error:
         if failure_evidence is not None:
-            failure_evidence.update(
-                _private_shadow_failure_record(
-                    preflight,
-                    prior_check_error,
-                    failure_stage=active_stage,
-                    states=states,
-                    cleanup_outcome="unknown",
-                    reconciliation_outcome="unknown",
+            if mode == "public_matrix":
+                failure_evidence.update(
+                    {
+                        "failure_stage": active_stage,
+                        "resources_created": {
+                            "document": "not_started",
+                            "file": "not_started",
+                            "store": "not_started",
+                        },
+                        "cleanup": {"attempted": 0, "status": "not_started"},
+                        "checks": dict(public_checks),
+                    }
                 )
-            )
+            else:
+                failure_evidence.update(
+                    _private_shadow_failure_record(
+                        preflight,
+                        prior_check_error,
+                        failure_stage=active_stage,
+                        states=states,
+                        cleanup_outcome="unknown",
+                        reconciliation_outcome="unknown",
+                    )
+                )
+        if diagnostic_sink is not None and mode == "public_matrix":
+            diagnostic_sink.capture("contract.check_matrix", public_checks)
         raise
     if prior_state_present:
         prior_state_mismatch = LiveSmokeBlocked(
             "private shadow prior operator state mismatch"
         )
         if failure_evidence is not None:
-            failure_evidence.update(
-                _private_shadow_failure_record(
-                    preflight,
-                    prior_state_mismatch,
-                    failure_stage=active_stage,
-                    states=states,
-                    cleanup_outcome="unknown",
-                    reconciliation_outcome="not_empty",
+            if mode == "public_matrix":
+                failure_evidence.update(
+                    {
+                        "failure_stage": active_stage,
+                        "resources_created": {
+                            "document": "not_started",
+                            "file": "not_started",
+                            "store": "not_started",
+                        },
+                        "cleanup": {"attempted": 0, "status": "not_started"},
+                        "checks": dict(public_checks),
+                    }
                 )
-            )
+            else:
+                failure_evidence.update(
+                    _private_shadow_failure_record(
+                        preflight,
+                        prior_state_mismatch,
+                        failure_stage=active_stage,
+                        states=states,
+                        cleanup_outcome="unknown",
+                        reconciliation_outcome="not_empty",
+                    )
+                )
+        if diagnostic_sink is not None and mode == "public_matrix":
+            diagnostic_sink.capture("contract.check_matrix", public_checks)
         raise prior_state_mismatch
     states.append("prior_operator_state_empty")
     try:
@@ -2000,6 +2049,8 @@ async def _run_shadow_sequence(
             PRIVATE_SHADOW_MODEL_CONTRACT[2],
         )
         stores.append(store_name)
+        if mode == "public_matrix":
+            public_checks["create_store"] = "passed"
         states.append("store_created")
         for item, display_name in zip(manifest.inputs, display_names, strict=True):
             active_input_identity = _private_shadow_input_identity(item.input_key)
@@ -2049,6 +2100,20 @@ async def _run_shadow_sequence(
             require_structured_supported=mode == "public_matrix",
         )
         active_stage = "positive_validation"
+        if mode == "public_matrix":
+            public_checks["positive_answer"] = (
+                "passed"
+                if positive.supported is True
+                and positive.answer is not None
+                and SYNTHETIC_MARKER in positive.answer
+                else "positive_answer_missing_marker"
+            )
+            public_checks["citation_presence"] = (
+                "passed"
+                if positive.citation_count > 0
+                and positive.resolved_citation_count == positive.citation_count
+                else "positive_citation_missing"
+            )
         if (
             positive.citation_count < 1
             or positive.resolved_citation_count != positive.citation_count
@@ -2086,6 +2151,17 @@ async def _run_shadow_sequence(
             require_structured_no_result=True,
         )
         active_stage = "negative_validation"
+        if mode == "public_matrix":
+            public_checks["negative_structured_output"] = (
+                "passed"
+                if negative.supported is False and negative.answer_empty is True
+                else "negative_structured_output_invalid"
+            )
+            public_checks["wrong_lecture_filtering"] = (
+                "passed"
+                if negative.citation_count == 0
+                else "wrong_lecture_retrieved"
+            )
         if (
             negative.citation_count != 0
             or negative.supported is not False
@@ -2101,11 +2177,14 @@ async def _run_shadow_sequence(
         failure_stage = active_stage
     finally:
         for document_name in reversed(documents):
+            cleanup_attempts["document"] += 1
             try:
                 await session.delete_document(document_name)
+                cleanup_successes["document"] += 1
             except BaseException:
                 cleanup_failed = True
                 document_cleanup_failed = True
+                cleanup_failures["document"] = True
         states.append(f"documents_delete_attempted:{len(documents)}")
         try:
             discovered = await session.find_files(display_names)
@@ -2120,10 +2199,13 @@ async def _run_shadow_sequence(
                 if file_name not in known
             )
         for file_name, _ in reversed(files):
+            cleanup_attempts["file"] += 1
             try:
                 await session.delete_file(file_name)
+                cleanup_successes["file"] += 1
             except BaseException:
                 cleanup_failed = True
+                cleanup_failures["file"] = True
         states.append(f"files_delete_attempted:{len(files)}")
         try:
             remaining_files = await session.find_files(display_names)
@@ -2148,10 +2230,13 @@ async def _run_shadow_sequence(
                 name for name in discovered_stores if name not in known_stores
             )
         for current_store in reversed(stores):
+            cleanup_attempts["store"] += 1
             try:
                 await session.delete_store(current_store)
+                cleanup_successes["store"] += 1
             except BaseException:
                 cleanup_failed = True
+                cleanup_failures["store"] = True
         states.append(f"stores_delete_attempted:{len(stores)}")
         try:
             remaining_stores = await session.find_stores(store_display_name)
@@ -2181,12 +2266,36 @@ async def _run_shadow_sequence(
         if file_reconciliation_empty and store_reconciliation_empty
         else "unknown"
     )
+    if mode == "public_matrix":
+        for resource, check in (
+            ("document", "cleanup_document"),
+            ("file", "cleanup_file"),
+            ("store", "cleanup_store"),
+        ):
+            public_checks[check] = (
+                "not_available"
+                if cleanup_attempts[resource] == 0
+                else "cleanup_delete_failed"
+                if cleanup_failures[resource]
+                or cleanup_successes[resource] != cleanup_attempts[resource]
+                else "passed"
+            )
     if failure is not None:
+        if mode == "public_matrix":
+            if failure_stage == "create_store":
+                public_checks["create_store"] = "create_store_failed"
+            elif failure_stage == "positive_query":
+                public_checks["positive_answer"] = (
+                    failure.reason
+                    if isinstance(failure, SmokeContractError) and failure.reason
+                    else "positive_query_failed"
+                )
+                if public_checks["positive_answer"] == "positive_answer_missing_marker":
+                    public_checks["citation_presence"] = "positive_citation_missing"
+            elif failure_stage == "negative_query":
+                public_checks["negative_structured_output"] = "negative_query_failed"
         if failure_evidence is not None:
             if mode == "public_matrix":
-                check = "positive_query_failed" if isinstance(failure, GeminiProviderError) else (
-                    failure.reason if isinstance(failure, SmokeContractError) and failure.reason else "positive_answer_invalid"
-                )
                 failure_evidence.update(
                     {
                         "failure_stage": failure_stage,
@@ -2199,17 +2308,7 @@ async def _run_shadow_sequence(
                             "attempted": len(documents) + len(files) + len(stores),
                             "status": "unknown" if failure_stage == "create_store" else ("failed" if cleanup_failed else "completed"),
                         },
-                        "checks": {
-                            "positive_answer": check,
-                            "citation_presence": "positive_citation_missing" if check == "positive_answer_missing_marker" else "not_run",
-                            "negative_structured_output": "not_run" if failure_stage == "positive_query" else ("negative_query_failed" if isinstance(failure, GeminiProviderError) else "passed"),
-                            "create_store": "create_store_failed" if failure_stage == "create_store" else "passed",
-                            "document_listing": "not_run",
-                            "cleanup_store": "not_available" if failure_stage == "create_store" else "passed",
-                            "cleanup_document": "passed" if documents else "not_available",
-                            "cleanup_file": "passed" if files else "not_available",
-                            "wrong_lecture_filtering": "not_run" if failure_stage == "positive_query" else "passed",
-                        },
+                        "checks": dict(public_checks),
                     }
                 )
             else:
@@ -2224,6 +2323,8 @@ async def _run_shadow_sequence(
                         input_identity=active_input_identity,
                     )
                 )
+        if diagnostic_sink is not None and mode == "public_matrix":
+            diagnostic_sink.capture("contract.check_matrix", public_checks)
         raise failure
     if cleanup_failed:
         cleanup_error = SmokeContractError(
@@ -2232,12 +2333,21 @@ async def _run_shadow_sequence(
         )
         if failure_evidence is not None:
             if mode == "public_matrix":
-                failure_evidence.update({
-                    "failure_stage": "cleanup",
-                    "resources_created": {"document": "confirmed" if documents else "not_started", "file": "confirmed" if files else "not_started", "store": "confirmed" if stores else "unknown"},
-                    "cleanup": {"attempted": len(documents) + len(files) + len(stores), "status": "failed"},
-                    "checks": {"cleanup_document": "passed" if documents else "not_available", "cleanup_file": "cleanup_delete_failed", "cleanup_store": "passed" if stores else "not_available"},
-                })
+                failure_evidence.update(
+                    {
+                        "failure_stage": "cleanup",
+                        "resources_created": {
+                            "document": "confirmed" if documents else "not_started",
+                            "file": "confirmed" if files else "not_started",
+                            "store": "confirmed" if stores else "unknown",
+                        },
+                        "cleanup": {
+                            "attempted": len(documents) + len(files) + len(stores),
+                            "status": "failed",
+                        },
+                        "checks": dict(public_checks),
+                    }
+                )
             else:
                 failure_evidence.update(
                 _private_shadow_failure_record(
@@ -2250,6 +2360,8 @@ async def _run_shadow_sequence(
                     input_identity="none",
                 )
                 )
+        if diagnostic_sink is not None and mode == "public_matrix":
+            diagnostic_sink.capture("contract.check_matrix", public_checks)
         raise cleanup_error from None
     assert positive is not None and negative is not None
     record = {
@@ -2267,7 +2379,7 @@ async def _run_shadow_sequence(
     }
     if mode == "public_matrix":
         if diagnostic_sink is not None:
-            diagnostic_sink.capture("contract.check_matrix", {"status": "passed"})
+            diagnostic_sink.capture("contract.check_matrix", public_checks)
         assert store_name is not None
         assert files and operations and documents
         assert positive.citation_page is not None
@@ -2289,8 +2401,14 @@ async def _run_shadow_sequence(
                     positive.citation_excerpt.encode()
                 ).hexdigest(),
             },
-            "negative_scope_retrieved": False,
-            "structured_output": {"schema": "SmokeAnswer", "validated": True, "answer_sha256": hashlib.sha256(b"").hexdigest()},
+            "negative_scope_retrieved": negative.citation_count != 0,
+            "structured_output": {
+                "schema": "SmokeAnswer",
+                "validated": negative.answer_empty is True,
+                "supported": positive.supported,
+                "marker_present": positive.answer is not None and SYNTHETIC_MARKER in positive.answer,
+                "answer_sha256": hashlib.sha256((negative.answer or "").encode()).hexdigest(),
+            },
             "thinking_configuration": "omitted",
             "duration_ms": record["duration_ms"],
             "usage": {"indexed_bytes": view.pdf.path.stat().st_size, "input_tokens": positive.input_tokens, "output_tokens": positive.output_tokens},
