@@ -44,7 +44,6 @@ def _load_smoke() -> ModuleType:
         failure_evidence: dict[str, object] | None = None,
         diagnostic_sink: object = None,
     ) -> dict[str, object]:
-        del diagnostic_sink
         with tempfile.TemporaryDirectory() as directory:
             view = module._synthetic_index_input(Path(directory))
             return await module._run_shadow_sequence(
@@ -54,6 +53,7 @@ def _load_smoke() -> ModuleType:
                 mode="public_matrix",
                 clock=clock or module.monotonic,
                 failure_evidence=failure_evidence,
+                diagnostic_sink=diagnostic_sink,
             )
 
     module.run_contract_smoke = shared_public_matrix

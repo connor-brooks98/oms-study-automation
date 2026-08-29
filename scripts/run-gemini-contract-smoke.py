@@ -582,6 +582,7 @@ class ShadowSession(Protocol):
         manifest: object,
         file_bindings: tuple[tuple[str, str], ...],
         require_structured_no_result: bool = False,
+        require_structured_supported: bool = False,
     ) -> PrivateShadowQueryAudit: ...
 
     async def delete_document(self, document_name: str) -> None: ...
@@ -891,6 +892,7 @@ class GoogleGenaiSmokeSession:
         manifest: object,
         file_bindings: tuple[tuple[str, str], ...],
         require_structured_no_result: bool = False,
+        require_structured_supported: bool = False,
     ) -> PrivateShadowQueryAudit:
         body: dict[str, object] = {
             "model": self._config.file_search_model,
@@ -904,7 +906,7 @@ class GoogleGenaiSmokeSession:
                 }
             ],
         }
-        if require_structured_no_result:
+        if require_structured_no_result or require_structured_supported:
             body["response_format"] = {
                 "type": "text",
                 "mime_type": "application/json",
@@ -918,7 +920,7 @@ class GoogleGenaiSmokeSession:
         output_text = _interaction_output(response)
         supported: bool | None = None
         answer_empty: bool | None = None
-        if require_structured_no_result:
+        if require_structured_no_result or require_structured_supported:
             try:
                 answer = SmokeAnswer.model_validate_json(output_text)
             except ValidationError:
@@ -956,7 +958,7 @@ class GoogleGenaiSmokeSession:
             usage.output_tokens,
             supported,
             answer_empty,
-            output_text,
+            answer.answer if (require_structured_no_result or require_structured_supported) else output_text,
             page,
             excerpt,
         )
@@ -1916,6 +1918,7 @@ async def _run_shadow_sequence(
     mode: Literal["public_matrix", "private_acceptance"],
     clock: Callable[[], float],
     failure_evidence: dict[str, object] | None = None,
+    diagnostic_sink: DiagnosticSink | None = None,
 ) -> dict[str, object]:
     if session.model_contract != PRIVATE_SHADOW_MODEL_CONTRACT:
         raise LiveSmokeBlocked("private shadow model contract mismatch")
@@ -1953,6 +1956,8 @@ async def _run_shadow_sequence(
     )
     store_display_name = f"task-2-8-{mode}-{run_token}"
     started = clock()
+    if diagnostic_sink is not None and mode == "public_matrix":
+        diagnostic_sink.capture("contract.expected", {"source_revision_id": view.source_revision_id})
     try:
         prior_state_present = bool(
             await session.find_stores(store_display_name)
@@ -2041,6 +2046,7 @@ async def _run_shadow_sequence(
             source_revision_id=view.source_revision_id,
             manifest=manifest,
             file_bindings=file_bindings,
+            require_structured_supported=mode == "public_matrix",
         )
         active_stage = "positive_validation"
         if (
@@ -2196,13 +2202,13 @@ async def _run_shadow_sequence(
                         "checks": {
                             "positive_answer": check,
                             "citation_presence": "positive_citation_missing" if check == "positive_answer_missing_marker" else "not_run",
-                            "negative_structured_output": "negative_query_failed" if isinstance(failure, GeminiProviderError) else "passed",
+                            "negative_structured_output": "not_run" if failure_stage == "positive_query" else ("negative_query_failed" if isinstance(failure, GeminiProviderError) else "passed"),
                             "create_store": "create_store_failed" if failure_stage == "create_store" else "passed",
                             "document_listing": "not_run",
                             "cleanup_store": "not_available" if failure_stage == "create_store" else "passed",
                             "cleanup_document": "passed" if documents else "not_available",
                             "cleanup_file": "passed" if files else "not_available",
-                            "wrong_lecture_filtering": "passed",
+                            "wrong_lecture_filtering": "not_run" if failure_stage == "positive_query" else "passed",
                         },
                     }
                 )
@@ -2225,7 +2231,15 @@ async def _run_shadow_sequence(
             reason="private_cleanup_failed",
         )
         if failure_evidence is not None:
-            failure_evidence.update(
+            if mode == "public_matrix":
+                failure_evidence.update({
+                    "failure_stage": "cleanup",
+                    "resources_created": {"document": "confirmed" if documents else "not_started", "file": "confirmed" if files else "not_started", "store": "confirmed" if stores else "unknown"},
+                    "cleanup": {"attempted": len(documents) + len(files) + len(stores), "status": "failed"},
+                    "checks": {"cleanup_document": "passed" if documents else "not_available", "cleanup_file": "cleanup_delete_failed", "cleanup_store": "passed" if stores else "not_available"},
+                })
+            else:
+                failure_evidence.update(
                 _private_shadow_failure_record(
                     preflight,
                     cleanup_error,
@@ -2235,7 +2249,7 @@ async def _run_shadow_sequence(
                     reconciliation_outcome=reconciliation_outcome,
                     input_identity="none",
                 )
-            )
+                )
         raise cleanup_error from None
     assert positive is not None and negative is not None
     record = {
@@ -2252,6 +2266,8 @@ async def _run_shadow_sequence(
         },
     }
     if mode == "public_matrix":
+        if diagnostic_sink is not None:
+            diagnostic_sink.capture("contract.check_matrix", {"status": "passed"})
         assert store_name is not None
         assert files and operations and documents
         assert positive.citation_page is not None
@@ -2410,6 +2426,7 @@ async def run_authorized_live_smoke(
                 mode="public_matrix",
                 clock=monotonic,
                 failure_evidence=failure_evidence,
+                diagnostic_sink=diagnostic_sink,
             )
     except BaseException as error:
         if diagnostic_sink is not None:
