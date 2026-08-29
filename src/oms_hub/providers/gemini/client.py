@@ -193,7 +193,7 @@ def _safe_status_code(exc: Exception) -> int | None:
 
 def _safe_provider_diagnostic(exc: Exception) -> str:
     if _safe_attr(exc, "status") != _INVALID_ARGUMENT:
-        return "unknown_provider"
+        return "provider_bad_request" if _safe_status_code(exc) == 400 else "unknown_provider"
     message = _safe_attr(exc, "message")
     if type(message) is str and message.startswith(_UNSUPPORTED_MIME_PREFIX):
         return "unsupported_mime_type"

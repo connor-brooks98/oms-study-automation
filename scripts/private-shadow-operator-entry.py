@@ -20,49 +20,17 @@ def _load_reviewed_operator() -> ModuleType:
     return module
 
 
-_FAILURE_KEYS = {
-    "status",
-    "source_revision_hash",
-    "document_types",
-    "page_count",
-    "slide_count",
-    "provider_operation_states",
-    "byte_usage",
-    "failure_stage",
-    "failure_input_identity",
-    "provider_error_category",
-    "provider_status_code",
-    "provider_reason",
-    "provider_cleanup_outcome",
-    "provider_reconciliation_outcome",
-    "warnings",
-}
-
-
-def _fail_closed_record() -> dict[str, object]:
-    return {
-        "status": "blocked",
-        "source_revision_hash": "0" * 64,
-        "document_types": ["markdown"],
-        "page_count": 1,
-        "slide_count": 1,
-        "provider_operation_states": ["private_shadow_failed"],
-        "byte_usage": {"index_inputs": 1},
-        "failure_stage": "prior_state_check",
-        "failure_input_identity": "none",
-        "provider_error_category": "none",
-        "provider_status_code": None,
-        "provider_reason": "none",
-        "provider_cleanup_outcome": "unknown",
-        "provider_reconciliation_outcome": "unknown",
-        "warnings": ["private_shadow_failed", "private_cleanup_unknown"],
-    }
-
-
-def _resolve_failure_record(failure_evidence: dict[str, object]) -> dict[str, object]:
-    if set(failure_evidence) == _FAILURE_KEYS and failure_evidence.get("status") == "blocked":
-        return dict(failure_evidence)
-    return _fail_closed_record()
+def _load_hash_bound_evidence(project: Path) -> ModuleType:
+    path = (project / "src" / "oms_hub" / "providers" / "gemini" / "evidence.py").resolve()
+    spec = importlib.util.spec_from_file_location("task_2_8_hash_bound_evidence", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("private_shadow_evidence_unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    if Path(str(module.__file__)).resolve() != path:
+        raise RuntimeError("private_shadow_evidence_binding_invalid")
+    return module
 
 
 def main() -> int:
@@ -72,13 +40,15 @@ def main() -> int:
     database = None
     scratch_valid = False
     failure_evidence: dict[str, object] = {}
-    record = _fail_closed_record()
+    evidence: ModuleType | None = None
+    record: dict[str, object] = {"status": "blocked"}
     try:
         if os.getenv("RUN_PRIVATE_GEMINI_SHADOW") != "1":
             raise reviewed.OperatorFailure("private_shadow_opt_in_required")
         reviewed._validate_scratch(scratch)
         scratch_valid = True
         source_sha256, pdf_sha256 = reviewed._approved_hashes(project)
+        evidence = _load_hash_bound_evidence(project)
         database_url, study_root = reviewed._runtime_configuration()
         source_database = reviewed.make_url(database_url).database
         if not isinstance(source_database, str):
@@ -138,7 +108,18 @@ def main() -> int:
         if set(record) != reviewed._LIVE_KEYS or record.get("status") != "passed":
             raise reviewed.OperatorFailure("private_shadow_evidence_invalid")
     except BaseException:
-        record = _resolve_failure_record(failure_evidence)
+        if evidence is not None:
+            try:
+                record = evidence.validate_private_shadow_record(failure_evidence, 1)
+            except ValueError:
+                record = evidence.failure_record(
+                    None,
+                    RuntimeError("private shadow blocked"),
+                    failure_stage="prior_state_check",
+                    states=[],
+                    cleanup_outcome="unknown",
+                    reconciliation_outcome="unknown",
+                ).model_dump(mode="json")
     finally:
         cleanup_failed = False
         if database is not None:
@@ -153,7 +134,15 @@ def main() -> int:
             except BaseException:
                 cleanup_failed = True
         if cleanup_failed:
-            record = _fail_closed_record()
+            if evidence is not None:
+                record = evidence.failure_record(
+                    None,
+                    RuntimeError("private shadow cleanup failed"),
+                    failure_stage="prior_state_check",
+                    states=[],
+                    cleanup_outcome="unknown",
+                    reconciliation_outcome="unknown",
+                ).model_dump(mode="json")
     print(json.dumps(record, sort_keys=True))
     return 0 if record["status"] == "passed" else 1
 

@@ -135,6 +135,8 @@ try {
     -Path $PythonExecutable -ExistingLeaf
   $ProjectRoot = Resolve-PrivateShadowSafePath `
     -Path $ProjectRoot -ExistingContainer
+  $SourceRoot = Resolve-PrivateShadowSafePath `
+    -Path (Join-Path $ProjectRoot "src") -ExistingContainer
   $OperatorScript = Resolve-PrivateShadowSafePath `
     -Path $OperatorScript -ExistingLeaf
   $EvidenceScript = Resolve-PrivateShadowSafePath `
@@ -148,6 +150,11 @@ try {
       $ProjectPrefix, [System.StringComparison]::OrdinalIgnoreCase
   )) {
     throw "Private-shadow operator must be inside the project root."
+  }
+  if (-not $SourceRoot.StartsWith(
+      $ProjectPrefix, [System.StringComparison]::OrdinalIgnoreCase
+  )) {
+    throw "Private-shadow source root must be inside the project root."
   }
   if ($DiagnosticRoot -ceq $ProjectRoot -or $DiagnosticRoot.StartsWith(
       $ProjectPrefix,
@@ -201,7 +208,8 @@ try {
     $WrapperStage = "evidence"
     $Evidence = Convert-PrivateShadowEvidence `
       -RawStdoutPath $RawStdout -SafeResultPath $SafeResultPath `
-      -ProcessExitCode $OperatorExit
+      -ProcessExitCode $OperatorExit -PythonExecutable $PythonExecutable `
+      -SourceRoot $SourceRoot
     $EvidenceUsable = $Evidence.EvidenceUsable
     $WrapperStage = $Evidence.Stage
     $ExitCode = if ($Evidence.ExitCode -ne 0) {$Evidence.ExitCode} else {$OperatorExit}

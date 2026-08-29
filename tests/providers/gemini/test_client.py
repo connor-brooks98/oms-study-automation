@@ -651,6 +651,15 @@ def test_unknown_error_uses_fixed_redacted_message() -> None:
     assert "private response body" not in str(translated)
 
 
+def test_generic_provider_bad_request_uses_fixed_diagnostic() -> None:
+    translated = translate_gemini_error(SdkError("private payload", status_code=400))
+
+    assert type(translated) is GeminiProviderError
+    assert translated.provider_status_code == 400
+    assert translated.diagnostic_code == "provider_bad_request"
+    assert "private payload" not in str(translated)
+
+
 def test_default_sdk_seam_fails_closed_when_google_genai_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

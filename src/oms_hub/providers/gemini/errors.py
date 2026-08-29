@@ -2,16 +2,9 @@
 
 from __future__ import annotations
 
-_SAFE_DIAGNOSTIC_CODES = frozenset(
-    {
-        "invalid_argument",
-        "sdk_contract",
-        "timeout",
-        "transport_error",
-        "unknown_provider",
-        "unsupported_mime_type",
-    }
-)
+from oms_hub.providers.gemini.evidence import _PROVIDER_REASONS
+
+_SAFE_DIAGNOSTIC_CODES = _PROVIDER_REASONS - {"none"}
 
 
 class GeminiProviderError(RuntimeError):

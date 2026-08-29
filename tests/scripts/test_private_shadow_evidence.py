@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 EVIDENCE = ROOT / "scripts" / "private-shadow-evidence.ps1"
 WRAPPER = ROOT / "scripts" / "run-private-shadow-evidence.ps1"
@@ -51,7 +53,7 @@ def test_private_shadow_wrapper_runs_committed_synthetic_fault_matrix() -> None:
         None,
     )
     if powershell is None:
-        return
+        pytest.skip("PowerShell is unavailable")
     result = subprocess.run(
         [
             powershell,

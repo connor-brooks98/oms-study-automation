@@ -7,29 +7,10 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-from tests.scripts.private_shadow_entrypoint_fixture import corrected_blocked_record
+from oms_hub.providers.gemini.evidence import validate_private_shadow_record
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = ROOT / "scripts" / "private-shadow-operator-entry.py"
-HARNESS = ROOT / "tests" / "scripts" / "private_shadow_entrypoint_harness.ps1"
-
-FAILURE_KEYS = {
-    "status",
-    "source_revision_hash",
-    "document_types",
-    "page_count",
-    "slide_count",
-    "provider_operation_states",
-    "byte_usage",
-    "failure_stage",
-    "failure_input_identity",
-    "provider_error_category",
-    "provider_status_code",
-    "provider_reason",
-    "provider_cleanup_outcome",
-    "provider_reconciliation_outcome",
-    "warnings",
-}
 
 
 def _load_entrypoint() -> ModuleType:
@@ -42,46 +23,14 @@ def _load_entrypoint() -> ModuleType:
     return module
 
 
-def test_entrypoint_preserves_corrected_blocked_schema_and_has_full_fallback() -> None:
+def test_entrypoint_loads_only_the_hash_bound_evidence_module() -> None:
     module = _load_entrypoint()
-    corrected = corrected_blocked_record()
+    source = ROOT / "src" / "oms_hub" / "providers" / "gemini" / "evidence.py"
+    loaded = module._load_hash_bound_evidence(ROOT)
 
-    assert module._FAILURE_KEYS == FAILURE_KEYS
-    assert module._resolve_failure_record(corrected) == corrected
-
-    fallback = module._resolve_failure_record({"status": "blocked"})
-    assert set(fallback) == FAILURE_KEYS
-    assert fallback["status"] == "blocked"
-    assert fallback["failure_stage"] == "prior_state_check"
-    assert fallback["failure_input_identity"] == "none"
-    assert fallback["provider_error_category"] == "none"
-    assert fallback["provider_status_code"] is None
-    assert fallback["provider_reason"] == "none"
-    assert fallback["provider_cleanup_outcome"] == "unknown"
-    assert fallback["provider_reconciliation_outcome"] == "unknown"
-    assert fallback["warnings"] == ["private_shadow_failed", "private_cleanup_unknown"]
-
-
-def test_entrypoint_currently_preserves_new_reason_by_key_shape_only() -> None:
-    module = _load_entrypoint()
-    record = corrected_blocked_record()
-    record["provider_error_category"] = "provider"
-    record["provider_status_code"] = 400
-    record["provider_reason"] = "provider_bad_request"
-
-    assert module._resolve_failure_record(record) == record
-
-
-def test_entrypoint_harness_binds_actual_entrypoint_to_real_validator() -> None:
-    harness = HARNESS.read_text(encoding="utf-8")
-    for required in (
-        "PRIVATE_SHADOW_ENTRYPOINT_HARNESS_VERIFIED",
-        "Convert-PrivateShadowEvidence",
-        'foreach ($Mode in @("corrected", "fallback", "close_failure", "cleanup_failure"))',
-        "$Process.ExitCode -ne 1",
-        "Count -ne 15",
-    ):
-        assert required in harness
+    assert Path(str(loaded.__file__)).resolve() == source.resolve()
+    assert "_FAILURE_KEYS" not in ENTRYPOINT.read_text(encoding="utf-8")
+    assert "sys.path.insert" not in ENTRYPOINT.read_text(encoding="utf-8")
 
 
 def test_entrypoint_close_and_cleanup_failures_still_emit_fail_closed_json() -> None:
@@ -97,6 +46,6 @@ def test_entrypoint_close_and_cleanup_failures_still_emit_fail_closed_json() -> 
         assert result.returncode == 1
         assert result.stderr == ""
         record = json.loads(result.stdout)
-        assert set(record) == FAILURE_KEYS
+        assert validate_private_shadow_record(record, 1)["status"] == "blocked"
         assert record["provider_cleanup_outcome"] == "unknown"
         assert record["provider_reconciliation_outcome"] == "unknown"

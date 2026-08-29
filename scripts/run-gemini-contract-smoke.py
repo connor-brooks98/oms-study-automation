@@ -37,6 +37,12 @@ from oms_hub.providers.gemini.client import (
     translate_gemini_error,
 )
 from oms_hub.providers.gemini.errors import GeminiProviderError
+from oms_hub.providers.gemini.evidence import (
+    failure_record as private_shadow_failure_record,
+)
+from oms_hub.providers.gemini.evidence import (
+    validate_private_shadow_record,
+)
 from oms_hub.providers.gemini.file_search import build_import_file_config
 from oms_hub.providers.gemini.models import GeminiConfig
 from oms_hub.source_trust_schema29 import project_schema29_index_input
@@ -75,42 +81,6 @@ _CITATION_CHECKS = (
 _PRIVATE_SLIDE_COORDINATE = re.compile(
     r"(?:slide )?([1-9][0-9]*)(?::[1-9][0-9]*)?\Z"
 )
-_PRIVATE_FAILURE_STAGES = frozenset(
-    {
-        "prior_state_check",
-        "create_store",
-        "upload_input",
-        "import_input",
-        "wait_for_import",
-        "positive_query",
-        "positive_validation",
-        "negative_query",
-        "negative_validation",
-        "cleanup",
-        "unknown",
-    }
-)
-_PRIVATE_CLEANUP_OUTCOMES = frozenset({"complete", "failed", "unknown"})
-_PRIVATE_RECONCILIATION_OUTCOMES = frozenset({"empty", "not_empty", "unknown"})
-_PRIVATE_INPUT_IDENTITIES = frozenset(
-    {"none", "pptx", "pdf", "normalized_markdown", "visual_asset", "unknown"}
-)
-_PRIVATE_PROVIDER_CATEGORIES = frozenset(
-    {"none", "authentication", "quota", "transient", "contract", "provider"}
-)
-_PRIVATE_PROVIDER_REASONS = frozenset(
-    {
-        "invalid_argument",
-        "none",
-        "sdk_contract",
-        "timeout",
-        "transport_error",
-        "unknown_provider",
-        "unsupported_mime_type",
-    }
-)
-
-
 class SmokeContractError(RuntimeError):
     _SAFE_REASONS = frozenset(
         {
@@ -1913,75 +1883,6 @@ def _private_shadow_input_identity(input_key: object) -> str:
     return "unknown"
 
 
-def _private_shadow_failure_record(
-    preflight: Mapping[str, object],
-    error: BaseException,
-    *,
-    failure_stage: str,
-    states: list[str],
-    cleanup_outcome: str,
-    reconciliation_outcome: str,
-    input_identity: str = "none",
-) -> dict[str, object]:
-    safe_stage = (
-        failure_stage if failure_stage in _PRIVATE_FAILURE_STAGES else "unknown"
-    )
-    safe_cleanup = (
-        cleanup_outcome if cleanup_outcome in _PRIVATE_CLEANUP_OUTCOMES else "unknown"
-    )
-    safe_reconciliation = (
-        reconciliation_outcome
-        if reconciliation_outcome in _PRIVATE_RECONCILIATION_OUTCOMES
-        else "unknown"
-    )
-    safe_input_identity = (
-        input_identity if input_identity in _PRIVATE_INPUT_IDENTITIES else "unknown"
-    )
-    category = "none"
-    status_code: int | None = None
-    reason = "none"
-    if isinstance(error, GeminiProviderError):
-        if error.category in _PRIVATE_PROVIDER_CATEGORIES:
-            category = error.category
-        if (
-            not isinstance(error.provider_status_code, bool)
-            and isinstance(error.provider_status_code, int)
-            and 100 <= error.provider_status_code <= 599
-        ):
-            status_code = error.provider_status_code
-        if error.diagnostic_code in _PRIVATE_PROVIDER_REASONS:
-            reason = error.diagnostic_code
-    warning = (
-        error.reason
-        if isinstance(error, SmokeContractError) and error.reason is not None
-        else "private_shadow_failed"
-    )
-    warnings = [warning]
-    cleanup_warning = {
-        "failed": "private_cleanup_failed",
-        "unknown": "private_cleanup_unknown",
-    }.get(safe_cleanup)
-    if cleanup_warning is not None and cleanup_warning not in warnings:
-        warnings.append(cleanup_warning)
-    return {
-        "status": "blocked",
-        "source_revision_hash": preflight["source_revision_hash"],
-        "document_types": preflight["document_types"],
-        "page_count": preflight["page_count"],
-        "slide_count": preflight["slide_count"],
-        "provider_operation_states": [*states, "private_shadow_failed"],
-        "byte_usage": preflight["byte_usage"],
-        "failure_stage": safe_stage,
-        "failure_input_identity": safe_input_identity,
-        "provider_error_category": category,
-        "provider_status_code": status_code,
-        "provider_reason": reason,
-        "provider_cleanup_outcome": safe_cleanup,
-        "provider_reconciliation_outcome": safe_reconciliation,
-        "warnings": warnings,
-    }
-
-
 async def _run_shadow_sequence(
     session: ShadowSession,
     view: IndexInputView,
@@ -2080,14 +1981,14 @@ async def _run_shadow_sequence(
                 )
             else:
                 failure_evidence.update(
-                    _private_shadow_failure_record(
+                    private_shadow_failure_record(
                         preflight,
                         prior_check_error,
                         failure_stage=active_stage,
                         states=states,
                         cleanup_outcome="unknown",
                         reconciliation_outcome="unknown",
-                    )
+                    ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
             diagnostic_sink.capture("contract.check_matrix", public_checks)
@@ -2111,14 +2012,14 @@ async def _run_shadow_sequence(
                 )
             else:
                 failure_evidence.update(
-                    _private_shadow_failure_record(
+                    private_shadow_failure_record(
                         preflight,
                         prior_state_mismatch,
                         failure_stage=active_stage,
                         states=states,
                         cleanup_outcome="unknown",
                         reconciliation_outcome="not_empty",
-                    )
+                    ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
             diagnostic_sink.capture("contract.check_matrix", public_checks)
@@ -2501,7 +2402,7 @@ async def _run_shadow_sequence(
                 )
             else:
                 failure_evidence.update(
-                    _private_shadow_failure_record(
+                    private_shadow_failure_record(
                         preflight,
                         failure,
                         failure_stage=failure_stage,
@@ -2509,7 +2410,7 @@ async def _run_shadow_sequence(
                         cleanup_outcome=cleanup_outcome,
                         reconciliation_outcome=reconciliation_outcome,
                         input_identity=active_input_identity,
-                    )
+                    ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
             diagnostic_sink.capture("contract.check_matrix", public_checks)
@@ -2537,7 +2438,7 @@ async def _run_shadow_sequence(
                 )
             else:
                 failure_evidence.update(
-                _private_shadow_failure_record(
+                private_shadow_failure_record(
                     preflight,
                     cleanup_error,
                     failure_stage="cleanup",
@@ -2545,7 +2446,7 @@ async def _run_shadow_sequence(
                     cleanup_outcome=cleanup_outcome,
                     reconciliation_outcome=reconciliation_outcome,
                     input_identity="none",
-                )
+                ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
             diagnostic_sink.capture("contract.check_matrix", public_checks)
@@ -2583,7 +2484,7 @@ async def _run_shadow_sequence(
             "reconciliation": reconciliation_outcome,
             "error_category": "none",
         }
-    return record
+    return validate_private_shadow_record(record, process_exit_code=0)
 
 
 async def run_authorized_private_shadow(

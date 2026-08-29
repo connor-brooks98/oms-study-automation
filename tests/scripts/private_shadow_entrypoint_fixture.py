@@ -11,6 +11,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
+from oms_hub.providers.gemini.evidence import failure_record
+
 PREFLIGHT_KEYS = {
     "status",
     "source_revision_hash",
@@ -29,23 +31,14 @@ LIVE_KEYS = PREFLIGHT_KEYS | {
 
 
 def corrected_blocked_record() -> dict[str, object]:
-    return {
-        "status": "blocked",
-        "source_revision_hash": "a" * 64,
-        "document_types": ["markdown"],
-        "page_count": 1,
-        "slide_count": 1,
-        "provider_operation_states": ["private_shadow_failed"],
-        "byte_usage": {"index_inputs": 1},
-        "failure_stage": "prior_state_check",
-        "failure_input_identity": "none",
-        "provider_error_category": "none",
-        "provider_status_code": None,
-        "provider_reason": "none",
-        "provider_cleanup_outcome": "unknown",
-        "provider_reconciliation_outcome": "unknown",
-        "warnings": ["private_shadow_failed", "private_cleanup_unknown"],
-    }
+    return failure_record(
+        None,
+        FixtureFailure("synthetic blocked"),
+        failure_stage="prior_state_check",
+        states=[],
+        cleanup_outcome="unknown",
+        reconciliation_outcome="unknown",
+    ).model_dump(mode="json")
 
 
 class FixtureFailure(RuntimeError):
@@ -173,6 +166,7 @@ def main() -> int:
         project = root / "project"
         scratch.mkdir()
         project.mkdir()
+        shutil.copytree(Path(__file__).resolve().parents[2] / "src", project / "src")
         database = root / "fixture.db"
         database.write_bytes(b"fixture")
         entrypoint = cast(Any, module)

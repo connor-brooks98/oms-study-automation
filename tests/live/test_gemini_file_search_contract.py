@@ -4050,7 +4050,7 @@ def test_private_shadow_markdown_import_failure_retains_only_safe_diagnostics(
     assert evidence["failure_input_identity"] == "normalized_markdown"
     assert evidence["provider_error_category"] == "provider"
     assert evidence["provider_status_code"] == 400
-    assert evidence["provider_reason"] == "unknown_provider"
+    assert evidence["provider_reason"] == "provider_bad_request"
     assert evidence["provider_cleanup_outcome"] == "complete"
     assert evidence["provider_reconciliation_outcome"] == "empty"
     serialized = json.dumps(evidence, sort_keys=True)
