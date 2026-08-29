@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "status": "cleanup_passed_review_pending",
+  "authorization": {
+    "authorized_by": "Connor",
+    "composition_commit": "f9f3adc70f9f678ec4e5014130d19319018784c4",
+    "composition_tree": "32f16029c0620c7db0cd4741f18ca4e6c2e25aee",
+    "final_handoff": "b29538714ed526ea4a7ca41e800584f04a9586e4",
+    "consumed": true,
+    "non_validate_only_invocations": 1,
+    "retries": 0
+  },
+  "reviewed_inputs": {
+    "cleanup_sha256": "342f9c83d0bc90c17ef1979f68266abb8a8c0e9ab60225b118fc481433272bde",
+    "root_manifest_sha256": "ea671e594d9494aec7be240e322baa382dc954bab8f1de9ca196c24052887184",
+    "root_manifest_files": 12560,
+    "initial_audit_sink_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "safe_result_sha256": "bd26cc4b7b3eeb34e875caaa043b4118bea375bc4473a3dab34dd65dffdf5a7d",
+    "safe_status_sha256": "e5ec9fcf1fb790b62a18939d78d350ea1572a903e02fae6e4e916ad5f4661c3f"
+  },
+  "preflight": {
+    "hashes_exact": true,
+    "audit_length": 0,
+    "validate_only_invocations": 2,
+    "validate_only_errors": 0,
+    "mutation_before_authorized_invocation": false
+  },
+  "execution": {
+    "exit_code": 0,
+    "stdout_marker": "TASK28_RECONCILIATION_CLEANUP_COMPLETE",
+    "task_unregistration_attempted": true,
+    "task_unregistration_completed": true,
+    "root_removal_attempted": true,
+    "root_removal_completed": true,
+    "audit_failure_record_written": false
+  },
+  "acceptance": {
+    "cleanup_task_count": 0,
+    "reconciliation_root_exists": false,
+    "audit_sink_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "audit_sink_length": 0,
+    "audit_sink_files": 1,
+    "audit_temp_exists": false,
+    "tombstone_root_exists": true,
+    "tombstone_evidence_path_exists": false,
+    "tombstone_top_level_entries": 19,
+    "tombstone_source_files": 674,
+    "tombstone_runtime_files": 11868,
+    "tombstone_reparse_points": 0,
+    "tombstone_acl_exact": true,
+    "retained_06848e2_root_exists": true,
+    "hub_task": "Running",
+    "health": [
+      {"port": 8765, "status": "ok", "schema_version": 29},
+      {"port": 8788, "status": "ok", "schema_version": 29}
+    ]
+  },
+  "tombstone_hashes_unchanged": {
+    "source_manifest_sha256": "d36c6a64ef342ff0d4e88c370c794a2add46ef2f98fbdfb9dcabd6bd86f702b0",
+    "runtime_manifest_sha256": "ad8e00b852d32c3b1216452e25e62160a68fb07745f3589321b20fec3ccfc5a7",
+    "controller_sha256": "5a955d65feb3adf03759bd62c8e2f842b2e81a27abfc5c9e10b8912c72796587",
+    "launcher_sha256": "0795af225426707b9a49454b19538b6b0eb420a9f05ab74280d1d541fd87fffa",
+    "entrypoint_sha256": "96c77c083d665fe945cde5a31265d83276fe07778a1bb732bccee1b28f1acad2"
+  },
+  "boundaries": {
+    "private_evidence_content_read": false,
+    "private_roots_mutated": false,
+    "tombstone_evidence_path_recreated": false,
+    "task_reregistered": false,
+    "key_read": false,
+    "provider_contacted": false,
+    "private_source_accessed": false,
+    "retry_performed": false,
+    "production_or_gate_mutated": false,
+    "merge_push_or_deploy_performed": false
+  },
+  "specification_review": "PENDING",
+  "quality_security_review": "PENDING"
+}
