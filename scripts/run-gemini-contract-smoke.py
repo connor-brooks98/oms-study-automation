@@ -25,6 +25,7 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
@@ -1667,6 +1668,30 @@ def synthetic_pdf_bytes() -> bytes:
     return output.getvalue()
 
 
+def _normalize_pptx(path: Path) -> None:
+    normalized = path.with_suffix(".normalized")
+    with ZipFile(path) as source:
+        members = {
+            info.filename: source.read(info.filename)
+            for info in source.infolist()
+            if not info.is_dir()
+        }
+    core_properties = "docProps/core.xml"
+    members[core_properties] = re.sub(
+        rb"(<dcterms:(?:created|modified)[^>]*>).*?(</dcterms:(?:created|modified)>)",
+        rb"\g<1>1980-01-01T00:00:00Z\g<2>",
+        members[core_properties],
+    )
+    with ZipFile(normalized, "w", ZIP_DEFLATED, compresslevel=9) as target:
+        for name in sorted(members):
+            info = ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+            info.compress_type = ZIP_DEFLATED
+            info.create_system = 0
+            info.external_attr = 0
+            target.writestr(info, members[name], compress_type=ZIP_DEFLATED, compresslevel=9)
+    normalized.replace(path)
+
+
 def _synthetic_index_input(root: Path) -> IndexInputView:
     from PIL import Image, ImageDraw
     from pptx import Presentation
@@ -1697,6 +1722,7 @@ def _synthetic_index_input(root: Path) -> IndexInputView:
     assert slide.shapes.title is not None
     slide.shapes.title.text = SYNTHETIC_FACT
     presentation.save(str(pptx))
+    _normalize_pptx(pptx)
     pdf.write_bytes(synthetic_pdf_bytes())
     markdown.write_text(f"# Synthetic\n\n{SYNTHETIC_FACT}\n", encoding="utf-8")
     for path, image_format, color in (
@@ -1998,6 +2024,7 @@ async def _run_shadow_sequence(
     cleanup_attempts = {"document": 0, "file": 0, "store": 0}
     cleanup_successes = {"document": 0, "file": 0, "store": 0}
     cleanup_failures = {"document": False, "file": False, "store": False}
+    uncertain_resources: set[str] = set()
     failure: BaseException | None = None
     failure_stage = "unknown"
     input_failure: BaseException | None = None
@@ -2123,7 +2150,9 @@ async def _run_shadow_sequence(
                 )
                 files.append((file_name, item.input_key))
                 if mode == "public_matrix":
-                    resource_states["file"] = "confirmed"
+                    resource_states["file"] = (
+                        "unknown" if "file" in uncertain_resources else "confirmed"
+                    )
                 chunking = (
                     {
                         "white_space_config": {
@@ -2148,7 +2177,9 @@ async def _run_shadow_sequence(
                 document_name = await session.wait_for_import(operation)
                 documents.append(document_name)
                 if mode == "public_matrix":
-                    resource_states["document"] = "confirmed"
+                    resource_states["document"] = (
+                        "unknown" if "document" in uncertain_resources else "confirmed"
+                    )
                     input_results.append(
                         {
                             "input_kind": item.input_kind,
@@ -2160,6 +2191,18 @@ async def _run_shadow_sequence(
             except BaseException as error:
                 if mode != "public_matrix":
                     raise
+                uncertain_resource = (
+                    {
+                        "upload_input": "file",
+                        "import_input": "document",
+                        "wait_for_import": "document",
+                    }.get(active_stage)
+                    if isinstance(error, GeminiProviderError)
+                    else None
+                )
+                if uncertain_resource is not None:
+                    uncertain_resources.add(uncertain_resource)
+                    resource_states[uncertain_resource] = "unknown"
                 category = (
                     error.category
                     if isinstance(error, GeminiProviderError)
@@ -2391,6 +2434,9 @@ async def _run_shadow_sequence(
             cleanup_failed = True
             cleanup_unknown = True
             reconciliation_unknown = True
+    if mode == "public_matrix" and "document" in uncertain_resources:
+        cleanup_unknown = True
+        reconciliation_unknown = True
     cleanup_outcome = (
         "unknown"
         if cleanup_unknown
