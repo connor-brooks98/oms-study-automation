@@ -1241,6 +1241,73 @@ def test_public_failure_checks_do_not_claim_unobserved_passes() -> None:
     assert checks["cleanup_document"] != "passed"
 
 
+def test_public_runner_rejects_provider_unsupported_positive_audit() -> None:
+    smoke = _load_smoke()
+
+    class UnsupportedAudit(_FakeSession):
+        async def query_private(self, *args: object, **kwargs: object) -> object:
+            audit = await super().query_private(*args, **kwargs)
+            if kwargs.get("require_structured_no_result"):
+                return audit
+            return dataclasses.replace(audit, supported=False)
+
+    with pytest.raises(smoke.SmokeContractError, match="marker"):
+        asyncio.run(smoke.run_contract_smoke(UnsupportedAudit(smoke)))
+
+
+def test_public_failure_does_not_mark_negative_checks_passed_before_query() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class PositiveFailure(_FakeSession):
+        async def query_private(self, *args: object, **kwargs: object) -> object:
+            if kwargs.get("require_structured_no_result"):
+                pytest.fail("negative query must not run")
+            raise smoke.SmokeContractError("positive failure", reason="positive_answer_invalid")
+
+    with pytest.raises(smoke.SmokeContractError):
+        asyncio.run(smoke.run_contract_smoke(PositiveFailure(smoke), failure_evidence=evidence))
+
+    assert evidence["checks"]["negative_structured_output"] != "passed"
+    assert evidence["checks"]["wrong_lecture_filtering"] != "passed"
+
+
+def test_public_cleanup_only_failure_has_public_observed_evidence() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class CleanupFailure(_FakeSession):
+        async def delete_file(self, file_name: str) -> None:
+            await super().delete_file(file_name)
+            raise RuntimeError("cleanup failure")
+
+    with pytest.raises(smoke.SmokeContractError, match="cleanup"):
+        asyncio.run(smoke.run_contract_smoke(CleanupFailure(smoke), failure_evidence=evidence))
+
+    assert evidence["resources_created"] == {
+        "document": "confirmed", "file": "confirmed", "store": "confirmed"
+    }
+    assert evidence["cleanup"]["status"] == "failed"
+
+
+def test_public_runner_forwards_contract_diagnostic_lifecycle_events() -> None:
+    smoke = _load_smoke()
+    captured: list[str] = []
+
+    class Sink:
+        def capture(self, label: str, value: object) -> None:
+            del value
+            captured.append(label)
+
+        def capture_exception(self, label: str, error: BaseException) -> None:
+            del label, error
+
+    asyncio.run(smoke.run_contract_smoke(_FakeSession(smoke), diagnostic_sink=Sink()))
+
+    assert "contract.expected" in captured
+    assert "contract.check_matrix" in captured
+
+
 def test_shared_sdk_paths_label_diagnostic_provider_failures(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
