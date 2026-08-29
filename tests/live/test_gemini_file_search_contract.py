@@ -1193,6 +1193,34 @@ def test_public_success_uses_actual_citation_and_provider_id_values() -> None:
     }
 
 
+def test_public_success_uses_actual_citation_audit_values() -> None:
+    smoke = _load_smoke()
+
+    class ActualAudit(_FakeSession):
+        async def query_private(self, *args: object, **kwargs: object) -> object:
+            result = await super().query_private(*args, **kwargs)
+            if kwargs.get("require_structured_no_result"):
+                return result
+            return SimpleNamespace(
+                citation_count=1,
+                resolved_citation_count=1,
+                input_tokens=11,
+                output_tokens=7,
+                supported=True,
+                answer_empty=None,
+                answer=smoke.SYNTHETIC_FACT,
+                page_number=7,
+                excerpt="actual synthetic excerpt",
+            )
+
+    record = asyncio.run(smoke.run_contract_smoke(ActualAudit(smoke)))
+
+    assert record["citation"] == {
+        "page_number": 7,
+        "excerpt_sha256": hashlib.sha256(b"actual synthetic excerpt").hexdigest(),
+    }
+
+
 def test_public_failure_checks_do_not_claim_unobserved_passes() -> None:
     smoke = _load_smoke()
     evidence: dict[str, object] = {}
@@ -1210,12 +1238,43 @@ def test_public_failure_checks_do_not_claim_unobserved_passes() -> None:
     assert checks["cleanup_document"] != "passed"
 
 
-def test_shared_sdk_paths_label_diagnostic_provider_failures() -> None:
+def test_shared_sdk_paths_label_diagnostic_provider_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     smoke = _load_smoke()
-    source = SCRIPT.read_text(encoding="utf-8")
+    captures: list[str] = []
 
-    for label in ("upload_input", "import_input", "query_private"):
-        assert f'label="{label}"' in source
+    class Sink:
+        def capture_exception(self, label: str, error: BaseException) -> None:
+            del error
+            captures.append(label)
+
+    async def fail_provider(
+        request: object, *, diagnostic_sink: object | None = None, label: str = ""
+    ) -> object:
+        del request
+        if diagnostic_sink is not None:
+            diagnostic_sink.capture_exception(label, RuntimeError("synthetic"))
+        raise smoke.GeminiProviderError("synthetic")
+
+    monkeypatch.setattr(smoke, "_provider_call", fail_provider)
+    session = smoke.GoogleGenaiSmokeSession(
+        "synthetic-sdk-key", sdk_factory=lambda **kwargs: _SdkClient(smoke), diagnostic_sink=Sink()
+    )
+    path = tmp_path / "input.pdf"
+    path.write_bytes(smoke.synthetic_pdf_bytes())
+    for call in (
+        lambda: session.upload_input("input.pdf", path, "application/pdf"),
+        lambda: session.import_input("fileSearchStores/test", "files/test", (), None),
+        lambda: session.query_private(
+            "fileSearchStores/test", "prompt", smoke.SmokeScope("course", "exam", "lecture"),
+            source_revision_id="revision", manifest=SimpleNamespace(inputs=()), file_bindings=(),
+        ),
+    ):
+        with pytest.raises(smoke.GeminiProviderError):
+            asyncio.run(call())
+
+    assert captures == ["upload_input", "import_input", "query_private"]
 
 
 def test_authorized_entrypoint_fails_closed_when_stored_key_is_missing(
