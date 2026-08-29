@@ -15,6 +15,8 @@ $env:LOCALAPPDATA = Join-Path $sandbox 'LocalAppData'
 $env:TEMP = Join-Path $sandbox 'Temp'
 $root = Join-Path $env:LOCALAPPDATA 'Temp\sol0-task28-reconciliation-e71eace'
 $evidence = Join-Path $root 'evidence'
+$fixtureCleanup = Join-Path $root 'cleanup-only-disposition.ps1'
+$rootManifest = Join-Path $root 'cleanup-root-manifest.sha256'
 $privateRoot = Join-Path $env:LOCALAPPDATA 'Temp\sol0-task28-private-shadow-9097851'
 $retainedRoot = Join-Path $env:LOCALAPPDATA 'Temp\sol0-task28-private-shadow-06848e2'
 $privateEvidence = Join-Path $privateRoot 'evidence'
@@ -55,6 +57,16 @@ function Initialize-CleanupFixture {
   [IO.File]::WriteAllBytes(
     (Join-Path $evidence 'safe-status.json'),
     [Convert]::FromBase64String($statusBase64)
+  )
+  Copy-Item -LiteralPath $CleanupScript -Destination $fixtureCleanup
+  $payload = Join-Path $root 'payload.txt'
+  [IO.File]::WriteAllText($payload,'bound cleanup payload')
+  $payloadHash = (Microsoft.PowerShell.Utility\Get-FileHash `
+    -LiteralPath $payload -Algorithm SHA256).Hash.ToLowerInvariant()
+  [IO.File]::WriteAllText(
+    $rootManifest,
+    $payloadHash + '  payload.txt' + [char]10,
+    [Text.UTF8Encoding]::new($false)
   )
   [IO.File]::WriteAllText((Join-Path $retainedEvidence 'retained.json'),'{}')
   $global:CleanupTaskRegistered = $true
@@ -97,6 +109,18 @@ function Get-ScheduledTask {
   $items = @($hub)
   if ($global:CleanupTaskRegistered) { $items += New-CleanupTaskFixture }
   return $items
+}
+
+function Get-FileHash {
+  [CmdletBinding()]
+  param([string]$LiteralPath,[string]$Algorithm)
+  if ([IO.Path]::GetFullPath($LiteralPath) -ceq [IO.Path]::GetFullPath($script:rootManifest)) {
+    return [pscustomobject]@{
+      Hash='ea671e594d9494aec7be240e322baa382dc954bab8f1de9ca196c24052887184'
+    }
+  }
+  return Microsoft.PowerShell.Utility\Get-FileHash `
+    -LiteralPath $LiteralPath -Algorithm $Algorithm
 }
 
 function Get-ScheduledTaskInfo {
@@ -142,7 +166,7 @@ function Assert-FailureRetained([scriptblock]$Action) {
 
 try {
   Initialize-CleanupFixture
-  $validation = & $CleanupScript -ValidateOnly
+  $validation = & $fixtureCleanup -ValidateOnly
   if ($validation -notcontains 'TASK28_RECONCILIATION_CLEANUP_VALIDATED' -or
       -not $global:CleanupTaskRegistered -or
       -not (Test-Path -LiteralPath $root -PathType Container) -or
@@ -152,32 +176,32 @@ try {
 
   Initialize-CleanupFixture
   [IO.File]::AppendAllText((Join-Path $evidence 'safe-result.json'),'x')
-  Assert-FailureRetained { & $CleanupScript -ValidateOnly }
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
   Initialize-CleanupFixture
   $global:CleanupTaskState = 'Running'
-  Assert-FailureRetained { & $CleanupScript -ValidateOnly }
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
   Initialize-CleanupFixture
   $global:CleanupHealthSchema = 28
-  Assert-FailureRetained { & $CleanupScript -ValidateOnly }
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
   Initialize-CleanupFixture
   [IO.File]::WriteAllText((Join-Path $root 'unexpected.txt'),'unexpected')
-  Assert-FailureRetained { & $CleanupScript -ValidateOnly }
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
   Initialize-CleanupFixture
   $rootTarget = $root + '-target'
   Move-Item -LiteralPath $root -Destination $rootTarget
   New-Item -ItemType Junction -Path $root -Target $rootTarget | Out-Null
-  Assert-FailureRetained { & $CleanupScript -ValidateOnly }
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
   Initialize-CleanupFixture
   [IO.File]::WriteAllText((Join-Path $privateEvidence 'unexpected.json'),'{}')
-  Assert-FailureRetained { & $CleanupScript -ValidateOnly }
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
   Initialize-CleanupFixture
-  & $CleanupScript
+  & $fixtureCleanup
   if ($global:CleanupTaskRegistered -or
       (Test-Path -LiteralPath $root) -or
       $global:CleanupUnregisterCalls.Count -ne 1 -or
