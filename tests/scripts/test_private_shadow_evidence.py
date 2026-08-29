@@ -16,44 +16,12 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     wrapper = WRAPPER.read_text(encoding="utf-8")
     harness = HARNESS.read_text(encoding="utf-8")
 
-    for key in (
-        "source_revision_hash",
-        "document_types",
-        "page_count",
-        "slide_count",
-        "provider_operation_states",
-        "byte_usage",
-        "failure_stage",
-        "failure_input_identity",
-        "provider_error_category",
-        "provider_status_code",
-        "provider_reason",
-        "provider_cleanup_outcome",
-        "provider_reconciliation_outcome",
-        "warnings",
-    ):
-        assert f'"{key}"' in evidence
-    for stage in (
-        "prior_state_check",
-        "create_store",
-        "upload_input",
-        "import_input",
-        "wait_for_import",
-        "positive_query",
-        "positive_validation",
-        "negative_query",
-        "negative_validation",
-        "cleanup",
-        "unknown",
-    ):
-        assert f'"{stage}"' in evidence
-    for outcome in ("complete", "failed", "empty", "not_empty", "unknown"):
-        assert f'"{outcome}"' in evidence
-    for reason in ("invalid_argument", "unsupported_mime_type"):
-        assert f'"{reason}"' in evidence
-    assert "$ArgumentReasons" in evidence
-    assert '$Record.provider_error_category -cne "provider"' in evidence
-    assert "$Record.provider_status_code -ne 400" in evidence
+    assert "-m oms_hub.providers.gemini.evidence" in evidence
+    assert "ReadAllText" in evidence
+    assert "WriteAllText" in evidence
+    assert "File]::Move" in evidence
+    assert "Assert-PrivateShadowRecord" not in evidence
+    assert "ProviderReasons" not in evidence
     for forbidden in (
         "gemini-api-key",
         "Lecture 13",
@@ -68,6 +36,7 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
         assert forbidden not in wrapper
         assert forbidden not in harness
     assert "PRIVATE_SHADOW_EVIDENCE_HARNESS_VERIFIED" in harness
+    assert "provider_bad_request" in harness
     assert "operator_artifacts_deleted" in wrapper
     assert "raw_content_retained" in wrapper
 
@@ -98,6 +67,8 @@ def test_private_shadow_wrapper_runs_committed_synthetic_fault_matrix() -> None:
             str(WRAPPER),
             "-PythonExecutable",
             sys.executable,
+            "-SourceRoot",
+            str(ROOT / "src"),
         ],
         check=False,
         capture_output=True,

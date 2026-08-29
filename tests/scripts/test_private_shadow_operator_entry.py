@@ -62,6 +62,16 @@ def test_entrypoint_preserves_corrected_blocked_schema_and_has_full_fallback() -
     assert fallback["warnings"] == ["private_shadow_failed", "private_cleanup_unknown"]
 
 
+def test_entrypoint_currently_preserves_new_reason_by_key_shape_only() -> None:
+    module = _load_entrypoint()
+    record = corrected_blocked_record()
+    record["provider_error_category"] = "provider"
+    record["provider_status_code"] = 400
+    record["provider_reason"] = "provider_bad_request"
+
+    assert module._resolve_failure_record(record) == record
+
+
 def test_entrypoint_harness_binds_actual_entrypoint_to_real_validator() -> None:
     harness = HARNESS.read_text(encoding="utf-8")
     for required in (

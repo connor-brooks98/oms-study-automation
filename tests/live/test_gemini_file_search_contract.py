@@ -4059,6 +4059,37 @@ def test_private_shadow_markdown_import_failure_retains_only_safe_diagnostics(
     assert "fileSearchStores/" not in serialized
 
 
+def test_private_shadow_generic_bad_request_is_preserved_as_safe_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    session = _PrivateShadowSession(smoke, fail_markdown_import=True)
+    evidence: dict[str, object] = {}
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.GeminiProviderError):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: session,
+                failure_evidence=evidence,
+            )
+        )
+
+    assert evidence["provider_error_category"] == "provider"
+    assert evidence["provider_status_code"] == 400
+    assert evidence["provider_reason"] == "provider_bad_request"
+
+
 @pytest.mark.parametrize(
     ("session_kwargs", "cleanup", "reconciliation", "warning"),
     (
