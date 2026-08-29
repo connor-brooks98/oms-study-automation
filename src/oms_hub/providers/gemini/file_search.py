@@ -195,15 +195,12 @@ class GeminiFileSearchAdmin:
         if _IMPORT_STORE_NAME.fullmatch(store_name) is None:
             raise GeminiContractError("Gemini store name is invalid.")
         file_name = _required_text(file_name, "file name")
-        config: dict[str, object] = {"custom_metadata": metadata}
-        if chunking is not None:
-            config["chunking_config"] = chunking
         async with self.client_factory.client() as client:
             operation = await _call_provider(
                 _stores_api(client).import_file,
                 file_search_store_name=store_name,
                 file_name=file_name,
-                config=config,
+                config=build_import_file_config(metadata, chunking),
             )
         return OperationRef(_provider_identity(operation, "operation"))
 
@@ -350,6 +347,82 @@ async def _call_provider(method: Any, *args: object, **kwargs: object) -> Any:
         raise
     except Exception as error:
         raise _translate(error) from None
+
+
+def build_import_file_config(metadata: object, chunking: object | None) -> Any:
+    """Build the public SDK import config with its documented exact wire body."""
+
+    types = import_module("google.genai.types")
+    custom_metadata = [
+        types.CustomMetadata(key=key, stringValue=value)
+        for key, value in _validated_metadata(metadata)
+    ]
+    extra_body: dict[str, object] = {
+        "customMetadata": [
+            item.model_dump(by_alias=True, exclude_none=True) for item in custom_metadata
+        ]
+    }
+    chunking_values = _validated_chunking(chunking)
+    if chunking_values is not None:
+        maximum, overlap = chunking_values
+        chunking_config = types.ChunkingConfig(
+            whiteSpaceConfig=types.WhiteSpaceConfig(
+                maxTokensPerChunk=maximum,
+                maxOverlapTokens=overlap,
+            )
+        )
+        extra_body["chunkingConfig"] = chunking_config.model_dump(
+            by_alias=True,
+            exclude_none=True,
+        )
+    return types.ImportFileConfig(
+        http_options=types.HttpOptions(extra_body=extra_body)
+    )
+
+
+def _validated_metadata(metadata: object) -> list[tuple[str, str]]:
+    if isinstance(metadata, (str, bytes, Mapping)) or not isinstance(metadata, Iterable):
+        raise GeminiContractError("Gemini import metadata is invalid.")
+    entries = list(metadata)
+    if not entries or len(entries) > 100:
+        raise GeminiContractError("Gemini import metadata is invalid.")
+    result: list[tuple[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping) or set(entry) != {"key", "string_value"}:
+            raise GeminiContractError("Gemini import metadata is invalid.")
+        result.append(
+            (
+                _required_text(entry["key"], "metadata key"),
+                _required_text(entry["string_value"], "metadata value"),
+            )
+        )
+    return result
+
+
+def _validated_chunking(chunking: object | None) -> tuple[int, int] | None:
+    if chunking is None:
+        return None
+    if not isinstance(chunking, Mapping) or set(chunking) != {"white_space_config"}:
+        raise GeminiContractError("Gemini import chunking configuration is invalid.")
+    white_space = chunking["white_space_config"]
+    if not isinstance(white_space, Mapping) or set(white_space) != {
+        "max_tokens_per_chunk",
+        "max_overlap_tokens",
+    }:
+        raise GeminiContractError("Gemini import chunking configuration is invalid.")
+    maximum = white_space["max_tokens_per_chunk"]
+    overlap = white_space["max_overlap_tokens"]
+    if (
+        isinstance(maximum, bool)
+        or not isinstance(maximum, int)
+        or maximum < 1
+        or isinstance(overlap, bool)
+        or not isinstance(overlap, int)
+        or overlap < 0
+        or overlap >= maximum
+    ):
+        raise GeminiContractError("Gemini import chunking configuration is invalid.")
+    return maximum, overlap
 
 
 def _translate(error: Exception) -> GeminiProviderError:

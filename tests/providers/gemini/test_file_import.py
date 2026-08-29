@@ -24,6 +24,7 @@ from oms_hub.providers.gemini.file_search import (
     GeminiFileSearchAdmin,
     OperationRef,
     UploadedFileRef,
+    build_import_file_config,
 )
 from oms_hub.providers.gemini.models import GeminiConfig
 
@@ -134,16 +135,22 @@ def test_upload_import_and_cleanup_use_exact_async_sdk_contract(tmp_path: Path) 
     assert client.files.upload_calls == [
         {"file": source, "config": {"display_name": "lecture.pptx"}}
     ]
-    assert client.file_search_stores.import_calls == [
-        {
-            "file_search_store_name": "fileSearchStores/course-1",
-            "file_name": "files/provider-1",
-            "config": {
-                "custom_metadata": metadata,
-                "chunking_config": chunking,
-            },
-        }
-    ]
+    import_call = client.file_search_stores.import_calls
+    assert len(import_call) == 1
+    assert import_call[0]["file_search_store_name"] == "fileSearchStores/course-1"
+    assert import_call[0]["file_name"] == "files/provider-1"
+    assert import_call[0]["config"].http_options.extra_body == {
+        "customMetadata": [
+            {"key": "authority_class", "stringValue": "course_material"},
+            {"key": "source_revision_id", "stringValue": "sr_1"},
+        ],
+        "chunkingConfig": {
+            "whiteSpaceConfig": {
+                "maxTokensPerChunk": 700,
+                "maxOverlapTokens": 100,
+            }
+        },
+    }
     assert client.files.delete_calls == [{"name": "files/provider-1"}]
     assert client.close_calls == 3
 
@@ -158,7 +165,7 @@ def test_upload_import_and_cleanup_use_exact_async_sdk_contract(tmp_path: Path) 
             {
                 "fileName": "files/lecture-pdf",
                 "customMetadata": [
-                    {"key": "input_key", "string_value": "lecture_pdf"}
+                    {"key": "input_key", "stringValue": "lecture_pdf"}
                 ],
             },
         ),
@@ -174,12 +181,12 @@ def test_upload_import_and_cleanup_use_exact_async_sdk_contract(tmp_path: Path) 
             {
                 "fileName": "files/normalized-markdown",
                 "customMetadata": [
-                    {"key": "input_key", "string_value": "normalized_markdown"}
+                    {"key": "input_key", "stringValue": "normalized_markdown"}
                 ],
                 "chunkingConfig": {
-                    "white_space_config": {
-                        "max_tokens_per_chunk": 700,
-                        "max_overlap_tokens": 100,
+                    "whiteSpaceConfig": {
+                        "maxTokensPerChunk": 700,
+                        "maxOverlapTokens": 100,
                     }
                 },
             },
@@ -236,11 +243,12 @@ def test_real_sdk_import_preserves_public_config_wire_body(
 
 
 @pytest.mark.parametrize(
-    ("file_name", "config", "expected"),
+    ("file_name", "metadata", "chunking", "expected"),
     (
         (
             "files/lecture-pdf",
-            {"customMetadata": [{"key": "input_key", "stringValue": "lecture_pdf"}]},
+            [{"key": "input_key", "string_value": "lecture_pdf"}],
+            None,
             {
                 "fileName": "files/lecture-pdf",
                 "customMetadata": [
@@ -250,16 +258,12 @@ def test_real_sdk_import_preserves_public_config_wire_body(
         ),
         (
             "files/normalized-markdown",
+            [{"key": "input_key", "string_value": "normalized_markdown"}],
             {
-                "customMetadata": [
-                    {"key": "input_key", "stringValue": "normalized_markdown"}
-                ],
-                "chunkingConfig": {
-                    "whiteSpaceConfig": {
-                        "maxTokensPerChunk": 700,
-                        "maxOverlapTokens": 100,
-                    }
-                },
+                "white_space_config": {
+                    "max_tokens_per_chunk": 700,
+                    "max_overlap_tokens": 100,
+                }
             },
             {
                 "fileName": "files/normalized-markdown",
@@ -278,11 +282,11 @@ def test_real_sdk_import_preserves_public_config_wire_body(
 )
 def test_typed_public_sdk_import_preserves_provider_wire_names(
     file_name: str,
-    config: dict[str, object],
+    metadata: list[dict[str, str]],
+    chunking: dict[str, object] | None,
     expected: dict[str, object],
 ) -> None:
     sdk = import_module("google.genai")
-    types = import_module("google.genai.types")
     captured: list[dict[str, object]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -305,23 +309,10 @@ def test_typed_public_sdk_import_preserves_provider_wire_names(
             },
         )
         try:
-            custom_metadata = [
-                types.CustomMetadata(**entry) for entry in config["customMetadata"]
-            ]
-            chunking_config = config.get("chunkingConfig")
             return await client.aio.file_search_stores.import_file(
                 file_search_store_name="fileSearchStores/course-1",
                 file_name=file_name,
-                config=types.ImportFileConfig(
-                    customMetadata=custom_metadata,
-                    chunkingConfig=(
-                        types.ChunkingConfig(
-                            whiteSpaceConfig=types.WhiteSpaceConfig(**chunking_config["whiteSpaceConfig"])
-                        )
-                        if chunking_config is not None
-                        else None
-                    ),
-                ),
+                config=build_import_file_config(metadata, chunking),
             )
         finally:
             await client.aio.aclose()
