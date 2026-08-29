@@ -275,15 +275,21 @@ class _FiveInputSession:
 
 
 class _OneTimeResponseLossSession(_FiveInputSession):
-    def __init__(self, smoke: ModuleType, failure_stage: str) -> None:
+    def __init__(
+        self,
+        smoke: ModuleType,
+        failure_stage: str,
+        error: BaseException | None = None,
+    ) -> None:
         super().__init__(smoke, "")
         self.failure_stage = failure_stage
         self.failed = False
+        self.error = error or smoke.GeminiProviderError("synthetic response loss")
 
     def _fail_once(self) -> None:
         if not self.failed:
             self.failed = True
-            raise self.smoke.GeminiProviderError("synthetic response loss")
+            raise self.error
 
     async def upload_input(self, *args: object, **kwargs: object) -> str:
         value = await super().upload_input(*args, **kwargs)
@@ -1026,6 +1032,42 @@ def test_public_matrix_one_time_response_loss_keeps_resource_truth_sticky(
     assert len(evidence["input_results"]) == 5
     assert json.dumps(evidence, sort_keys=True).find("files/synthetic-") == -1
     assert json.dumps(evidence, sort_keys=True).find("fileSearchStores/synthetic") == -1
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "error_kind"),
+    (("wait_for_import", "temporary"), ("import_input", "contract")),
+)
+def test_public_matrix_non_provider_lifecycle_failure_keeps_document_unknown(
+    failure_stage: str,
+    error_kind: str,
+) -> None:
+    smoke = _load_smoke()
+    error: BaseException = (
+        smoke.SmokeTemporaryFailure("synthetic temporary loss")
+        if error_kind == "temporary"
+        else smoke.SmokeContractError("synthetic completion contract failure")
+    )
+    session = _OneTimeResponseLossSession(smoke, failure_stage, error)
+    evidence: dict[str, object] = {}
+
+    with pytest.raises(type(error)):
+        asyncio.run(smoke.run_contract_smoke(session, failure_evidence=evidence))
+
+    names = [name for name, _ in session.calls]
+    assert names.count("upload_input") == 5
+    assert names.count("import_input") == 5
+    assert names.count("wait_for_import") == (
+        4 if failure_stage == "import_input" else 5
+    )
+    assert names.count("query_private") == 0
+    assert evidence["resources_created"]["document"] == "unknown"
+    assert evidence["cleanup"]["status"] == "unknown"
+    assert evidence["reconciliation"] == "unknown"
+    assert len(evidence["input_results"]) == 5
+    encoded = json.dumps(evidence, sort_keys=True)
+    assert "files/synthetic-" not in encoded
+    assert "fileSearchStores/synthetic" not in encoded
 
 
 def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
