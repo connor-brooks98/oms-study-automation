@@ -263,6 +263,13 @@ try {
   Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
   Initialize-CleanupFixture
+  $approvedBase = Join-Path $env:LOCALAPPDATA 'Temp'
+  $approvedBaseTarget = $approvedBase + '-target'
+  Move-Item -LiteralPath $approvedBase -Destination $approvedBaseTarget
+  New-Item -ItemType Junction -Path $approvedBase -Target $approvedBaseTarget | Out-Null
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
   New-Item -ItemType Directory -Path $privateEvidence | Out-Null
   Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
