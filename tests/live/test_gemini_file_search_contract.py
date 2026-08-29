@@ -660,6 +660,56 @@ def test_real_sdk_normalized_markdown_upload_and_import_wire_contract(
     }
 
 
+def test_real_sdk_pdf_import_wire_contract() -> None:
+    smoke = _load_smoke()
+    sdk = import_module("google.genai")
+    captured: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"name": "operations/import-1", "done": False},
+            request=request,
+        )
+
+    def sdk_factory(**kwargs: object) -> object:
+        assert kwargs["api_key"] == "synthetic-sdk-key"
+        return sdk.Client(
+            api_key="synthetic-sdk-key",
+            http_options={
+                "api_version": "v1beta",
+                "base_url": "https://unit.invalid",
+                "httpx_async_client": httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler)
+                ),
+            },
+        )
+
+    session = smoke.GoogleGenaiSmokeSession(
+        "synthetic-sdk-key",
+        sdk_factory=sdk_factory,
+    )
+
+    operation = asyncio.run(
+        session.import_file(
+            "fileSearchStores/synthetic",
+            "files/lecture-pdf",
+            (("input_key", "lecture_pdf"),),
+        )
+    )
+
+    assert operation == "operations/import-1"
+    assert captured == [
+        {
+            "fileName": "files/lecture-pdf",
+            "customMetadata": [
+                {"key": "input_key", "stringValue": "lecture_pdf"}
+            ],
+        }
+    ]
+
+
 def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
     tmp_path: Path,
 ) -> None:
