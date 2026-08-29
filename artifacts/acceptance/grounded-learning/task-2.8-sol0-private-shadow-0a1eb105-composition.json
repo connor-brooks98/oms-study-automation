@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "status": "diagnostic_composed_hash_verified_not_executed_review_pending_audit_hold",
+  "recorded_at": "2026-08-29T10:14:47-04:00",
+  "composition_identity": "0a1eb105de153e0ad97a724756635f9b",
+  "composition_root": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-private-shadow-0a1eb105de153e0ad97a724756635f9b",
+  "task_name": "OMS Sol0 Task28 Private Shadow 0a1eb105de153e0ad97a724756635f9b",
+  "source_candidate": "4d17a50eb4f292a916ac9301401f385754ff9fe1",
+  "source_tree": "fea2a12801a8bbfa709389bbec3e8bbc2812153d",
+  "source_handoff": "0a1eb105de153e0ad97a724756635f9b990a7611",
+  "diagnostic_tdd": {
+    "red": "1cae247dbd01a506e9cb138b35a880384afb68f5",
+    "green": "a6656dab10ad8104b2bbe87758de72bf8f5e2ede",
+    "review_red": "00a0be9f47e792261a0393426adc235eeff4163f",
+    "review_green": "4d17a50eb4f292a916ac9301401f385754ff9fe1"
+  },
+  "hashes": {
+    "source_archive_sha256": "dcecc1f316a97ff91721fef9aa95573479b2261de48fd833cc372d9e9ead8db0",
+    "requirements_lock_sha256": "c6bd5cbebb0d87841f66b506f034ed39b8b18c1ec8973e738f258f95afd6758a",
+    "source_manifest_sha256": "8cb13d08b1f18ce7564e9774de471d24b1fb440658bb202855388d93805fb6ab",
+    "runtime_manifest_sha256": "ba2fa22228c61de72c48f5196b999303300ec9bc21a3000a9363d4211b96007d",
+    "controller_sha256": "d08bca9822ea812c784d359671be551c0ee9b6c9c84baee2dd5d6d4943f97a20",
+    "launcher_sha256": "84d30a15912f1d130f832f6b4ade41ae1d61fc85c4d1d4b97bc93d7c6160245c",
+    "client_diagnostic_sha256": "c2f227477256387edd12f7d65f429a868e80e24834f10fa101010e3db9f1de1c",
+    "diagnostic_allowlist_sha256": "7be390f7213ccab7d0c2d3dc232cdb663ea35e0214bfb583cb624e3fa2a2072a",
+    "smoke_operator_sha256": "bcf4183c3e7bb6d129bfd4a0968487e9205994fbc9c2cd554d64ef20f9b86e92",
+    "evidence_validator_sha256": "9aeaf21d801655a4992b8fb2de8e37c05d575ceae73c2581d8fd5192a48adcf0",
+    "evidence_harness_sha256": "d8331531ed31e6ba447d9a6431f5700c681d044b136c8ece8003530f925d7703",
+    "evidence_state_contract_sha256": "2c3ef4158e5f7118e36ea1d273ee2382931780ea3851345a27f4468360637dff",
+    "scheduled_task_contract_sha256": "013fb6a834514ef15cd7ae0e738288446aa1a8e83bfe70f8c3dc46de27600e23"
+  },
+  "manifests": {
+    "source_file_count": 676,
+    "runtime_file_count": 11868,
+    "top_level_entry_count": 22
+  },
+  "runtime_pins": {
+    "google-genai": "2.14.0",
+    "pydantic": "2.13.4",
+    "httpx": "0.28.1",
+    "keyring": "25.7.0"
+  },
+  "diagnostic_contract": {
+    "unsupported_mime_type": "exact official Unsupported MIME type: prefix only",
+    "invalid_argument": "other canonical INVALID_ARGUMENT",
+    "required_category": "provider",
+    "required_status": 400,
+    "raw_provider_message_retained": false
+  },
+  "verification": {
+    "focused": "13 passed",
+    "affected": "passed with 1 intentional live skip",
+    "ruff": "passed",
+    "strict_mypy": "passed on 3 changed production files; unavailable optional pdf_inspector import explicitly suppressed",
+    "python_bytecode": "passed",
+    "powershell_5_1_markers": [
+      "PRIVATE_SHADOW_SCRATCH_BINDING_VERIFIED",
+      "PRIVATE_SHADOW_EVIDENCE_DIRECTORY_CONTRACT_VERIFIED",
+      "SCHEDULED_TASK_RUN_CONTRACT_HARNESS_VERIFIED",
+      "PRIVATE_SHADOW_EVIDENCE_HARNESS_VERIFIED",
+      "PRIVATE_SHADOW_ENTRYPOINT_HARNESS_VERIFIED"
+    ]
+  },
+  "protected_state": {
+    "root_acl": "current_sid_only_full_control_oi_ci_inheritance_disabled",
+    "evidence_present_empty": true,
+    "evidence_acl": "current_sid_only_full_control_oi_ci_inheritance_disabled",
+    "reparse_points": 0,
+    "task_absent": true,
+    "scratch_absent": true,
+    "diagnostic_absent": true,
+    "prior_roots_present_disjoint_metadata_only": 4,
+    "hub_task": "Running",
+    "health_8765": "ok/schema29",
+    "health_8788": "ok/schema29"
+  },
+  "boundaries": {
+    "controller_or_launcher_executed": false,
+    "task_registered_or_started": false,
+    "credential_read": false,
+    "private_source_evidence_or_prior_root_contents_accessed": false,
+    "provider_contacted": false,
+    "live_retry_performed": false,
+    "production_or_gate_mutated": false,
+    "merged_pushed_or_deployed": false
+  },
+  "reviews": {
+    "specification": "pending exact-head review",
+    "quality_security": "pending exact-head review"
+  },
+  "process_state": "audit hold; no live authorization requested or consumed"
+}
