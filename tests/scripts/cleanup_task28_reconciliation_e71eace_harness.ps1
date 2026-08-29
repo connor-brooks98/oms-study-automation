@@ -113,7 +113,7 @@ function Get-ScheduledTaskInfo {
 
 function Unregister-ScheduledTask {
   [CmdletBinding(SupportsShouldProcess = $true)]
-  param([string]$TaskName,[string]$TaskPath,[switch]$Confirm)
+  param([string]$TaskName,[string]$TaskPath)
   if ($TaskName -cne $script:taskName -or $TaskPath -cne $script:taskPath) {
     throw 'unexpected_unregister_target'
   }
