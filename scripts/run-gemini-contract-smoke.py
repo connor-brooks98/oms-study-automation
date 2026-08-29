@@ -2191,15 +2191,11 @@ async def _run_shadow_sequence(
             except BaseException as error:
                 if mode != "public_matrix":
                     raise
-                uncertain_resource = (
-                    {
-                        "upload_input": "file",
-                        "import_input": "document",
-                        "wait_for_import": "document",
-                    }.get(active_stage)
-                    if isinstance(error, GeminiProviderError)
-                    else None
-                )
+                uncertain_resource = {
+                    "upload_input": "file",
+                    "import_input": "document",
+                    "wait_for_import": "document",
+                }.get(active_stage)
                 if uncertain_resource is not None:
                     uncertain_resources.add(uncertain_resource)
                     resource_states[uncertain_resource] = "unknown"

@@ -1490,8 +1490,8 @@ def test_public_matrix_collects_each_input_failure_before_cleanup(
         "input_count": 5,
         "indexed_bytes": sum(value[3] for value in uploads),
     }
-    assert evidence["cleanup"] == {"attempted": 10, "status": "completed"}
-    assert evidence["reconciliation"] == "empty"
+    assert evidence["cleanup"] == {"attempted": 10, "status": "unknown"}
+    assert evidence["reconciliation"] == "unknown"
     assert len([value for name, value in session.calls if name == "delete_document"]) == 4
     assert len([value for name, value in session.calls if name == "delete_file"]) == 5
     assert len([value for name, value in session.calls if name == "delete_store"]) == 1
@@ -2079,7 +2079,8 @@ def test_primary_provider_failure_wins_when_cleanup_also_fails() -> None:
         asyncio.run(smoke.run_contract_smoke(session, failure_evidence=evidence))
 
     assert [name for name, _ in session.calls][-2:] == ["delete_file", "delete_store"]
-    assert evidence["cleanup"] == {"attempted": 10, "status": "failed"}
+    assert evidence["cleanup"] == {"attempted": 10, "status": "unknown"}
+    assert evidence["reconciliation"] == "unknown"
 
 
 def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> None:
