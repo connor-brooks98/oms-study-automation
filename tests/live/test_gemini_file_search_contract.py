@@ -1145,6 +1145,79 @@ def test_authorized_entrypoint_uses_shared_manifest_import_path(
         )
 
 
+def test_public_runner_rejects_actual_wrong_marker_without_test_adapter_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _load_smoke()
+
+    class WrongMarkerAudit(_FakeSession):
+        async def query_private(self, *args: object, **kwargs: object) -> object:
+            result = await super().query_private(*args, **kwargs)
+            if kwargs.get("require_structured_no_result"):
+                return result
+            return SimpleNamespace(
+                citation_count=1,
+                resolved_citation_count=1,
+                input_tokens=11,
+                output_tokens=7,
+                supported=True,
+                answer_empty=None,
+                answer="wrong-marker",
+            )
+
+    monkeypatch.setenv("RUN_LIVE_GEMINI_TESTS", "1")
+    with pytest.raises(smoke.SmokeContractError, match="marker"):
+        asyncio.run(
+            smoke.run_authorized_live_smoke(
+                secret_store=_FakeSecrets("stored-synthetic-key"),
+                session_factory=lambda _: WrongMarkerAudit(smoke),
+            )
+        )
+
+
+def test_public_success_uses_actual_citation_and_provider_id_values() -> None:
+    smoke = _load_smoke()
+    session = _FakeSession(smoke)
+    session.store_name = "fileSearchStores/nondefault-store"
+    session.file_name = "files/nondefault-file"
+    session.operation_name = "operations/nondefault-operation"
+    session.document_name = "fileSearchStores/nondefault-store/documents/nondefault-document"
+
+    record = asyncio.run(smoke.run_contract_smoke(session))
+
+    assert record["provider_ids"] == {
+        "store": smoke._redacted_identity(session.store_name),
+        "file": smoke._redacted_identity(session.file_name),
+        "operation": smoke._redacted_identity(session.operation_name),
+        "document": smoke._redacted_identity(session.document_name),
+    }
+
+
+def test_public_failure_checks_do_not_claim_unobserved_passes() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class FailsBeforeQuery(_FakeSession):
+        async def create_store(self, *args: object, **kwargs: object) -> str:
+            del args, kwargs
+            raise smoke.GeminiProviderError("synthetic provider failure")
+
+    with pytest.raises(smoke.GeminiProviderError):
+        asyncio.run(smoke.run_contract_smoke(FailsBeforeQuery(smoke), failure_evidence=evidence))
+
+    checks = evidence["checks"]
+    assert checks["document_listing"] != "passed"
+    assert checks["cleanup_document"] != "passed"
+
+
+def test_shared_sdk_paths_label_diagnostic_provider_failures() -> None:
+    smoke = _load_smoke()
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    for label in ("upload_input", "import_input", "query_private"):
+        assert f'label="{label}"' in source
+
+
 def test_authorized_entrypoint_fails_closed_when_stored_key_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
