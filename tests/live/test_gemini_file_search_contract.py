@@ -214,6 +214,74 @@ class _FakeSession:
         self.live_stores.pop(store_name, None)
 
 
+class _FiveInputSession:
+    def __init__(self, smoke: ModuleType, failed_input: str) -> None:
+        self.smoke = smoke
+        self.failed_input = failed_input
+        self.calls: list[tuple[str, object]] = []
+        self.model_contract = smoke.PRIVATE_SHADOW_MODEL_CONTRACT
+        self.live_files: dict[str, str] = {}
+        self.live_stores: dict[str, str] = {}
+        self.file_media_types: dict[str, str] = {}
+        self._next_file = 0
+
+    async def create_store(self, display_name: str, embedding_model: str) -> str:
+        self.calls.append(("create_store", (display_name, embedding_model)))
+        self.live_stores["fileSearchStores/synthetic"] = display_name
+        return "fileSearchStores/synthetic"
+
+    async def find_stores(self, display_name: str) -> tuple[str, ...]:
+        self.calls.append(("find_stores", display_name))
+        return tuple(name for name, value in self.live_stores.items() if value == display_name)
+
+    async def upload_input(self, display_name: str, path: Path, media_type: str) -> str:
+        self._next_file += 1
+        file_name = f"files/synthetic-{self._next_file}"
+        self.calls.append(("upload_input", (display_name, path, media_type)))
+        self.live_files[file_name] = display_name
+        self.file_media_types[file_name] = media_type
+        return file_name
+
+    async def import_input(
+        self,
+        store_name: str,
+        file_name: str,
+        metadata: tuple[tuple[str, str], ...],
+        chunking: object | None,
+    ) -> str:
+        self.calls.append(("import_input", (store_name, file_name, metadata, chunking)))
+        media_type = self.file_media_types[file_name]
+        if self.failed_input == media_type or (
+            self.failed_input == "normalized_markdown"
+            and ("input_key", "normalized_markdown") in metadata
+        ):
+            raise self.smoke.SmokeContractError("synthetic import failure")
+        return f"operations/{file_name.rsplit('-', 1)[1]}"
+
+    async def wait_for_import(self, operation_name: str) -> str:
+        self.calls.append(("wait_for_import", operation_name))
+        return f"fileSearchStores/synthetic/documents/{operation_name.rsplit('/', 1)[1]}"
+
+    async def find_files(self, display_names: tuple[str, ...]) -> tuple[str, ...]:
+        self.calls.append(("find_files", display_names))
+        return tuple(name for name, value in self.live_files.items() if value in display_names)
+
+    async def query_private(self, *args: object, **kwargs: object) -> object:
+        del args, kwargs
+        pytest.fail("queries must not run after an input import failure")
+
+    async def delete_document(self, document_name: str) -> None:
+        self.calls.append(("delete_document", document_name))
+
+    async def delete_file(self, file_name: str) -> None:
+        self.calls.append(("delete_file", file_name))
+        self.live_files.pop(file_name, None)
+
+    async def delete_store(self, store_name: str) -> None:
+        self.calls.append(("delete_store", store_name))
+        self.live_stores.pop(store_name, None)
+
+
 class _SdkDocuments:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
@@ -659,8 +727,37 @@ def test_real_sdk_smoke_store_list_respects_provider_page_limit() -> None:
     ]
 
 
-def test_real_sdk_normalized_markdown_upload_and_import_wire_contract(
+@pytest.mark.parametrize(
+    ("filename", "media_type", "input_key", "chunking"),
+    (
+        (
+            "lecture.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "pptx",
+            None,
+        ),
+        ("lecture.pdf", "application/pdf", "pdf", None),
+        (
+            "normalized.md",
+            "text/markdown",
+            "normalized_markdown",
+            {
+                "white_space_config": {
+                    "max_tokens_per_chunk": 700,
+                    "max_overlap_tokens": 100,
+                }
+            },
+        ),
+        ("visual.png", "image/png", "image_png", None),
+        ("visual.jpg", "image/jpeg", "image_jpeg", None),
+    ),
+)
+def test_real_sdk_public_matrix_upload_and_import_wire_contract(
     tmp_path: Path,
+    filename: str,
+    media_type: str,
+    input_key: str,
+    chunking: object | None,
 ) -> None:
     smoke = _load_smoke()
     sdk = import_module("google.genai")
@@ -679,8 +776,8 @@ def test_real_sdk_normalized_markdown_upload_and_import_wire_contract(
                 200,
                 json={
                     "file": {
-                        "name": "files/normalized-markdown",
-                        "mimeType": "text/markdown",
+                        "name": f"files/{input_key}",
+                        "mimeType": media_type,
                     }
                 },
                 headers={"X-Goog-Upload-Status": "final"},
@@ -705,48 +802,42 @@ def test_real_sdk_normalized_markdown_upload_and_import_wire_contract(
             },
         )
 
-    markdown = tmp_path / "normalized.md"
-    markdown.write_text("# Synthetic\n", encoding="utf-8")
+    fixture = tmp_path / filename
+    fixture.write_bytes(b"synthetic-public-matrix")
     session = smoke.GoogleGenaiSmokeSession(
         "synthetic-sdk-key",
         sdk_factory=sdk_factory,
     )
 
-    file_name = asyncio.run(
-        session.upload_input("normalized.md", markdown, "text/markdown")
-    )
+    file_name = asyncio.run(session.upload_input(filename, fixture, media_type))
     operation = asyncio.run(
         session.import_input(
             "fileSearchStores/synthetic",
             file_name,
-            (("input_key", "normalized_markdown"),),
-            {
-                "white_space_config": {
-                    "max_tokens_per_chunk": 700,
-                    "max_overlap_tokens": 100,
-                }
-            },
+            (("input_key", input_key),),
+            chunking,
         )
     )
 
     assert operation == "operations/import-1"
     upload_init = requests[0]
     upload_body = json.loads(upload_init.content)
-    assert upload_init.headers["x-goog-upload-header-content-type"] == "text/markdown"
-    assert upload_body["file"]["mime_type"] == "text/markdown"
-    import_body = json.loads(requests[-1].content)
-    assert import_body == {
-        "fileName": "files/normalized-markdown",
+    assert upload_init.headers["x-goog-upload-header-content-type"] == media_type
+    assert upload_body["file"]["mime_type"] == media_type
+    expected_import = {
+        "fileName": f"files/{input_key}",
         "customMetadata": [
-            {"key": "input_key", "stringValue": "normalized_markdown"}
+            {"key": "input_key", "stringValue": input_key}
         ],
-        "chunkingConfig": {
+    }
+    if chunking is not None:
+        expected_import["chunkingConfig"] = {
             "whiteSpaceConfig": {
                 "maxTokensPerChunk": 700,
                 "maxOverlapTokens": 100,
             }
-        },
-    }
+        }
+    assert json.loads(requests[-1].content) == expected_import
 
 
 def test_real_sdk_pdf_import_wire_contract() -> None:
@@ -1166,6 +1257,71 @@ def test_authorized_entrypoint_uses_shared_manifest_import_path(
         )
 
 
+@pytest.mark.parametrize(
+    "failed_input",
+    (
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/pdf",
+        "normalized_markdown",
+        "image/png",
+        "image/jpeg",
+    ),
+)
+def test_public_matrix_collects_each_input_failure_before_cleanup(
+    failed_input: str,
+) -> None:
+    smoke = _load_smoke()
+    session = _FiveInputSession(smoke, failed_input)
+    evidence: dict[str, object] = {}
+
+    with pytest.raises(smoke.SmokeContractError, match="synthetic import failure"):
+        asyncio.run(smoke.run_contract_smoke(session, failure_evidence=evidence))
+
+    uploads = [value for name, value in session.calls if name == "upload_input"]
+    imports = [value for name, value in session.calls if name == "import_input"]
+    assert [value[2] for value in uploads] == [
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/pdf",
+        "text/markdown",
+        "image/png",
+        "image/jpeg",
+    ]
+    assert len(imports) == 5
+    assert not [value for name, value in session.calls if name == "query_private"]
+    assert evidence["input_results"] == [
+        {
+            "input_kind": input_kind,
+            "stage": "import_input",
+            "outcome": "failed" if index == [
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "application/pdf",
+                "normalized_markdown",
+                "image/png",
+                "image/jpeg",
+            ].index(failed_input) else "passed",
+            "error_category": "contract" if index == [
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "application/pdf",
+                "normalized_markdown",
+                "image/png",
+                "image/jpeg",
+            ].index(failed_input) else "none",
+        }
+        for index, input_kind in enumerate(("pptx", "pdf", "markdown", "image", "image"))
+    ]
+    assert evidence["aggregate"] == {
+        "input_count": 5,
+        "indexed_bytes": sum(value[1].stat().st_size for value in uploads),
+    }
+    assert evidence["cleanup"] == {"attempted": 10, "status": "completed"}
+    assert evidence["reconciliation"] == "empty"
+    assert len([value for name, value in session.calls if name == "delete_document"]) == 4
+    assert len([value for name, value in session.calls if name == "delete_file"]) == 5
+    assert len([value for name, value in session.calls if name == "delete_store"]) == 1
+    assert session.live_files == {}
+    assert session.live_stores == {}
+
+
 def test_public_runner_rejects_actual_wrong_marker_without_test_adapter_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1196,7 +1352,7 @@ def test_public_runner_rejects_actual_wrong_marker_without_test_adapter_validati
         )
 
 
-def test_public_success_uses_actual_citation_and_provider_id_values() -> None:
+def test_public_success_omits_provider_identity_projection() -> None:
     smoke = _load_smoke()
     session = _FakeSession(smoke)
     session.store_name = "fileSearchStores/nondefault-store"
@@ -1206,12 +1362,7 @@ def test_public_success_uses_actual_citation_and_provider_id_values() -> None:
 
     record = asyncio.run(smoke.run_contract_smoke(session))
 
-    assert record["provider_ids"] == {
-        "store": smoke._redacted_identity(session.store_name),
-        "file": smoke._redacted_identity(session.file_name),
-        "operation": smoke._redacted_identity(session.operation_name),
-        "document": smoke._redacted_identity(session.document_name),
-    }
+    assert "provider_ids" not in record
 
 
 def test_public_success_uses_actual_citation_audit_values() -> None:
