@@ -236,6 +236,103 @@ def test_real_sdk_import_preserves_public_config_wire_body(
 
 
 @pytest.mark.parametrize(
+    ("file_name", "config", "expected"),
+    (
+        (
+            "files/lecture-pdf",
+            {"customMetadata": [{"key": "input_key", "stringValue": "lecture_pdf"}]},
+            {
+                "fileName": "files/lecture-pdf",
+                "customMetadata": [
+                    {"key": "input_key", "stringValue": "lecture_pdf"}
+                ],
+            },
+        ),
+        (
+            "files/normalized-markdown",
+            {
+                "customMetadata": [
+                    {"key": "input_key", "stringValue": "normalized_markdown"}
+                ],
+                "chunkingConfig": {
+                    "whiteSpaceConfig": {
+                        "maxTokensPerChunk": 700,
+                        "maxOverlapTokens": 100,
+                    }
+                },
+            },
+            {
+                "fileName": "files/normalized-markdown",
+                "customMetadata": [
+                    {"key": "input_key", "stringValue": "normalized_markdown"}
+                ],
+                "chunkingConfig": {
+                    "whiteSpaceConfig": {
+                        "maxTokensPerChunk": 700,
+                        "maxOverlapTokens": 100,
+                    }
+                },
+            },
+        ),
+    ),
+)
+def test_typed_public_sdk_import_preserves_provider_wire_names(
+    file_name: str,
+    config: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    sdk = import_module("google.genai")
+    types = import_module("google.genai.types")
+    captured: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"name": "operations/import-1", "done": False},
+            request=request,
+        )
+
+    async def import_file() -> object:
+        client = sdk.Client(
+            api_key="provider-secret",
+            http_options={
+                "api_version": "v1beta",
+                "base_url": "https://unit.invalid",
+                "httpx_async_client": httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler)
+                ),
+            },
+        )
+        try:
+            custom_metadata = [
+                types.CustomMetadata(**entry) for entry in config["customMetadata"]
+            ]
+            chunking_config = config.get("chunkingConfig")
+            return await client.aio.file_search_stores.import_file(
+                file_search_store_name="fileSearchStores/course-1",
+                file_name=file_name,
+                config=types.ImportFileConfig(
+                    customMetadata=custom_metadata,
+                    chunkingConfig=(
+                        types.ChunkingConfig(
+                            whiteSpaceConfig=types.WhiteSpaceConfig(**chunking_config["whiteSpaceConfig"])
+                        )
+                        if chunking_config is not None
+                        else None
+                    ),
+                ),
+            )
+        finally:
+            await client.aio.aclose()
+
+    operation = run(import_file())
+
+    assert operation.name == "operations/import-1"
+    assert captured == [expected]
+
+
+@pytest.mark.parametrize(
     ("message", "expected_reason"),
     (
         ("Unsupported MIME type: text/markdown", "unsupported_mime_type"),
