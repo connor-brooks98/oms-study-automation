@@ -928,6 +928,9 @@ class GoogleGenaiSmokeSession:
                 ) from None
             supported = answer.supported
             answer_empty = answer.answer == ""
+        else:
+            supported = True
+            answer_empty = False
         usage = _audit_usage(_field(response, "usage"))
         if (
             usage.input_tokens is None
@@ -2195,10 +2198,10 @@ async def _run_shadow_sequence(
                             "citation_presence": "positive_citation_missing" if check == "positive_answer_missing_marker" else "not_run",
                             "negative_structured_output": "negative_query_failed" if isinstance(failure, GeminiProviderError) else "passed",
                             "create_store": "create_store_failed" if failure_stage == "create_store" else "passed",
-                            "document_listing": "passed",
+                            "document_listing": "not_run",
                             "cleanup_store": "not_available" if failure_stage == "create_store" else "passed",
-                            "cleanup_document": "passed",
-                            "cleanup_file": "passed",
+                            "cleanup_document": "passed" if documents else "not_available",
+                            "cleanup_file": "passed" if files else "not_available",
                             "wrong_lecture_filtering": "passed",
                         },
                     }

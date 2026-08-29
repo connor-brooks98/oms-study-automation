@@ -857,8 +857,10 @@ def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
         )
     )
 
-    assert positive == smoke.PrivateShadowQueryAudit(1, 1, 19, 6, None, None)
-    assert negative == smoke.PrivateShadowQueryAudit(0, 0, 19, 6, False, True)
+    assert positive == smoke.PrivateShadowQueryAudit(
+        1, 1, 19, 6, True, False, "private response discarded by adapter", 1, "Do not emit this text."
+    )
+    assert negative == smoke.PrivateShadowQueryAudit(0, 0, 19, 6, False, True, '{"answer":"","supported":false}')
     assert operation == "operations/sdk-operation"
     assert reconciled == ("files/reconciled",)
     assert reconciled_stores == ("fileSearchStores/reconciled",)
@@ -1405,7 +1407,7 @@ def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> 
     }
     assert record["checks"]["positive_answer"] == "positive_query_failed"
     assert record["checks"]["negative_structured_output"] == "negative_query_failed"
-    assert record["checks"]["document_listing"] == "passed"
+    assert record["checks"]["document_listing"] == "not_run"
     encoded = json.dumps(record, sort_keys=True)
     assert "private-query-payload" not in encoded
     assert smoke.SYNTHETIC_FACT not in encoded
@@ -2332,7 +2334,7 @@ def test_check_matrix_continues_after_independent_positive_failures() -> None:
     assert checks["citation_presence"] == "positive_citation_missing"
     assert checks["negative_structured_output"] == "passed"
     assert checks["wrong_lecture_filtering"] == "passed"
-    assert checks["document_listing"] == "passed"
+    assert checks["document_listing"] == "not_run"
     assert checks["cleanup_document"] == "passed"
     assert checks["cleanup_file"] == "passed"
     assert checks["cleanup_store"] == "passed"
