@@ -163,6 +163,16 @@ try {
   Assert-FailureRetained { & $CleanupScript -ValidateOnly }
 
   Initialize-CleanupFixture
+  [IO.File]::WriteAllText((Join-Path $root 'unexpected.txt'),'unexpected')
+  Assert-FailureRetained { & $CleanupScript -ValidateOnly }
+
+  Initialize-CleanupFixture
+  $rootTarget = $root + '-target'
+  Move-Item -LiteralPath $root -Destination $rootTarget
+  New-Item -ItemType Junction -Path $root -Target $rootTarget | Out-Null
+  Assert-FailureRetained { & $CleanupScript -ValidateOnly }
+
+  Initialize-CleanupFixture
   [IO.File]::WriteAllText((Join-Path $privateEvidence 'unexpected.json'),'{}')
   Assert-FailureRetained { & $CleanupScript -ValidateOnly }
 
