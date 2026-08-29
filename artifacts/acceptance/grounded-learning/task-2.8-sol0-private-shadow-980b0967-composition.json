@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "post_blocker_composed_hash_verified_not_executed_review_pending",
+  "status": "post_blocker_corrected_hash_verified_not_executed_review_pending",
   "recorded_at": "2026-08-29T08:53:30-04:00",
   "composition_identity": "980b0967fca0b9138a83d210505882ea",
   "composition_root": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-private-shadow-980b0967fca0b9138a83d210505882ea",
@@ -17,12 +17,13 @@
     "requirements_lock_sha256": "c6bd5cbebb0d87841f66b506f034ed39b8b18c1ec8973e738f258f95afd6758a",
     "source_manifest_sha256": "d36c6a64ef342ff0d4e88c370c794a2add46ef2f98fbdfb9dcabd6bd86f702b0",
     "runtime_manifest_sha256": "cf1344be7003a65d7e4863b0dfbbccc34f56d21c93e0bb7ff6d126df827b2a42",
-    "controller_sha256": "6846d7053a61e0b4c674aa72c19e275a8d1d18884bd55a19fb296834cfa0a17b",
-    "launcher_sha256": "7bde9f7391d0970196c1f76d9365835da4537cb03f463a83cf89df9879c6ab09",
+    "controller_sha256": "d3d5dfbb57df4718741030a9629a41968705875f74c74c0d081a3a5bb0055528",
+    "launcher_sha256": "48189dbe4fb4defd5e71f5657d5d2e6f370d82d79e19e0a7cf4a2593b4665bf4",
     "entrypoint_sha256": "96c77c083d665fe945cde5a31265d83276fe07778a1bb732bccee1b28f1acad2",
     "composition_bound_operator_sha256": "9ab7703f02c5338379bf02279716b98f43e13eae4f51176c25d8761e73ccc3d3",
     "scratch_binding_test_sha256": "82999619aa2161e98e2a73995e16f47e4eb9ec2050b4f4c51ef50d88047bcdf5",
-    "evidence_directory_contract_harness_sha256": "af1dbc3d1e520916428d48bdc300f9b00fdaf23a751b22e268c131abbdfce776",
+    "evidence_state_contract_sha256": "2c3ef4158e5f7118e36ea1d273ee2382931780ea3851345a27f4468360637dff",
+    "evidence_directory_contract_harness_sha256": "ac97101dc0ad72d1973552603875d9a171a265c3a59bfe448ddc77b634d7072d",
     "evidence_validator_sha256": "6220323896c4b6d9d5eae62bc4d69e2efcdba046d633df99afbcc0b6ba557c72",
     "evidence_wrapper_sha256": "b4bb9422dd101bcc4ccebbdeef16380226f4f76e5d9706d6100a7a6876a090c9",
     "scheduled_task_contract_sha256": "013fb6a834514ef15cd7ae0e738288446aa1a8e83bfe70f8c3dc46de27600e23"
@@ -30,7 +31,7 @@
   "manifests": {
     "source_file_count": 674,
     "runtime_file_count": 11868,
-    "top_level_entry_count": 21
+    "top_level_entry_count": 22
   },
   "runtime_pins": {
     "google-genai": "2.14.0",
@@ -39,14 +40,16 @@
     "keyring": "25.7.0"
   },
   "post_blocker_contract": {
-    "controller_requires_evidence_directory_before_registration": true,
-    "launcher_requires_evidence_directory_before_task_contract": true,
-    "controller_and_launcher_require_top_level_count_21": true,
+    "controller_revalidates_evidence_state_immediately_before_task_absence_and_registration": true,
+    "launcher_revalidates_evidence_state_immediately_before_current_task_contract": true,
+    "evidence_state_requires_presence_emptiness_acl_top_level_count_and_no_reparse": true,
+    "controller_and_launcher_require_top_level_count_22": true,
     "guard_never_creates_or_repairs_evidence_directory": true,
     "stale_missing_scheduled_task_handoff_assertion_removed": true,
     "scheduled_task_contract_and_harness_remain_hash_bound": true,
-    "red": "PowerShell 5.1 rejected prior controller with evidence_directory_guard_missing_or_late",
-    "green": "PRIVATE_SHADOW_EVIDENCE_DIRECTORY_CONTRACT_VERIFIED"
+    "initial_red": "PowerShell 5.1 rejected prior controller with evidence_directory_guard_missing_or_late",
+    "review_red": "PowerShell 5.1 rejected controller with evidence_guard_missing_revalidation_or_self_heals",
+    "green": "PowerShell 5.1 missing, nonempty, and disappear-before-registration cases emitted PRIVATE_SHADOW_EVIDENCE_DIRECTORY_CONTRACT_VERIFIED"
   },
   "build_observation": {
     "initial_new_root_evidence_disappeared_before_first_full_verification": true,
@@ -97,6 +100,10 @@
     "merged_pushed_or_deployed": false
   },
   "reviews": {
+    "prior_review_commit": "b1fa7817db31aadc5731390aa80d2a67dc9fa7d2",
+    "prior_specification": "SHIP: no findings",
+    "prior_quality_security": "BLOCK: evidence state could drift after initial check and consume authorization at registration",
+    "correction": "shared no-self-heal evidence-state contract called initially and immediately before registration/current-task boundaries",
     "specification": "pending exact-head review",
     "quality_security": "pending exact-head review"
   }
