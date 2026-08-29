@@ -235,7 +235,7 @@ function Invoke-RestMethod {
     throw 'unexpected_health_uri'
   }
   $global:CleanupHealthCalls += 1
-  if ($global:CleanupPreRemovalRootDrift -and $global:CleanupHealthCalls -eq 4) {
+  if ($global:CleanupPreRemovalRootDrift -and $global:CleanupHealthCalls -eq 6) {
     [IO.File]::WriteAllText((Join-Path $script:root 'pre-removal-drift.txt'),'drift')
   }
   $schema = if ($global:CleanupPostRemovalHubFailure -and
