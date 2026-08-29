@@ -86,16 +86,21 @@ class _FakeSession:
         return tuple(name for name, value in self.live_stores.items() if value == display_name)
 
     async def upload_input(self, display_name: str, path: Path, media_type: str) -> str:
-        assert media_type == "application/pdf"
-        file_name = await self.upload_pdf(display_name, path.read_bytes())
+        file_name = f"files/raw-file-identity-{len(self.live_files) + 1}"
+        self.calls.append(
+            ("upload_input", (display_name, path.name, media_type, path.stat().st_size))
+        )
         self.live_files[file_name] = display_name
         return file_name
 
     async def import_input(
         self, store_name: str, file_name: str, metadata: tuple[tuple[str, str], ...], chunking: object | None
     ) -> str:
-        assert chunking is None
-        return await self.import_file(store_name, file_name, metadata)
+        self.calls.append(("import_input", (store_name, file_name, metadata, chunking)))
+        if self.fail_import:
+            self.fail_import = False
+            raise self.smoke.SmokeTemporaryFailure("synthetic temporary failure")
+        return f"operations/raw-operation-identity-{len(self.calls)}"
 
     async def find_files(self, display_names: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(name for name, value in self.live_files.items() if value in display_names)
@@ -149,25 +154,9 @@ class _FakeSession:
             answer.answer, result.citations[0].page_number, result.citations[0].excerpt,
         )
 
-    async def upload_pdf(self, display_name: str, content: bytes) -> str:
-        assert content.startswith(b"%PDF-")
-        self.calls.append(("upload_pdf", (display_name, len(content))))
-        return self.file_name
-
-    async def import_file(
-        self,
-        store_name: str,
-        file_name: str,
-        metadata: tuple[tuple[str, str], ...],
-    ) -> str:
-        self.calls.append(("import_file", (store_name, file_name, metadata)))
-        if self.fail_import:
-            raise self.smoke.SmokeTemporaryFailure("synthetic temporary failure")
-        return self.operation_name
-
     async def wait_for_import(self, operation_name: str) -> str:
         self.calls.append(("wait_for_import", operation_name))
-        return self.document_name
+        return f"fileSearchStores/raw-store-identity/documents/{operation_name.rsplit('/', 1)[1]}"
 
     async def query(
         self,
@@ -237,7 +226,9 @@ class _FiveInputSession:
     async def upload_input(self, display_name: str, path: Path, media_type: str) -> str:
         self._next_file += 1
         file_name = f"files/synthetic-{self._next_file}"
-        self.calls.append(("upload_input", (display_name, path, media_type)))
+        self.calls.append(
+            ("upload_input", (display_name, path.name, media_type, path.stat().st_size))
+        )
         self.live_files[file_name] = display_name
         self.file_media_types[file_name] = media_type
         return file_name
@@ -335,7 +326,14 @@ class _SdkFiles:
     async def upload(self, *, file: object, config: object) -> object:
         content = file.read_bytes() if isinstance(file, Path) else file.read()
         self.calls.append(("upload", (content, config)))
-        return SimpleNamespace(name="files/sdk-file")
+        assert isinstance(config, dict)
+        return SimpleNamespace(
+            name=(
+                "files/sdk-file"
+                if config["mime_type"] == "application/pdf"
+                else f"files/sdk-file-{config['mime_type']}"
+            )
+        )
 
     async def delete(self, *, name: str) -> None:
         self.calls.append(("delete", name))
@@ -598,19 +596,32 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
     record = asyncio.run(smoke.run_contract_smoke(session, clock=lambda: 100.0))
 
     assert record["status"] == "passed"
-    assert record["usage"] == {
-        "indexed_bytes": len(smoke.synthetic_pdf_bytes()),
-        "input_tokens": 13,
-        "output_tokens": 8,
-    }
+    assert [item["input_kind"] for item in record["input_results"]] == [
+        "pptx",
+        "pdf",
+        "markdown",
+        "image",
+        "image",
+    ]
+    assert record["aggregate"]["input_count"] == 5
+    assert record["aggregate"]["indexed_bytes"] > len(smoke.synthetic_pdf_bytes())
     all_aio = [client.aio for client in clients]
     assert all(aio.closed == 1 for aio in all_aio)
     store_calls = [call for aio in all_aio for call in aio.file_search_stores.calls]
     assert ("list", {"page_size": 20}) in store_calls
     assert any(call[0] == "create" for call in store_calls)
-    upload_call = next(call for aio in all_aio for call in aio.files.calls if call[0] == "upload")
-    assert upload_call[1][1]["display_name"].startswith("task-2-8-public_matrix-")
-    assert upload_call[1][1]["mime_type"] == "application/pdf"
+    upload_calls = [call for aio in all_aio for call in aio.files.calls if call[0] == "upload"]
+    assert [call[1][1]["mime_type"] for call in upload_calls] == [
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/pdf",
+        "text/markdown",
+        "image/png",
+        "image/jpeg",
+    ]
+    assert all(
+        call[1][1]["display_name"].startswith("task-2-8-public_matrix-")
+        for call in upload_calls
+    )
     import_call = next(call for call in store_calls if call[0] == "import_file")
     import_config = import_call[1][2]
     assert import_config.http_options.extra_body["customMetadata"][0] == {
@@ -891,6 +902,38 @@ def test_real_sdk_pdf_import_wire_contract() -> None:
             ],
         }
     ]
+
+
+def test_public_synthetic_index_input_contains_the_ordered_five_media_matrix(
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = smoke._synthetic_index_input(tmp_path)
+    manifest = smoke._private_shadow_manifest(view)
+
+    assert [(item.input_kind, item.media_type) for item in manifest.inputs] == [
+        (
+            "pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+        ("pdf", "application/pdf"),
+        ("markdown", "text/markdown"),
+        ("image", "image/png"),
+        ("image", "image/jpeg"),
+    ]
+    from pptx import Presentation
+
+    presentation = Presentation(view.pptx.path)
+    assert len(presentation.slides) == 1
+    assert presentation.slides[0].shapes.title.text == smoke.SYNTHETIC_FACT
+    assert smoke.SYNTHETIC_FACT.encode() in view.pdf.path.read_bytes()
+    assert smoke.SYNTHETIC_FACT in view.markdown.path.read_text(encoding="utf-8")
+    for asset in view.assets:
+        assert asset.width is not None and asset.height is not None
+        assert asset.width < 4096 and asset.height < 4096
+        with Image.open(asset.path) as image:
+            assert image.size == (asset.width, asset.height)
+            image.verify()
 
 
 def test_private_shadow_query_uses_real_sdk_models_and_maps_direct_evidence(
@@ -1311,7 +1354,7 @@ def test_public_matrix_collects_each_input_failure_before_cleanup(
     ]
     assert evidence["aggregate"] == {
         "input_count": 5,
-        "indexed_bytes": sum(value[1].stat().st_size for value in uploads),
+        "indexed_bytes": sum(value[3] for value in uploads),
     }
     assert evidence["cleanup"] == {"attempted": 10, "status": "completed"}
     assert evidence["reconciliation"] == "empty"
@@ -1365,7 +1408,7 @@ def test_public_success_omits_provider_identity_projection() -> None:
     assert "provider_ids" not in record
 
 
-def test_public_success_uses_actual_citation_audit_values() -> None:
+def test_public_success_commits_only_safe_matrix_fields() -> None:
     smoke = _load_smoke()
 
     class ActualAudit(_FakeSession):
@@ -1387,9 +1430,14 @@ def test_public_success_uses_actual_citation_audit_values() -> None:
 
     record = asyncio.run(smoke.run_contract_smoke(ActualAudit(smoke)))
 
-    assert record["citation"] == {
-        "page_number": 7,
-        "excerpt_sha256": hashlib.sha256(b"actual synthetic excerpt").hexdigest(),
+    assert set(record) == {
+        "schema_version",
+        "status",
+        "input_results",
+        "aggregate",
+        "cleanup",
+        "reconciliation",
+        "error_category",
     }
 
 
@@ -1520,7 +1568,7 @@ def test_public_response_loss_retains_unknown_resource_and_cleanup_outcomes(
             "store": "confirmed",
         },
         "cleanup": {
-            "attempted": 1 if failure_stage == "upload_input" else 2,
+            "attempted": 1 if failure_stage == "upload_input" else 6,
             "status": "unknown",
         },
     }
@@ -1897,7 +1945,7 @@ def test_primary_provider_failure_wins_when_cleanup_also_fails() -> None:
         asyncio.run(smoke.run_contract_smoke(session, failure_evidence=evidence))
 
     assert [name for name, _ in session.calls][-2:] == ["delete_file", "delete_store"]
-    assert evidence["cleanup"] == {"attempted": 2, "status": "failed"}
+    assert evidence["cleanup"] == {"attempted": 10, "status": "failed"}
 
 
 def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> None:
@@ -1918,7 +1966,7 @@ def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> 
         asyncio.run(smoke.run_contract_smoke(session, failure_evidence=evidence))
 
     record = smoke._failure_record(raised.value, evidence)
-    assert {key: record[key] for key in record if key != "checks"} == {
+    assert {key: record[key] for key in record if key not in {"checks", "input_results", "aggregate", "reconciliation"}} == {
         "schema_version": 1,
         "status": "failed",
         "failure_stage": "positive_query",
@@ -1930,8 +1978,10 @@ def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> 
             "file": "confirmed",
             "store": "confirmed",
         },
-        "cleanup": {"attempted": 3, "status": "completed"},
+        "cleanup": {"attempted": 11, "status": "completed"},
     }
+    assert record["aggregate"]["input_count"] == 5
+    assert record["reconciliation"] == "empty"
     assert record["checks"]["positive_answer"] == "positive_query_failed"
     assert record["checks"]["negative_structured_output"] == "not_run"
     assert record["checks"]["document_listing"] == "not_run"
@@ -2021,7 +2071,7 @@ def test_response_loss_records_unknown_resource_and_cleanup_outcome() -> None:
             )
         )
 
-    assert {key: evidence[key] for key in evidence if key != "checks"} == {
+    assert {key: evidence[key] for key in evidence if key not in {"input_results", "aggregate", "reconciliation", "checks"}} == {
         "failure_stage": "create_store",
         "resources_created": {
             "document": "not_started",
@@ -2030,6 +2080,9 @@ def test_response_loss_records_unknown_resource_and_cleanup_outcome() -> None:
         },
         "cleanup": {"attempted": 0, "status": "unknown"},
     }
+    assert evidence["aggregate"]["input_count"] == 5
+    assert evidence["input_results"] == []
+    assert evidence["reconciliation"] == "empty"
     assert evidence["checks"]["create_store"] == "create_store_failed"
     assert evidence["checks"]["cleanup_store"] == "not_available"
 
@@ -2058,7 +2111,7 @@ def test_positive_validation_accepts_multiple_matching_citations() -> None:
     record = asyncio.run(smoke.run_contract_smoke(MultipleCitations(smoke)))
 
     assert record["status"] == "passed"
-    assert record["citation"]["page_number"] == 1
+    assert all(item["outcome"] == "passed" for item in record["input_results"])
 
 
 def test_positive_validation_failure_retains_fixed_redacted_reason() -> None:
@@ -2343,25 +2396,19 @@ def test_offline_fake_proves_full_smoke_sequence_and_redacted_record() -> None:
 
     encoded = json.dumps(record, sort_keys=True)
     assert record["status"] == "passed"
-    assert record["document_types"] == ["pdf"]
-    assert record["citation"]["page_number"] == 1
-    assert record["negative_scope_retrieved"] is False
-    assert record["structured_output"] == {
-        "schema": "SmokeAnswer",
-        "validated": True,
-        "supported": True,
-        "marker_present": True,
-        "answer_sha256": hashlib.sha256(b"").hexdigest(),
-    }
+    assert [item["input_kind"] for item in record["input_results"]] == [
+        "pptx",
+        "pdf",
+        "markdown",
+        "image",
+        "image",
+    ]
+    assert all(item["outcome"] == "passed" for item in record["input_results"])
     assert smoke.SYNTHETIC_FACT not in encoded
-    assert record["thinking_configuration"] == "omitted"
-    assert record["duration_ms"] == 1250
-    assert record["usage"] == {
-        "indexed_bytes": len(smoke.synthetic_pdf_bytes()),
-        "input_tokens": 11,
-        "output_tokens": 7,
-    }
-    assert record["cleanup"] == {"attempted": 3, "status": "completed"}
+    assert record["aggregate"]["input_count"] == 5
+    assert record["aggregate"]["indexed_bytes"] > len(smoke.synthetic_pdf_bytes())
+    assert record["cleanup"] == {"attempted": 11, "status": "completed"}
+    assert record["reconciliation"] == "empty"
     for raw_identity in (
         session.store_name,
         session.file_name,
@@ -2370,10 +2417,13 @@ def test_offline_fake_proves_full_smoke_sequence_and_redacted_record() -> None:
     ):
         assert raw_identity not in encoded
     names = [name for name, _ in session.calls]
-    assert names == [
-        "create_store", "upload_pdf", "import_file", "wait_for_import",
-        "query", "query", "delete_document", "delete_file", "delete_store",
-    ]
+    assert names.count("upload_input") == 5
+    assert names.count("import_input") == 5
+    assert names.count("wait_for_import") == 5
+    assert names.count("query") == 2
+    assert names.count("delete_document") == 5
+    assert names.count("delete_file") == 5
+    assert names.count("delete_store") == 1
 
 
 def test_temporary_failure_fake_cleans_up_without_a_live_outage() -> None:
@@ -2383,13 +2433,14 @@ def test_temporary_failure_fake_cleans_up_without_a_live_outage() -> None:
     with pytest.raises(smoke.SmokeTemporaryFailure, match="temporary"):
         asyncio.run(smoke.run_contract_smoke(session))
 
-    assert [name for name, _ in session.calls] == [
-        "create_store",
-        "upload_pdf",
-        "import_file",
-        "delete_file",
-        "delete_store",
-    ]
+    names = [name for name, _ in session.calls]
+    assert names.count("upload_input") == 5
+    assert names.count("import_input") == 5
+    assert names.count("wait_for_import") == 4
+    assert names.count("query") == 0
+    assert names.count("delete_document") == 4
+    assert names.count("delete_file") == 5
+    assert names.count("delete_store") == 1
 
 
 def test_temporary_failure_fixture_persists_retry_state_then_resumes() -> None:
@@ -2978,13 +3029,11 @@ def test_check_matrix_continues_after_independent_positive_failures() -> None:
     assert checks["cleanup_document"] == "passed"
     assert checks["cleanup_file"] == "passed"
     assert checks["cleanup_store"] == "passed"
-    assert [name for name, _ in session.calls][-5:] == [
-        "wait_for_import",
-        "query",
-        "delete_document",
-        "delete_file",
-        "delete_store",
-    ]
+    names = [name for name, _ in session.calls]
+    assert names.count("query") == 1
+    assert names.count("delete_document") == 5
+    assert names.count("delete_file") == 5
+    assert names.count("delete_store") == 1
 
 
 def test_optional_document_uri_diagnosis_does_not_fail_bound_citation() -> None:

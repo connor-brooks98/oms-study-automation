@@ -23,7 +23,6 @@ from importlib import import_module
 from io import BytesIO
 from pathlib import Path
 from time import monotonic
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
@@ -1669,9 +1668,11 @@ def synthetic_pdf_bytes() -> bytes:
 
 
 def _synthetic_index_input(root: Path) -> IndexInputView:
+    from PIL import Image, ImageDraw
     from pptx import Presentation
 
     from oms_hub.artifacts import ArtifactRole
+    from oms_hub.document_processing.domain import DocumentLocator
     from oms_hub.files.atomic import sha256_file
     from oms_hub.knowledge.models import (
         EvidenceLocator,
@@ -1679,15 +1680,32 @@ def _synthetic_index_input(root: Path) -> IndexInputView:
         EvidenceUnit,
         SourceRevisionState,
     )
-    from oms_hub.knowledge.service import CanonicalInputArtifact, IndexInputView
+    from oms_hub.knowledge.service import (
+        CanonicalInputArtifact,
+        IndexAssetView,
+        IndexInputView,
+    )
     from oms_hub.providers.contracts import AuthorityClass
 
-    pptx, pdf, markdown = root / "lecture.pptx", root / "lecture.pdf", root / "normalized.md"
+    pptx = root / "lecture.pptx"
+    pdf = root / "lecture.pdf"
+    markdown = root / "normalized.md"
+    png = root / "visual.png"
+    jpeg = root / "visual.jpg"
     presentation = Presentation()
-    presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+    assert slide.shapes.title is not None
+    slide.shapes.title.text = SYNTHETIC_FACT
     presentation.save(str(pptx))
     pdf.write_bytes(synthetic_pdf_bytes())
     markdown.write_text(f"# Synthetic\n\n{SYNTHETIC_FACT}\n", encoding="utf-8")
+    for path, image_format, color in (
+        (png, "PNG", (37, 99, 235)),
+        (jpeg, "JPEG", (217, 119, 6)),
+    ):
+        image = Image.new("RGB", (160, 90), color)
+        ImageDraw.Draw(image).text((8, 8), SYNTHETIC_MARKER, fill="white")
+        image.save(path, format=image_format, quality=85)
     evidence = EvidenceUnit(
         evidence_id="synthetic-evidence", source_revision_id=SYNTHETIC_REVISION_ID,
         authority_class=AuthorityClass.COURSE_MATERIAL, course_id=SYNTHETIC_COURSE_ID,
@@ -1700,10 +1718,48 @@ def _synthetic_index_input(root: Path) -> IndexInputView:
         source_family="synthetic", revision_state=SourceRevisionState.READY,
         authority_class=AuthorityClass.COURSE_MATERIAL, course_id=SYNTHETIC_COURSE_ID,
         exam_id=SYNTHETIC_EXAM_ID, lecture_id=SYNTHETIC_LECTURE_ID,
-        pptx=CanonicalInputArtifact("synthetic:pptx", ArtifactRole.PPTX, pptx, sha256_file(pptx), "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
-        pdf=CanonicalInputArtifact("synthetic:pdf", ArtifactRole.PDF, pdf, sha256_file(pdf), "application/pdf"),
-        markdown=CanonicalInputArtifact("synthetic:markdown", ArtifactRole.CLEANED, markdown, sha256_file(markdown), "text/markdown"),
-        evidence_units=(evidence,), assets=(),
+        pptx=CanonicalInputArtifact(
+            "synthetic:pptx",
+            ArtifactRole.PPTX,
+            pptx,
+            sha256_file(pptx),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+        pdf=CanonicalInputArtifact(
+            "synthetic:pdf", ArtifactRole.PDF, pdf, sha256_file(pdf), "application/pdf"
+        ),
+        markdown=CanonicalInputArtifact(
+            "synthetic:markdown",
+            ArtifactRole.CLEANED,
+            markdown,
+            sha256_file(markdown),
+            "text/markdown",
+        ),
+        evidence_units=(evidence,),
+        assets=(
+            IndexAssetView(
+                asset_id="synthetic-png",
+                path=png,
+                media_type="image/png",
+                sha256=sha256_file(png),
+                locator=DocumentLocator("slide 1", slide_number=1),
+                width=160,
+                height=90,
+                visual_semantic=True,
+                evidence_ids=(evidence.evidence_id,),
+            ),
+            IndexAssetView(
+                asset_id="synthetic-jpeg",
+                path=jpeg,
+                media_type="image/jpeg",
+                sha256=sha256_file(jpeg),
+                locator=DocumentLocator("slide 1", slide_number=1),
+                width=160,
+                height=90,
+                visual_semantic=True,
+                evidence_ids=(evidence.evidence_id,),
+            ),
+        ),
     )
 
 
@@ -1742,6 +1798,9 @@ def _failure_record(
         "retryable": retryable,
         "resources_created": evidence.get("resources_created", {}),
         "cleanup": evidence.get("cleanup", {"attempted": 0, "status": "not_started"}),
+        "reconciliation": evidence.get("reconciliation", "unknown"),
+        "aggregate": evidence.get("aggregate", {"input_count": 0, "indexed_bytes": 0}),
+        "input_results": evidence.get("input_results", []),
         "checks": evidence.get("checks", {}),
     }
     if isinstance(error, SmokeContractError) and error.reason is not None:
@@ -1910,13 +1969,11 @@ async def _run_shadow_sequence(
     if session.model_contract != PRIVATE_SHADOW_MODEL_CONTRACT:
         raise LiveSmokeBlocked("private shadow model contract mismatch")
     manifest = _private_shadow_manifest(view)
-    if mode == "public_matrix":
-        manifest = SimpleNamespace(
-            source_revision_id=manifest.source_revision_id,
-            authority_class=manifest.authority_class,
-            inputs=tuple(item for item in manifest.inputs if item.input_key == "pdf"),
-            evidence=manifest.evidence,
-        )
+    input_results: list[dict[str, str]] = []
+    aggregate = {
+        "input_count": len(manifest.inputs),
+        "indexed_bytes": sum(item.path.stat().st_size for item in manifest.inputs),
+    }
     store_name: str | None = None
     stores: list[str] = []
     files: list[tuple[str, str]] = []
@@ -1943,6 +2000,9 @@ async def _run_shadow_sequence(
     cleanup_failures = {"document": False, "file": False, "store": False}
     failure: BaseException | None = None
     failure_stage = "unknown"
+    input_failure: BaseException | None = None
+    input_failure_stage = "unknown"
+    input_failure_identity = "none"
     active_stage = "prior_state_check"
     active_input_identity = "none"
     cleanup_failed = False
@@ -1985,6 +2045,9 @@ async def _run_shadow_sequence(
                         "failure_stage": active_stage,
                         "resources_created": dict(resource_states),
                         "cleanup": {"attempted": 0, "status": "not_started"},
+                        "reconciliation": "unknown",
+                        "aggregate": aggregate,
+                        "input_results": input_results,
                         "checks": dict(public_checks),
                     }
                 )
@@ -2013,6 +2076,9 @@ async def _run_shadow_sequence(
                         "failure_stage": active_stage,
                         "resources_created": dict(resource_states),
                         "cleanup": {"attempted": 0, "status": "not_started"},
+                        "reconciliation": "not_empty",
+                        "aggregate": aggregate,
+                        "input_results": input_results,
                         "checks": dict(public_checks),
                     }
                 )
@@ -2046,42 +2112,79 @@ async def _run_shadow_sequence(
         states.append("store_created")
         for item, display_name in zip(manifest.inputs, display_names, strict=True):
             active_input_identity = _private_shadow_input_identity(item.input_key)
-            active_stage = "upload_input"
-            if mode == "public_matrix":
-                resource_states["file"] = "unknown"
-            file_name = await session.upload_input(
-                display_name,
-                item.path,
-                item.media_type,
-            )
-            files.append((file_name, item.input_key))
-            if mode == "public_matrix":
-                resource_states["file"] = "confirmed"
-            chunking = (
-                {
-                    "white_space_config": {
-                        "max_tokens_per_chunk": 700,
-                        "max_overlap_tokens": 100,
+            try:
+                active_stage = "upload_input"
+                if mode == "public_matrix":
+                    resource_states["file"] = "unknown"
+                file_name = await session.upload_input(
+                    display_name,
+                    item.path,
+                    item.media_type,
+                )
+                files.append((file_name, item.input_key))
+                if mode == "public_matrix":
+                    resource_states["file"] = "confirmed"
+                chunking = (
+                    {
+                        "white_space_config": {
+                            "max_tokens_per_chunk": 700,
+                            "max_overlap_tokens": 100,
+                        }
                     }
-                }
-                if item.input_key == "normalized_markdown"
-                else None
-            )
-            active_stage = "import_input"
-            if mode == "public_matrix":
-                resource_states["document"] = "unknown"
-            operation = await session.import_input(
-                store_name,
-                file_name,
-                _private_shadow_metadata(view, item),
-                chunking,
-            )
-            operations.append(operation)
-            active_stage = "wait_for_import"
-            document_name = await session.wait_for_import(operation)
-            documents.append(document_name)
-            if mode == "public_matrix":
-                resource_states["document"] = "confirmed"
+                    if item.input_key == "normalized_markdown"
+                    else None
+                )
+                active_stage = "import_input"
+                if mode == "public_matrix":
+                    resource_states["document"] = "unknown"
+                operation = await session.import_input(
+                    store_name,
+                    file_name,
+                    _private_shadow_metadata(view, item),
+                    chunking,
+                )
+                operations.append(operation)
+                active_stage = "wait_for_import"
+                document_name = await session.wait_for_import(operation)
+                documents.append(document_name)
+                if mode == "public_matrix":
+                    resource_states["document"] = "confirmed"
+                    input_results.append(
+                        {
+                            "input_kind": item.input_kind,
+                            "stage": "import_input",
+                            "outcome": "passed",
+                            "error_category": "none",
+                        }
+                    )
+            except BaseException as error:
+                if mode != "public_matrix":
+                    raise
+                category = (
+                    error.category
+                    if isinstance(error, GeminiProviderError)
+                    else "transient"
+                    if isinstance(error, SmokeTemporaryFailure)
+                    else "contract"
+                    if isinstance(error, SmokeContractError)
+                    else "unknown"
+                )
+                input_results.append(
+                    {
+                        "input_kind": item.input_kind,
+                        "stage": active_stage,
+                        "outcome": "failed",
+                        "error_category": category,
+                    }
+                )
+                if input_failure is None:
+                    input_failure = error
+                    input_failure_stage = active_stage
+                    input_failure_identity = active_input_identity
+        if input_failure is not None:
+            active_stage = input_failure_stage
+            active_input_identity = input_failure_identity
+            raise input_failure
         states.extend(
             (f"inputs_uploaded:{len(files)}", f"inputs_imported:{len(documents)}")
         )
@@ -2348,6 +2451,9 @@ async def _run_shadow_sequence(
                                 else cleanup_outcome
                             ),
                         },
+                        "reconciliation": reconciliation_outcome,
+                        "aggregate": aggregate,
+                        "input_results": input_results,
                         "checks": dict(public_checks),
                     }
                 )
@@ -2381,6 +2487,9 @@ async def _run_shadow_sequence(
                             "attempted": len(documents) + len(files) + len(stores),
                             "status": "completed" if cleanup_outcome == "complete" else cleanup_outcome,
                         },
+                        "reconciliation": reconciliation_outcome,
+                        "aggregate": aggregate,
+                        "input_results": input_results,
                         "checks": dict(public_checks),
                     }
                 )
@@ -2423,39 +2532,14 @@ async def _run_shadow_sequence(
         return {
             "schema_version": 1,
             "status": "passed",
-            "sdk_version": PRIVATE_SHADOW_MODEL_CONTRACT[0],
-            "model": PRIVATE_SHADOW_MODEL_CONTRACT[1],
-            "embedding_model": PRIVATE_SHADOW_MODEL_CONTRACT[2],
-            "source_revision_hash": record["source_revision_hash"],
-            "document_types": ["pdf"],
-            "page_count": record["page_count"],
-            "operation_states": ["done"],
-            "citation_resolution_rate": record["citation_resolution_rate"],
-            "citation": {
-                "page_number": positive.citation_page,
-                "excerpt_sha256": hashlib.sha256(
-                    positive.citation_excerpt.encode()
-                ).hexdigest(),
+            "input_results": input_results,
+            "aggregate": aggregate,
+            "cleanup": {
+                "attempted": len(documents) + len(files) + len(stores),
+                "status": "completed",
             },
-            "negative_scope_retrieved": negative.citation_count != 0,
-            "structured_output": {
-                "schema": "SmokeAnswer",
-                "validated": negative.answer_empty is True,
-                "supported": positive.supported,
-                "marker_present": positive.answer is not None and SYNTHETIC_MARKER in positive.answer,
-                "answer_sha256": hashlib.sha256((negative.answer or "").encode()).hexdigest(),
-            },
-            "thinking_configuration": "omitted",
-            "duration_ms": record["duration_ms"],
-            "usage": {"indexed_bytes": view.pdf.path.stat().st_size, "input_tokens": positive.input_tokens, "output_tokens": positive.output_tokens},
-            "warnings": [],
-            "cleanup": {"attempted": len(documents) + len(files) + len(stores), "status": "completed"},
-            "provider_ids": {
-                "store": _redacted_identity(store_name),
-                "file": _redacted_identity(files[0][0]),
-                "operation": _redacted_identity(operations[0]),
-                "document": _redacted_identity(documents[0]),
-            },
+            "reconciliation": reconciliation_outcome,
+            "error_category": "none",
         }
     return record
 
