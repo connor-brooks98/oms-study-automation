@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "status": "offline_green_review_blocked_owner_correction_required",
+  "source_owner_disposition_handoff": "8b10617290e62e6276e6f448c11670cdc83b8c03",
+  "source_owner_disposition_candidate": "26fa70a47f6b6d1cb32683ec530aa4e23e876fc7",
+  "source_owner_disposition_tree": "542281913bd263d6fca32744f04eac029d9d6dfe",
+  "local_owner_disposition_content_commits": [
+    "76f964f",
+    "03cb134",
+    "a3e2e8d"
+  ],
+  "tdd": {
+    "red_commit": "a69a2c4046e99735058d018027d0231fdaba3dc8",
+    "red_powershell_failure": "cleanup_directory_unavailable",
+    "fixture_launcher_correction": "dce3f69a6c6c9ac6ef26ae6a50ff6faa7f21f368",
+    "fixture_temp_isolation_correction": "64f4246ffe5edc9aa18d0fec57667fe6d0bc88da",
+    "review_red_commit": "95b3b1ce3dfaf7d703fb8ec46303ba9a047bc1f6",
+    "review_red_failure": "ambiguous_cleanup_did_not_retain_task_and_root",
+    "green_commit": "da5a7a38f51a4f075380ff2c576a9f0a06e04f09",
+    "green_tree": "50fca253a9687a6c00b2fd1d51de2c3dd9658098"
+  },
+  "hashes": {
+    "cleanup_script_sha256": "4526603656c97ea7cc064d1f7cffbae486896470363a5929a376eee2a88f7560",
+    "cleanup_harness_sha256": "5584ab0bb935fd9ab75dd5fffaf512e9a266c1686b53acc1316a0afa7542c712",
+    "cleanup_python_test_sha256": "15ce84919c105e100f562eaafba5100a9a013a152bd76a6735706171fe7591b7",
+    "safe_result_sha256": "bd26cc4b7b3eeb34e875caaa043b4118bea375bc4473a3dab34dd65dffdf5a7d",
+    "safe_status_sha256": "e5ec9fcf1fb790b62a18939d78d350ea1572a903e02fae6e4e916ad5f4661c3f",
+    "tombstone_source_manifest_sha256": "d36c6a64ef342ff0d4e88c370c794a2add46ef2f98fbdfb9dcabd6bd86f702b0",
+    "tombstone_runtime_manifest_sha256": "ad8e00b852d32c3b1216452e25e62160a68fb07745f3589321b20fec3ccfc5a7",
+    "tombstone_controller_sha256": "5a955d65feb3adf03759bd62c8e2f842b2e81a27abfc5c9e10b8912c72796587",
+    "tombstone_launcher_sha256": "0795af225426707b9a49454b19538b6b0eb420a9f05ab74280d1d541fd87fffa",
+    "tombstone_entrypoint_sha256": "96c77c083d665fe945cde5a31265d83276fe07778a1bb732bccee1b28f1acad2"
+  },
+  "offline_verification": {
+    "focused_cleanup_tests": "2 passed",
+    "affected_task_2_8_tests": "136 passed, 1 intentional live skip",
+    "powershell_5_1_harness": "TASK28_RECONCILIATION_CLEANUP_HARNESS_VERIFIED",
+    "ruff": "passed",
+    "strict_mypy_file_lane": "passed",
+    "diff_hygiene": "passed",
+    "repository_wide_pytest": "2409 passed, 3 skipped, 18 unrelated environment/order failures",
+    "repository_wide_failure_classes": [
+      "recorded command requires unavailable python shim",
+      "optional anydoc dependency absent",
+      "macOS Keychain unavailable in sandbox",
+      "order-dependent provider import assertion"
+    ]
+  },
+  "implemented_but_not_approved": {
+    "terminal_tombstone_evidence_path_absent": true,
+    "restoration_performed": false,
+    "published_five_hashes_bound": true,
+    "source_files": 674,
+    "runtime_files": 11868,
+    "top_level_entries": 19,
+    "exact_acl_required": true,
+    "zero_reparse_points_required": true,
+    "private_task_diagnostic_scratch_absence_required": true,
+    "hub_and_schema29_required": true,
+    "reconciliation_and_tombstone_paths_disjoint": true,
+    "tombstone_snapshot_unchanged_in_harness": true
+  },
+  "independent_reviews": {
+    "reviewed_commit": "da5a7a38f51a4f075380ff2c576a9f0a06e04f09",
+    "reviewed_tree": "50fca253a9687a6c00b2fd1d51de2c3dd9658098",
+    "specification": "BLOCK",
+    "quality_security": "BLOCK",
+    "findings": [
+      "The immutable task executable is exact system Windows PowerShell outside the reconciliation root, contradicting the owner requirement that every path-bearing task value be contained by that root.",
+      "Task unregistration and recursive root removal are non-transactional, so retain-both cannot be guaranteed after the first successful mutation without separately authorized rollback.",
+      "The candidate must repeat every root, path, reparse, manifest, evidence, task or task-absence, tombstone, and Hub check immediately before each mutation."
+    ]
+  },
+  "required_owner_action": {
+    "owner": "Sol-2 private-shadow evidence disposition owner",
+    "amendments": [
+      "Exempt only the exact canonical system PowerShell executable from reconciliation-root containment while requiring exact file identity, trusted-base ancestor reparse checks, no alias, and tombstone disjointness.",
+      "Define retain-both as applying through the final pre-unregister validation. After successful unregister, permit fail-closed partial cleanup that retains the reconciliation root and tombstone and records sanitized failure-stage evidence.",
+      "Explicitly accept the residual protected-ACL single-invocation check-to-call race, or require a separately reviewed handle or locking design."
+    ]
+  },
+  "composition_built": false,
+  "composition_reviewed": false,
+  "authorization_wording_ready": false,
+  "cleanup_staged_or_executed": false,
+  "authorization_consumed": false,
+  "tombstone_allowlisted_metadata_inspected": true,
+  "tombstone_private_or_evidence_content_read": false,
+  "tombstone_restored_or_mutated": false,
+  "key_or_provider_accessed": false,
+  "production_or_gate_mutated": false
+}
