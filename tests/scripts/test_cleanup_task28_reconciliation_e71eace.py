@@ -22,6 +22,14 @@ def test_cleanup_disposition_binds_exact_legacy_result_and_targets() -> None:
         "System.Management.Automation.PSCustomObject",
         "Unregister-ScheduledTask",
         "TASK28_RECONCILIATION_CLEANUP_VALIDATED",
+        "d36c6a64ef342ff0d4e88c370c794a2add46ef2f98fbdfb9dcabd6bd86f702b0",
+        "ad8e00b852d32c3b1216452e25e62160a68fb07745f3589321b20fec3ccfc5a7",
+        "5a955d65feb3adf03759bd62c8e2f842b2e81a27abfc5c9e10b8912c72796587",
+        "0795af225426707b9a49454b19538b6b0eb420a9f05ab74280d1d541fd87fffa",
+        "96c77c083d665fe945cde5a31265d83276fe07778a1bb732bccee1b28f1acad2",
+        "cleanup_tombstone_state_mismatch",
+        "cleanup_path_overlap",
+        "cleanup_path_escape",
     ):
         assert required in source
     for forbidden in (

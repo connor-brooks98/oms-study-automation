@@ -21,6 +21,9 @@ $privateRoot = Join-Path $env:LOCALAPPDATA 'Temp\sol0-task28-private-shadow-9097
 $retainedRoot = Join-Path $env:LOCALAPPDATA 'Temp\sol0-task28-private-shadow-06848e2'
 $privateEvidence = Join-Path $privateRoot 'evidence'
 $retainedEvidence = Join-Path $retainedRoot 'evidence'
+$privateDiagnostic = Join-Path $env:TEMP 'sol0-task28-private-shadow-diagnostic-9097851'
+$privateScratch = Join-Path $env:TEMP 'sol0-task28-private-shadow-scratch-9097851'
+$privateTaskName = 'OMS Sol0 Task28 Private Shadow 9097851'
 $taskName = 'OMS Sol0 Task28 Reconciliation e71eace'
 $taskPath = '\'
 $expectedExecutable = Join-Path $PSHOME 'powershell.exe'
@@ -32,6 +35,10 @@ $global:CleanupTaskRegistered = $true
 $global:CleanupTaskState = 'Ready'
 $global:CleanupHealthSchema = 29
 $global:CleanupUnregisterCalls = @()
+$global:CleanupTaskExecute = $expectedExecutable
+$global:CleanupTaskArguments = $expectedArguments
+$global:CleanupTaskWorkingDirectory = $root
+$global:CleanupPrivateTaskRegistered = $false
 
 function Protect-FixtureDirectory([string]$Path) {
   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -45,9 +52,9 @@ function Initialize-CleanupFixture {
     Remove-Item -LiteralPath $env:LOCALAPPDATA -Recurse -Force
   }
   New-Item -ItemType Directory -Path $env:LOCALAPPDATA,$env:TEMP -Force | Out-Null
-  New-Item -ItemType Directory -Path $root,$evidence,$privateRoot,$privateEvidence,
+  New-Item -ItemType Directory -Path $root,$evidence,$privateRoot,
     $retainedRoot,$retainedEvidence | Out-Null
-  foreach ($directory in @($root,$evidence,$privateRoot,$privateEvidence,$retainedRoot,$retainedEvidence)) {
+  foreach ($directory in @($root,$evidence,$privateRoot,$retainedRoot,$retainedEvidence)) {
     Protect-FixtureDirectory $directory
   }
   [IO.File]::WriteAllBytes(
@@ -60,6 +67,27 @@ function Initialize-CleanupFixture {
   )
   $payload = Join-Path $root 'payload.txt'
   [IO.File]::WriteAllText($payload,'bound cleanup payload')
+
+  $privateFiles = [ordered]@{
+    'source-manifest.sha256' = ((1..674 | ForEach-Object {
+      ('{0}  source/{1:d4}.py' -f ('a' * 64),$_)
+    }) -join [char]10) + [char]10
+    'runtime-manifest.sha256' = ((1..11868 | ForEach-Object {
+      ('{0}  runtime/{1:d5}.py' -f ('b' * 64),$_)
+    }) -join [char]10) + [char]10
+    'private-shadow-controller.ps1' = 'fixture controller'
+    'private-shadow-launcher.ps1' = 'fixture launcher'
+    'private-shadow-operator-entry.py' = 'fixture entrypoint'
+  }
+  foreach ($item in $privateFiles.GetEnumerator()) {
+    [IO.File]::WriteAllText(
+      (Join-Path $privateRoot $item.Key),$item.Value,[Text.UTF8Encoding]::new($false)
+    )
+  }
+  foreach ($index in 1..14) {
+    New-Item -ItemType Directory -Path (Join-Path $privateRoot ('bound-{0:d2}' -f $index)) |
+      Out-Null
+  }
   $payloadHash = (Microsoft.PowerShell.Utility\Get-FileHash `
     -LiteralPath $payload -Algorithm SHA256).Hash.ToLowerInvariant()
   [IO.File]::WriteAllText(
@@ -75,12 +103,40 @@ function Initialize-CleanupFixture {
     $manifestHash
   )
   if ($fixtureSource -ceq $cleanupSource) { throw 'fixture_manifest_binding_missing' }
+  foreach ($binding in @(
+    @('d36c6a64ef342ff0d4e88c370c794a2add46ef2f98fbdfb9dcabd6bd86f702b0','source-manifest.sha256'),
+    @('ad8e00b852d32c3b1216452e25e62160a68fb07745f3589321b20fec3ccfc5a7','runtime-manifest.sha256'),
+    @('5a955d65feb3adf03759bd62c8e2f842b2e81a27abfc5c9e10b8912c72796587','private-shadow-controller.ps1'),
+    @('0795af225426707b9a49454b19538b6b0eb420a9f05ab74280d1d541fd87fffa','private-shadow-launcher.ps1'),
+    @('96c77c083d665fe945cde5a31265d83276fe07778a1bb732bccee1b28f1acad2','private-shadow-operator-entry.py')
+  )) {
+    $fixtureHash = (Microsoft.PowerShell.Utility\Get-FileHash `
+      -LiteralPath (Join-Path $privateRoot $binding[1]) -Algorithm SHA256).Hash.ToLowerInvariant()
+    $fixtureSource = $fixtureSource.Replace($binding[0],$fixtureHash)
+  }
   [IO.File]::WriteAllText($fixtureCleanup,$fixtureSource,[Text.UTF8Encoding]::new($false))
   [IO.File]::WriteAllText((Join-Path $retainedEvidence 'retained.json'),'{}')
   $global:CleanupTaskRegistered = $true
   $global:CleanupTaskState = 'Ready'
   $global:CleanupHealthSchema = 29
   $global:CleanupUnregisterCalls = @()
+  $global:CleanupTaskExecute = $expectedExecutable
+  $global:CleanupTaskArguments = $expectedArguments
+  $global:CleanupTaskWorkingDirectory = $root
+  $global:CleanupPrivateTaskRegistered = $false
+}
+
+function Get-TombstoneSnapshot {
+  if (-not (Test-Path -LiteralPath $privateRoot -PathType Container)) { return 'missing' }
+  $records = @(Get-ChildItem -LiteralPath $privateRoot -Force -Recurse | Sort-Object FullName |
+    ForEach-Object {
+      $relative = $_.FullName.Substring($privateRoot.Length)
+      $hash = if (-not $_.PSIsContainer) {
+        (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+      } else { '' }
+      '{0}|{1}|{2}|{3}' -f $relative,$_.Attributes,$_.Length,$hash
+    })
+  return ($records -join [char]10)
 }
 
 function New-CleanupTaskFixture {
@@ -90,9 +146,9 @@ function New-CleanupTaskFixture {
     TaskPath = $script:taskPath
     State = $global:CleanupTaskState
     Actions = @([pscustomobject]@{
-      Execute = $script:expectedExecutable
-      Arguments = $script:expectedArguments
-      WorkingDirectory = $script:root
+      Execute = $global:CleanupTaskExecute
+      Arguments = $global:CleanupTaskArguments
+      WorkingDirectory = $global:CleanupTaskWorkingDirectory
     })
     Principal = [pscustomobject]@{
       UserId = $sid
@@ -116,6 +172,9 @@ function Get-ScheduledTask {
   }
   $items = @($hub)
   if ($global:CleanupTaskRegistered) { $items += New-CleanupTaskFixture }
+  if ($global:CleanupPrivateTaskRegistered) {
+    $items += [pscustomobject]@{TaskName=$script:privateTaskName;TaskPath='\';State='Ready'}
+  }
   return $items
 }
 
@@ -162,10 +221,13 @@ function Assert-FailureRetained([scriptblock]$Action) {
 
 try {
   Initialize-CleanupFixture
+  $tombstoneBefore = Get-TombstoneSnapshot
   $validation = & $fixtureCleanup -ValidateOnly
   if ($validation -notcontains 'TASK28_RECONCILIATION_CLEANUP_VALIDATED' -or
       -not $global:CleanupTaskRegistered -or
       -not (Test-Path -LiteralPath $root -PathType Container) -or
+      (Test-Path -LiteralPath $privateEvidence) -or
+      (Get-TombstoneSnapshot) -cne $tombstoneBefore -or
       $global:CleanupUnregisterCalls.Count -ne 0) {
     throw 'validate_only_mutated_state'
   }
@@ -193,15 +255,61 @@ try {
   Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
   Initialize-CleanupFixture
-  [IO.File]::WriteAllText((Join-Path $privateEvidence 'unexpected.json'),'{}')
+  New-Item -ItemType Directory -Path $privateEvidence | Out-Null
   Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
   Initialize-CleanupFixture
+  $global:CleanupPrivateTaskRegistered = $true
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
+  New-Item -ItemType Directory -Path $privateDiagnostic | Out-Null
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
+  New-Item -ItemType Directory -Path $privateScratch | Out-Null
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
+  [IO.File]::AppendAllText((Join-Path $privateRoot 'private-shadow-controller.ps1'),'x')
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
+  New-Item -ItemType Directory -Path (Join-Path $privateRoot 'unexpected-top-level') | Out-Null
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
+  $sourceManifest = Join-Path $privateRoot 'source-manifest.sha256'
+  [IO.File]::WriteAllLines($sourceManifest,@([IO.File]::ReadAllLines($sourceManifest)[0]))
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
+  $global:CleanupTaskExecute = Join-Path $root 'powershell.exe'
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
+  $global:CleanupTaskArguments = '-File "C:\outside\reconciliation-launcher.ps1"'
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
+  $global:CleanupTaskWorkingDirectory = $privateRoot
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
+  $privateTarget = $privateRoot + '-target'
+  Move-Item -LiteralPath $privateRoot -Destination $privateTarget
+  New-Item -ItemType Junction -Path $privateRoot -Target $privateTarget | Out-Null
+  Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
+
+  Initialize-CleanupFixture
+  $tombstoneBefore = Get-TombstoneSnapshot
   & $fixtureCleanup
   if ($global:CleanupTaskRegistered -or
       (Test-Path -LiteralPath $root) -or
       $global:CleanupUnregisterCalls.Count -ne 1 -or
       -not (Test-Path -LiteralPath $privateRoot -PathType Container) -or
+      (Test-Path -LiteralPath $privateEvidence) -or
+      (Get-TombstoneSnapshot) -cne $tombstoneBefore -or
       -not (Test-Path -LiteralPath $retainedRoot -PathType Container)) {
     throw 'exact_cleanup_success_contract_failed'
   }
