@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param([Parameter(Mandatory = $true)][string]$CleanupScript)
+param(
+  [Parameter(Mandatory = $true)][string]$CleanupScript,
+  [switch]$EarlyTaskMismatch
+)
 
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $CleanupScript -PathType Leaf)) {
@@ -47,6 +50,8 @@ $global:CleanupPostUnregisterRootDrift = $false
 $global:CleanupPreRemovalRootDrift = $false
 $global:CleanupRootRemovalFailure = $false
 $global:CleanupPostRemovalHubFailure = $false
+$global:CleanupImmediatePreUnregisterRootDrift = $false
+$global:CleanupImmediatePreRemovalRootDrift = $false
 $global:CleanupHealthCalls = 0
 
 function Protect-FixtureDirectory([string]$Path) {
@@ -147,6 +152,8 @@ function Initialize-CleanupFixture {
   $global:CleanupPreRemovalRootDrift = $false
   $global:CleanupRootRemovalFailure = $false
   $global:CleanupPostRemovalHubFailure = $false
+  $global:CleanupImmediatePreUnregisterRootDrift = $false
+  $global:CleanupImmediatePreRemovalRootDrift = $false
   $global:CleanupHealthCalls = 0
 }
 
@@ -235,8 +242,16 @@ function Invoke-RestMethod {
     throw 'unexpected_health_uri'
   }
   $global:CleanupHealthCalls += 1
+  if ($global:CleanupImmediatePreUnregisterRootDrift -and
+      $global:CleanupHealthCalls -eq 2) {
+    [IO.File]::WriteAllText((Join-Path $script:root 'immediate-unregister-drift.txt'),'drift')
+  }
   if ($global:CleanupPreRemovalRootDrift -and $global:CleanupHealthCalls -eq 6) {
     [IO.File]::WriteAllText((Join-Path $script:root 'pre-removal-drift.txt'),'drift')
+  }
+  if ($global:CleanupImmediatePreRemovalRootDrift -and
+      $global:CleanupHealthCalls -eq 8) {
+    [IO.File]::WriteAllText((Join-Path $script:root 'immediate-removal-drift.txt'),'drift')
   }
   $schema = if ($global:CleanupPostRemovalHubFailure -and
     -not (Test-Path -LiteralPath $script:root) -and $global:CleanupHealthCalls -ge 5) {
@@ -305,6 +320,24 @@ function Assert-FailureAudit(
 }
 
 try {
+  if ($EarlyTaskMismatch) {
+    Initialize-CleanupFixture
+    $global:CleanupTaskState = 'Running'
+    Assert-FailureRetained { & $fixtureCleanup }
+    Assert-FailureAudit 'pre_unregister_validation' 'failed' 'bound' `
+      'bound' 'healthy' $false $false
+    Write-Output 'TASK28_EARLY_TASK_MISMATCH_AUDITED'
+    return
+  }
+
+  $earlyOutput = & (Join-Path $PSHOME 'powershell.exe') -NoProfile `
+    -ExecutionPolicy Bypass -File $PSCommandPath -CleanupScript $CleanupScript `
+    -EarlyTaskMismatch
+  if ($LASTEXITCODE -ne 0 -or
+      $earlyOutput -notcontains 'TASK28_EARLY_TASK_MISMATCH_AUDITED') {
+    throw 'early_task_mismatch_audit_unproven'
+  }
+
   Initialize-CleanupFixture
   $tombstoneBefore = Get-TombstoneSnapshot
   $validation = & $fixtureCleanup -ValidateOnly
@@ -401,6 +434,12 @@ try {
     'bound' 'failed' $false $false
 
   Initialize-CleanupFixture
+  $global:CleanupImmediatePreUnregisterRootDrift = $true
+  Assert-FailureRetained { & $fixtureCleanup }
+  Assert-FailureAudit 'pre_unregister_validation' 'exact_task_present' 'failed' `
+    'bound' 'healthy' $false $false
+
+  Initialize-CleanupFixture
   $global:CleanupUnregisterFailure = $true
   Assert-FailureRetained { & $fixtureCleanup }
   Assert-FailureAudit 'unregister_request' 'exact_task_present' 'bound' `
@@ -424,6 +463,17 @@ try {
   if (-not $failed -or $global:CleanupTaskRegistered -or
       -not (Test-Path -LiteralPath $root -PathType Container)) {
     throw 'pre_removal_failure_contract_mismatch'
+  }
+  Assert-FailureAudit 'pre_root_removal_validation' 'exact_task_absent' 'failed' `
+    'bound' 'healthy' $false $false
+
+  Initialize-CleanupFixture
+  $global:CleanupImmediatePreRemovalRootDrift = $true
+  $failed = $false
+  try { & $fixtureCleanup } catch { $failed = $true }
+  if (-not $failed -or $global:CleanupTaskRegistered -or
+      -not (Test-Path -LiteralPath $root -PathType Container)) {
+    throw 'immediate_pre_removal_failure_contract_mismatch'
   }
   Assert-FailureAudit 'pre_root_removal_validation' 'exact_task_absent' 'failed' `
     'bound' 'healthy' $false $false
