@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "owner_disposition_reviewed_ship",
+  "status": "owner_disposition_amended_review_pending",
   "owner": "sol2_private_shadow_evidence",
   "source_handoff": "909785131b113fb5b2083b74bd2757c2fc0dbf4b",
   "baseline_handoff": "896ded575f8ec44256152592b84ad7774e482d45",
@@ -68,11 +68,49 @@
     "Reject a missing 9097851 root, any present evidence path, any 9097851 task, diagnostic or scratch residue, ACL mismatch, reparse point, hash mismatch, source/runtime count mismatch, top-level inventory mismatch, or unhealthy Hub.",
     "Bind the exact five published hashes, 674/11868 file counts, 19 top-level entries, current-SID-only root ACL, zero reparse points, task absence, diagnostic/scratch absence, and both schema-29 health endpoints before and after cleanup.",
     "Before any mutation, resolve the exact existing reconciliation cleanup root and 9097851 tombstone root through reparse-safe canonical paths and reject equality, ancestry, descent, or any alias between them.",
-    "Before any mutation, bind the exact reconciliation scheduled-task executable, arguments, working directory, principal, and task path; every path-bearing action value and deletion target must resolve inside the reconciliation root and remain disjoint from the 9097851 tombstone.",
+    "Before any mutation, bind the exact reconciliation scheduled-task executable, arguments, working directory, principal, and task path. Exempt only the exact canonical C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe from reconciliation-root containment after binding its SHA-256, length, version, valid Microsoft Authenticode signer identity, final handle-resolved path, trusted system-base ancestor chain, no-reparse state, no alias, and tombstone disjointness.",
+    "Require the launcher argument to resolve inside the canonical reconciliation root and the working directory to equal or resolve inside that root; every other path-bearing action value and deletion target must also resolve inside the reconciliation root and remain disjoint from the 9097851 tombstone.",
     "Reject a reparse point in either target path, its approved-base-to-target ancestor chain, or any enumerated deletion descendant before cleanup starts.",
     "Prove the cleanup never creates, removes, reads, or writes the 9097851 evidence path or any other part of the 9097851 root.",
     "Fail closed if the evidence path reappears or any bound metadata changes; require a new owner disposition instead of adapting in place."
   ],
+  "mutation_lifecycle": {
+    "retain_both_definition": "Retain the exact reconciliation task, reconciliation root, and private tombstone through the final complete pre-unregister validation only.",
+    "pre_unregister_task_predicate": "exactly_one_exact_bound_reconciliation_task",
+    "unregister_call": "single_exact_task_unregistration_attempt",
+    "post_unregister_task_predicate": "exact_reconciliation_task_absent",
+    "pre_root_removal_task_predicate": "exact_reconciliation_task_absent",
+    "post_root_removal_task_predicate": "exact_reconciliation_task_absent",
+    "post_unregister_failure_action": "Retain the reconciliation root if present and the private tombstone, stop before every further cleanup mutation, and atomically record only fixed sanitized failure-stage evidence.",
+    "post_unregister_reregistration_permitted": false,
+    "failure_evidence_sink": "A pre-existing protected audit sink outside and disjoint from both the reconciliation root and private tombstone, bound by canonical path, exact current-SID-only ACL, no-reparse ancestor chain, fixed schema, and bounded atomic replacement before cleanup begins.",
+    "failure_evidence_write_rule": "Immediately before the sole sanitized evidence write, repeat the complete phase-appropriate state validation. The validation result may contain failed fixed predicates; the write is permitted only to the pre-bound protected audit sink. If the sink validation fails, do not write there; return only the fixed failure stage through the already-reviewed controller result channel and stop.",
+    "sanitized_failure_stages": [
+      "pre_unregister_validation",
+      "unregister_request",
+      "post_unregister_validation",
+      "pre_root_removal_validation",
+      "root_removal",
+      "post_root_removal_validation"
+    ],
+    "failure_evidence_fields": [
+      "failure_stage",
+      "task_predicate",
+      "reconciliation_root_predicate",
+      "tombstone_predicate",
+      "hub_predicate",
+      "mutation_attempted",
+      "mutation_completed"
+    ],
+    "raw_error_or_path_content_permitted": false
+  },
+  "race_decision": {
+    "narrow_check_to_call_race_accepted": true,
+    "accepted_threat_model": "One reviewed cleanup invocation under the exact current-SID-only protected ACL, with no concurrent same-SID or elevated actor and no second cleanup process.",
+    "ceiling": "Does not protect against a concurrent same-SID process, administrator, malware, filesystem driver or kernel actor, alias introduced after validation, or a second cleanup invocation.",
+    "required_mitigation": "Repeat the complete root, canonical-path, reparse, manifest, immutable result/status, phase-specific task-or-task-absence, tombstone, Hub, and protected audit-sink checks immediately before every mutation, including unregistration, root removal, and a sanitized failure-evidence write.",
+    "upgrade_trigger": "Any broader concurrency or actor threat model requires a separately independently reviewed locking and stable-handle identity contract before cleanup."
+  },
   "downstream_contract": {
     "allowed_next_composition": "fresh_hash_bound_reconciliation_cleanup_only",
     "cleanup_target": "separate_e71eace_reconciliation_task_and_root_only",
@@ -83,6 +121,15 @@
     "pre_mutation_canonical_path_disjointness_required": true,
     "pre_mutation_scheduled_task_action_binding_required": true,
     "pre_mutation_reparse_safe_cleanup_target_binding_required": true,
+    "system_powershell_exemption": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "system_powershell_exact_identity_and_trusted_ancestor_binding_required": true,
+    "launcher_argument_inside_reconciliation_root_required": true,
+    "working_directory_equal_or_inside_reconciliation_root_required": true,
+    "post_unregister_reregistration_authorized": false,
+    "complete_state_revalidation_immediately_before_each_cleanup_mutation": true,
+    "complete_state_revalidation_immediately_before_failure_evidence_write": true,
+    "failure_evidence_sink_outside_both_roots_required": true,
+    "narrow_check_to_call_race_accepted": true,
     "private_9097851_root_removal_requires_separate_authorization": true,
     "fresh_private_attempt_requires_new_root_and_separate_authorization": true,
     "provider_or_key_access_authorized": false,
@@ -95,5 +142,17 @@
     "quality_security": "SHIP",
     "quality_initial_finding": "Require pre-mutation canonical and reparse-safe disjointness plus exact scheduled-task action binding before any cleanup deletion.",
     "quality_finding_resolved": true
+  },
+  "amendment_source": {
+    "blocked_sol0_handoff": "7e3c3ab",
+    "findings_resolved": [
+      "exact trusted system PowerShell exemption",
+      "phase-specific post-unregister task-or-absence and no-reregistration contract",
+      "explicit narrow check-to-call race acceptance and immediate complete revalidation"
+    ]
+  },
+  "amendment_reviews": {
+    "specification": "PENDING",
+    "quality_security": "PENDING"
   }
 }
