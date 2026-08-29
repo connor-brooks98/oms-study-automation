@@ -30,6 +30,21 @@ def test_cleanup_disposition_binds_exact_legacy_result_and_targets() -> None:
         "cleanup_tombstone_state_mismatch",
         "cleanup_path_overlap",
         "cleanup_path_escape",
+        "7600ffe12da441fe89d035b13801e8e91d064bc544a27b19a5cf49f6ab8b18f5",
+        "454656",
+        "10.0.26100.8875 (WinBuild.160101.0800)",
+        "DC91E564D5BC1E3A8E02D6A8508682ABEA8A2443",
+        "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+        "GetFinalPathNameByHandle",
+        "Get-AuthenticodeSignature",
+        "cleanup-failure.json",
+        "[IO.File]::Replace",
+        "pre_unregister_validation",
+        "unregister_request",
+        "post_unregister_validation",
+        "pre_root_removal_validation",
+        "root_removal",
+        "post_root_removal_validation",
     ):
         assert required in source
     for forbidden in (
@@ -39,6 +54,7 @@ def test_cleanup_disposition_binds_exact_legacy_result_and_targets() -> None:
         "Start-ScheduledTask",
         "Register-ScheduledTask",
         "RUN_PRIVATE_GEMINI_SHADOW",
+        "Register-ScheduledTask",
     ):
         assert forbidden not in source
 

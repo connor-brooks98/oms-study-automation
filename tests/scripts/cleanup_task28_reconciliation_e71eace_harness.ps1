@@ -24,6 +24,9 @@ $retainedEvidence = Join-Path $retainedRoot 'evidence'
 $privateDiagnostic = Join-Path $env:TEMP 'sol0-task28-private-shadow-diagnostic-9097851'
 $privateScratch = Join-Path $env:TEMP 'sol0-task28-private-shadow-scratch-9097851'
 $privateTaskName = 'OMS Sol0 Task28 Private Shadow 9097851'
+$auditRoot = Join-Path $env:LOCALAPPDATA 'Temp\sol0-task28-reconciliation-e71eace-audit'
+$auditPath = Join-Path $auditRoot 'cleanup-failure.json'
+$auditTemp = Join-Path $auditRoot 'cleanup-failure.tmp'
 $taskName = 'OMS Sol0 Task28 Reconciliation e71eace'
 $taskPath = '\'
 $expectedExecutable = Join-Path $PSHOME 'powershell.exe'
@@ -39,6 +42,12 @@ $global:CleanupTaskExecute = $expectedExecutable
 $global:CleanupTaskArguments = $expectedArguments
 $global:CleanupTaskWorkingDirectory = $root
 $global:CleanupPrivateTaskRegistered = $false
+$global:CleanupUnregisterFailure = $false
+$global:CleanupPostUnregisterRootDrift = $false
+$global:CleanupPreRemovalRootDrift = $false
+$global:CleanupRootRemovalFailure = $false
+$global:CleanupPostRemovalHubFailure = $false
+$global:CleanupHealthCalls = 0
 
 function Protect-FixtureDirectory([string]$Path) {
   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -55,11 +64,12 @@ function Initialize-CleanupFixture {
     Remove-Item -LiteralPath $env:TEMP -Recurse -Force
   }
   New-Item -ItemType Directory -Path $env:LOCALAPPDATA,$env:TEMP -Force | Out-Null
-  New-Item -ItemType Directory -Path $root,$evidence,$privateRoot,
+  New-Item -ItemType Directory -Path $root,$evidence,$privateRoot,$auditRoot,
     $retainedRoot,$retainedEvidence | Out-Null
-  foreach ($directory in @($root,$evidence,$privateRoot,$retainedRoot,$retainedEvidence)) {
+  foreach ($directory in @($root,$evidence,$privateRoot,$auditRoot,$retainedRoot,$retainedEvidence)) {
     Protect-FixtureDirectory $directory
   }
+  [IO.File]::WriteAllBytes($auditPath,[byte[]]@())
   [IO.File]::WriteAllBytes(
     (Join-Path $evidence 'safe-result.json'),
     [Convert]::FromBase64String($resultBase64)
@@ -132,6 +142,12 @@ function Initialize-CleanupFixture {
   $global:CleanupTaskArguments = $expectedArguments
   $global:CleanupTaskWorkingDirectory = $root
   $global:CleanupPrivateTaskRegistered = $false
+  $global:CleanupUnregisterFailure = $false
+  $global:CleanupPostUnregisterRootDrift = $false
+  $global:CleanupPreRemovalRootDrift = $false
+  $global:CleanupRootRemovalFailure = $false
+  $global:CleanupPostRemovalHubFailure = $false
+  $global:CleanupHealthCalls = 0
 }
 
 function Get-TombstoneSnapshot {
@@ -204,8 +220,12 @@ function Unregister-ScheduledTask {
   if ($TaskName -cne $script:taskName -or $TaskPath -cne $script:taskPath) {
     throw 'unexpected_unregister_target'
   }
+  if ($global:CleanupUnregisterFailure) { throw 'synthetic_unregister_failure' }
   $global:CleanupUnregisterCalls += "$TaskPath$TaskName"
   $global:CleanupTaskRegistered = $false
+  if ($global:CleanupPostUnregisterRootDrift) {
+    [IO.File]::WriteAllText((Join-Path $script:root 'post-unregister-drift.txt'),'drift')
+  }
 }
 
 function Invoke-RestMethod {
@@ -214,7 +234,35 @@ function Invoke-RestMethod {
   if ($Uri -notin @('http://127.0.0.1:8765/health','http://127.0.0.1:8788/health')) {
     throw 'unexpected_health_uri'
   }
-  [pscustomobject]@{status='ok';schema_version=$global:CleanupHealthSchema}
+  $global:CleanupHealthCalls += 1
+  if ($global:CleanupPreRemovalRootDrift -and $global:CleanupHealthCalls -eq 4) {
+    [IO.File]::WriteAllText((Join-Path $script:root 'pre-removal-drift.txt'),'drift')
+  }
+  $schema = if ($global:CleanupPostRemovalHubFailure -and
+    -not (Test-Path -LiteralPath $script:root) -and $global:CleanupHealthCalls -ge 5) {
+    28
+  } else { $global:CleanupHealthSchema }
+  [pscustomobject]@{status='ok';schema_version=$schema}
+}
+
+function Remove-Item {
+  [CmdletBinding()]
+  param(
+    [string[]]$LiteralPath,
+    [switch]$Recurse,
+    [switch]$Force
+  )
+  $effectiveErrorAction = if ($PSBoundParameters.ContainsKey('ErrorAction')) {
+    $PSBoundParameters['ErrorAction']
+  } else { 'Continue' }
+  foreach ($path in $LiteralPath) {
+    if ($global:CleanupRootRemovalFailure -and
+        [string]::Equals($path,$script:root,[StringComparison]::OrdinalIgnoreCase)) {
+      throw 'synthetic_root_removal_failure'
+    }
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $path `
+      -Recurse:$Recurse -Force:$Force -ErrorAction $effectiveErrorAction
+  }
 }
 
 function Assert-FailureRetained([scriptblock]$Action) {
@@ -227,6 +275,35 @@ function Assert-FailureRetained([scriptblock]$Action) {
   }
 }
 
+function Assert-FailureAudit(
+  [string]$Stage,[string]$TaskPredicate,[string]$RootPredicate,
+  [string]$TombstonePredicate,[string]$HubPredicate,
+  [bool]$Attempted,[bool]$Completed
+) {
+  if (-not (Test-Path -LiteralPath $auditPath -PathType Leaf) -or
+      (Get-Item -LiteralPath $auditPath).Length -eq 0 -or
+      (Test-Path -LiteralPath $auditTemp)) {
+    throw 'failure_audit_missing_or_nonatomic'
+  }
+  $audit = Get-Content -LiteralPath $auditPath -Raw | ConvertFrom-Json
+  $names = @($audit.PSObject.Properties.Name | Sort-Object)
+  $expectedNames = @(
+    'failure_stage','hub_predicate','mutation_attempted','mutation_completed',
+    'reconciliation_root_predicate','task_predicate','tombstone_predicate'
+  ) | Sort-Object
+  if (($names -join "`n") -cne ($expectedNames -join "`n") -or
+      $audit.failure_stage -cne $Stage -or
+      $audit.task_predicate -cne $TaskPredicate -or
+      $audit.reconciliation_root_predicate -cne $RootPredicate -or
+      $audit.tombstone_predicate -cne $TombstonePredicate -or
+      $audit.hub_predicate -cne $HubPredicate -or
+      $audit.mutation_attempted -ne $Attempted -or
+      $audit.mutation_completed -ne $Completed -or
+      ([IO.File]::ReadAllText($auditPath) -match 'sol0-task28|C:\\|provider|private')) {
+    throw 'failure_audit_contract_mismatch'
+  }
+}
+
 try {
   Initialize-CleanupFixture
   $tombstoneBefore = Get-TombstoneSnapshot
@@ -236,6 +313,7 @@ try {
       -not (Test-Path -LiteralPath $root -PathType Container) -or
       (Test-Path -LiteralPath $privateEvidence) -or
       (Get-TombstoneSnapshot) -cne $tombstoneBefore -or
+      (Get-Item -LiteralPath $auditPath).Length -ne 0 -or
       $global:CleanupUnregisterCalls.Count -ne 0) {
     throw 'validate_only_mutated_state'
   }
@@ -317,6 +395,62 @@ try {
   Assert-FailureRetained { & $fixtureCleanup -ValidateOnly }
 
   Initialize-CleanupFixture
+  $global:CleanupHealthSchema = 28
+  Assert-FailureRetained { & $fixtureCleanup }
+  Assert-FailureAudit 'pre_unregister_validation' 'exact_task_present' 'bound' `
+    'bound' 'failed' $false $false
+
+  Initialize-CleanupFixture
+  $global:CleanupUnregisterFailure = $true
+  Assert-FailureRetained { & $fixtureCleanup }
+  Assert-FailureAudit 'unregister_request' 'exact_task_present' 'bound' `
+    'bound' 'healthy' $true $false
+
+  Initialize-CleanupFixture
+  $global:CleanupPostUnregisterRootDrift = $true
+  $failed = $false
+  try { & $fixtureCleanup } catch { $failed = $true }
+  if (-not $failed -or $global:CleanupTaskRegistered -or
+      -not (Test-Path -LiteralPath $root -PathType Container)) {
+    throw 'post_unregister_failure_contract_mismatch'
+  }
+  Assert-FailureAudit 'post_unregister_validation' 'exact_task_absent' 'failed' `
+    'bound' 'healthy' $true $true
+
+  Initialize-CleanupFixture
+  $global:CleanupPreRemovalRootDrift = $true
+  $failed = $false
+  try { & $fixtureCleanup } catch { $failed = $true }
+  if (-not $failed -or $global:CleanupTaskRegistered -or
+      -not (Test-Path -LiteralPath $root -PathType Container)) {
+    throw 'pre_removal_failure_contract_mismatch'
+  }
+  Assert-FailureAudit 'pre_root_removal_validation' 'exact_task_absent' 'failed' `
+    'bound' 'healthy' $false $false
+
+  Initialize-CleanupFixture
+  $global:CleanupRootRemovalFailure = $true
+  $failed = $false
+  try { & $fixtureCleanup } catch { $failed = $true }
+  if (-not $failed -or $global:CleanupTaskRegistered -or
+      -not (Test-Path -LiteralPath $root -PathType Container)) {
+    throw 'root_removal_failure_contract_mismatch'
+  }
+  Assert-FailureAudit 'root_removal' 'exact_task_absent' 'bound' `
+    'bound' 'healthy' $true $false
+
+  Initialize-CleanupFixture
+  $global:CleanupPostRemovalHubFailure = $true
+  $failed = $false
+  try { & $fixtureCleanup } catch { $failed = $true }
+  if (-not $failed -or $global:CleanupTaskRegistered -or
+      (Test-Path -LiteralPath $root)) {
+    throw 'post_removal_failure_contract_mismatch'
+  }
+  Assert-FailureAudit 'post_root_removal_validation' 'exact_task_absent' 'absent' `
+    'bound' 'failed' $true $true
+
+  Initialize-CleanupFixture
   $tombstoneBefore = Get-TombstoneSnapshot
   & $fixtureCleanup
   if ($global:CleanupTaskRegistered -or
@@ -325,6 +459,7 @@ try {
       -not (Test-Path -LiteralPath $privateRoot -PathType Container) -or
       (Test-Path -LiteralPath $privateEvidence) -or
       (Get-TombstoneSnapshot) -cne $tombstoneBefore -or
+      (Get-Item -LiteralPath $auditPath).Length -ne 0 -or
       -not (Test-Path -LiteralPath $retainedRoot -PathType Container)) {
     throw 'exact_cleanup_success_contract_failed'
   }
