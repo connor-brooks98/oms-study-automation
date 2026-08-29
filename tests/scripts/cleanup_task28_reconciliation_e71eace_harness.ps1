@@ -58,7 +58,6 @@ function Initialize-CleanupFixture {
     (Join-Path $evidence 'safe-status.json'),
     [Convert]::FromBase64String($statusBase64)
   )
-  Copy-Item -LiteralPath $CleanupScript -Destination $fixtureCleanup
   $payload = Join-Path $root 'payload.txt'
   [IO.File]::WriteAllText($payload,'bound cleanup payload')
   $payloadHash = (Microsoft.PowerShell.Utility\Get-FileHash `
@@ -68,6 +67,15 @@ function Initialize-CleanupFixture {
     $payloadHash + '  payload.txt' + [char]10,
     [Text.UTF8Encoding]::new($false)
   )
+  $manifestHash = (Microsoft.PowerShell.Utility\Get-FileHash `
+    -LiteralPath $rootManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+  $cleanupSource = [IO.File]::ReadAllText($CleanupScript)
+  $fixtureSource = $cleanupSource.Replace(
+    'ea671e594d9494aec7be240e322baa382dc954bab8f1de9ca196c24052887184',
+    $manifestHash
+  )
+  if ($fixtureSource -ceq $cleanupSource) { throw 'fixture_manifest_binding_missing' }
+  [IO.File]::WriteAllText($fixtureCleanup,$fixtureSource,[Text.UTF8Encoding]::new($false))
   [IO.File]::WriteAllText((Join-Path $retainedEvidence 'retained.json'),'{}')
   $global:CleanupTaskRegistered = $true
   $global:CleanupTaskState = 'Ready'
@@ -109,18 +117,6 @@ function Get-ScheduledTask {
   $items = @($hub)
   if ($global:CleanupTaskRegistered) { $items += New-CleanupTaskFixture }
   return $items
-}
-
-function Get-FileHash {
-  [CmdletBinding()]
-  param([string]$LiteralPath,[string]$Algorithm)
-  if ((Split-Path -Leaf $LiteralPath) -ceq 'cleanup-root-manifest.sha256') {
-    return [pscustomobject]@{
-      Hash='ea671e594d9494aec7be240e322baa382dc954bab8f1de9ca196c24052887184'
-    }
-  }
-  return Microsoft.PowerShell.Utility\Get-FileHash `
-    -LiteralPath $LiteralPath -Algorithm $Algorithm
 }
 
 function Get-ScheduledTaskInfo {
