@@ -42,7 +42,7 @@ function Initialize-CleanupFixture {
   if (Test-Path -LiteralPath $env:LOCALAPPDATA) {
     Remove-Item -LiteralPath $env:LOCALAPPDATA -Recurse -Force
   }
-  New-Item -ItemType Directory -Path $env:LOCALAPPDATA,$env:TEMP | Out-Null
+  New-Item -ItemType Directory -Path $env:LOCALAPPDATA,$env:TEMP -Force | Out-Null
   New-Item -ItemType Directory -Path $root,$evidence,$privateRoot,$privateEvidence,
     $retainedRoot,$retainedEvidence | Out-Null
   foreach ($directory in @($root,$evidence,$privateRoot,$privateEvidence,$retainedRoot,$retainedEvidence)) {
