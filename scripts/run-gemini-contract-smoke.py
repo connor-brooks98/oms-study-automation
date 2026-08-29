@@ -718,15 +718,15 @@ class GoogleGenaiSmokeSession:
         file_name: str,
         metadata: tuple[tuple[str, str], ...],
     ) -> str:
-        custom_metadata = [
-            {"key": key, "string_value": value} for key, value in metadata
-        ]
         async with self._clients.client() as client:
             operation = await _provider_call(
                 lambda: client.file_search_stores.import_file(
                     file_search_store_name=store_name,
                     file_name=file_name,
-                    config={"custom_metadata": custom_metadata},
+                    config=build_import_file_config(
+                        [{"key": key, "string_value": value} for key, value in metadata],
+                        None,
+                    ),
                 ),
                 diagnostic_sink=self._diagnostic_sink,
                 label="import_file",

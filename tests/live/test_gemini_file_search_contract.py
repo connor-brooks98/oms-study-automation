@@ -454,8 +454,11 @@ def test_google_genai_2_14_session_maps_exact_sdk_contract() -> None:
         "display_name": "task-2-8-synthetic.pdf",
         "mime_type": "application/pdf",
     }
-    metadata = all_aio[2].file_search_stores.calls[0][1][2]["custom_metadata"]
-    assert metadata[0] == {"key": "authority_class", "string_value": "course_material"}
+    import_config = all_aio[2].file_search_stores.calls[0][1][2]
+    assert import_config.http_options.extra_body["customMetadata"][0] == {
+        "key": "authority_class",
+        "stringValue": "course_material",
+    }
     query_bodies = [
         aio.interactions.calls[0] for aio in all_aio if aio.interactions.calls
     ]
