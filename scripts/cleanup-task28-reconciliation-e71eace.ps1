@@ -21,9 +21,18 @@ $privateDiagnostic = Join-Path $env:TEMP 'sol0-task28-private-shadow-diagnostic-
 $privateScratch = Join-Path $env:TEMP 'sol0-task28-private-shadow-scratch-9097851'
 $privateTaskName = 'OMS Sol0 Task28 Private Shadow 9097851'
 $approvedBase = Join-Path $env:LOCALAPPDATA 'Temp'
-$expectedExecutable = Join-Path $PSHOME 'powershell.exe'
+$auditRoot = Join-Path $approvedBase 'sol0-task28-reconciliation-e71eace-audit'
+$auditPath = Join-Path $auditRoot 'cleanup-failure.json'
+$auditTemp = Join-Path $auditRoot 'cleanup-failure.tmp'
+$trustedSystemBase = 'C:\Windows'
+$expectedExecutable = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
 $expectedArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
   $launcher + '"'
+$expectedExecutableHash = '7600ffe12da441fe89d035b13801e8e91d064bc544a27b19a5cf49f6ab8b18f5'
+$expectedExecutableLength = 454656
+$expectedExecutableVersion = '10.0.26100.8875 (WinBuild.160101.0800)'
+$expectedSignerSubject = 'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
+$expectedSignerThumbprint = 'DC91E564D5BC1E3A8E02D6A8508682ABEA8A2443'
 
 function Assert-ExactHash([string]$Path,[string]$Expected) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or
@@ -84,6 +93,77 @@ function Assert-NoReparsePoint([string]$Path) {
   }
 }
 
+function Get-FinalPath([string]$Path) {
+  if (-not ('OmsFinalPath' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class OmsFinalPath {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern uint GetFinalPathNameByHandle(
+    Microsoft.Win32.SafeHandles.SafeFileHandle handle,
+    StringBuilder path,
+    uint length,
+    uint flags
+  );
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern bool ReplaceFile(
+    string replacedFile, string replacementFile, string backupFile,
+    uint flags, IntPtr exclude, IntPtr reserved
+  );
+
+  public static string Resolve(string path) {
+    using (var stream = new FileStream(
+      path, FileMode.Open, FileAccess.Read,
+      FileShare.ReadWrite | FileShare.Delete
+    )) {
+      var buffer = new StringBuilder(32768);
+      uint length = GetFinalPathNameByHandle(
+        stream.SafeFileHandle, buffer, (uint)buffer.Capacity, 0
+      );
+      if (length == 0 || length >= buffer.Capacity) {
+        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+      }
+      return buffer.ToString();
+    }
+  }
+
+  public static void AtomicReplace(string destination, string replacement) {
+    if (!ReplaceFile(destination, replacement, null, 1, IntPtr.Zero, IntPtr.Zero)) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+  }
+}
+'@
+  }
+  $final = [OmsFinalPath]::Resolve($Path)
+  if ($final.StartsWith('\\?\',[StringComparison]::Ordinal)) {
+    $final = $final.Substring(4)
+  }
+  return [IO.Path]::GetFullPath($final)
+}
+
+function Assert-NoReparseAncestorChain([string]$Base,[string]$Target) {
+  $baseFull = [IO.Path]::GetFullPath($Base).TrimEnd('\')
+  $targetFull = [IO.Path]::GetFullPath($Target).TrimEnd('\')
+  if (-not $targetFull.StartsWith(
+    $baseFull + '\',[StringComparison]::OrdinalIgnoreCase
+  )) { throw 'cleanup_path_escape' }
+  $current = $baseFull
+  foreach ($part in @('') + $targetFull.Substring($baseFull.Length + 1).Split('\')) {
+    if ($part) { $current = Join-Path $current $part }
+    if (-not (Test-Path -LiteralPath $current) -or
+        ((Get-Item -LiteralPath $current -Force).Attributes -band
+          [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'cleanup_reparse_point_detected'
+    }
+  }
+}
+
 function Get-CanonicalPath(
   [string]$Base,[string]$Path,[bool]$Container
 ) {
@@ -135,15 +215,62 @@ function Get-CleanupPathContract {
   $canonicalLauncher = Get-CanonicalPath $approvedBase $launcher $false
   $canonicalCleanup = Get-CanonicalPath $approvedBase $cleanupScript $false
   $canonicalManifest = Get-CanonicalPath $approvedBase $rootManifest $false
+  $canonicalAudit = Get-CanonicalPath $approvedBase $auditRoot $true
+  $canonicalAuditPath = Get-CanonicalPath $approvedBase $auditPath $false
+  Assert-DisjointPaths $canonicalRoot $canonicalAudit
+  Assert-DisjointPaths $canonicalPrivate $canonicalAudit
   foreach ($path in @($canonicalLauncher,$canonicalCleanup,$canonicalManifest)) {
     if (-not (Test-PathWithin $canonicalRoot $path)) { throw 'cleanup_path_escape' }
     Assert-DisjointPaths $canonicalPrivate $path
+  }
+  if (-not (Test-PathWithin $canonicalAudit $canonicalAuditPath)) {
+    throw 'cleanup_path_escape'
   }
   return [pscustomobject]@{
     Root = $canonicalRoot
     PrivateRoot = $canonicalPrivate
     Launcher = $canonicalLauncher
+    AuditRoot = $canonicalAudit
+    AuditPath = $canonicalAuditPath
   }
+}
+
+function Assert-AuditSink([object]$Paths) {
+  Assert-ProtectedDirectory $auditRoot
+  Assert-NoReparsePoint $auditRoot
+  $currentAudit = Get-CanonicalPath $approvedBase $auditRoot $true
+  $currentAuditPath = Get-CanonicalPath $approvedBase $auditPath $false
+  if (-not $currentAudit.Equals($Paths.AuditRoot,[StringComparison]::OrdinalIgnoreCase) -or
+      -not $currentAuditPath.Equals($Paths.AuditPath,[StringComparison]::OrdinalIgnoreCase) -or
+      @(Get-ChildItem -LiteralPath $auditRoot -Force).Count -ne 1 -or
+      (Get-Item -LiteralPath $auditPath -Force).Length -ne 0 -or
+      (Test-Path -LiteralPath $auditTemp) -or
+      (Get-FileHash -LiteralPath $auditPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+        'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855') {
+    throw 'cleanup_audit_sink_mismatch'
+  }
+}
+
+function Assert-SystemExecutable([object]$Paths,[string]$ActionExecutable) {
+  if (-not [string]::Equals(
+    $ActionExecutable,$expectedExecutable,[StringComparison]::OrdinalIgnoreCase
+  )) { throw 'cleanup_task_contract_mismatch' }
+  Assert-NoReparseAncestorChain $trustedSystemBase $expectedExecutable
+  $item = Get-Item -LiteralPath $expectedExecutable -Force
+  $signature = Get-AuthenticodeSignature -LiteralPath $expectedExecutable
+  $final = Get-FinalPath $expectedExecutable
+  if (-not $final.Equals($expectedExecutable,[StringComparison]::OrdinalIgnoreCase) -or
+      $item.Length -ne $expectedExecutableLength -or
+      $item.VersionInfo.FileVersion -cne $expectedExecutableVersion -or
+      (Get-FileHash -LiteralPath $expectedExecutable -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+        $expectedExecutableHash -or
+      [string]$signature.Status -cne 'Valid' -or
+      $signature.SignerCertificate.Subject -cne $expectedSignerSubject -or
+      $signature.SignerCertificate.Thumbprint -cne $expectedSignerThumbprint) {
+    throw 'cleanup_executable_identity_mismatch'
+  }
+  Assert-DisjointPaths $Paths.Root $final
+  Assert-DisjointPaths $Paths.PrivateRoot $final
 }
 
 function Assert-ExactRootManifest {
@@ -279,6 +406,7 @@ function Assert-ExactRetainedTask([object]$Paths) {
   $actionLauncher = Get-CanonicalPath $approvedBase $launcher $false
   $actionWorkingDirectory = [IO.Path]::GetFullPath([string]$actions[0].WorkingDirectory)
   $actionExecutable = [IO.Path]::GetFullPath([string]$actions[0].Execute)
+  Assert-SystemExecutable $Paths ([string]$actions[0].Execute)
   if (-not $actionLauncher.Equals($Paths.Launcher,[StringComparison]::OrdinalIgnoreCase) -or
       -not (Test-PathWithin $Paths.Root $actionLauncher) -or
       (-not $actionWorkingDirectory.Equals(
@@ -289,6 +417,104 @@ function Assert-ExactRetainedTask([object]$Paths) {
       )) {
     throw 'cleanup_path_escape'
   }
+}
+
+function Assert-ReconciliationRootBound([object]$Paths) {
+  Assert-ProtectedDirectory $root
+  Assert-ProtectedDirectory $evidence
+  Assert-NoReparsePoint $root
+  $current = Get-CleanupPathContract
+  if (-not $current.Root.Equals($Paths.Root,[StringComparison]::OrdinalIgnoreCase) -or
+      -not $current.PrivateRoot.Equals(
+        $Paths.PrivateRoot,[StringComparison]::OrdinalIgnoreCase
+      ) -or
+      -not $current.AuditRoot.Equals($Paths.AuditRoot,[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'cleanup_path_identity_changed'
+  }
+  if ([IO.Path]::GetFullPath($PSCommandPath) -cne [IO.Path]::GetFullPath($cleanupScript)) {
+    throw 'cleanup_script_location_mismatch'
+  }
+  Assert-ExactRootManifest
+  Assert-ExactLegacyEvidence
+  if (Test-Path -LiteralPath $diagnostic) { throw 'cleanup_diagnostic_present' }
+}
+
+function Assert-ExactTaskAbsent {
+  if (@(Get-ExactTask).Count -ne 0) { throw 'cleanup_task_removal_unproven' }
+}
+
+function Assert-BoundPhase([object]$Paths,[bool]$TaskPresent) {
+  Assert-ReconciliationRootBound $Paths
+  Assert-PreservedPrivateRoots $Paths
+  if ($TaskPresent) { Assert-ExactRetainedTask $Paths } else { Assert-ExactTaskAbsent }
+  Assert-HubHealthy
+  Assert-AuditSink $Paths
+}
+
+function Assert-RemovedPhase([object]$Paths) {
+  Assert-ExactTaskAbsent
+  if (Test-Path -LiteralPath $root) { throw 'cleanup_root_removal_unproven' }
+  Assert-PreservedPrivateRoots $Paths
+  Assert-HubHealthy
+  Assert-AuditSink $Paths
+}
+
+function Get-TaskPredicate([object]$Paths,[bool]$TaskPresent) {
+  try {
+    if ($TaskPresent) { Assert-ExactRetainedTask $Paths } else { Assert-ExactTaskAbsent }
+    if ($TaskPresent) { return 'exact_task_present' }
+    return 'exact_task_absent'
+  } catch { return 'failed' }
+}
+
+function Get-RootPredicate([object]$Paths,[bool]$RootPresent) {
+  try {
+    if ($RootPresent) { Assert-ReconciliationRootBound $Paths }
+    elseif (Test-Path -LiteralPath $root) { throw 'cleanup_root_removal_unproven' }
+    if ($RootPresent) { return 'bound' }
+    return 'absent'
+  } catch { return 'failed' }
+}
+
+function Get-TombstonePredicate([object]$Paths) {
+  try { Assert-PreservedPrivateRoots $Paths; return 'bound' } catch { return 'failed' }
+}
+
+function Get-HubPredicate {
+  try { Assert-HubHealthy; return 'healthy' } catch { return 'failed' }
+}
+
+function Write-FailureAudit(
+  [object]$Paths,[string]$Stage,[bool]$TaskPresent,[bool]$RootPresent,
+  [bool]$MutationAttempted,[bool]$MutationCompleted
+) {
+  Assert-AuditSink $Paths
+  $record = [ordered]@{
+    failure_stage = $Stage
+    task_predicate = Get-TaskPredicate $Paths $TaskPresent
+    reconciliation_root_predicate = Get-RootPredicate $Paths $RootPresent
+    tombstone_predicate = Get-TombstonePredicate $Paths
+    hub_predicate = Get-HubPredicate
+    mutation_attempted = $MutationAttempted
+    mutation_completed = $MutationCompleted
+  }
+  Assert-AuditSink $Paths
+  $json = $record | ConvertTo-Json -Compress
+  [IO.File]::WriteAllText(
+    $auditTemp,$json + [char]10,[Text.UTF8Encoding]::new($false)
+  )
+  [OmsFinalPath]::AtomicReplace($auditPath,$auditTemp)
+}
+
+function Stop-WithFailureAudit(
+  [object]$Paths,[string]$Stage,[bool]$TaskPresent,[bool]$RootPresent,
+  [bool]$MutationAttempted,[bool]$MutationCompleted
+) {
+  try {
+    Write-FailureAudit $Paths $Stage $TaskPresent $RootPresent `
+      $MutationAttempted $MutationCompleted
+  } catch {}
+  throw ('cleanup_failed_' + $Stage)
 }
 
 function Assert-ExactLegacyEvidence {
@@ -325,32 +551,42 @@ function Assert-ExactLegacyEvidence {
   }
 }
 
-Assert-ProtectedDirectory $root
-Assert-ProtectedDirectory $evidence
-Assert-NoReparsePoint $root
 $paths = Get-CleanupPathContract
-if ([IO.Path]::GetFullPath($PSCommandPath) -cne [IO.Path]::GetFullPath($cleanupScript)) {
-  throw 'cleanup_script_location_mismatch'
-}
-Assert-ExactRootManifest
-Assert-PreservedPrivateRoots $paths
-Assert-ExactRetainedTask $paths
-Assert-ExactLegacyEvidence
-if (Test-Path -LiteralPath $diagnostic) { throw 'cleanup_diagnostic_present' }
-Assert-HubHealthy
 
 if ($ValidateOnly) {
+  Assert-BoundPhase $paths $true
   Write-Output 'TASK28_RECONCILIATION_CLEANUP_VALIDATED'
   return
 }
 
-Unregister-ScheduledTask `
-  -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction Stop
-if (@(Get-ExactTask).Count -ne 0) { throw 'cleanup_task_removal_unproven' }
-Assert-HubHealthy
-Assert-PreservedPrivateRoots $paths
-Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
-if (Test-Path -LiteralPath $root) { throw 'cleanup_root_removal_unproven' }
-Assert-HubHealthy
-Assert-PreservedPrivateRoots $paths
+try { Assert-BoundPhase $paths $true } catch {
+  Stop-WithFailureAudit $paths 'pre_unregister_validation' $true $true $false $false
+}
+
+try {
+  Assert-BoundPhase $paths $true
+  Unregister-ScheduledTask `
+    -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction Stop
+} catch {
+  Stop-WithFailureAudit $paths 'unregister_request' $true $true $true $false
+}
+
+try { Assert-BoundPhase $paths $false } catch {
+  Stop-WithFailureAudit $paths 'post_unregister_validation' $false $true $true $true
+}
+
+try { Assert-BoundPhase $paths $false } catch {
+  Stop-WithFailureAudit $paths 'pre_root_removal_validation' $false $true $false $false
+}
+
+try {
+  Assert-BoundPhase $paths $false
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
+} catch {
+  Stop-WithFailureAudit $paths 'root_removal' $false $true $true $false
+}
+
+try { Assert-RemovedPhase $paths } catch {
+  Stop-WithFailureAudit $paths 'post_root_removal_validation' $false $false $true $true
+}
 Write-Output 'TASK28_RECONCILIATION_CLEANUP_COMPLETE'
