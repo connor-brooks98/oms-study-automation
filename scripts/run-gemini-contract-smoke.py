@@ -636,6 +636,7 @@ class GoogleGenaiSmokeSession:
                 lambda: client.file_search_stores.list(config={"page_size": 20}),
                 diagnostic_sink=self._diagnostic_sink,
                 label="find_stores.request",
+                capture_response=False,
             )
             if not isinstance(listed, AsyncIterable):
                 raise SmokeContractError(
@@ -713,6 +714,7 @@ class GoogleGenaiSmokeSession:
                 lambda: client.files.list(config={"page_size": 100}),
                 diagnostic_sink=self._diagnostic_sink,
                 label="find_files.request",
+                capture_response=False,
             )
             if not isinstance(listed, AsyncIterable):
                 raise SmokeContractError(
@@ -1034,6 +1036,7 @@ async def _provider_call(
     *,
     diagnostic_sink: DiagnosticSink | None = None,
     label: str = "provider_call",
+    capture_response: bool = True,
 ) -> Any:
     try:
         response = await request()
@@ -1043,7 +1046,7 @@ async def _provider_call(
         if diagnostic_sink is not None:
             diagnostic_sink.capture_exception(f"{label}.failed", error)
         raise translate_gemini_error(error) from None
-    if diagnostic_sink is not None:
+    if capture_response and diagnostic_sink is not None:
         diagnostic_sink.capture(label, response)
     return response
 
