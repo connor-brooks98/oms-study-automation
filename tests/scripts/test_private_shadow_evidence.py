@@ -51,6 +51,9 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
         assert f'"{outcome}"' in evidence
     for reason in ("invalid_argument", "unsupported_mime_type"):
         assert f'"{reason}"' in evidence
+    assert "$ArgumentReasons" in evidence
+    assert '$Record.provider_error_category -cne "provider"' in evidence
+    assert "$Record.provider_status_code -ne 400" in evidence
     for forbidden in (
         "gemini-api-key",
         "Lecture 13",

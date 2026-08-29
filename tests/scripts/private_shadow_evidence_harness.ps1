@@ -79,6 +79,8 @@ else:
         "cleanup_count_mismatch": "positive_query",
         "store_count_mismatch": "upload_input",
         "provider_diagnostics": "import_input",
+        "invalid_argument_wrong_category": "import_input",
+        "unsupported_mime_wrong_status": "import_input",
         "invalid_failure_input": "positive_query",
         "invalid_provider_category": "positive_query",
         "invalid_provider_status": "positive_query",
@@ -190,6 +192,14 @@ else:
         record["provider_error_category"] = "provider"
         record["provider_status_code"] = 400
         record["provider_reason"] = "unknown_provider"
+    elif mode == "invalid_argument_wrong_category":
+        record["provider_error_category"] = "authentication"
+        record["provider_status_code"] = 400
+        record["provider_reason"] = "invalid_argument"
+    elif mode == "unsupported_mime_wrong_status":
+        record["provider_error_category"] = "provider"
+        record["provider_status_code"] = 401
+        record["provider_reason"] = "unsupported_mime_type"
     elif mode == "invalid_failure_input":
         record["failure_input_identity"] = "private-dynamic-input"
     elif mode == "invalid_provider_category":
@@ -373,7 +383,8 @@ try {
       "success_null_warnings", "reversed_warnings", "stage_progress_contradiction",
       "impossible_outcomes", "cleanup_count_mismatch", "store_count_mismatch",
       "invalid_failure_input", "invalid_provider_category",
-      "invalid_provider_status", "invalid_provider_reason"
+      "invalid_provider_status", "invalid_provider_reason",
+      "invalid_argument_wrong_category", "unsupported_mime_wrong_status"
   )) {
     Invoke-PrivateShadowCase -Mode $Mode `
       -EvidenceUsable $false -ExpectedExit 52 | Out-Null
