@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "blocked_cleanup_complete_reconciliation_empty_review_pending",
+  "status": "blocked_cleanup_complete_reconciliation_empty_reviewed_ship",
   "recorded_at": "2026-08-29T09:36:35-04:00",
   "authorized_composition_commit": "ba141f403ed54335ce6282adbdcfa86524fb74e9",
   "authorized_composition_tree": "dfaac0883464d8767982460c82eed19162ed715d",
@@ -85,9 +85,12 @@
     "merged_pushed_or_deployed": false
   },
   "blocker": "Gemini returned HTTP 400 while importing the normalized Markdown input; sanitized reason classification is unknown_provider",
-  "next_action": "No retry is authorized. The owning implementation must diagnose the import_input request contract offline and obtain fresh reviewed composition and authorization before any later provider attempt.",
+  "next_owner": "Sol-2",
+  "next_action": "No retry is authorized. Sol-2 must diagnose the import_input request contract offline and obtain a corrected independently reviewed composition and fresh authorization before any later provider attempt.",
   "reviews": {
-    "specification": "pending exact-result review",
-    "quality_security": "pending exact-result review"
+    "reviewed_commit": "ff3599cf58c2d303f92e9aad781af2df985ac807",
+    "reviewed_tree": "327a554a6e4904768490125d65f283b1cd56328b",
+    "specification": "SHIP: no findings",
+    "quality_security": "SHIP: no findings"
   }
 }
