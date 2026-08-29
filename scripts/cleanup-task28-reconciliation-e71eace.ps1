@@ -93,7 +93,7 @@ function Assert-NoReparsePoint([string]$Path) {
   }
 }
 
-function Get-FinalPath([string]$Path) {
+function Initialize-NativeHelper {
   if (-not ('OmsFinalPath' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -140,6 +140,10 @@ public static class OmsFinalPath {
 }
 '@
   }
+}
+
+function Get-FinalPath([string]$Path) {
+  Initialize-NativeHelper
   $final = [OmsFinalPath]::Resolve($Path)
   if ($final.StartsWith('\\?\',[StringComparison]::Ordinal)) {
     $final = $final.Substring(4)
@@ -551,6 +555,7 @@ function Assert-ExactLegacyEvidence {
   }
 }
 
+Initialize-NativeHelper
 $paths = Get-CleanupPathContract
 
 if ($ValidateOnly) {
@@ -563,8 +568,11 @@ try { Assert-BoundPhase $paths $true } catch {
   Stop-WithFailureAudit $paths 'pre_unregister_validation' $true $true $false $false
 }
 
+try { Assert-BoundPhase $paths $true } catch {
+  Stop-WithFailureAudit $paths 'pre_unregister_validation' $true $true $false $false
+}
+
 try {
-  Assert-BoundPhase $paths $true
   Unregister-ScheduledTask `
     -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction Stop
 } catch {
@@ -579,8 +587,11 @@ try { Assert-BoundPhase $paths $false } catch {
   Stop-WithFailureAudit $paths 'pre_root_removal_validation' $false $true $false $false
 }
 
+try { Assert-BoundPhase $paths $false } catch {
+  Stop-WithFailureAudit $paths 'pre_root_removal_validation' $false $true $false $false
+}
+
 try {
-  Assert-BoundPhase $paths $false
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
 } catch {
   Stop-WithFailureAudit $paths 'root_removal' $false $true $true $false
