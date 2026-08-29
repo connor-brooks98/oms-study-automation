@@ -11,6 +11,8 @@ $diagnostic = Join-Path $env:TEMP 'sol0-task28-reconciliation-diagnostic-e71eace
 $taskName = 'OMS Sol0 Task28 Reconciliation e71eace'
 $taskPath = '\'
 $launcher = Join-Path $root 'reconciliation-launcher.ps1'
+$cleanupScript = Join-Path $root 'cleanup-only-disposition.ps1'
+$rootManifest = Join-Path $root 'cleanup-root-manifest.sha256'
 $privateRoot = Join-Path $env:LOCALAPPDATA 'Temp\sol0-task28-private-shadow-9097851'
 $retainedRoot = Join-Path $env:LOCALAPPDATA 'Temp\sol0-task28-private-shadow-06848e2'
 $privateEvidence = Join-Path $privateRoot 'evidence'
@@ -69,10 +71,50 @@ function Assert-ProtectedDirectory([string]$Path) {
 }
 
 function Assert-NoReparsePoint([string]$Path) {
-  if (@(Get-ChildItem -LiteralPath $Path -Force -Recurse | Where-Object {
+  if (((Get-Item -LiteralPath $Path -Force).Attributes -band
+        [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      @(Get-ChildItem -LiteralPath $Path -Force -Recurse | Where-Object {
         ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
       }).Count -ne 0) {
     throw 'cleanup_reparse_point_detected'
+  }
+}
+
+function Assert-ExactRootManifest {
+  Assert-ExactHash $rootManifest 'ea671e594d9494aec7be240e322baa382dc954bab8f1de9ca196c24052887184'
+  $listed = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($line in @(Get-Content -LiteralPath $rootManifest)) {
+    if ($line -notmatch '^([0-9a-f]{64})  (.+)$') {
+      throw 'cleanup_root_manifest_invalid'
+    }
+    $expectedHash = $Matches[1]
+    $relative = $Matches[2]
+    if ([IO.Path]::IsPathRooted($relative) -or
+        $relative -match '(^|[\\/])\.\.([\\/]|$)' -or
+        $relative -like 'evidence/*' -or
+        $relative -ceq 'cleanup-only-disposition.ps1' -or
+        $relative -ceq 'cleanup-root-manifest.sha256' -or
+        -not $listed.Add($relative)) {
+      throw 'cleanup_root_manifest_invalid'
+    }
+    $path = Join-Path $root $relative.Replace('/',[IO.Path]::DirectorySeparatorChar)
+    Assert-ExactHash $path $expectedHash
+  }
+  if ($listed.Count -eq 0) { throw 'cleanup_root_manifest_invalid' }
+  $allowed = [Collections.Generic.HashSet[string]]::new(
+    $listed,[StringComparer]::OrdinalIgnoreCase
+  )
+  foreach ($relative in @(
+    'evidence/safe-result.json','evidence/safe-status.json',
+    'cleanup-only-disposition.ps1','cleanup-root-manifest.sha256'
+  )) {
+    if (-not $allowed.Add($relative)) { throw 'cleanup_root_manifest_invalid' }
+  }
+  $actual = @(Get-ChildItem -LiteralPath $root -Recurse -File)
+  if ($actual.Count -ne $allowed.Count) { throw 'cleanup_root_inventory_mismatch' }
+  foreach ($file in $actual) {
+    $relative = $file.FullName.Substring($root.Length + 1).Replace('\','/')
+    if (-not $allowed.Contains($relative)) { throw 'cleanup_root_inventory_mismatch' }
   }
 }
 
@@ -175,6 +217,10 @@ function Assert-ExactLegacyEvidence {
 Assert-ProtectedDirectory $root
 Assert-ProtectedDirectory $evidence
 Assert-NoReparsePoint $root
+if ([IO.Path]::GetFullPath($PSCommandPath) -cne [IO.Path]::GetFullPath($cleanupScript)) {
+  throw 'cleanup_script_location_mismatch'
+}
+Assert-ExactRootManifest
 Assert-PreservedPrivateRoots
 Assert-ExactRetainedTask
 Assert-ExactLegacyEvidence
