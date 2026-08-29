@@ -341,6 +341,9 @@ class PrivateShadowQueryAudit:
     output_tokens: int
     supported: bool | None
     answer_empty: bool | None
+    answer: str | None = None
+    citation_page: int | None = None
+    citation_excerpt: str | None = None
 
 
 class DiagnosticSink(Protocol):
@@ -677,7 +680,7 @@ class GoogleGenaiSmokeSession:
                 lambda: client.files.upload(
                     file=path,
                     config={"display_name": display_name, "mime_type": media_type},
-                )
+                ), diagnostic_sink=self._diagnostic_sink, label="upload_input"
             )
         self._file_name = _provider_identity(uploaded, "file")
         return self._file_name
@@ -720,7 +723,7 @@ class GoogleGenaiSmokeSession:
                         [{"key": key, "string_value": value} for key, value in metadata],
                         chunking,
                     ),
-                )
+                ), diagnostic_sink=self._diagnostic_sink, label="import_input"
             )
         return _provider_identity(operation, "operation")
 
@@ -908,7 +911,10 @@ class GoogleGenaiSmokeSession:
                 "schema": SmokeAnswer.model_json_schema(),
             }
         async with self._clients.client() as client:
-            response = await _provider_call(lambda: client.interactions.create(**body))
+            response = await _provider_call(
+                lambda: client.interactions.create(**body), diagnostic_sink=self._diagnostic_sink,
+                label="query_private",
+            )
         output_text = _interaction_output(response)
         supported: bool | None = None
         answer_empty: bool | None = None
@@ -932,7 +938,7 @@ class GoogleGenaiSmokeSession:
                 "private shadow usage was invalid",
                 reason="private_usage_invalid",
             )
-        citation_count, resolved_count = _private_shadow_citation_counts(
+        citation_count, resolved_count, page, excerpt = _private_shadow_citation_counts(
             response,
             store_name=store_name,
             scope=scope,
@@ -947,6 +953,9 @@ class GoogleGenaiSmokeSession:
             usage.output_tokens,
             supported,
             answer_empty,
+            output_text,
+            page,
+            excerpt,
         )
 
     async def list_documents(self, store_name: str) -> tuple[str, ...]:
@@ -1408,12 +1417,12 @@ def _private_shadow_citation_counts(
     source_revision_id: str,
     manifest: Any,
     file_bindings: tuple[tuple[str, str], ...],
-) -> tuple[int, int]:
+) -> tuple[int, int, int | None, str | None]:
     from oms_hub.providers.gemini.citations import ProviderCitation, map_provider_citation
 
     steps = _field(response, "steps")
     if not isinstance(steps, Iterable) or isinstance(steps, (str, bytes, Mapping)):
-        return 0, 0
+        return 0, 0, None, None
     inputs = {item.input_key: item for item in manifest.inputs}
     expected_scope = {
         "course_id": scope.course_id,
@@ -1423,6 +1432,8 @@ def _private_shadow_citation_counts(
     }
     citation_count = 0
     resolved_count = 0
+    first_page: int | None = None
+    first_excerpt: str | None = None
     for step in steps:
         contents = _field(step, "content")
         if _field(step, "type") != "model_output" or not isinstance(contents, Iterable):
@@ -1474,9 +1485,11 @@ def _private_shadow_citation_counts(
                     citation = ProviderCitation(item.path.name, excerpt, page)
                     if map_provider_citation(citation, manifest) is not None:
                         resolved_count += 1
+                        if first_excerpt is None:
+                            first_page, first_excerpt = page, excerpt
                 except (SmokeContractError, TypeError, ValueError):
                     continue
-    return citation_count, resolved_count
+    return citation_count, resolved_count, first_page, first_excerpt
 
 
 def _citations(
@@ -1915,6 +1928,7 @@ async def _run_shadow_sequence(
     stores: list[str] = []
     files: list[tuple[str, str]] = []
     documents: list[str] = []
+    operations: list[str] = []
     states: list[str] = []
     failure: BaseException | None = None
     failure_stage = "unknown"
@@ -2005,6 +2019,7 @@ async def _run_shadow_sequence(
                 _private_shadow_metadata(view, item),
                 chunking,
             )
+            operations.append(operation)
             active_stage = "wait_for_import"
             documents.append(await session.wait_for_import(operation))
         states.extend(
@@ -2033,6 +2048,14 @@ async def _run_shadow_sequence(
                 "private shadow citations were unresolved",
                 reason="private_citation_unresolved",
             )
+        if mode == "public_matrix" and (
+            positive.supported is not True
+            or positive.answer is None
+            or SYNTHETIC_MARKER not in positive.answer
+            or positive.citation_page is None
+            or positive.citation_excerpt is None
+        ):
+            raise SmokeContractError("public smoke marker was invalid", reason="positive_answer_missing_marker")
         states.append("positive_query_complete")
         if view.lecture_id == PRIVATE_SHADOW_WRONG_LECTURE_ID:
             raise LiveSmokeBlocked("private shadow wrong-scope identity collided")
@@ -2237,7 +2260,7 @@ async def _run_shadow_sequence(
             "page_count": record["page_count"],
             "operation_states": ["done"],
             "citation_resolution_rate": record["citation_resolution_rate"],
-            "citation": {"page_number": 1, "excerpt_sha256": hashlib.sha256(SYNTHETIC_FACT.encode()).hexdigest()},
+            "citation": {"page_number": positive.citation_page, "excerpt_sha256": hashlib.sha256(positive.citation_excerpt.encode()).hexdigest()},
             "negative_scope_retrieved": False,
             "structured_output": {"schema": "SmokeAnswer", "validated": True, "answer_sha256": hashlib.sha256(b"").hexdigest()},
             "thinking_configuration": "omitted",
@@ -2245,6 +2268,12 @@ async def _run_shadow_sequence(
             "usage": {"indexed_bytes": view.pdf.path.stat().st_size, "input_tokens": positive.input_tokens, "output_tokens": positive.output_tokens},
             "warnings": [],
             "cleanup": {"attempted": len(documents) + len(files) + len(stores), "status": "completed"},
+            "provider_ids": {
+                "store": _redacted_identity(store_name),
+                "file": _redacted_identity(files[0][0]),
+                "operation": _redacted_identity(operations[0]),
+                "document": _redacted_identity(documents[0]),
+            },
         }
     return record
 

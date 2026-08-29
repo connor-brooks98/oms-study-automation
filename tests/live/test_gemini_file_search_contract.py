@@ -136,7 +136,8 @@ class _FakeSession:
             )
         return self.smoke.PrivateShadowQueryAudit(
             len(result.citations), len(result.citations),
-            result.input_tokens or 0, result.output_tokens or 0, None, None,
+            result.input_tokens or 0, result.output_tokens or 0, True, None,
+            answer.answer, result.citations[0].page_number, result.citations[0].excerpt,
         )
 
     async def upload_pdf(self, display_name: str, content: bytes) -> str:
@@ -1209,8 +1210,8 @@ def test_public_success_uses_actual_citation_audit_values() -> None:
                 supported=True,
                 answer_empty=None,
                 answer=smoke.SYNTHETIC_FACT,
-                page_number=7,
-                excerpt="actual synthetic excerpt",
+                citation_page=7,
+                citation_excerpt="actual synthetic excerpt",
             )
 
     record = asyncio.run(smoke.run_contract_smoke(ActualAudit(smoke)))
