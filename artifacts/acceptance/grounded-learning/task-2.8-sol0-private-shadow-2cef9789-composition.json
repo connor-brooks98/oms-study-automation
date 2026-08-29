@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "corrected_composed_hash_verified_not_executed_review_pending",
+  "status": "offline_complete_reviewed_ship_not_authorized_not_executed",
   "recorded_at": "2026-08-28T23:04:48-04:00",
   "composition_identity": "2cef97899a371ba5e72d831e31194ce1",
   "composition_root": "C:\\Users\\conbr\\AppData\\Local\\Temp\\sol0-task28-private-shadow-2cef97899a371ba5e72d831e31194ce1",
@@ -99,12 +99,21 @@
     "production_or_gate_mutated": false,
     "merged_pushed_or_deployed": false
   },
+  "authorization": {
+    "fresh_one_shot_required": true,
+    "authorization_consumed": false,
+    "reviewed_composition_commit": "427d1dd573f9f0d07b1f9c7267a87f428e9792f3",
+    "reviewed_composition_tree": "5d6b1eec45ff5d32a273094d89b1425d0967a6cc",
+    "permitted_invocations": 0
+  },
   "reviews": {
     "prior_review_commit": "5bd97796a8c29b2bf84049487b0f47fd6302c21c",
     "prior_specification": "BLOCK: obsolete reviewed-operator scratch identity mismatched fresh launcher",
     "prior_quality_security": "BLOCK: exact launcher-to-operator integration would fail closed before private boundary",
     "correction": "composition-bound operator scratch identity aligned; real validator exercised with launcher-equivalent ACL initialization",
-    "specification": "pending fresh exact-composition review",
-    "quality_security": "pending fresh exact-composition review"
+    "reviewed_commit": "427d1dd573f9f0d07b1f9c7267a87f428e9792f3",
+    "reviewed_tree": "5d6b1eec45ff5d32a273094d89b1425d0967a6cc",
+    "specification": "SHIP: no findings",
+    "quality_security": "SHIP: no findings"
   }
 }
