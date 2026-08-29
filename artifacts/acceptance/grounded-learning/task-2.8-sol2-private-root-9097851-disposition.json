@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "owner_disposition_amended_review_pending",
+  "status": "owner_disposition_amended_reviewed_ship",
   "owner": "sol2_private_shadow_evidence",
   "source_handoff": "909785131b113fb5b2083b74bd2757c2fc0dbf4b",
   "baseline_handoff": "896ded575f8ec44256152592b84ad7774e482d45",
@@ -152,7 +152,11 @@
     ]
   },
   "amendment_reviews": {
-    "specification": "PENDING",
-    "quality_security": "PENDING"
+    "reviewed_candidate": "9e89bccb4fec5cd09e00eed27266ea423ed33ba0",
+    "reviewed_tree": "2781062a5936c4fecb20493faf601e4dfa49c95c",
+    "specification": "SHIP",
+    "specification_finding": "No residual candidate-local finding.",
+    "quality_security": "SHIP",
+    "quality_security_finding": "The exact PowerShell exemption, no-reregistration lifecycle, accepted TOCTOU ceiling, external audit sink, and tombstone protections are complete and fail closed."
   }
 }
