@@ -101,12 +101,17 @@ class _FakeSession:
         return tuple(name for name, value in self.live_files.items() if value in display_names)
 
     async def query_private(self, store_name: str, prompt: str, scope: object, **kwargs: object) -> object:
-        structured = kwargs.get("require_structured_no_result", False)
+        structured_no_result = kwargs.get("require_structured_no_result", False)
+        structured_supported = kwargs.get("require_structured_supported", False)
         result = await self.query(
             store_name,
             prompt,
             scope,
-            response_schema=self.smoke.SmokeAnswer if structured else None,
+            response_schema=(
+                self.smoke.SmokeAnswer
+                if structured_no_result or structured_supported
+                else None
+            ),
             omit_thinking=True,
         )
         try:
@@ -115,7 +120,7 @@ class _FakeSession:
             raise self.smoke.SmokeContractError(
                 "structured output was invalid", reason="structured_output_invalid"
             ) from None
-        if structured:
+        if structured_no_result:
             if answer.supported or answer.answer:
                 raise self.smoke.SmokeContractError(
                     "negative answer was invalid", reason="negative_answer_invalid"
@@ -123,6 +128,19 @@ class _FakeSession:
             return self.smoke.PrivateShadowQueryAudit(
                 len(result.citations), len(result.citations), 0, 0,
                 answer.supported, answer.answer == "",
+            )
+        if structured_supported:
+            citation = result.citations[0] if result.citations else None
+            return self.smoke.PrivateShadowQueryAudit(
+                len(result.citations),
+                len(result.citations),
+                result.input_tokens or 0,
+                result.output_tokens or 0,
+                answer.supported,
+                answer.answer == "",
+                answer.answer,
+                citation.page_number if citation is not None else None,
+                citation.excerpt if citation is not None else None,
             )
         if not answer.supported:
             raise self.smoke.SmokeContractError("positive answer was invalid")
@@ -1299,6 +1317,143 @@ def test_public_cleanup_only_failure_has_public_observed_evidence() -> None:
     assert evidence["checks"]["cleanup_store"] == "passed"
 
 
+@pytest.mark.parametrize(
+    ("failure_stage", "uncertain_resource"),
+    (
+        ("upload_input", "file"),
+        ("import_input", "document"),
+        ("wait_for_import", "document"),
+    ),
+)
+def test_public_response_loss_retains_unknown_resource_and_cleanup_outcomes(
+    failure_stage: str,
+    uncertain_resource: str,
+) -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class ResponseLoss(_FakeSession):
+        def __init__(self) -> None:
+            super().__init__(smoke)
+            self.file_reconciliations = 0
+
+        async def upload_input(self, *args: object, **kwargs: object) -> str:
+            value = await super().upload_input(*args, **kwargs)
+            if failure_stage == "upload_input":
+                raise smoke.GeminiProviderError("synthetic upload response loss")
+            return value
+
+        async def import_input(self, *args: object, **kwargs: object) -> str:
+            value = await super().import_input(*args, **kwargs)
+            if failure_stage == "import_input":
+                raise smoke.GeminiProviderError("synthetic import response loss")
+            return value
+
+        async def wait_for_import(self, *args: object, **kwargs: object) -> str:
+            value = await super().wait_for_import(*args, **kwargs)
+            if failure_stage == "wait_for_import":
+                raise smoke.GeminiProviderError("synthetic wait response loss")
+            return value
+
+        async def find_files(self, display_names: tuple[str, ...]) -> tuple[str, ...]:
+            self.file_reconciliations += 1
+            if self.file_reconciliations == 2:
+                raise RuntimeError("synthetic reconciliation loss")
+            return await super().find_files(display_names)
+
+    with pytest.raises(smoke.GeminiProviderError):
+        asyncio.run(smoke.run_contract_smoke(ResponseLoss(), failure_evidence=evidence))
+
+    assert {
+        key: evidence[key]
+        for key in ("failure_stage", "resources_created", "cleanup")
+    } == {
+        "failure_stage": failure_stage,
+        "resources_created": {
+            "document": "unknown" if uncertain_resource == "document" else "not_started",
+            "file": "unknown" if uncertain_resource == "file" else "confirmed",
+            "store": "confirmed",
+        },
+        "cleanup": {
+            "attempted": 1 if failure_stage == "upload_input" else 2,
+            "status": "unknown",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("answer", "supported", "citation", "expected_reason"),
+    (
+        ("cobalt-otter-28", False, "complete", "positive_answer_unsupported"),
+        ("wrong-marker", True, "complete", "positive_answer_missing_marker"),
+        ("cobalt-otter-28", True, "missing", "positive_citation_missing"),
+        ("cobalt-otter-28", True, "page_missing", "citation_page_absent"),
+        ("cobalt-otter-28", True, "excerpt_missing", "citation_excerpt_absent"),
+    ),
+)
+def test_public_positive_failures_keep_distinct_safe_reasons(
+    answer: str,
+    supported: bool,
+    citation: str,
+    expected_reason: str,
+) -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class ProviderShape(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id != smoke.SYNTHETIC_LECTURE_ID:
+                return result
+            citations = result.citations
+            if citation == "missing":
+                citations = ()
+            elif citation == "page_missing":
+                citations = (dataclasses.replace(citations[0], page_number=None),)
+            elif citation == "excerpt_missing":
+                citations = (dataclasses.replace(citations[0], excerpt=""),)
+            return smoke.SmokeQueryResult(
+                answer={"answer": answer, "supported": supported},
+                citations=citations,
+                input_tokens=11,
+                output_tokens=7,
+            )
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        asyncio.run(
+            smoke.run_contract_smoke(
+                ProviderShape(smoke), failure_evidence=evidence
+            )
+        )
+
+    assert smoke._failure_record(raised.value, evidence)["contract_reason"] == expected_reason
+
+
+def test_public_positive_malformed_provider_shape_is_not_a_negative_failure() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+
+    class MalformedPositive(_FakeSession):
+        async def query(self, *args: object, **kwargs: object) -> object:
+            result = await super().query(*args, **kwargs)
+            scope = args[2]
+            if scope.lecture_id == smoke.SYNTHETIC_LECTURE_ID:
+                return smoke.SmokeQueryResult(answer={}, citations=result.citations)
+            return result
+
+    with pytest.raises(smoke.SmokeContractError) as raised:
+        asyncio.run(
+            smoke.run_contract_smoke(
+                MalformedPositive(smoke), failure_evidence=evidence
+            )
+        )
+
+    assert smoke._failure_record(raised.value, evidence)["contract_reason"] == (
+        "structured_output_invalid"
+    )
+
+
 def test_public_runner_forwards_contract_diagnostic_lifecycle_events() -> None:
     smoke = _load_smoke()
     captured: dict[str, object] = {}
@@ -1312,7 +1467,13 @@ def test_public_runner_forwards_contract_diagnostic_lifecycle_events() -> None:
 
     asyncio.run(smoke.run_contract_smoke(_FakeSession(smoke), diagnostic_sink=Sink()))
 
-    assert "contract.expected" in captured
+    assert captured["contract.expected"] == {
+        "course_id": smoke.SYNTHETIC_COURSE_ID,
+        "exam_id": smoke.SYNTHETIC_EXAM_ID,
+        "lecture_id": smoke.SYNTHETIC_LECTURE_ID,
+        "source_revision_id": smoke.SYNTHETIC_REVISION_ID,
+        "fixture_sha256": hashlib.sha256(smoke.synthetic_pdf_bytes()).hexdigest(),
+    }
     assert captured["contract.check_matrix"] == {
         "positive_answer": "passed",
         "citation_presence": "passed",
@@ -1678,7 +1839,47 @@ def test_positive_citation_and_negative_schema_use_separate_existing_queries() -
     session = SchemaCapture()
     asyncio.run(smoke.run_contract_smoke(session))
 
-    assert session.schemas == [None, smoke.SmokeAnswer]
+    assert session.schemas == [smoke.SmokeAnswer, smoke.SmokeAnswer]
+
+
+def test_public_positive_adapter_returns_provider_audit_for_runner_validation() -> None:
+    smoke = _load_smoke()
+
+    class ProviderShape(_FakeSession):
+        def __init__(self) -> None:
+            super().__init__(smoke)
+            self.schemas: list[object] = []
+
+        async def query(self, *args: object, **kwargs: object) -> object:
+            self.schemas.append(kwargs["response_schema"])
+            return smoke.SmokeQueryResult(
+                answer={"answer": "wrong-marker", "supported": False},
+                citations=(),
+                input_tokens=11,
+                output_tokens=7,
+            )
+
+    session = ProviderShape()
+    audit = asyncio.run(
+        session.query_private(
+            session.store_name,
+            "safe public prompt",
+            smoke.SmokeScope(
+                smoke.SYNTHETIC_COURSE_ID,
+                smoke.SYNTHETIC_EXAM_ID,
+                smoke.SYNTHETIC_LECTURE_ID,
+            ),
+            source_revision_id=smoke.SYNTHETIC_REVISION_ID,
+            manifest=SimpleNamespace(),
+            file_bindings=(),
+            require_structured_supported=True,
+        )
+    )
+
+    assert session.schemas == [smoke.SmokeAnswer]
+    assert audit == smoke.PrivateShadowQueryAudit(
+        0, 0, 11, 7, False, False, "wrong-marker", None, None
+    )
 
 
 def test_negative_structured_answer_must_report_unsupported() -> None:
