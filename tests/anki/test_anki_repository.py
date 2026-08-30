@@ -1788,7 +1788,7 @@ def test_v24_card_ledger_evidence_survives_reopen_upgrade_without_rewriting(
         for candidate_model, outcome in fixtures
         if candidate_model == model
     ]
-    assert version == 29
+    assert version == 30
 
 
 def test_card_ledger_transport_failure_persists_only_safe_diagnostics(

@@ -1,6 +1,7 @@
 import hashlib
 
 from fastapi.testclient import TestClient
+from selectolax.parser import HTMLParser
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
@@ -37,6 +38,47 @@ def test_lecture_page_shows_separate_outline_and_quiz_controls(tmp_path):
     assert "Upload Lecture Transcript" not in page.text
     assert "Lecture Summary" in page.text
     assert "Lecture Quiz Generation" in page.text
+
+
+def test_lecture_page_shows_five_pass_ledger_rows_between_expandable_panels(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+    lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 1, "Seizures", "Faculty", None)
+    )
+
+    page = TestClient(app).get(f"/lectures/{lecture_id}")
+    document = HTMLParser(page.text)
+
+    assert page.status_code == 200
+    processing = document.css_first("[data-processing-checklist]")
+    tracker = document.css_first("[data-pass-tracker]")
+    metadata = document.css_first(".metadata-panel")
+    assert processing is not None and processing.tag == "details"
+    assert tracker is not None and tracker.tag == "details"
+    assert metadata is not None and metadata.tag == "details"
+    assert (
+        page.text.index("data-processing-checklist")
+        < page.text.index("data-pass-tracker")
+        < page.text.index("metadata-panel")
+    )
+
+    rows = tracker.css("[data-pass-row]")
+    assert len(rows) == 5
+    for position, row in enumerate(rows, start=1):
+        assert row.attributes["data-pass-position"] == str(position)
+        completion = row.css_first("[data-pass-complete]")
+        assert completion is not None and completion.attributes["type"] == "checkbox"
+        assert row.css_first("[data-pass-date]") is not None
+        assert row.css_first("select[data-pass-resource]") is not None
+    assert tracker.css_first("[data-pass-count]").text(strip=True) == "0/5"
+    add_pass = tracker.css_first("[data-add-pass]")
+    assert add_pass is not None and "disabled" in add_pass.attributes
 
 
 def test_lecture_page_links_previous_and_next_within_subject_exam_order(tmp_path):
@@ -160,6 +202,80 @@ def test_dashboard_only_exposes_the_first_course_and_exam_by_default(tmp_path):
     neuro = page.text[page.text.index('data-course="Neuro"'):]
     assert 'aria-expanded="false"' in neuro
     assert 'id="course-2" hidden' in neuro
+
+
+def test_dashboard_links_exam_label_to_pass_overview_beside_its_disclosure_button(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+    app.state.catalog_repository.upsert_lecture(
+        LectureInput("Heme/Lymph", 2, 12, "Platelet Disorders", "", None)
+    )
+
+    page = TestClient(app).get("/lectures")
+    document = HTMLParser(page.text)
+    exam = document.css_first(".exam-group")
+
+    assert exam is not None
+    overview = exam.css_first("a.exam-overview-link")
+    disclosure = exam.css_first("button.exam-toggle")
+    assert overview is not None
+    assert overview.text(strip=True) == "Exam 2"
+    assert overview.attributes["href"] == (
+        "/lectures/exams/2/passes?subject=Heme/Lymph"
+    )
+    assert disclosure is not None and "data-disclosure" in disclosure.attributes
+    assert disclosure.attributes["aria-controls"]
+
+
+def test_exam_pass_overview_lists_each_lecture_count_and_progress(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+    first_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Heme/Lymph", 2, 12, "Platelet Disorders", "", None)
+    )
+    second_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Heme/Lymph", 2, 13, "Mononucleosis", "", None)
+    )
+
+    page = TestClient(app).get(
+        "/lectures/exams/2/passes",
+        params={"subject": "Heme/Lymph"},
+    )
+    document = HTMLParser(page.text)
+
+    assert page.status_code == 200
+    assert document.css_first("h1").text(strip=True) == "Exam 2 passes"
+    overview = document.css_first("[data-exam-pass-overview]")
+    assert overview is not None
+    assert [heading.text(strip=True) for heading in overview.css("th")] == [
+        "Lecture",
+        "Passes",
+        "Progress",
+        "Last pass",
+    ]
+    rows = overview.css("[data-exam-lecture]")
+    assert len(rows) == 2
+    assert [row.css_first("a").attributes["href"] for row in rows] == [
+        f"/lectures/{first_id}",
+        f"/lectures/{second_id}",
+    ]
+    for row in rows:
+        assert row.css_first("[data-pass-count]").text(strip=True) == "0 / 5"
+        progress = row.css_first("[data-pass-progress]")
+        assert progress.attributes["role"] == "progressbar"
+        assert progress.attributes["aria-valuemin"] == "0"
+        assert progress.attributes["aria-valuemax"] == "5"
+        assert progress.attributes["aria-valuenow"] == "0"
 
 
 def test_review_uses_course_relative_human_label_for_proposed_revisions(tmp_path):

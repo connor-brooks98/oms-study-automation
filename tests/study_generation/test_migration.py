@@ -97,6 +97,47 @@ def test_reconciles_the_historical_schema_29_without_losing_its_version(tmp_path
         ).scalar_one() == LATEST_SCHEMA_VERSION
 
 
+def test_v30_creates_and_backfills_lecture_passes_idempotently(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    first_id = CatalogRepository(database).upsert_lecture(
+        LectureInput("Neuro", 1, 1, "Brain", "", None)
+    )
+    second_id = CatalogRepository(database).upsert_lecture(
+        LectureInput("Neuro", 1, 2, "Spine", "", None)
+    )
+    with database.engine.begin() as connection:
+        if inspect(database.engine).has_table("lecture_passes"):
+            connection.execute(text("DROP TABLE lecture_passes"))
+        connection.execute(text("UPDATE schema_version SET version=29 WHERE id=1"))
+
+    database.migrate()
+    database.migrate()
+
+    inspector = inspect(database.engine)
+    assert inspector.has_table("lecture_passes")
+    assert {"lecture_id", "position", "completed_on", "resource"} <= {
+        column["name"] for column in inspector.get_columns("lecture_passes")
+    }
+    with database.engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT lecture_id, position, completed_on, resource "
+                "FROM lecture_passes ORDER BY lecture_id, position"
+            )
+        ).all()
+        version = connection.execute(
+            text("SELECT version FROM schema_version WHERE id=1")
+        ).scalar_one()
+
+    assert rows == [
+        (lecture_id, position, None, None)
+        for lecture_id in (first_id, second_id)
+        for position in range(1, 6)
+    ]
+    assert version == 30
+
+
 def test_reconciles_the_deployed_non_anki_schema_23_without_losing_data(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()

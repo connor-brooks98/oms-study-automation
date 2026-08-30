@@ -107,3 +107,23 @@ test("a denied sessionStorage getter leaves dashboard server defaults usable", (
   assert.equal(fixture.firstCourse.getAttribute("aria-expanded"), "true");
   assert.equal(fixture.firstExam.getAttribute("aria-expanded"), "true");
 });
+
+test("the exam overview link stays navigation while its adjacent disclosure button expands the tree", () => {
+  const fixture = dashboardFixture({ firstCourseOpen: true, firstExamOpen: true });
+  const overviewLink = {
+    listeners: {},
+    addEventListener(type, callback) { this.listeners[type] = callback; },
+  };
+  fixture.documentRef.querySelectorAll = (selector) => {
+    if (selector === "[data-disclosure]") return [fixture.firstCourse, fixture.firstExam];
+    if (selector === ".exam-overview-link") return [overviewLink];
+    return [];
+  };
+
+  dashboard.initialize(fixture.documentRef, { getItem() { return null; } });
+
+  assert.equal(overviewLink.listeners.click, undefined);
+  fixture.firstExam.listeners.click();
+  assert.equal(fixture.firstExam.getAttribute("aria-expanded"), "false");
+  assert.equal(fixture.panels.get("exam-1").hidden, true);
+});

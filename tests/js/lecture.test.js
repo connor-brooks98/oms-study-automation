@@ -33,6 +33,15 @@ class FakeLectureElement {
     (this._listeners[type] ||= []).push(handler);
   }
 
+  async dispatch(type) {
+    await Promise.all(
+      (this._listeners[type] || []).map((handler) => handler({
+        target: this,
+        preventDefault() {},
+      })),
+    );
+  }
+
   querySelector(selector) {
     return this._children[selector] || null;
   }
@@ -47,8 +56,11 @@ class FakeLectureElement {
 }
 
 class FakeLectureDocument {
-  constructor(cards) {
+  constructor(cards, { passRows = [], passCount = null, addPass = null } = {}) {
     this.cards = cards;
+    this.passRows = passRows;
+    this.passCount = passCount;
+    this.addPass = addPass;
     this.cookie = "";
   }
 
@@ -56,7 +68,20 @@ class FakeLectureDocument {
 
   querySelectorAll(selector) {
     if (selector === "[data-generation-card]") return this.cards;
+    if (selector === "[data-pass-row]") return this.passRows;
+    if (selector === "[data-pass-complete]") {
+      return this.passRows.map((row) => row.querySelector("[data-pass-complete]"));
+    }
+    if (selector === "[data-pass-resource]") {
+      return this.passRows.map((row) => row.querySelector("[data-pass-resource]"));
+    }
     return [];
+  }
+
+  querySelector(selector) {
+    if (selector === "[data-pass-count]") return this.passCount;
+    if (selector === "[data-add-pass]") return this.addPass;
+    return null;
   }
 }
 
@@ -68,6 +93,25 @@ const buildCard = (kind) => {
   card._children["[data-generation-message]"] = message;
   card._children["[data-generate]"] = generateButton;
   return { card, message, generateButton };
+};
+
+const buildPassRow = ({ position, completed = false, resource = "" }) => {
+  const row = new FakeLectureElement();
+  row.dataset.passPosition = String(position);
+  const checkbox = new FakeLectureElement();
+  checkbox.dataset.passPosition = String(position);
+  checkbox.checked = completed;
+  const date = new FakeLectureElement();
+  date.textContent = completed ? "Aug 29, 2026" : "Not completed";
+  const select = new FakeLectureElement();
+  select.dataset.passPosition = String(position);
+  select.value = resource;
+  row._children["[data-pass-complete]"] = checkbox;
+  row._children["[data-pass-date]"] = date;
+  row._children["[data-pass-resource]"] = select;
+  checkbox.closest = () => row;
+  select.closest = () => row;
+  return { row, checkbox, date, select };
 };
 
 test("completed generation refresh names the ready artifact", () => {
@@ -221,6 +265,171 @@ test("generation-status polling surfaces failures, doubles the retry delay up to
   } finally {
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
+test("pass completion and resource changes PATCH independently with CSRF and refresh the ledger", async () => {
+  const passes = Array.from({ length: 5 }, (_, index) => buildPassRow({ position: index + 1 }));
+  const passCount = new FakeLectureElement();
+  passCount.textContent = "0/5";
+  const addPass = new FakeLectureElement();
+  addPass.disabled = true;
+  const documentRef = new FakeLectureDocument([], {
+    passRows: passes.map(({ row }) => row),
+    passCount,
+    addPass,
+  });
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  const requests = [];
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (!options.method) return { ok: true, async json() { return {}; } };
+    const body = JSON.parse(options.body);
+    return {
+      ok: true,
+      async json() {
+        return body.completed === true
+          ? { position: 1, completed_on: "2026-08-30", resource: "" }
+          : { position: 1, completed_on: "2026-08-30", resource: body.resource };
+      },
+    };
+  };
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42" };
+
+  try {
+    lecture.initialize(documentRef, fetchImpl);
+    passes[0].checkbox.checked = true;
+    await passes[0].checkbox.dispatch("change");
+    await flushMicrotasks();
+
+    passes[0].select.value = "Anki";
+    await passes[0].select.dispatch("change");
+    await flushMicrotasks();
+
+    const mutations = requests.filter(({ options }) => options.method === "PATCH");
+    assert.equal(mutations.length, 2);
+    assert.deepEqual(
+      mutations.map(({ url, options }) => ({
+        url,
+        body: JSON.parse(options.body),
+        csrf: options.headers["X-CSRF-Token"],
+      })),
+      [
+        {
+          url: "/api/lectures/42/passes/1",
+          body: { completed: true },
+          csrf: "csrf-token",
+        },
+        {
+          url: "/api/lectures/42/passes/1",
+          body: { resource: "Anki" },
+          csrf: "csrf-token",
+        },
+      ],
+    );
+    assert.equal(passes[0].date.textContent, "Aug 30, 2026");
+    assert.equal(passCount.textContent, "1/5");
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
+test("failed pass updates restore the prior completion, date, count, and resource", async () => {
+  const passes = Array.from({ length: 5 }, (_, index) => buildPassRow({
+    position: index + 1,
+    resource: index === 0 ? "Lecture" : "",
+  }));
+  const passCount = new FakeLectureElement();
+  passCount.textContent = "0/5";
+  const documentRef = new FakeLectureDocument([], {
+    passRows: passes.map(({ row }) => row),
+    passCount,
+    addPass: new FakeLectureElement(),
+  });
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  const fetchImpl = async (_url, options = {}) => {
+    if (!options.method) return { ok: true, async json() { return {}; } };
+    return { ok: false, async json() { return { detail: "Pass update failed." }; } };
+  };
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42" };
+
+  try {
+    lecture.initialize(documentRef, fetchImpl);
+
+    passes[0].checkbox.checked = true;
+    await passes[0].checkbox.dispatch("change");
+    await flushMicrotasks();
+    assert.equal(passes[0].checkbox.checked, false);
+    assert.equal(passes[0].date.textContent, "Not completed");
+    assert.equal(passCount.textContent, "0/5");
+
+    passes[0].select.value = "Anki";
+    await passes[0].select.dispatch("change");
+    await flushMicrotasks();
+    assert.equal(passes[0].select.value, "Lecture");
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
+test("add pass stays inert until every current pass is complete, then POSTs with CSRF", async () => {
+  const passes = Array.from({ length: 5 }, (_, index) => buildPassRow({
+    position: index + 1,
+    completed: index < 4,
+  }));
+  const passCount = new FakeLectureElement();
+  passCount.textContent = "4/5";
+  const addPass = new FakeLectureElement();
+  addPass.disabled = true;
+  const documentRef = new FakeLectureDocument([], {
+    passRows: passes.map(({ row }) => row),
+    passCount,
+    addPass,
+  });
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  const requests = [];
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (!options.method) return { ok: true, async json() { return {}; } };
+    if (options.method === "POST") {
+      return {
+        ok: true,
+        async json() { return { position: 6, completed_on: null, resource: null }; },
+      };
+    }
+    return {
+      ok: true,
+      async json() { return { position: 5, completed_on: "2026-08-30", resource: null }; },
+    };
+  };
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42", reload() {} };
+
+  try {
+    lecture.initialize(documentRef, fetchImpl);
+    await addPass.dispatch("click");
+    await flushMicrotasks();
+    assert.equal(requests.filter(({ options }) => options.method === "POST").length, 0);
+
+    passes[4].checkbox.checked = true;
+    await passes[4].checkbox.dispatch("change");
+    await flushMicrotasks();
+    assert.equal(passCount.textContent, "5/5");
+    assert.equal(addPass.disabled, false);
+
+    await addPass.dispatch("click");
+    await flushMicrotasks();
+    const posts = requests.filter(({ options }) => options.method === "POST");
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].url, "/api/lectures/42/passes");
+    assert.equal(posts[0].options.headers["X-CSRF-Token"], "csrf-token");
+  } finally {
     if (originalLocation === undefined) delete global.location;
     else global.location = originalLocation;
   }

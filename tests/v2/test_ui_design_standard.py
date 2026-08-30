@@ -526,6 +526,64 @@ def test_sh_disclose_summaries_hide_only_the_native_marker() -> None:
     assert '<span class="sh-disclose"' not in source("settings.html")
 
 
+def test_option_a_pass_tracker_keeps_the_three_lecture_panels_in_order() -> None:
+    lecture = source("lecture.html")
+
+    processing_position = lecture.index("data-processing-checklist")
+    tracker_position = lecture.index("data-pass-tracker")
+    metadata_position = lecture.index('class="metadata-panel')
+    assert processing_position < tracker_position < metadata_position
+    assert "<section" not in lecture[metadata_position:]
+
+    for position in (processing_position, tracker_position):
+        tag_start = lecture.rfind("<details", 0, position)
+        tag = lecture[tag_start : lecture.index(">", position) + 1]
+        assert tag_start >= 0
+        assert "sh-card" in tag
+        assert "t-accordion" in tag
+    assert "all_complete and release_steps|length > 6" not in lecture
+    for hook in (
+        "data-pass-row",
+        "data-pass-position",
+        "data-pass-complete",
+        "data-pass-date",
+        "data-pass-resource",
+        "data-pass-count",
+        "data-add-pass",
+    ):
+        assert hook in lecture
+
+
+def test_exam_label_link_and_tree_disclosure_are_separate_controls() -> None:
+    dashboard = source("dashboard.html")
+
+    assert 'class="exam-overview-link"' in dashboard
+    assert "/lectures/exams/{{ exam.number }}/passes?subject=" in dashboard
+    assert "course.name|urlencode" in dashboard
+    exam_toggle = dashboard[
+        dashboard.index('<button class="exam-toggle"') : dashboard.index(
+            "</button>", dashboard.index('<button class="exam-toggle"')
+        )
+    ]
+    assert "data-disclosure" in exam_toggle
+    assert "aria-controls" in exam_toggle
+    assert "exam-overview-link" not in exam_toggle
+
+
+def test_exam_pass_overview_uses_shared_components_and_progress_semantics() -> None:
+    overview = source("exam_passes.html")
+
+    assert "data-exam-pass-overview" in overview
+    assert "data-exam-lecture" in overview
+    assert "data-pass-count" in overview
+    assert "data-pass-progress" in overview
+    assert 'role="progressbar"' in overview
+    for heading in ("Lecture", "Passes", "Progress", "Last pass"):
+        assert f"<th>{heading}</th>" in overview
+    for component in ("sh-container", "sh-card", "sh-title", "sh-pill"):
+        assert component in overview
+
+
 def test_import_checks_and_image_rows_escape_late_legacy_cascade() -> None:
     app_css = (STATIC / "app.css").read_text(encoding="utf-8")
 
