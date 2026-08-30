@@ -23,6 +23,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Verify immutable parent and Windows PowerShell 5.1
         shell: powershell
         run: |
@@ -79,3 +83,75 @@ jobs:
           } finally {
             Remove-Item -LiteralPath $Probe -Force -ErrorAction SilentlyContinue
           }
+          $PythonProbe = Join-Path $env:RUNNER_TEMP "gate2b_acl_probe.py"
+          [IO.File]::WriteAllText($PythonProbe, @'
+          import csv
+          import json
+          import os
+          import re
+          import subprocess
+          from collections.abc import Mapping
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "gate2b-python-acl-probe"
+          path.write_text("synthetic", encoding="ascii")
+          summary = {}
+          try:
+              identity = subprocess.run(
+                  ["whoami", "/user", "/fo", "csv", "/nh"],
+                  capture_output=True, text=True, timeout=10, check=False,
+              )
+              row = next(csv.reader([identity.stdout.strip()]))
+              sid = row[1].strip() if len(row) == 2 else ""
+              summary.update(
+                  identity_exit=identity.returncode,
+                  row_length=len(row),
+                  sid_valid=re.fullmatch(r"S-1(?:-\d+)+", sid) is not None,
+              )
+              secured = subprocess.run(
+                  ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{sid}:(F)"],
+                  capture_output=True, text=True, timeout=10, check=False,
+              )
+              verified = subprocess.run(
+                  ["icacls", str(path), "/verify"],
+                  capture_output=True, text=True, timeout=10, check=False,
+              )
+              inspected = subprocess.run(
+                  ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", (
+                      "$acl=Get-Acl -LiteralPath $env:OMS_TASK28_DIAGNOSTIC_PATH;"
+                      "$rules=@($acl.GetAccessRules($true,$false,"
+                      "[System.Security.Principal.SecurityIdentifier]));"
+                      "$items=@($rules|ForEach-Object{[pscustomobject]@{"
+                      "Sid=$_.IdentityReference.Value;"
+                      "Allow=($_.AccessControlType -eq "
+                      "[System.Security.AccessControl.AccessControlType]::Allow);"
+                      "FullControl=(($_.FileSystemRights -band "
+                      "[System.Security.AccessControl.FileSystemRights]::FullControl) "
+                      "-eq [System.Security.AccessControl.FileSystemRights]::FullControl);"
+                      "Inherited=$_.IsInherited}});"
+                      "[pscustomobject]@{Protected=$acl.AreAccessRulesProtected;"
+                      "Rules=$items}|ConvertTo-Json -Compress -Depth 4"
+                  )], capture_output=True, text=True, timeout=10, check=False,
+                  env={**os.environ, "OMS_TASK28_DIAGNOSTIC_PATH": str(path)},
+              )
+              inspection = json.loads(inspected.stdout)
+              rules = inspection.get("Rules") if isinstance(inspection, Mapping) else None
+              rule_list = [rules] if isinstance(rules, Mapping) else rules if isinstance(rules, list) else []
+              rule = rule_list[0] if len(rule_list) == 1 else None
+              summary.update(
+                  grant_exit=secured.returncode,
+                  verify_exit=verified.returncode,
+                  inspect_exit=inspected.returncode,
+                  inspect_json=isinstance(inspection, Mapping),
+                  protected=inspection.get("Protected") if isinstance(inspection, Mapping) else None,
+                  rule_count=len(rule_list),
+                  sid_match=isinstance(rule, Mapping) and rule.get("Sid") == sid,
+                  allow=isinstance(rule, Mapping) and rule.get("Allow") is True,
+                  full_control=isinstance(rule, Mapping) and rule.get("FullControl") is True,
+                  inherited=isinstance(rule, Mapping) and rule.get("Inherited") is True,
+              )
+          finally:
+              path.unlink(missing_ok=True)
+          print(json.dumps(summary, sort_keys=True))
+          '@, [Text.UTF8Encoding]::new($false, $true))
+          py -3.12 $PythonProbe
