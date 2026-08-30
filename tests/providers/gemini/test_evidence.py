@@ -99,6 +99,18 @@ def _raw_cli(raw: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _raw_bytes_cli(raw: bytes) -> subprocess.CompletedProcess[bytes]:
+    environment = os.environ | {"PYTHONPATH": str(ROOT / "src")}
+    return subprocess.run(
+        [sys.executable, "-m", "oms_hub.providers.gemini.evidence", "--process-exit-code", "1"],
+        input=raw,
+        capture_output=True,
+        check=False,
+        timeout=30,
+        env=environment,
+    )
+
+
 def test_private_shadow_evidence_accepts_known_generic_bad_request() -> None:
     record = validate_private_shadow_record(_blocked_record(), process_exit_code=1)
 
@@ -320,14 +332,14 @@ def test_private_shadow_evidence_cli_is_canonical_utf8_and_maps_errors() -> None
 
 
 def test_private_shadow_evidence_cli_accepts_windows_utf8_bom() -> None:
-    raw = "\ufeff" + json.dumps(_blocked_record(), separators=(",", ":"))
+    raw = b"\xef\xbb\xbf" + json.dumps(_blocked_record(), separators=(",", ":")).encode()
 
-    result = _raw_cli(raw)
+    result = _raw_bytes_cli(raw)
 
     assert result.returncode == 0
-    assert result.stderr == ""
+    assert result.stderr == b""
     assert result.stdout == (
-        json.dumps(_blocked_record(), sort_keys=True, separators=(",", ":")) + "\n"
+        json.dumps(_blocked_record(), sort_keys=True, separators=(",", ":")).encode() + b"\n"
     )
 
 
