@@ -202,7 +202,7 @@ try {
   ) -NoNewWindow -Wait -PassThru
   $ControllerExit = $ControllerProcess.ExitCode
   $State = Get-Task28StatePaths -RunId ([string]$Run.Value.run_id)
-  if ($ControllerExit -ne 1) {
+  if ($ControllerExit -ne 0) {
     $WrapperStage = "missing"
     $WrapperStatus = Join-Path $State.Evidence "status.json"
     if (Test-Path -LiteralPath $WrapperStatus -PathType Leaf) {
@@ -211,13 +211,13 @@ try {
           ConvertFrom-Json).wrapper_stage
       } catch {}
     }
-    throw "Synthetic controller path did not return blocked evidence; controller_exit=$ControllerExit; wrapper_stage=$WrapperStage"
+    throw "Synthetic controller path did not pass; controller_exit=$ControllerExit; wrapper_stage=$WrapperStage"
   }
   $Result = Join-Path $State.Evidence "result.json"
   $Status = Join-Path $State.Evidence "status.json"
   if (-not (Test-Path -LiteralPath $Result -PathType Leaf) -or
       -not (Test-Path -LiteralPath $Status -PathType Leaf) -or
-      ([IO.File]::ReadAllText($Result, $Utf8) | ConvertFrom-Json).status -cne "blocked" -or
+      ([IO.File]::ReadAllText($Result, $Utf8) | ConvertFrom-Json).status -cne "passed" -or
       -not ([IO.File]::ReadAllText($Status, $Utf8) | ConvertFrom-Json).evidence_usable) {
     throw "Synthetic controller path did not produce canonical evidence."
   }
