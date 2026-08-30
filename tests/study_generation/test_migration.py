@@ -139,6 +139,48 @@ def test_v30_creates_and_backfills_lecture_passes_idempotently(tmp_path) -> None
     assert version == 30
 
 
+def test_v31_creates_and_backfills_pass_resources_idempotently(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    lecture_id = CatalogRepository(database).upsert_lecture(
+        LectureInput("Neuro", 1, 1, "Brain", "", None)
+    )
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS lecture_pass_resources"))
+        connection.execute(text("UPDATE schema_version SET version=30 WHERE id=1"))
+        connection.execute(
+            text(
+                "UPDATE lecture_passes SET resource = :resource "
+                "WHERE lecture_id = :lecture_id AND position = :position"
+            ),
+            [
+                {"resource": "Boards & Beyond", "lecture_id": lecture_id, "position": 1},
+                {"resource": "boards & beyond", "lecture_id": lecture_id, "position": 2},
+                {"resource": "Other", "lecture_id": lecture_id, "position": 3},
+            ],
+        )
+
+    database.migrate()
+    database.migrate()
+
+    with database.engine.connect() as connection:
+        resources = connection.execute(
+            text("SELECT name FROM lecture_pass_resources ORDER BY id")
+        ).scalars().all()
+        version = connection.execute(
+            text("SELECT version FROM schema_version WHERE id=1")
+        ).scalar_one()
+
+    assert resources == [
+        "Lecture",
+        "Anki",
+        "Lecture outline",
+        "Practice questions",
+        "Boards & Beyond",
+    ]
+    assert version == 31
+
+
 def test_claimed_v30_missing_lecture_passes_fails_closed(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
