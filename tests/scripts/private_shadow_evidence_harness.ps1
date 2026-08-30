@@ -314,7 +314,7 @@ with tempfile.NamedTemporaryFile(delete=True) as handle:
 '@,
     $Utf8
   )
-  $Entrypoint = Invoke-EntrypointEvidence
+  $Entrypoint = Invoke-EntrypointEvidence | Select-Object -Last 1
   $EntrypointRaw = $Entrypoint.Stdout.TrimEnd("`r", "`n")
   $EntrypointRoot = Join-Path $CasesRoot ([Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $EntrypointRoot | Out-Null
