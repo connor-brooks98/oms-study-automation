@@ -358,4 +358,6 @@ def test_fix_first_state_and_wrapper_boundaries_are_executable() -> None:
     assert "Missing state child was accepted." in composition_harness
     assert "Extra state child was accepted." in composition_harness
     assert "State child junction was accepted." in composition_harness
+    assert "Overlap rejection had the wrong reason." in composition_harness
     assert "$SafeResultContent" in evidence_harness
+    assert "New-Item -ItemType Directory -Path $CaseRoot" in evidence_harness

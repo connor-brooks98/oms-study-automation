@@ -128,12 +128,16 @@ try {
     "--add-virtual-file=source/.task28-source-commit:$Commit" "--output=$Archive" $Commit
   if ($LASTEXITCODE -ne 0) { throw "Harness archive creation failed." }
   try {
+    $OverlapError = $null
     & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
       -SourceCommit $Commit -LockedRequirements $Lock -Destination $StateView.Root `
       -TaskName "task28-composition-harness" -RunId $RunId `
       -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
     if ($LASTEXITCODE -eq 0) { throw "Fixed-state overlap unexpectedly succeeded." }
-  } catch {}
+  } catch { $OverlapError = $_.Exception.Message }
+  if ($OverlapError -cne "Immutable and mutable paths must not overlap.") {
+    throw "Overlap rejection had the wrong reason."
+  }
   if (Test-Path -LiteralPath $StateView.Root) { throw "Overlap rejection created the fixed state root." }
   & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
     -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
