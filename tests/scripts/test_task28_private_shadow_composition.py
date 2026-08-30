@@ -315,12 +315,20 @@ def test_c7_launcher_exposes_only_the_fixed_terminal_diagnostic_capability() -> 
     )
 
     assert 'Join-Path $State.Diagnostic "provider-diagnostic.json"' in launcher
+    assert "$WrapperParameters = @{" in launcher
+    assert "& $Wrapper @WrapperParameters" in launcher
+    assert "$WrapperParameters.DiagnosticPath = $DiagnosticPath" in launcher
+    assert "WrapperArguments" not in launcher
     assert "[string]$DiagnosticPath" in wrapper
     assert "Join-Path $DiagnosticRoot \"provider-diagnostic.json\"" in wrapper
     assert '$RawStdout = Join-Path $ScratchRoot "operator.stdout"' in wrapper
     assert '$RawStderr = Join-Path $ScratchRoot "operator.stderr"' in wrapper
     assert '"OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH"' in evidence
     assert "-DiagnosticPath $DiagnosticPath" in wrapper
+    harness = (
+        ROOT / "tests" / "scripts" / "task28_private_shadow_composition_harness.ps1"
+    ).read_text(encoding="utf-8")
+    assert "Named-splat diagnostic binding was not exercised." in harness
 
 
 def test_c5_runs_the_committed_windows_harness_when_available() -> None:

@@ -5,6 +5,7 @@ import dataclasses
 import hashlib
 import importlib.metadata
 import importlib.util
+import inspect
 import json
 import os
 import stat
@@ -3757,6 +3758,17 @@ def _private_diagnostic_path(root: Path, run_id: str = "0" * 32) -> Path:
     return root / "oms-task28-runs" / run_id / "diagnostic" / "provider-diagnostic.json"
 
 
+def _private_diagnostic_capability(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    run_id: str = "0" * 32,
+) -> Path:
+    path = _private_diagnostic_path(root, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH", str(path))
+    return path
+
+
 class _PrivateShadowSession:
     def __init__(
         self,
@@ -3925,6 +3937,50 @@ def test_private_shadow_requires_opt_in_before_projection_or_secret(
                 materialization_root=tmp_path,
                 approved_preflight={},
                 secret_store=secrets,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
+            )
+        )
+
+    assert projected is False
+    assert secrets.calls == []
+
+
+def test_private_shadow_requires_terminal_diagnostic_capability_before_preflight_or_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    assert (
+        inspect.signature(smoke.run_authorized_private_shadow)
+        .parameters["diagnostic_path"]
+        .default
+        is inspect.Parameter.empty
+    )
+    diagnostic_path = _private_diagnostic_path(tmp_path)
+    diagnostic_path.parent.mkdir(parents=True)
+    projected = False
+    secrets = _FakeSecrets("must-not-be-read")
+
+    def project(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        nonlocal projected
+        projected = True
+        return object()
+
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.delenv("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH", raising=False)
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", project)
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="diagnostic capability"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight={},
+                secret_store=secrets,
+                diagnostic_path=diagnostic_path,
             )
         )
 
@@ -3954,9 +4010,48 @@ def test_private_shadow_mismatch_fails_before_secret_and_provider(
                 approved_preflight=approved,
                 secret_store=secrets,
                 session_factory=lambda key: pytest.fail(f"provider received {key}"),
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
+    assert secrets.calls == []
+
+
+def test_private_diagnostic_lexical_alias_blocks_before_preflight_or_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    canonical = _private_diagnostic_path(tmp_path)
+    canonical.parent.mkdir(parents=True)
+    alias = canonical.parent / ".." / "diagnostic" / canonical.name
+    projected = False
+    secrets = _FakeSecrets("must-not-be-read")
+
+    def project(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        nonlocal projected
+        projected = True
+        return object()
+
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setenv("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH", str(alias))
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", project)
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="diagnostic capability"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight={},
+                secret_store=secrets,
+                diagnostic_path=alias,
+            )
+        )
+
+    assert projected is False
     assert secrets.calls == []
 
 
@@ -3982,6 +4077,7 @@ def test_private_shadow_indexes_every_input_queries_and_returns_only_aggregates(
             secret_store=secrets,
             session_factory=lambda key: session if key == "stored-private-key" else None,
             clock=iter((100.0, 100.25)).__next__,
+            diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
         )
     )
 
@@ -4045,6 +4141,7 @@ def test_private_shadow_cleanup_failure_still_attempts_every_delete(
                 approved_preflight=approved,
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
@@ -4075,6 +4172,7 @@ def test_private_shadow_rejects_uncited_but_supported_wrong_scope_answer(
                 approved_preflight=approved,
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
@@ -4102,6 +4200,7 @@ def test_private_shadow_primary_failure_precedes_cleanup_failure(
                 approved_preflight=approved,
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
@@ -4134,6 +4233,7 @@ def test_private_shadow_primary_failure_retains_safe_cleanup_evidence(
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
                 failure_evidence=evidence,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
@@ -4207,6 +4307,7 @@ def test_private_shadow_markdown_import_failure_retains_only_safe_diagnostics(
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
                 failure_evidence=evidence,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
@@ -4305,6 +4406,53 @@ def test_private_shadow_terminal_failure_writes_one_safe_diagnostic(
     local = json.dumps(local_record, sort_keys=True)
     for secret in ("fake-secret", "Authorization", "Lecture-13", "private provider body"):
         assert secret not in committed
+        assert secret not in local
+
+
+def test_private_shadow_prior_check_failure_retains_only_safe_terminal_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    diagnostic_path = _private_diagnostic_capability(monkeypatch, tmp_path)
+    evidence: dict[str, object] = {}
+
+    class PriorCheckFailureSession(_PrivateShadowSession):
+        async def find_stores(self, display_name: str) -> tuple[str, ...]:
+            del display_name
+            raise smoke.GeminiProviderError(
+                "fake-secret Authorization: Bearer fake-secret C:\\private\\Lecture-13",
+                provider_status_code=400,
+                diagnostic_code="unsupported_mime_type",
+            )
+
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.GeminiProviderError):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: PriorCheckFailureSession(smoke),
+                failure_evidence=evidence,
+                diagnostic_path=diagnostic_path,
+            )
+        )
+
+    assert evidence["failure_stage"] == "prior_state_check"
+    assert evidence["provider_reconciliation_outcome"] == "unknown"
+    assert evidence["diagnostic_sha256"] == hashlib.sha256(diagnostic_path.read_bytes()).hexdigest()
+    local = diagnostic_path.read_text(encoding="utf-8")
+    assert json.loads(local)["failure_stage"] == "prior_state_check"
+    for secret in ("fake-secret", "Authorization", "Lecture-13", "stored-private-key"):
+        assert secret not in json.dumps(evidence, sort_keys=True)
         assert secret not in local
 
 
@@ -4537,6 +4685,7 @@ def test_private_shadow_generic_bad_request_is_preserved_as_safe_diagnostic(
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
                 failure_evidence=evidence,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
@@ -4588,6 +4737,7 @@ def test_private_shadow_failure_evidence_is_conservative_and_redacted(
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
                 failure_evidence=evidence,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
@@ -4625,6 +4775,7 @@ def test_private_shadow_cleanup_only_failure_retains_failed_outcome(
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
                 failure_evidence=evidence,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
@@ -4656,6 +4807,7 @@ def test_private_shadow_reconciles_uncertain_upload_before_primary_failure(
                 approved_preflight=approved,
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
@@ -4685,6 +4837,7 @@ def test_private_shadow_reconciles_uncertain_store_before_primary_failure(
                 approved_preflight=approved,
                 secret_store=_FakeSecrets("stored-private-key"),
                 session_factory=lambda key: session,
+                diagnostic_path=_private_diagnostic_capability(monkeypatch, tmp_path),
             )
         )
 
