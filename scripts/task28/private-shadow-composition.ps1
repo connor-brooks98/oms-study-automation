@@ -196,8 +196,19 @@ try {
   $PreviousVerify = $env:OMS_TASK28_COMPOSITION_VERIFY
   $env:OMS_TASK28_COMPOSITION_VERIFY = "1"
   & $Controller -Manifest $Run.Path
-  if ($LASTEXITCODE -ne 1) { throw "Synthetic controller path did not return blocked evidence." }
+  $ControllerExit = $LASTEXITCODE
   $State = Get-Task28StatePaths -RunId ([string]$Run.Value.run_id)
+  if ($ControllerExit -ne 1) {
+    $WrapperStage = "missing"
+    $WrapperStatus = Join-Path $State.Evidence "status.json"
+    if (Test-Path -LiteralPath $WrapperStatus -PathType Leaf) {
+      try {
+        $WrapperStage = [string]([IO.File]::ReadAllText($WrapperStatus, $Utf8) |
+          ConvertFrom-Json).wrapper_stage
+      } catch {}
+    }
+    throw "Synthetic controller path did not return blocked evidence; controller_exit=$ControllerExit; wrapper_stage=$WrapperStage"
+  }
   $Result = Join-Path $State.Evidence "result.json"
   $Status = Join-Path $State.Evidence "status.json"
   if (-not (Test-Path -LiteralPath $Result -PathType Leaf) -or
