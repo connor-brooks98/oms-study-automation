@@ -67,6 +67,7 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     assert "$InputStream.Write($InputBytes, 0, $InputBytes.Length)" in evidence
     assert "$Process.StandardInput.Write($Raw)" not in evidence
     assert "$InputStream.Close()" in evidence
+    assert '$Payload = $Payload.TrimEnd("`r", "`n") + "`n"' in evidence
     assert "StandardInputEncoding" not in harness
     assert "$InputStream = $Process.StandardInput.BaseStream" in harness
     assert "StreamWriter" not in harness
