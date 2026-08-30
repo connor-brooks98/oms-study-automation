@@ -120,11 +120,8 @@ function Invoke-DirectEvidence {
   $Process = [Diagnostics.Process]::new()
   $Process.StartInfo = $Start
   if (-not $Process.Start()) { throw "Evidence validator did not start." }
-  $InputBytes = $Utf8.GetBytes($Raw)
-  $InputStream = $Process.StandardInput.BaseStream
-  $InputStream.Write($InputBytes, 0, $InputBytes.Length)
-  $InputStream.Flush()
-  $InputStream.Close()
+  $Process.StandardInput.Write($Raw)
+  $Process.StandardInput.Close()
   $Stdout = $Process.StandardOutput.ReadToEndAsync()
   $Stderr = $Process.StandardError.ReadToEndAsync()
   $Process.WaitForExit()
@@ -234,7 +231,7 @@ function Invoke-WrapperReparseCase {
 
 try {
   . $EvidenceScript
-  $ValidRaw = '{"status":"blocked","source_revision_hash":"' + ("a" * 64) + '","document_types":["markdown"],"page_count":1,"slide_count":1,"provider_operation_states":["private_shadow_failed"],"byte_usage":{"index_inputs":1},"transient_attempts":0,"failure_class":"unclassified","failure_stage":"prior_state_check","failure_input_identity":"none","provider_error_category":"provider","provider_status_code":400,"provider_reason":"provider_bad_request","provider_cleanup_outcome":"unknown","provider_reconciliation_outcome":"unknown","warnings":["private_shadow_failed","private_cleanup_unknown"]}' + "`n"
+  $ValidRaw = '{"status":"blocked","source_revision_hash":"' + ("a" * 64 -join "") + '","document_types":["markdown"],"page_count":1,"slide_count":1,"provider_operation_states":["private_shadow_failed"],"byte_usage":{"index_inputs":1},"transient_attempts":0,"failure_class":"unclassified","failure_stage":"prior_state_check","failure_input_identity":"none","provider_error_category":"provider","provider_status_code":400,"provider_reason":"provider_bad_request","provider_cleanup_outcome":"unknown","provider_reconciliation_outcome":"unknown","warnings":["private_shadow_failed","private_cleanup_unknown"]}' + "`n"
   $DirectValid = Invoke-DirectEvidence -Raw $ValidRaw
   $env:OMS_TASK28_COMPOSITION_VERIFY = "stale-composition"
   $env:OMS_TASK28_PRIVATE_PROJECT = "stale-private-project"
