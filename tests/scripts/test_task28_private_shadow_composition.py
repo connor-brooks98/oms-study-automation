@@ -144,3 +144,13 @@ def test_launcher_uses_a_sanitized_explicit_composition_verify_child() -> None:
     assert ".EnvironmentVariables.Clear()" in wrapper
     assert '"OMS_TASK28_PRIVATE_PROJECT"' in wrapper
     assert '"PYTHONPATH"' in wrapper
+
+
+def test_all_task28_executables_use_the_tracked_common_validator() -> None:
+    common = ROOT / "scripts" / "task28" / "private-shadow-common.ps1"
+    assert common.is_file()
+    for executable in EXECUTABLES:
+        text = (ROOT / executable).read_text(encoding="utf-8")
+        assert "private-shadow-common.ps1" in text
+        assert "Read-BoundRunManifest" in text
+        assert "Assert-ImmutableBundle" in text
