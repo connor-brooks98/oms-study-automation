@@ -324,6 +324,8 @@ def _validate_blocked_lifecycle(record: PrivateShadowBlocked) -> None:
     if cleanup[position:] != ["private_shadow_failed"]:
         raise ValueError("cleanup progress ordering is invalid")
     kind, input_count = _progress_kind(progress)
+    if kind == "invalid":
+        raise ValueError("operation progress is invalid")
     expected_kind = {
         "create_store": "before_store",
         "upload_input": "after_store",
