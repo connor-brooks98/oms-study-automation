@@ -562,7 +562,9 @@ def _has_reparse_component(path: Path) -> bool:
         cursor = parent
 
 
-def _validate_private_diagnostic_capability(path: Path) -> Path:
+def _validate_private_diagnostic_capability(path: object) -> Path:
+    if not isinstance(path, Path):
+        raise LiveSmokeBlocked("private diagnostic capability is unavailable")
     supplied = os.getenv("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH")
     supplied_path = Path(supplied) if supplied else None
     if (
@@ -700,8 +702,9 @@ def _finalize_private_terminal_diagnostic(
 ) -> str | None:
     if mode != "private_acceptance" or private_diagnostic_path is None:
         return None
+    verified_path = _validate_private_diagnostic_capability(private_diagnostic_path)
     return _write_private_terminal_diagnostic(
-        private_diagnostic_path,
+        verified_path,
         error,
         failure_stage=failure_stage,
         input_identity=input_identity,
