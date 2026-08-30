@@ -3203,9 +3203,6 @@ def _install_fake_windows_acl(
             self.control = 0
             self.bInheritHandle = True
 
-        def Initialize(self) -> None:
-            calls.append("attributes.initialize")
-
         def SetSecurityDescriptorDacl(
             self, present: bool, dacl: Acl, defaulted: bool
         ) -> None:
@@ -3304,7 +3301,7 @@ def test_windows_synthetic_diagnostic_requires_verified_current_user_dacl(
     sink.capture("synthetic", {"status": "ready"})
     sink.close()
 
-    assert calls == ["token.close", "attributes.initialize", "create_file", "handle.detach"]
+    assert calls == ["token.close", "create_file", "handle.detach"]
     assert request.output_path.exists()
     sink.delete()
 

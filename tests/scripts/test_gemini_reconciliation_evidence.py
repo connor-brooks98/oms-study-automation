@@ -36,6 +36,9 @@ def test_reconciliation_wrapper_commits_distinct_evidence_stages_and_retention()
     assert "FileSystemRights]::FullControl" in wrapper
     assert "InheritanceFlags]::ContainerInherit" in wrapper
     assert "InheritanceFlags]::ObjectInherit" in wrapper
+    assert "SetAccessRuleProtection($true, $false)" in wrapper
+    assert "RemoveAccessRuleSpecific" in wrapper
+    assert 'icacls.exe $Path /inheritance:r /grant:r' not in wrapper
     assert "FileAttributes]::ReparsePoint" in wrapper
     assert "Resolve-ReconciliationSafePath" in wrapper
     assert "wrapper_failed" not in evidence
