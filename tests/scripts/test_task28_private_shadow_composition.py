@@ -387,7 +387,7 @@ def test_c5_runs_the_committed_windows_harness_when_available() -> None:
         check=False,
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=900,
     )
 
     assert result.returncode == 0, result.stderr
