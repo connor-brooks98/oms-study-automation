@@ -13,6 +13,7 @@ import importlib.metadata
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import traceback
@@ -70,9 +71,32 @@ PRIVATE_SHADOW_MODEL_CONTRACT = (
 PRIVATE_SHADOW_WRONG_LECTURE_ID = "task-2-8-private-wrong-lecture"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _MAX_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
+_MAX_PRIVATE_DIAGNOSTIC_BYTES = 16 * 1024
 _MAX_TRANSIENT_ATTEMPTS = 10_000
 _RETRY_DELAYS = (1.0, 2.0)
 _IS_WINDOWS = os.name == "nt"
+_PRIVATE_DIAGNOSTIC_FILENAME = "provider-diagnostic.json"
+_PRIVATE_DIAGNOSTIC_REASONS = frozenset(
+    {
+        "none",
+        "invalid_argument",
+        "provider_bad_request",
+        "sdk_contract",
+        "timeout",
+        "transport_error",
+        "unknown_provider",
+        "unsupported_mime_type",
+    }
+)
+_PRIVATE_DIAGNOSTIC_MESSAGES = {
+    "invalid_argument": "Provider rejected the argument.",
+    "provider_bad_request": "Provider rejected the request.",
+    "sdk_contract": "Provider SDK contract was invalid.",
+    "timeout": "Provider operation timed out.",
+    "transport_error": "Provider transport failed.",
+    "unknown_provider": "Provider failure classification was unavailable.",
+    "unsupported_mime_type": "Unsupported MIME type.",
+}
 _CITATION_CHECKS = (
     "citation_presence",
     "citation_document_binding",
@@ -517,6 +541,145 @@ def _restrict_diagnostic_file(file_descriptor: int, path: Path) -> None:
             "synthetic diagnostic permissions were unavailable",
             reason="diagnostic_permissions_unavailable",
         ) from None
+
+
+def _has_reparse_component(path: Path) -> bool:
+    cursor = path
+    while True:
+        try:
+            info = cursor.lstat()
+        except OSError:
+            return True
+        attributes = getattr(info, "st_file_attributes", 0)
+        if stat.S_ISLNK(info.st_mode) or (
+            _IS_WINDOWS
+            and bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        ):
+            return True
+        parent = cursor.parent
+        if parent == cursor:
+            return False
+        cursor = parent
+
+
+def _validate_private_diagnostic_capability(path: Path) -> Path:
+    supplied = os.getenv("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH")
+    if not supplied or not path.is_absolute() or not Path(supplied).is_absolute():
+        raise LiveSmokeBlocked("private diagnostic capability is unavailable")
+    path_has_reparse = _has_reparse_component(path.parent)
+    supplied_has_reparse = _has_reparse_component(Path(supplied).parent)
+    try:
+        output = path.resolve(strict=False)
+        launcher_output = Path(supplied).resolve(strict=False)
+    except (OSError, RuntimeError):
+        raise LiveSmokeBlocked("private diagnostic capability is invalid") from None
+    if output != launcher_output:
+        raise LiveSmokeBlocked("private diagnostic capability did not match the launcher")
+    if (
+        output.name != _PRIVATE_DIAGNOSTIC_FILENAME
+        or output.parent.name != "diagnostic"
+        or re.fullmatch(r"[0-9a-f]{32}", output.parent.parent.name) is None
+        or output.parent.parent.parent.name != "oms-task28-runs"
+        or path_has_reparse
+        or supplied_has_reparse
+        or output.is_relative_to(_REPOSITORY_ROOT)
+    ):
+        raise LiveSmokeBlocked("private diagnostic capability is invalid")
+    if output.exists() or output.is_symlink():
+        raise LiveSmokeBlocked("private diagnostic output already exists")
+    return output
+
+
+def _private_terminal_diagnostic_payload(
+    error: BaseException,
+    *,
+    failure_stage: str,
+    input_identity: str,
+) -> bytes:
+    status_code = getattr(error, "provider_status_code", None)
+    if type(status_code) is not int or not 100 <= status_code <= 599:
+        status_code = None
+    reason = getattr(error, "diagnostic_code", "none")
+    if reason not in _PRIVATE_DIAGNOSTIC_REASONS:
+        reason = "none"
+    if reason == "unknown_provider" and status_code == 400:
+        reason = "provider_bad_request"
+    exception_kind = (
+        "gemini_provider_error"
+        if isinstance(error, GeminiProviderError)
+        else "smoke_contract_error"
+        if isinstance(error, SmokeContractError)
+        else "unclassified_error"
+    )
+    payload = {
+        "schema_version": 1,
+        "exception_kind": exception_kind,
+        "provider_status_code": status_code,
+        "provider_reason": reason,
+        "provider_message": _PRIVATE_DIAGNOSTIC_MESSAGES.get(
+            reason, "Provider failure classification was unavailable."
+        ),
+        "failure_stage": failure_stage
+        if failure_stage
+        in {
+            "prior_state_check",
+            "create_store",
+            "upload_input",
+            "import_input",
+            "wait_for_import",
+            "positive_query",
+            "positive_validation",
+            "negative_query",
+            "negative_validation",
+            "cleanup",
+            "unknown",
+        }
+        else "unknown",
+        "failure_input_identity": input_identity
+        if input_identity in {"none", "pptx", "pdf", "normalized_markdown", "visual_asset", "unknown"}
+        else "unknown",
+    }
+    return (json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "utf-8"
+    )
+
+
+def _write_private_terminal_diagnostic(
+    output: Path,
+    error: BaseException,
+    *,
+    failure_stage: str,
+    input_identity: str,
+) -> str:
+    if output.exists() or output.is_symlink():
+        raise LiveSmokeBlocked("private diagnostic output already exists")
+    payload = _private_terminal_diagnostic_payload(
+        error,
+        failure_stage=failure_stage,
+        input_identity=input_identity,
+    )
+    if len(payload) > _MAX_PRIVATE_DIAGNOSTIC_BYTES:
+        raise SmokeContractError("private diagnostic overflow", reason="diagnostic_overflow")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=output.parent,
+        prefix=f".{output.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        try:
+            _restrict_diagnostic_file(descriptor, temporary)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return hashlib.sha256(payload).hexdigest()
 
 
 class ShadowSession(Protocol):
@@ -1959,6 +2122,7 @@ async def _run_shadow_sequence(
     clock: Callable[[], float],
     failure_evidence: dict[str, object] | None = None,
     diagnostic_sink: DiagnosticSink | None = None,
+    private_diagnostic_path: Path | None = None,
 ) -> dict[str, object]:
     if session.model_contract != PRIVATE_SHADOW_MODEL_CONTRACT:
         raise LiveSmokeBlocked("private shadow model contract mismatch")
@@ -2454,6 +2618,14 @@ async def _run_shadow_sequence(
                     public_checks["citation_presence"] = "positive_citation_missing"
             elif failure_stage == "negative_query":
                 public_checks["negative_structured_output"] = "negative_query_failed"
+        diagnostic_sha256: str | None = None
+        if mode == "private_acceptance" and private_diagnostic_path is not None:
+            diagnostic_sha256 = _write_private_terminal_diagnostic(
+                private_diagnostic_path,
+                failure,
+                failure_stage=failure_stage,
+                input_identity=active_input_identity,
+            )
         if failure_evidence is not None:
             if mode == "public_matrix":
                 failure_evidence.update(
@@ -2487,6 +2659,7 @@ async def _run_shadow_sequence(
                         reconciliation_outcome=reconciliation_outcome,
                         input_identity=active_input_identity,
                         transient_attempts=_session_transient_attempts(session),
+                        diagnostic_sha256=diagnostic_sha256,
                     ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
@@ -2497,6 +2670,14 @@ async def _run_shadow_sequence(
             "private shadow cleanup failed",
             reason="private_cleanup_failed",
         )
+        diagnostic_sha256 = None
+        if mode == "private_acceptance" and private_diagnostic_path is not None:
+            diagnostic_sha256 = _write_private_terminal_diagnostic(
+                private_diagnostic_path,
+                cleanup_error,
+                failure_stage="cleanup",
+                input_identity="none",
+            )
         if failure_evidence is not None:
             if mode == "public_matrix":
                 failure_evidence.update(
@@ -2524,6 +2705,7 @@ async def _run_shadow_sequence(
                     reconciliation_outcome=reconciliation_outcome,
                     input_identity="none",
                     transient_attempts=_session_transient_attempts(session),
+                    diagnostic_sha256=diagnostic_sha256,
                 ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
@@ -2662,6 +2844,7 @@ async def run_authorized_private_shadow(
     parser: Any | None = None,
     clock: Callable[[], float] = monotonic,
     failure_evidence: dict[str, object] | None = None,
+    diagnostic_path: Path | None = None,
 ) -> dict[str, object]:
     if failure_evidence is not None:
         failure_evidence.clear()
@@ -2669,6 +2852,11 @@ async def run_authorized_private_shadow(
         raise LiveSmokeBlocked(
             "RUN_PRIVATE_GEMINI_SHADOW=1 is required for a private shadow"
         )
+    private_diagnostic_path = (
+        _validate_private_diagnostic_capability(diagnostic_path)
+        if diagnostic_path is not None
+        else None
+    )
     try:
         sdk_version = importlib.metadata.version("google-genai")
     except importlib.metadata.PackageNotFoundError:
@@ -2717,6 +2905,7 @@ async def run_authorized_private_shadow(
         mode="private_acceptance",
         clock=clock,
         failure_evidence=failure_evidence,
+        private_diagnostic_path=private_diagnostic_path,
     )
 
 

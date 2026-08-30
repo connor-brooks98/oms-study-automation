@@ -5,6 +5,7 @@ param(
   [Parameter(Mandatory = $true)][string]$ProjectRoot,
   [Parameter(Mandatory = $true)][string]$OperatorScript,
   [Parameter(Mandatory = $true)][string]$DiagnosticRoot,
+  [string]$DiagnosticPath,
   [Parameter(Mandatory = $true)][string]$SafeResultPath,
   [Parameter(Mandatory = $true)][string]$SafeStatusPath,
   [switch]$CompositionVerify
@@ -144,8 +145,20 @@ try {
   )) {
     throw "Private-shadow evidence module must be inside the source root."
   }
-  $RawStdout = Join-Path $DiagnosticRoot "operator.stdout"
-  $RawStderr = Join-Path $DiagnosticRoot "operator.stderr"
+  $RawStdout = Join-Path $ScratchRoot "operator.stdout"
+  $RawStderr = Join-Path $ScratchRoot "operator.stderr"
+  if ($CompositionVerify) {
+    if (-not [string]::IsNullOrWhiteSpace($DiagnosticPath)) {
+      throw "Composition verification cannot receive a diagnostic capability."
+    }
+  } else {
+    $DiagnosticPath = Resolve-PrivateShadowSafePath -Path $DiagnosticPath
+    $ExpectedDiagnosticPath = Join-Path $DiagnosticRoot "provider-diagnostic.json"
+    if (-not [string]::Equals($DiagnosticPath, $ExpectedDiagnosticPath, [StringComparison]::OrdinalIgnoreCase) -or
+        (Test-Path -LiteralPath $DiagnosticPath)) {
+      throw "Private-shadow diagnostic capability was invalid."
+    }
+  }
   Assert-PrivateShadowPathParents
   $StateContainmentValidated = $true
   . $EvidenceScript
@@ -166,7 +179,7 @@ try {
       -ScratchRoot $ScratchRoot -Sanitize -CompositionVerify -ProjectRoot $ProjectRoot
   } else {
     Set-PrivateShadowChildEnvironment -ProcessInfo $ProcessInfo -SourceRoot $SourceRoot `
-      -ScratchRoot $ScratchRoot
+      -ScratchRoot $ScratchRoot -DiagnosticPath $DiagnosticPath
   }
   $Process = [System.Diagnostics.Process]::new()
   $Process.StartInfo = $ProcessInfo

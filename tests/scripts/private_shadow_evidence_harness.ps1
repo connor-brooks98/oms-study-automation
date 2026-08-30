@@ -62,6 +62,7 @@ with tempfile.NamedTemporaryFile(delete=True) as handle:
         "bytecode": os.environ.get("PYTHONDONTWRITEBYTECODE"),
         "composition_verify": os.environ.get("OMS_TASK28_COMPOSITION_VERIFY"),
         "private_project": os.environ.get("OMS_TASK28_PRIVATE_PROJECT"),
+        "private_diagnostic": os.environ.get("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH"),
     }),
     encoding="utf-8",
 )
@@ -138,16 +139,24 @@ function Invoke-WrapperEvidence {
   $State = New-EvidenceState
   $EvidenceRoot = $State.Evidence
   $DiagnosticRoot = $State.Diagnostic
+  $DiagnosticPath = Join-Path $DiagnosticRoot "provider-diagnostic.json"
   $SafeResult = Join-Path $EvidenceRoot "result.json"
   $SafeStatus = Join-Path $EvidenceRoot "status.json"
   $SafeResultContent = ""
   $EnvironmentProbe = ""
   $env:PRIVATE_SHADOW_FIXTURE_MODE = $Mode
   try {
-    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-      -File $WrapperScript -PythonExecutable $PythonExecutable -StateRoot $State.Root -ProjectRoot $ProjectRoot `
-      -OperatorScript $Emitter -DiagnosticRoot $DiagnosticRoot `
-      -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus -CompositionVerify:$CompositionVerify
+    if ($CompositionVerify) {
+      & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $WrapperScript -PythonExecutable $PythonExecutable -StateRoot $State.Root -ProjectRoot $ProjectRoot `
+        -OperatorScript $Emitter -DiagnosticRoot $DiagnosticRoot `
+        -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus -CompositionVerify
+    } else {
+      & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $WrapperScript -PythonExecutable $PythonExecutable -StateRoot $State.Root -ProjectRoot $ProjectRoot `
+        -OperatorScript $Emitter -DiagnosticRoot $DiagnosticRoot -DiagnosticPath $DiagnosticPath `
+        -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
+    }
     $ExitCode = $LASTEXITCODE
     if (Test-Path -LiteralPath $SafeResult) {
       $SafeResultContent = [IO.File]::ReadAllText($SafeResult, $Utf8)
@@ -165,6 +174,7 @@ function Invoke-WrapperEvidence {
     SafeResult = $SafeResultContent
     EnvironmentProbe = $EnvironmentProbe
     ScratchRoot = $State.Scratch
+    DiagnosticPath = $DiagnosticPath
   }
 }
 
@@ -207,6 +217,7 @@ function Invoke-WrapperReparseCase {
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
       -File $WrapperScript -PythonExecutable $PythonExecutable -StateRoot $State.Root -ProjectRoot $ProjectRoot `
       -OperatorScript $Emitter -DiagnosticRoot $State.Diagnostic `
+      -DiagnosticPath (Join-Path $State.Diagnostic "provider-diagnostic.json") `
       -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
     [pscustomobject]@{
       ExitCode = $LASTEXITCODE
@@ -225,6 +236,7 @@ try {
   $DirectValid = Invoke-DirectEvidence -Raw $ValidRaw
   $env:OMS_TASK28_COMPOSITION_VERIFY = "stale-composition"
   $env:OMS_TASK28_PRIVATE_PROJECT = "stale-private-project"
+  $env:OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH = "stale-private-diagnostic"
   $WrappedValid = Invoke-WrapperEvidence -Mode "valid"
   if ($DirectValid.ExitCode -ne 0 -or -not [string]::IsNullOrEmpty($DirectValid.Stderr) -or
       $WrappedValid.ExitCode -ne 1 -or $WrappedValid.SafeResult -cne $DirectValid.Stdout) {
@@ -241,11 +253,13 @@ try {
     }
   }
   $NormalProbe = $WrappedValid.EnvironmentProbe | ConvertFrom-Json
-  if ($null -ne $NormalProbe.composition_verify -or $null -ne $NormalProbe.private_project) {
+  if ($null -ne $NormalProbe.composition_verify -or $null -ne $NormalProbe.private_project -or
+      -not [string]::Equals([IO.Path]::GetFullPath($NormalProbe.private_diagnostic),
+        [IO.Path]::GetFullPath($WrappedValid.DiagnosticPath), [StringComparison]::OrdinalIgnoreCase)) {
     throw "Normal child inherited stale composition environment."
   }
   $CompositionProbe = $WrappedComposition.EnvironmentProbe | ConvertFrom-Json
-  if ($CompositionProbe.composition_verify -cne "1" -or -not [string]::Equals(
+  if ($CompositionProbe.composition_verify -cne "1" -or $null -ne $CompositionProbe.private_diagnostic -or -not [string]::Equals(
       [IO.Path]::GetFullPath($CompositionProbe.private_project), [IO.Path]::GetFullPath($ProjectRoot),
       [StringComparison]::OrdinalIgnoreCase
     )) {

@@ -216,6 +216,11 @@ class PrivateShadowBlocked(BaseModel):
     byte_usage: dict[str, int]
     transient_attempts: int = Field(ge=0, le=_MAX_TRANSIENT_ATTEMPTS)
     failure_class: Literal["infrastructure_transient", "unclassified"]
+    diagnostic_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
+    )
     failure_stage: Literal[
         "prior_state_check",
         "create_store",
@@ -437,6 +442,7 @@ def failure_record(
     reconciliation_outcome: str,
     input_identity: str = "none",
     transient_attempts: int = 0,
+    diagnostic_sha256: str | None = None,
 ) -> PrivateShadowBlocked:
     """Build a bounded blocked record without retaining exception content."""
 
@@ -479,6 +485,11 @@ def failure_record(
         or not 0 <= transient_attempts <= _MAX_TRANSIENT_ATTEMPTS
     ):
         transient_attempts = 0
+    if diagnostic_sha256 is not None and (
+        not isinstance(diagnostic_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", diagnostic_sha256) is None
+    ):
+        raise ValueError("diagnostic SHA-256 is invalid")
     return PrivateShadowBlocked.model_validate(
         {
             "status": "blocked",
@@ -492,6 +503,7 @@ def failure_record(
             "failure_class": (
                 "infrastructure_transient" if category == "transient" else "unclassified"
             ),
+            "diagnostic_sha256": diagnostic_sha256,
             "failure_stage": failure_stage if failure_stage in _FAILURE_STAGES else "unknown",
             "failure_input_identity": (
                 input_identity if input_identity in _INPUT_IDENTITIES else "unknown"

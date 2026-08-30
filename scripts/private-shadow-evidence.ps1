@@ -31,10 +31,12 @@ function Set-PrivateShadowChildEnvironment {
     [Parameter(Mandatory = $true)][string]$ScratchRoot,
     [switch]$Sanitize,
     [switch]$CompositionVerify,
-    [string]$ProjectRoot
+    [string]$ProjectRoot,
+    [string]$DiagnosticPath
   )
   [void]$ProcessInfo.EnvironmentVariables.Remove("OMS_TASK28_COMPOSITION_VERIFY")
   [void]$ProcessInfo.EnvironmentVariables.Remove("OMS_TASK28_PRIVATE_PROJECT")
+  [void]$ProcessInfo.EnvironmentVariables.Remove("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH")
   if ($Sanitize) {
     $ProcessInfo.EnvironmentVariables.Clear()
     foreach ($Name in @("SystemRoot", "WINDIR", "ComSpec", "PATH")) {
@@ -50,6 +52,8 @@ function Set-PrivateShadowChildEnvironment {
     if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { throw "Composition project root is unavailable." }
     $ProcessInfo.EnvironmentVariables["OMS_TASK28_COMPOSITION_VERIFY"] = "1"
     $ProcessInfo.EnvironmentVariables["OMS_TASK28_PRIVATE_PROJECT"] = $ProjectRoot
+  } elseif (-not [string]::IsNullOrWhiteSpace($DiagnosticPath)) {
+    $ProcessInfo.EnvironmentVariables["OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH"] = $DiagnosticPath
   }
 }
 

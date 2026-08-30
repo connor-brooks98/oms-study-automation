@@ -3753,6 +3753,10 @@ def _private_shadow_view(smoke: ModuleType, tmp_path: Path) -> object:
     )
 
 
+def _private_diagnostic_path(root: Path, run_id: str = "0" * 32) -> Path:
+    return root / "oms-task28-runs" / run_id / "diagnostic" / "provider-diagnostic.json"
+
+
 class _PrivateShadowSession:
     def __init__(
         self,
@@ -4226,7 +4230,7 @@ def test_private_shadow_terminal_failure_writes_one_safe_diagnostic(
     smoke = _load_smoke()
     view = _private_shadow_view(smoke, tmp_path)
     evidence: dict[str, object] = {}
-    diagnostic_path = tmp_path / "state" / "diagnostic" / "provider-diagnostic.json"
+    diagnostic_path = _private_diagnostic_path(tmp_path)
     diagnostic_path.parent.mkdir(parents=True)
 
     class UnsafeMimeSession(_PrivateShadowSession):
@@ -4309,7 +4313,7 @@ def test_private_terminal_diagnostic_rejects_preexisting_and_overflow_without_pa
     tmp_path: Path,
 ) -> None:
     smoke = _load_smoke()
-    diagnostic_path = tmp_path / "state" / "diagnostic" / "provider-diagnostic.json"
+    diagnostic_path = _private_diagnostic_path(tmp_path)
     diagnostic_path.parent.mkdir(parents=True)
     error = smoke.GeminiProviderError(
         "safe", provider_status_code=400, diagnostic_code="unsupported_mime_type"
@@ -4335,7 +4339,7 @@ def test_private_terminal_diagnostic_rejects_preexisting_and_overflow_without_pa
         )
 
     assert not diagnostic_path.exists()
-    assert not list(tmp_path.glob(".provider-diagnostic.json.*.tmp"))
+    assert not list(diagnostic_path.parent.glob(".provider-diagnostic.json.*.tmp"))
 
 
 def test_private_terminal_diagnostic_is_one_write_and_success_leaves_none(
@@ -4343,7 +4347,7 @@ def test_private_terminal_diagnostic_is_one_write_and_success_leaves_none(
     tmp_path: Path,
 ) -> None:
     smoke = _load_smoke()
-    diagnostic_path = tmp_path / "state" / "diagnostic" / "provider-diagnostic.json"
+    diagnostic_path = _private_diagnostic_path(tmp_path)
     diagnostic_path.parent.mkdir(parents=True)
     error = smoke.GeminiProviderError(
         "safe", provider_status_code=400, diagnostic_code="unsupported_mime_type"
@@ -4364,7 +4368,7 @@ def test_private_terminal_diagnostic_is_one_write_and_success_leaves_none(
         )
     assert digest == hashlib.sha256(diagnostic_path.read_bytes()).hexdigest()
 
-    success_path = tmp_path / "success-state" / "diagnostic" / "provider-diagnostic.json"
+    success_path = _private_diagnostic_path(tmp_path, "1" * 32)
     success_path.parent.mkdir(parents=True)
     view = _private_shadow_view(smoke, tmp_path)
     session = _PrivateShadowSession(smoke)
@@ -4394,12 +4398,73 @@ def test_private_diagnostic_capability_mismatch_blocks_before_secret_read(
     tmp_path: Path,
 ) -> None:
     smoke = _load_smoke()
-    supplied = tmp_path / "state" / "diagnostic" / "provider-diagnostic.json"
+    supplied = _private_diagnostic_path(tmp_path)
     supplied.parent.mkdir(parents=True)
-    launcher_path = tmp_path / "other" / "diagnostic" / "provider-diagnostic.json"
+    launcher_path = _private_diagnostic_path(tmp_path, "1" * 32)
     secrets = _FakeSecrets("must-not-be-read")
     monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
     monkeypatch.setenv("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH", str(launcher_path))
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="diagnostic capability"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight={},
+                secret_store=secrets,
+                diagnostic_path=supplied,
+            )
+        )
+
+    assert secrets.calls == []
+
+
+def test_private_diagnostic_relative_capability_blocks_before_secret_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    secrets = _FakeSecrets("must-not-be-read")
+    relative = Path("oms-task28-runs") / ("0" * 32) / "diagnostic" / "provider-diagnostic.json"
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setenv("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH", str(relative))
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="diagnostic capability"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight={},
+                secret_store=secrets,
+                diagnostic_path=relative,
+            )
+        )
+
+    assert secrets.calls == []
+
+
+@pytest.mark.parametrize("inside_repo", (True, False))
+def test_private_diagnostic_unsafe_path_blocks_before_secret_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    inside_repo: bool,
+) -> None:
+    smoke = _load_smoke()
+    if inside_repo:
+        supplied = _private_diagnostic_path(ROOT)
+    else:
+        real_root = tmp_path / "real"
+        _private_diagnostic_path(real_root).parent.mkdir(parents=True)
+        linked_root = tmp_path / "linked"
+        linked_root.symlink_to(real_root, target_is_directory=True)
+        supplied = _private_diagnostic_path(linked_root)
+    secrets = _FakeSecrets("must-not-be-read")
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setenv("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH", str(supplied))
 
     with pytest.raises(smoke.LiveSmokeBlocked, match="diagnostic capability"):
         asyncio.run(
@@ -4422,7 +4487,7 @@ def test_private_success_after_transient_retries_leaves_no_diagnostic(
     tmp_path: Path,
 ) -> None:
     smoke = _load_smoke()
-    diagnostic_path = tmp_path / "state" / "diagnostic" / "provider-diagnostic.json"
+    diagnostic_path = _private_diagnostic_path(tmp_path)
     diagnostic_path.parent.mkdir(parents=True)
     view = _private_shadow_view(smoke, tmp_path)
     session = _PrivateShadowSession(smoke)

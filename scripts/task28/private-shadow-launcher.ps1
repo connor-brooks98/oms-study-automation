@@ -33,12 +33,21 @@ foreach ($Pair in @(
   }
 }
 $EvidenceRoot = $State.Evidence
+$DiagnosticPath = Join-Path $State.Diagnostic "provider-diagnostic.json"
 $ExitCode = 54
 try {
-  & $Wrapper -CompositionVerify -PythonExecutable ([string]$Run.Value.python_executable) -ProjectRoot $Source `
-      -OperatorScript $EntryPoint -StateRoot $State.Root -DiagnosticRoot $State.Diagnostic `
-      -SafeResultPath (Join-Path $EvidenceRoot "result.json") `
-      -SafeStatusPath (Join-Path $EvidenceRoot "status.json")
+  $WrapperArguments = @(
+    "-PythonExecutable", ([string]$Run.Value.python_executable), "-ProjectRoot", $Source,
+    "-OperatorScript", $EntryPoint, "-StateRoot", $State.Root, "-DiagnosticRoot", $State.Diagnostic,
+    "-SafeResultPath", (Join-Path $EvidenceRoot "result.json"),
+    "-SafeStatusPath", (Join-Path $EvidenceRoot "status.json")
+  )
+  if ($env:OMS_TASK28_COMPOSITION_VERIFY -eq "1") {
+    $WrapperArguments += "-CompositionVerify"
+  } else {
+    $WrapperArguments += @("-DiagnosticPath", $DiagnosticPath)
+  }
+  & $Wrapper @WrapperArguments
   $ExitCode = $LASTEXITCODE
 } finally {
   Remove-Item -LiteralPath $State.Scratch -Recurse -Force -ErrorAction SilentlyContinue

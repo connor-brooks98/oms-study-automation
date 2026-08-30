@@ -56,6 +56,7 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     assert "DIRECT_CONVERTER_ENVIRONMENT_VERIFIED" in harness
     assert 'EnvironmentVariables.Remove("OMS_TASK28_COMPOSITION_VERIFY")' in evidence
     assert 'EnvironmentVariables.Remove("OMS_TASK28_PRIVATE_PROJECT")' in evidence
+    assert 'EnvironmentVariables.Remove("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH")' in evidence
     assert "PRIVATE_SHADOW_COMPOSITION_ENVIRONMENT_VERIFIED" in harness
     assert "DIRECT_CONVERTER_SITECUSTOMIZE_REMOVED" in harness
 
