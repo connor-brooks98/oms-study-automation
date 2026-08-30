@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -11,6 +12,7 @@ from oms_hub.models import (
     ImportRunModel,
     LectureModel,
     LecturePassModel,
+    LecturePassResourceModel,
     LectureStepModel,
 )
 
@@ -132,9 +134,21 @@ class CatalogRepository:
                 if completed_on is not None
                 else None
             )
-        if update_resource:
-            values["resource"] = resource
         with self.database.session() as session:
+            if update_resource:
+                resource = resource.strip() if resource else None
+                if resource and resource.casefold() != "other":
+                    session.execute(
+                        insert(LecturePassResourceModel)
+                        .values(name=resource)
+                        .on_conflict_do_nothing(index_elements=["name"])
+                    )
+                    resource = session.scalar(
+                        select(LecturePassResourceModel.name).where(
+                            LecturePassResourceModel.name.collate("NOCASE") == resource
+                        )
+                    )
+                values["resource"] = resource
             lecture_pass = session.scalar(
                 update(LecturePassModel)
                 .where(
@@ -147,6 +161,14 @@ class CatalogRepository:
             if lecture_pass is None:
                 raise KeyError((lecture_id, position))
             return lecture_pass
+
+    def list_pass_resources(self) -> list[str]:
+        with self.database.session() as session:
+            return list(
+                session.scalars(
+                    select(LecturePassResourceModel.name).order_by(LecturePassResourceModel.id)
+                )
+            )
 
     def append_pass(self, lecture_id: int) -> LecturePassModel:
         try:

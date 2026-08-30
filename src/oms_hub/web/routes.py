@@ -166,7 +166,8 @@ def exam_passes(request: Request, exam_number: int, subject: str) -> HTMLRespons
 
 @router.get("/lectures/{lecture_id}", response_class=HTMLResponse)
 def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
-    lecture = _repo(request).get_lecture(lecture_id)
+    repository = _repo(request)
+    lecture = repository.get_lecture(lecture_id)
     if lecture is None:
         return HTMLResponse("Lecture not found", status_code=404)
     key = LectureKey(
@@ -207,7 +208,7 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
     outline = generation.current_outline(lecture_id)
     quiz = generation.current_quiz(lecture_id)
     subject_lectures = sorted(
-        (item for item in _repo(request).list_lectures() if item.subject == lecture.subject),
+        (item for item in repository.list_lectures() if item.subject == lecture.subject),
         key=lambda item: (item.exam_number, item.lecture_number, item.id),
     )
     position = next(index for index, item in enumerate(subject_lectures) if item.id == lecture.id)
@@ -248,6 +249,7 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
                 if position + 1 < len(subject_lectures)
                 else None
             ),
+            "pass_resources": repository.list_pass_resources(),
         },
     )
 

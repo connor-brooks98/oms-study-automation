@@ -136,7 +136,7 @@ def test_v30_creates_and_backfills_lecture_passes_idempotently(tmp_path) -> None
         for lecture_id in (first_id, second_id)
         for position in range(1, 6)
     ]
-    assert version == 30
+    assert version == LATEST_SCHEMA_VERSION
 
 
 def test_v31_creates_and_backfills_pass_resources_idempotently(tmp_path) -> None:

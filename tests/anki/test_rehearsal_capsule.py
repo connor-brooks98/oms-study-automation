@@ -206,10 +206,12 @@ def test_materializer_rebases_supported_windows_absolute_path_forms(
         ).fetchone() == (str(overlay.root / "roots" / "study" / "lecture.txt"),)
 
 
-def test_materializer_rejects_unknown_future_schema_v31(tmp_path: Path) -> None:
-    root = _capsule(tmp_path, database_schema=31)
+def test_materializer_rejects_unknown_future_schema(tmp_path: Path) -> None:
+    future_schema = LATEST_SCHEMA_VERSION + 1
+    root = _capsule(tmp_path, database_schema=future_schema)
     with pytest.raises(
-        CapsuleIntegrityError, match="unsupported path registry for database schema 31"
+        CapsuleIntegrityError,
+        match=f"unsupported path registry for database schema {future_schema}",
     ):
         materialize_capsule(root, tmp_path / "overlay")
 

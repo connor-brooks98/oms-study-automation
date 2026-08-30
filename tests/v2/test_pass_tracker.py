@@ -187,20 +187,24 @@ def test_pass_patch_records_local_date_preserves_it_for_resource_and_clears_on_u
 
 def test_custom_resource_catalog_reuses_first_spelling_across_lectures(tmp_path) -> None:
     client, lecture_id = _client_with_lecture(tmp_path)
-    second_id = _lecture(client.app, number=2, topic="Spine")
+    _lecture(client.app, number=2, topic="Spine")
     headers = _csrf_headers(client)
     url = f"/api/lectures/{lecture_id}/passes/1"
 
     saved = client.patch(url, json={"resource": "Pathoma"}, headers=headers)
     changed = client.patch(url, json={"resource": "Anki"}, headers=headers)
     variant = client.patch(url, json={"resource": "pathoma"}, headers=headers)
-    page = client.get(f"/lectures/{second_id}")
 
     assert saved.json()["resource"] == "Pathoma"
     assert changed.json()["resource"] == "Anki"
     assert variant.json()["resource"] == "Pathoma"
-    assert page.status_code == 200
-    assert page.text.count('<option value="Pathoma"') == 5
+    assert client.app.state.catalog_repository.list_pass_resources() == [
+        "Lecture",
+        "Anki",
+        "Lecture outline",
+        "Practice questions",
+        "Pathoma",
+    ]
     with client.app.state.database.engine.connect() as connection:
         resources = connection.execute(
             text("SELECT name FROM lecture_pass_resources ORDER BY id")

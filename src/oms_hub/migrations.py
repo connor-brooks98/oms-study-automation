@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import Table, inspect, select, text
+from sqlalchemy import Table, func, inspect, select, text
+from sqlalchemy.dialects.sqlite import insert
 
 import oms_hub.anki.models  # noqa: F401
 from oms_hub.anki.card_centric import (
@@ -27,6 +28,7 @@ from oms_hub.llm.repository import DEFAULT_MODELS
 from oms_hub.models import (
     LectureModel,
     LecturePassModel,
+    LecturePassResourceModel,
     LectureStepModel,
     LLMProviderSettingModel,
     LLMTaskAssignmentModel,
@@ -39,7 +41,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 30
+LATEST_SCHEMA_VERSION = 31
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -415,6 +417,61 @@ def _validate_lecture_passes_v30(database: "Database") -> None:
     }
     if ("lecture_id", "position") not in unique_sets:
         raise RuntimeError("schema v30 lecture pass identity is not unique")
+
+
+def _upgrade_lecture_pass_resources_v31(database: "Database") -> None:
+    cast(Table, LecturePassResourceModel.__table__).create(database.engine, checkfirst=True)
+    defaults = ("Lecture", "Anki", "Lecture outline", "Practice questions")
+    with database.session() as session:
+        for name in defaults:
+            session.execute(
+                insert(LecturePassResourceModel)
+                .values(name=name)
+                .on_conflict_do_nothing(index_elements=["name"])
+            )
+        names = session.scalars(
+            select(func.trim(LecturePassModel.resource))
+            .where(
+                LecturePassModel.resource.is_not(None),
+                func.trim(LecturePassModel.resource) != "",
+                func.length(func.trim(LecturePassModel.resource)) <= 100,
+                func.lower(func.trim(LecturePassModel.resource)) != "other",
+            )
+            .order_by(LecturePassModel.id)
+        )
+        for name in names:
+            session.execute(
+                insert(LecturePassResourceModel)
+                .values(name=name)
+                .on_conflict_do_nothing(index_elements=["name"])
+            )
+
+
+def _validate_lecture_pass_resources_v31(database: "Database") -> None:
+    inspector = inspect(database.engine)
+    table = LecturePassResourceModel.__tablename__
+    if not inspector.has_table(table):
+        raise RuntimeError("schema v31 is missing lecture pass resources")
+    columns = {column["name"]: column for column in inspector.get_columns(table)}
+    required = {"id", "name", "created_at"}
+    if missing := sorted(required - set(columns)):
+        raise RuntimeError(
+            "schema v31 lecture pass resource columns are incomplete: " + ", ".join(missing)
+        )
+    expected_nullable = {"id": False, "name": False, "created_at": False}
+    if any(
+        bool(columns[name]["nullable"]) != nullable
+        for name, nullable in expected_nullable.items()
+    ):
+        raise RuntimeError("schema v31 lecture pass resource nullability is invalid")
+    primary_key = tuple(inspector.get_pk_constraint(table).get("constrained_columns") or ())
+    if primary_key != ("id",):
+        raise RuntimeError("schema v31 lecture pass resource primary key is invalid")
+    unique_sets = {
+        tuple(item["column_names"]) for item in inspector.get_unique_constraints(table)
+    }
+    if ("name",) not in unique_sets:
+        raise RuntimeError("schema v31 lecture pass resource name is not unique")
 
 
 def _validate_course_curation_policy_v28(database: "Database") -> None:
@@ -2581,6 +2638,7 @@ def migrate_database(database: "Database") -> None:
             _validate_course_curation_policy_v28(database)
             _validate_v3_durable_reservations_v29(database)
             _validate_lecture_passes_v30(database)
+            _validate_lecture_pass_resources_v31(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -2628,6 +2686,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_course_curation_policy_v28(database)
     _upgrade_v3_durable_reservations_v29(database)
     _upgrade_lecture_passes_v30(database)
+    _upgrade_lecture_pass_resources_v31(database)
     _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
     _validate_complete_existing_artifact_graph(database)
     _validate_current_artifact_indexes(database)
@@ -2639,6 +2698,7 @@ def migrate_database(database: "Database") -> None:
     _validate_v3_durable_reservations_v29(database)
     _validate_reconciled_v29_schema(database)
     _validate_lecture_passes_v30(database)
+    _validate_lecture_pass_resources_v31(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

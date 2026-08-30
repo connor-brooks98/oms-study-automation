@@ -122,6 +122,15 @@ class LecturePassModel(Base):
     lecture: Mapped[LectureModel] = relationship(back_populates="passes")
 
 
+class LecturePassResourceModel(Base):
+    __tablename__ = "lecture_pass_resources"
+    __table_args__ = (UniqueConstraint("name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100, collation="NOCASE"))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class ImportIssueModel(Base):
     __tablename__ = "import_issues"
 
