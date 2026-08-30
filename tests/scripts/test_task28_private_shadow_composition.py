@@ -111,6 +111,16 @@ def test_verify_uses_only_the_explicit_offline_seam() -> None:
     assert "OMS_TASK28_COMPOSITION_VERIFY" in composition
     assert "OMS_TASK28_COMPOSITION_VERIFY_ROOT" not in launcher
     assert "RUN_PRIVATE_GEMINI_SHADOW" not in launcher
+
+
+def test_windows_health_fixture_has_a_bounded_accept() -> None:
+    harness = (
+        ROOT / "tests" / "scripts" / "task28_private_shadow_composition_harness.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "GetContextAsync()" in harness
+    assert "$ContextTask.Wait(30000)" in harness
+    assert "$Listener.GetContext()" not in harness
     assert "OMS_TASK28_PRIVATE_PROJECT" not in launcher
     assert "OMS_TASK28_PRIVATE_SCRATCH" not in launcher
 
