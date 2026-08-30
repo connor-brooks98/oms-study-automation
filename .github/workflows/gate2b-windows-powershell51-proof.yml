@@ -39,7 +39,7 @@ jobs:
       - name: Verify immutable parent and Windows PowerShell 5.1
         shell: powershell
         run: |
-          $Candidate = "6d76be06d88cc76ebf49f665cb6317682423d3f5"
+          $Candidate = "16b87eb0a70366c8ad66383955ccd0a1c9a9cee5"
           git merge-base --is-ancestor $Candidate HEAD
           if ($LASTEXITCODE -ne 0) {
             throw "Reviewed integration candidate is not an ancestor of the proof commit."
