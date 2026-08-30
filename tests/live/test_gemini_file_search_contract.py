@@ -8,6 +8,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -4055,6 +4056,34 @@ def test_private_diagnostic_lexical_alias_blocks_before_preflight_or_secret(
     assert secrets.calls == []
 
 
+def test_private_diagnostic_env_alias_must_lexically_match_argument(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    canonical = _private_diagnostic_path(tmp_path)
+    canonical.parent.mkdir(parents=True)
+    alias = canonical.parent / ".." / "diagnostic" / canonical.name
+    secrets = _FakeSecrets("must-not-be-read")
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setenv("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH", str(alias))
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="diagnostic capability"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight={},
+                secret_store=secrets,
+                diagnostic_path=canonical,
+            )
+        )
+
+    assert secrets.calls == []
+
+
 def test_private_shadow_indexes_every_input_queries_and_returns_only_aggregates(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -4255,6 +4284,7 @@ def test_private_shadow_primary_failure_retains_safe_cleanup_evidence(
         "provider_reason",
         "provider_cleanup_outcome",
         "provider_reconciliation_outcome",
+        "diagnostic_sha256",
         "warnings",
     }
     assert evidence["status"] == "blocked"
@@ -4265,6 +4295,7 @@ def test_private_shadow_primary_failure_retains_safe_cleanup_evidence(
     assert evidence["provider_reason"] == "none"
     assert evidence["provider_cleanup_outcome"] == "failed"
     assert evidence["provider_reconciliation_outcome"] == "unknown"
+    assert re.fullmatch(r"[0-9a-f]{64}", str(evidence["diagnostic_sha256"]))
     assert evidence["warnings"] == [
         "private_citation_unresolved",
         "private_cleanup_failed",
@@ -4454,6 +4485,52 @@ def test_private_shadow_prior_check_failure_retains_only_safe_terminal_diagnosti
     for secret in ("fake-secret", "Authorization", "Lecture-13", "stored-private-key"):
         assert secret not in json.dumps(evidence, sort_keys=True)
         assert secret not in local
+
+
+def test_private_shadow_prior_state_mismatch_retains_terminal_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    diagnostic_path = _private_diagnostic_capability(monkeypatch, tmp_path)
+    evidence: dict[str, object] = {}
+
+    class PriorStateSession(_PrivateShadowSession):
+        async def find_stores(self, display_name: str) -> tuple[str, ...]:
+            del display_name
+            return ("fileSearchStores/private-store",)
+
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="prior operator state mismatch"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: PriorStateSession(smoke),
+                failure_evidence=evidence,
+                diagnostic_path=diagnostic_path,
+            )
+        )
+
+    assert evidence["provider_reconciliation_outcome"] == "not_empty"
+    assert evidence["diagnostic_sha256"] == hashlib.sha256(diagnostic_path.read_bytes()).hexdigest()
+    assert json.loads(diagnostic_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "exception_kind": "unclassified_error",
+        "provider_status_code": None,
+        "provider_reason": "none",
+        "provider_message": "Provider failure classification was unavailable.",
+        "failure_stage": "prior_state_check",
+        "failure_input_identity": "none",
+    }
 
 
 def test_private_terminal_diagnostic_rejects_preexisting_and_overflow_without_partial(

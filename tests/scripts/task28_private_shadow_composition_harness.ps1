@@ -165,11 +165,24 @@ try {
   if (-not [System.Linq.Enumerable]::SequenceEqual($BeforeVerify, (Get-ImmutableSnapshot -Root $Destination))) {
     throw "Controller execution changed the immutable bundle."
   }
+  $Launcher = Join-Path $Destination "source/scripts/task28/private-shadow-launcher.ps1"
+  Remove-Item -LiteralPath (Join-Path $StateView.Evidence "result.json") -Force
+  Remove-Item -LiteralPath (Join-Path $StateView.Evidence "status.json") -Force
+  New-Item -ItemType Directory -Path $StateView.Scratch | Out-Null
+  Protect-Task28Directory -Path $StateView.Scratch -Sid (Get-Task28CurrentSid)
+  Assert-Task28ProtectedState -State $StateView
+  Remove-Item -LiteralPath "Env:OMS_TASK28_COMPOSITION_VERIFY" -ErrorAction SilentlyContinue
+  & $Launcher -Manifest $ManifestPath
+  if ($LASTEXITCODE -ne 1 -or
+      -not (Test-Path -LiteralPath (Join-Path $StateView.Evidence "result.json")) -or
+      -not (Test-Path -LiteralPath (Join-Path $StateView.Evidence "status.json")) -or
+      (Test-Path -LiteralPath (Join-Path $StateView.Diagnostic "provider-diagnostic.json"))) {
+    throw "Named-splat diagnostic binding was not exercised."
+  }
   Remove-Item -LiteralPath (Join-Path $State "evidence") -Recurse -Force
   $Controller = Join-Path $Destination "source/scripts/task28/private-shadow-controller.ps1"
   & $Controller -Manifest $ManifestPath
   if ($LASTEXITCODE -eq 0) { throw "Dirty state root was repaired or reused." }
-  $Launcher = Join-Path $Destination "source/scripts/task28/private-shadow-launcher.ps1"
   & $Launcher -Manifest $ManifestPath
   if ($LASTEXITCODE -eq 0) { throw "Missing state child reached the launcher." }
   if (-not [System.Linq.Enumerable]::SequenceEqual($BeforeVerify, (Get-ImmutableSnapshot -Root $Destination))) {

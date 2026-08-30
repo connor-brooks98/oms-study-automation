@@ -36,18 +36,21 @@ $EvidenceRoot = $State.Evidence
 $DiagnosticPath = Join-Path $State.Diagnostic "provider-diagnostic.json"
 $ExitCode = 54
 try {
-  $WrapperArguments = @(
-    "-PythonExecutable", ([string]$Run.Value.python_executable), "-ProjectRoot", $Source,
-    "-OperatorScript", $EntryPoint, "-StateRoot", $State.Root, "-DiagnosticRoot", $State.Diagnostic,
-    "-SafeResultPath", (Join-Path $EvidenceRoot "result.json"),
-    "-SafeStatusPath", (Join-Path $EvidenceRoot "status.json")
-  )
-  if ($env:OMS_TASK28_COMPOSITION_VERIFY -eq "1") {
-    $WrapperArguments += "-CompositionVerify"
-  } else {
-    $WrapperArguments += @("-DiagnosticPath", $DiagnosticPath)
+  $WrapperParameters = @{
+    PythonExecutable = [string]$Run.Value.python_executable
+    ProjectRoot = $Source
+    OperatorScript = $EntryPoint
+    StateRoot = $State.Root
+    DiagnosticRoot = $State.Diagnostic
+    SafeResultPath = Join-Path $EvidenceRoot "result.json"
+    SafeStatusPath = Join-Path $EvidenceRoot "status.json"
   }
-  & $Wrapper @WrapperArguments
+  if ($env:OMS_TASK28_COMPOSITION_VERIFY -eq "1") {
+    $WrapperParameters.CompositionVerify = $true
+  } else {
+    $WrapperParameters.DiagnosticPath = $DiagnosticPath
+  }
+  & $Wrapper @WrapperParameters
   $ExitCode = $LASTEXITCODE
 } finally {
   Remove-Item -LiteralPath $State.Scratch -Recurse -Force -ErrorAction SilentlyContinue

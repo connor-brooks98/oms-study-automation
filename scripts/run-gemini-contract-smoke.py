@@ -564,13 +564,21 @@ def _has_reparse_component(path: Path) -> bool:
 
 def _validate_private_diagnostic_capability(path: Path) -> Path:
     supplied = os.getenv("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH")
-    if not supplied or not path.is_absolute() or not Path(supplied).is_absolute():
+    supplied_path = Path(supplied) if supplied else None
+    if (
+        supplied_path is None
+        or not path.is_absolute()
+        or not supplied_path.is_absolute()
+        or ".." in path.parts
+        or ".." in supplied_path.parts
+        or path != supplied_path
+    ):
         raise LiveSmokeBlocked("private diagnostic capability is unavailable")
     path_has_reparse = _has_reparse_component(path.parent)
-    supplied_has_reparse = _has_reparse_component(Path(supplied).parent)
+    supplied_has_reparse = _has_reparse_component(supplied_path.parent)
     try:
         output = path.resolve(strict=False)
-        launcher_output = Path(supplied).resolve(strict=False)
+        launcher_output = supplied_path.resolve(strict=False)
     except (OSError, RuntimeError):
         raise LiveSmokeBlocked("private diagnostic capability is invalid") from None
     if output != launcher_output:
@@ -680,6 +688,24 @@ def _write_private_terminal_diagnostic(
     finally:
         temporary.unlink(missing_ok=True)
     return hashlib.sha256(payload).hexdigest()
+
+
+def _finalize_private_terminal_diagnostic(
+    mode: Literal["public_matrix", "private_acceptance"],
+    private_diagnostic_path: Path | None,
+    error: BaseException,
+    *,
+    failure_stage: str,
+    input_identity: str,
+) -> str | None:
+    if mode != "private_acceptance" or private_diagnostic_path is None:
+        return None
+    return _write_private_terminal_diagnostic(
+        private_diagnostic_path,
+        error,
+        failure_stage=failure_stage,
+        input_identity=input_identity,
+    )
 
 
 class ShadowSession(Protocol):
@@ -2202,6 +2228,13 @@ async def _run_shadow_sequence(
         )
     except BaseException as prior_check_error:
         refresh_transient_attempts()
+        diagnostic_sha256 = _finalize_private_terminal_diagnostic(
+            mode,
+            private_diagnostic_path,
+            prior_check_error,
+            failure_stage=active_stage,
+            input_identity=active_input_identity,
+        )
         if failure_evidence is not None:
             if mode == "public_matrix":
                 failure_evidence.update(
@@ -2225,6 +2258,7 @@ async def _run_shadow_sequence(
                         cleanup_outcome="unknown",
                         reconciliation_outcome="unknown",
                         transient_attempts=_session_transient_attempts(session),
+                        diagnostic_sha256=diagnostic_sha256,
                     ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
@@ -2234,6 +2268,13 @@ async def _run_shadow_sequence(
         refresh_transient_attempts()
         prior_state_mismatch = LiveSmokeBlocked(
             "private shadow prior operator state mismatch"
+        )
+        diagnostic_sha256 = _finalize_private_terminal_diagnostic(
+            mode,
+            private_diagnostic_path,
+            prior_state_mismatch,
+            failure_stage=active_stage,
+            input_identity=active_input_identity,
         )
         if failure_evidence is not None:
             if mode == "public_matrix":
@@ -2258,6 +2299,7 @@ async def _run_shadow_sequence(
                         cleanup_outcome="unknown",
                         reconciliation_outcome="not_empty",
                         transient_attempts=_session_transient_attempts(session),
+                        diagnostic_sha256=diagnostic_sha256,
                     ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
@@ -2618,14 +2660,13 @@ async def _run_shadow_sequence(
                     public_checks["citation_presence"] = "positive_citation_missing"
             elif failure_stage == "negative_query":
                 public_checks["negative_structured_output"] = "negative_query_failed"
-        diagnostic_sha256: str | None = None
-        if mode == "private_acceptance" and private_diagnostic_path is not None:
-            diagnostic_sha256 = _write_private_terminal_diagnostic(
-                private_diagnostic_path,
-                failure,
-                failure_stage=failure_stage,
-                input_identity=active_input_identity,
-            )
+        diagnostic_sha256 = _finalize_private_terminal_diagnostic(
+            mode,
+            private_diagnostic_path,
+            failure,
+            failure_stage=failure_stage,
+            input_identity=active_input_identity,
+        )
         if failure_evidence is not None:
             if mode == "public_matrix":
                 failure_evidence.update(
@@ -2670,14 +2711,13 @@ async def _run_shadow_sequence(
             "private shadow cleanup failed",
             reason="private_cleanup_failed",
         )
-        diagnostic_sha256 = None
-        if mode == "private_acceptance" and private_diagnostic_path is not None:
-            diagnostic_sha256 = _write_private_terminal_diagnostic(
-                private_diagnostic_path,
-                cleanup_error,
-                failure_stage="cleanup",
-                input_identity="none",
-            )
+        diagnostic_sha256 = _finalize_private_terminal_diagnostic(
+            mode,
+            private_diagnostic_path,
+            cleanup_error,
+            failure_stage="cleanup",
+            input_identity="none",
+        )
         if failure_evidence is not None:
             if mode == "public_matrix":
                 failure_evidence.update(
@@ -2839,12 +2879,12 @@ async def run_authorized_private_shadow(
     artifacts: ArtifactService,
     materialization_root: Path,
     approved_preflight: Mapping[str, object],
+    diagnostic_path: Path,
     secret_store: SecretStore | None = None,
     session_factory: Callable[[str], ShadowSession] | None = None,
     parser: Any | None = None,
     clock: Callable[[], float] = monotonic,
     failure_evidence: dict[str, object] | None = None,
-    diagnostic_path: Path | None = None,
 ) -> dict[str, object]:
     if failure_evidence is not None:
         failure_evidence.clear()
@@ -2852,11 +2892,7 @@ async def run_authorized_private_shadow(
         raise LiveSmokeBlocked(
             "RUN_PRIVATE_GEMINI_SHADOW=1 is required for a private shadow"
         )
-    private_diagnostic_path = (
-        _validate_private_diagnostic_capability(diagnostic_path)
-        if diagnostic_path is not None
-        else None
-    )
+    private_diagnostic_path = _validate_private_diagnostic_capability(diagnostic_path)
     try:
         sdk_version = importlib.metadata.version("google-genai")
     except importlib.metadata.PackageNotFoundError:

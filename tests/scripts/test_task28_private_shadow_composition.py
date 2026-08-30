@@ -146,7 +146,7 @@ def test_launcher_uses_a_sanitized_explicit_composition_verify_child() -> None:
         encoding="utf-8"
     )
 
-    assert "-CompositionVerify" in launcher
+    assert "$WrapperParameters.CompositionVerify = $true" in launcher
     assert "[switch]$CompositionVerify" in wrapper
     assert ".EnvironmentVariables.Clear()" in evidence
     assert '"OMS_TASK28_PRIVATE_PROJECT"' in evidence
