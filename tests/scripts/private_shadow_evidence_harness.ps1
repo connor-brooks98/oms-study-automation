@@ -109,7 +109,6 @@ function Invoke-DirectEvidence {
   $Start.RedirectStandardInput = $true
   $Start.RedirectStandardOutput = $true
   $Start.RedirectStandardError = $true
-  $Start.StandardInputEncoding = $Utf8
   $Start.StandardOutputEncoding = $Utf8
   $Start.StandardErrorEncoding = $Utf8
   $Start.EnvironmentVariables["PYTHONPATH"] = $PackageRoot
@@ -121,8 +120,9 @@ function Invoke-DirectEvidence {
   $Process = [Diagnostics.Process]::new()
   $Process.StartInfo = $Start
   if (-not $Process.Start()) { throw "Evidence validator did not start." }
-  $Process.StandardInput.Write($Raw)
-  $Process.StandardInput.Close()
+  $InputWriter = [IO.StreamWriter]::new($Process.StandardInput.BaseStream, $Utf8)
+  $InputWriter.Write($Raw)
+  $InputWriter.Close()
   $Stdout = $Process.StandardOutput.ReadToEndAsync()
   $Stderr = $Process.StandardError.ReadToEndAsync()
   $Process.WaitForExit()

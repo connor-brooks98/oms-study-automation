@@ -95,7 +95,6 @@ function Convert-PrivateShadowEvidence {
     $Start.RedirectStandardInput = $true
     $Start.RedirectStandardOutput = $true
     $Start.RedirectStandardError = $true
-    $Start.StandardInputEncoding = $script:PrivateShadowUtf8
     $Start.StandardOutputEncoding = $script:PrivateShadowUtf8
     $Start.StandardErrorEncoding = $script:PrivateShadowUtf8
     Set-PrivateShadowChildEnvironment -ProcessInfo $Start -SourceRoot $SourceRoot `
@@ -103,8 +102,11 @@ function Convert-PrivateShadowEvidence {
     $Process = [Diagnostics.Process]::new()
     $Process.StartInfo = $Start
     if (-not $Process.Start()) { throw "Private-shadow evidence validator did not start." }
-    $Process.StandardInput.Write($Raw)
-    $Process.StandardInput.Close()
+    $InputWriter = [IO.StreamWriter]::new(
+      $Process.StandardInput.BaseStream, $script:PrivateShadowUtf8
+    )
+    $InputWriter.Write($Raw)
+    $InputWriter.Close()
     $Stdout = $Process.StandardOutput.ReadToEndAsync()
     $Stderr = $Process.StandardError.ReadToEndAsync()
     $Process.WaitForExit()
