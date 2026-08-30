@@ -33,6 +33,8 @@ function Set-PrivateShadowChildEnvironment {
     [switch]$CompositionVerify,
     [string]$ProjectRoot
   )
+  [void]$ProcessInfo.EnvironmentVariables.Remove("OMS_TASK28_COMPOSITION_VERIFY")
+  [void]$ProcessInfo.EnvironmentVariables.Remove("OMS_TASK28_PRIVATE_PROJECT")
   if ($Sanitize) {
     $ProcessInfo.EnvironmentVariables.Clear()
     foreach ($Name in @("SystemRoot", "WINDIR", "ComSpec", "PATH")) {
