@@ -27,4 +27,5 @@ New-Task28ProtectedState -State $State
 Assert-ImmutableBundle -Run $Run | Out-Null
 Assert-ImmutableBundle -Run $Run | Out-Null
 & $Launcher -Manifest $Manifest
-exit $LASTEXITCODE
+$LauncherExit = $LASTEXITCODE
+exit $LauncherExit

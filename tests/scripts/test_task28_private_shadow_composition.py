@@ -226,6 +226,8 @@ def test_stage_and_verify_use_the_bound_runtime_contract() -> None:
     assert "Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json" not in controller
     assert "Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json" not in launcher
     assert "Assert-ImmutableBundle -Run $Run" in controller
+    assert "$LauncherExit = $LASTEXITCODE" in controller
+    assert "exit $LauncherExit" in controller
     assert "Assert-ImmutableBundle -Run $Run" in launcher
     assert "[IO.Directory]::Move($StageRoot, $FinalDestination)" in composition
     promotion = composition.split("[IO.Directory]::Move($StageRoot, $FinalDestination)", 1)[1]
