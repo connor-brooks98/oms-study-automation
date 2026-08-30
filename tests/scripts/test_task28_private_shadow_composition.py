@@ -303,6 +303,26 @@ def test_c5_requires_one_shared_protected_run_state_contract() -> None:
     assert "Remove-Item -LiteralPath $State -Recurse -Force" in harness
 
 
+def test_c7_launcher_exposes_only_the_fixed_terminal_diagnostic_capability() -> None:
+    launcher = (ROOT / "scripts" / "task28" / "private-shadow-launcher.ps1").read_text(
+        encoding="utf-8"
+    )
+    wrapper = (ROOT / "scripts" / "run-private-shadow-evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+    evidence = (ROOT / "scripts" / "private-shadow-evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'Join-Path $State.Diagnostic "provider-diagnostic.json"' in launcher
+    assert "[string]$DiagnosticPath" in wrapper
+    assert "Join-Path $DiagnosticRoot \"provider-diagnostic.json\"" in wrapper
+    assert '$RawStdout = Join-Path $ScratchRoot "operator.stdout"' in wrapper
+    assert '$RawStderr = Join-Path $ScratchRoot "operator.stderr"' in wrapper
+    assert '"OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH"' in evidence
+    assert "-DiagnosticPath $DiagnosticPath" in wrapper
+
+
 def test_c5_runs_the_committed_windows_harness_when_available() -> None:
     powershell = next(
         (

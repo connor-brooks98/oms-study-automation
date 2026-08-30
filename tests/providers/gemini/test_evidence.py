@@ -106,6 +106,22 @@ def test_private_shadow_evidence_accepts_known_generic_bad_request() -> None:
     assert record["provider_status_code"] == 400
 
 
+def test_private_shadow_diagnostic_hash_is_blocked_only_and_strict() -> None:
+    blocked = _blocked_record()
+    blocked["diagnostic_sha256"] = "a" * 64
+
+    assert validate_private_shadow_record(blocked, process_exit_code=1)["diagnostic_sha256"] == "a" * 64
+
+    blocked["diagnostic_sha256"] = "A" * 64
+    with pytest.raises(ValueError):
+        validate_private_shadow_record(blocked, process_exit_code=1)
+
+    passed = _passed_record()
+    passed["diagnostic_sha256"] = "a" * 64
+    with pytest.raises(ValueError):
+        validate_private_shadow_record(passed, process_exit_code=0)
+
+
 def test_private_shadow_transient_failure_class_requires_bounded_retry_aggregate() -> None:
     record = _blocked_record(category="transient", status=500)
     record["provider_reason"] = "transport_error"
