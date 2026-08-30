@@ -61,7 +61,7 @@ if ($Mode -eq "Stage") {
   $State = Get-Task28StatePaths -RunId $RunId
   $FinalDestination = $Destination
   Assert-Task28NoReparsePath -Path (Split-Path -Parent $Destination)
-  if (Test-Path -LiteralPath $FinalDestination -or Test-Path -LiteralPath $State.Root) {
+  if ((Test-Path -LiteralPath $FinalDestination) -or (Test-Path -LiteralPath $State.Root)) {
     throw "Stage destinations must be absent."
   }
   if ([string]::Equals($FinalDestination, $State.Root, [StringComparison]::OrdinalIgnoreCase) -or
