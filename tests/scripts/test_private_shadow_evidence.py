@@ -61,8 +61,12 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     assert 'EnvironmentVariables.Remove("OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH")' in evidence
     assert "StandardInputEncoding" not in evidence
     assert "StandardInput.BaseStream" in evidence
+    assert "StreamWriter" not in evidence
+    assert "$InputStream.Write($InputBytes, 0, $InputBytes.Length)" in evidence
     assert "StandardInputEncoding" not in harness
     assert "StandardInput.BaseStream" in harness
+    assert "StreamWriter" not in harness
+    assert "$InputStream.Write($InputBytes, 0, $InputBytes.Length)" in harness
     assert "PRIVATE_SHADOW_COMPOSITION_ENVIRONMENT_VERIFIED" in harness
     assert "DIRECT_CONVERTER_SITECUSTOMIZE_REMOVED" in harness
     assert '$DirectValid.Stdout.TrimEnd("`r", "`n") + "`n"' in harness
