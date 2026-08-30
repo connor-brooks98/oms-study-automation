@@ -2567,6 +2567,89 @@ async def _run_shadow_sequence(
     return validate_private_shadow_record(record, process_exit_code=0)
 
 
+class _CompositionProbeSession:
+    """In-process fake used only by the tracked composition verifier."""
+
+    model_contract = PRIVATE_SHADOW_MODEL_CONTRACT
+
+    def __init__(self) -> None:
+        self._files: dict[str, str] = {}
+        self._stores: dict[str, str] = {}
+
+    async def create_store(self, display_name: str, embedding_model: str) -> str:
+        del embedding_model
+        name = "composition-probe-store"
+        self._stores[name] = display_name
+        return name
+
+    async def find_stores(self, display_name: str) -> tuple[str, ...]:
+        return tuple(name for name, value in self._stores.items() if value == display_name)
+
+    async def upload_input(self, display_name: str, path: Path, media_type: str) -> str:
+        del path, media_type
+        name = f"composition-probe-file-{len(self._files) + 1}"
+        self._files[name] = display_name
+        return name
+
+    async def import_input(
+        self,
+        store_name: str,
+        file_name: str,
+        metadata: tuple[tuple[str, str], ...],
+        chunking: object | None,
+    ) -> str:
+        del store_name, file_name, metadata, chunking
+        return "composition-probe-operation"
+
+    async def find_files(self, display_names: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(name for name, value in self._files.items() if value in display_names)
+
+    async def wait_for_import(self, operation_name: str) -> str:
+        return f"composition-probe-document-{operation_name}"
+
+    async def query_private(
+        self,
+        store_name: str,
+        prompt: str,
+        scope: SmokeScope,
+        *,
+        source_revision_id: str,
+        manifest: object,
+        file_bindings: tuple[tuple[str, str], ...],
+        require_structured_no_result: bool = False,
+        require_structured_supported: bool = False,
+    ) -> PrivateShadowQueryAudit:
+        del store_name, prompt, scope, source_revision_id, manifest, file_bindings
+        if require_structured_no_result:
+            return PrivateShadowQueryAudit(0, 0, 0, 0, False, True)
+        if require_structured_supported:
+            raise SmokeContractError("private composition probe has no public mode")
+        return PrivateShadowQueryAudit(1, 1, 0, 0, None, None)
+
+    async def delete_document(self, document_name: str) -> None:
+        del document_name
+
+    async def delete_file(self, file_name: str) -> None:
+        self._files.pop(file_name, None)
+
+    async def delete_store(self, store_name: str) -> None:
+        self._stores.pop(store_name, None)
+
+
+async def run_private_shadow_composition_probe() -> dict[str, object]:
+    """Exercise the private lifecycle locally without credentials or provider access."""
+
+    with tempfile.TemporaryDirectory(prefix="task-2-8-composition-probe-") as directory:
+        view = _synthetic_index_input(Path(directory))
+        return await _run_shadow_sequence(
+            _CompositionProbeSession(),
+            view,
+            _private_shadow_preflight_from_view(view),
+            mode="private_acceptance",
+            clock=lambda: 0.0,
+        )
+
+
 async def run_authorized_private_shadow(
     slide_revision_id: str,
     *,

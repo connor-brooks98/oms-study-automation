@@ -116,6 +116,6 @@ def test_stage_uses_an_atomic_sibling_and_rejects_equal_roots() -> None:
         encoding="utf-8"
     )
 
-    assert "$Destination -ceq $MutableStatePath" in composition
+    assert "$FinalDestination -ceq $MutableStatePath" in composition
     assert "$StageRoot" in composition
-    assert "Move-Item -LiteralPath $StageRoot -Destination $Destination" in composition
+    assert "Move-Item -LiteralPath $StageRoot -Destination $FinalDestination" in composition

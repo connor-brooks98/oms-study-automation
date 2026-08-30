@@ -140,23 +140,32 @@ if ($Mode -eq "Stage") {
   }
   $Destination = [IO.Path]::GetFullPath($Destination)
   $MutableStatePath = [IO.Path]::GetFullPath($MutableStatePath)
+  $FinalDestination = $Destination
   Assert-NoReparsePath -Path (Split-Path -Parent $Destination)
   Assert-NoReparsePath -Path (Split-Path -Parent $MutableStatePath)
-  if (Test-Path -LiteralPath $Destination -or Test-Path -LiteralPath $MutableStatePath) {
+  if (Test-Path -LiteralPath $FinalDestination -or Test-Path -LiteralPath $MutableStatePath) {
     throw "Stage destinations must be absent."
   }
-  if ($MutableStatePath.StartsWith($Destination.TrimEnd("\\", "/") + [IO.Path]::DirectorySeparatorChar,
+  if ($FinalDestination -ceq $MutableStatePath -or
+      $MutableStatePath.StartsWith($FinalDestination.TrimEnd("\\", "/") + [IO.Path]::DirectorySeparatorChar,
       [StringComparison]::OrdinalIgnoreCase) -or
-      $Destination.StartsWith($MutableStatePath.TrimEnd("\\", "/") + [IO.Path]::DirectorySeparatorChar,
+      $FinalDestination.StartsWith($MutableStatePath.TrimEnd("\\", "/") + [IO.Path]::DirectorySeparatorChar,
       [StringComparison]::OrdinalIgnoreCase)) {
     throw "Immutable and mutable paths must not overlap."
   }
+  $StageRoot = Join-Path (Split-Path -Parent $FinalDestination) (
+    ".{0}.stage-{1}" -f (Split-Path -Leaf $FinalDestination), [Guid]::NewGuid().ToString("N")
+  )
+  if (Test-Path -LiteralPath $StageRoot) { throw "Stage root already exists." }
+  $Destination = $StageRoot
+  New-Item -ItemType Directory -Path $StageRoot | Out-Null
+  try {
   $Tree = (& git -C $RepositoryRoot rev-parse "$SourceCommit^{tree}").Trim()
   if ($LASTEXITCODE -ne 0 -or $Tree -notmatch "^[0-9a-f]{40}$") { throw "Declared commit is unavailable." }
   $ExpectedArchive = Join-Path ([IO.Path]::GetTempPath()) ("oms-task28-archive-{0}.tar" -f [Guid]::NewGuid().ToString("N"))
   try {
     & git -C $RepositoryRoot archive --format=tar --prefix=source/ `
-      "--add-virtual-file=.task28-source-commit:$SourceCommit" "--output=$ExpectedArchive" $SourceCommit
+      "--add-virtual-file=source/.task28-source-commit:$SourceCommit" "--output=$ExpectedArchive" $SourceCommit
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $ExpectedArchive -PathType Leaf) -or
         -not [System.Linq.Enumerable]::SequenceEqual(
           [IO.File]::ReadAllBytes($ExpectedArchive), [IO.File]::ReadAllBytes($SourceArchive)
@@ -166,7 +175,6 @@ if ($Mode -eq "Stage") {
   } finally {
     Remove-Item -LiteralPath $ExpectedArchive -Force -ErrorAction SilentlyContinue
   }
-  New-Item -ItemType Directory -Path $Destination | Out-Null
   Copy-Item -LiteralPath $SourceArchive -Destination (Join-Path $Destination "source.tar")
   Copy-Item -LiteralPath $LockedRequirements -Destination (Join-Path $Destination "requirements.lock")
   & tar -xf (Join-Path $Destination "source.tar") -C $Destination
@@ -200,7 +208,7 @@ if ($Mode -eq "Stage") {
     source=[ordered]@{commit=$SourceCommit; tree=$Tree; archive_sha256=(Get-FileHash -LiteralPath (Join-Path $Destination "source.tar") -Algorithm SHA256).Hash.ToLowerInvariant(); manifest_sha256=(Get-FileHash -LiteralPath $SourceManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()}
     runtime=[ordered]@{lock_sha256=$RuntimeRows[0].sha256; manifest_sha256=(Get-FileHash -LiteralPath $RuntimeManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()}
     allowed_task_name=$TaskName
-    immutable_bundle_path=$Destination
+    immutable_bundle_path=$FinalDestination
     mutable_state_path=$MutableStatePath
     controller_sha256=(Get-FileHash -LiteralPath $Controller -Algorithm SHA256).Hash.ToLowerInvariant()
     launcher_sha256=(Get-FileHash -LiteralPath $Launcher -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -212,6 +220,13 @@ if ($Mode -eq "Stage") {
     authorization_count=0
   }
   Write-CanonicalJson -Path (Join-Path $Destination "run-manifest.json") -Value $RunManifest
+  Move-Item -LiteralPath $StageRoot -Destination $FinalDestination
+  $StageRoot = $null
+  } finally {
+    if ($StageRoot -and (Test-Path -LiteralPath $StageRoot)) {
+      Remove-Item -LiteralPath $StageRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
   exit 0
 }
 
@@ -239,7 +254,9 @@ $VerifyRoot = Join-Path ([IO.Path]::GetTempPath()) ("oms-task28-verify-{0}" -f [
 New-Item -ItemType Directory -Path $VerifyRoot | Out-Null
 try {
   $Previous = $env:OMS_TASK28_COMPOSITION_VERIFY_ROOT
+  $PreviousVerify = $env:OMS_TASK28_COMPOSITION_VERIFY
   $env:OMS_TASK28_COMPOSITION_VERIFY_ROOT = $VerifyRoot
+  $env:OMS_TASK28_COMPOSITION_VERIFY = "1"
   & $Controller -Manifest $Run.Path
   if ($LASTEXITCODE -ne 1) { throw "Synthetic controller path did not return blocked evidence." }
   $Result = Join-Path $VerifyRoot "evidence/result.json"
@@ -256,5 +273,6 @@ try {
   }
 } finally {
   $env:OMS_TASK28_COMPOSITION_VERIFY_ROOT = $Previous
+  $env:OMS_TASK28_COMPOSITION_VERIFY = $PreviousVerify
   Remove-Item -LiteralPath $VerifyRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

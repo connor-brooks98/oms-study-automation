@@ -13,6 +13,7 @@ $Commit = (& git -C $RepositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $Commit -notmatch "^[0-9a-f]{40}$") { throw "Harness commit is invalid." }
 $Sandbox = Join-Path ([IO.Path]::GetTempPath()) ("oms-task28-composition-{0}" -f [Guid]::NewGuid().ToString("N"))
 $Archive = Join-Path $Sandbox "source.tar"
+$PartialArchive = Join-Path $Sandbox "partial-source.tar"
 $Destination = Join-Path $Sandbox "bundle"
 $State = Join-Path $Sandbox "reserved-state"
 $Lock = Join-Path $RepositoryRoot "uv.lock"
@@ -40,9 +41,36 @@ $HealthJob = Start-Job -ArgumentList $Port -ScriptBlock {
 New-Item -ItemType Directory -Path $Sandbox | Out-Null
 try {
   Start-Sleep -Milliseconds 200
+  $ControllerCommit = (& git -C $RepositoryRoot log --format=%H --reverse -- `
+    scripts/task28/private-shadow-controller.ps1 | Select-Object -First 1).Trim()
+  $PartialCommit = (& git -C $RepositoryRoot rev-parse "$ControllerCommit^").Trim()
   & git -C $RepositoryRoot archive --format=tar --prefix=source/ `
-    "--add-virtual-file=.task28-source-commit:$Commit" "--output=$Archive" $Commit
+    "--add-virtual-file=source/.task28-source-commit:$PartialCommit" `
+    "--output=$PartialArchive" $PartialCommit
+  if ($LASTEXITCODE -ne 0) { throw "Partial-stage archive creation failed." }
+  try {
+    & $Composition -Mode Stage -SourceArchive $PartialArchive -RepositoryRoot $RepositoryRoot `
+      -SourceCommit $PartialCommit -LockedRequirements $Lock -Destination $Destination `
+      -TaskName "task28-composition-harness" -MutableStatePath $State `
+      -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
+    if ($LASTEXITCODE -eq 0) { throw "Partial Stage unexpectedly succeeded." }
+  } catch {}
+  if (Test-Path -LiteralPath $Destination) {
+    throw "Failed partial Stage left a final destination."
+  }
+  & git -C $RepositoryRoot archive --format=tar --prefix=source/ `
+    "--add-virtual-file=source/.task28-source-commit:$Commit" "--output=$Archive" $Commit
   if ($LASTEXITCODE -ne 0) { throw "Harness archive creation failed." }
+  try {
+    & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
+      -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
+      -TaskName "task28-composition-harness" -MutableStatePath $Destination `
+      -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
+    if ($LASTEXITCODE -eq 0) { throw "Equal immutable and mutable roots unexpectedly succeeded." }
+  } catch {}
+  if (Test-Path -LiteralPath $Destination) {
+    throw "Equal-root rejection created a final destination."
+  }
   & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
     -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
     -TaskName "task28-composition-harness" -MutableStatePath $State `

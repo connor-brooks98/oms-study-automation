@@ -69,21 +69,15 @@ foreach ($Pair in @(
 }
 $EvidenceRoot = Join-Path $VerifyRoot "evidence"
 New-Item -ItemType Directory -Path $EvidenceRoot | Out-Null
-$PreviousOptIn = $env:RUN_PRIVATE_GEMINI_SHADOW
-$PreviousProject = $env:OMS_TASK28_PRIVATE_PROJECT
-$PreviousScratch = $env:OMS_TASK28_PRIVATE_SCRATCH
+$PreviousVerify = $env:OMS_TASK28_COMPOSITION_VERIFY
 try {
-  $env:RUN_PRIVATE_GEMINI_SHADOW = "1"
-  $env:OMS_TASK28_PRIVATE_PROJECT = $Source
-  $env:OMS_TASK28_PRIVATE_SCRATCH = Join-Path $VerifyRoot "scratch"
+  $env:OMS_TASK28_COMPOSITION_VERIFY = "1"
   & $Wrapper -PythonExecutable ([string]$Run.python_executable) -ProjectRoot $Source `
     -OperatorScript $EntryPoint -DiagnosticRoot (Join-Path $VerifyRoot "diagnostic") `
     -SafeResultPath (Join-Path $EvidenceRoot "result.json") `
     -SafeStatusPath (Join-Path $EvidenceRoot "status.json")
   $ExitCode = $LASTEXITCODE
 } finally {
-  $env:RUN_PRIVATE_GEMINI_SHADOW = $PreviousOptIn
-  $env:OMS_TASK28_PRIVATE_PROJECT = $PreviousProject
-  $env:OMS_TASK28_PRIVATE_SCRATCH = $PreviousScratch
+  $env:OMS_TASK28_COMPOSITION_VERIFY = $PreviousVerify
 }
 exit $ExitCode
