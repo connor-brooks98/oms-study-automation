@@ -7,7 +7,7 @@ param(
   [string]$LockedRequirements,
   [string]$Destination,
   [string]$TaskName,
-  [string]$MutableStatePath,
+  [string]$RunId,
   [string]$PythonExecutable,
   [string]$HubHealthUrl,
   [string]$Manifest
@@ -39,10 +39,11 @@ function Get-StringSha256 {
 
 if ($Mode -eq "Stage") {
   foreach ($Required in @($SourceArchive, $RepositoryRoot, $SourceCommit, $LockedRequirements,
-      $Destination, $TaskName, $MutableStatePath, $PythonExecutable, $HubHealthUrl)) {
+      $Destination, $TaskName, $RunId, $PythonExecutable, $HubHealthUrl)) {
     if ([string]::IsNullOrWhiteSpace($Required)) { throw "Stage input was missing." }
   }
-  if ($SourceCommit -notmatch "^[0-9a-f]{40}$" -or $TaskName -notmatch "^[A-Za-z0-9._-]{1,120}$") {
+  if ($SourceCommit -notmatch "^[0-9a-f]{40}$" -or $TaskName -notmatch "^[A-Za-z0-9._-]{1,120}$" -or
+      $RunId -cnotmatch "^[0-9a-f]{32}$") {
     throw "Stage identity input is invalid."
   }
   $HealthUri = [Uri]$HubHealthUrl
@@ -55,21 +56,17 @@ if ($Mode -eq "Stage") {
   $RepositoryRoot = Resolve-Task28ExistingPath -Path $RepositoryRoot -Type Container
   $LockedRequirements = Resolve-Task28ExistingPath -Path $LockedRequirements -Type Leaf
   $PythonExecutable = Resolve-Task28ExistingPath -Path $PythonExecutable -Type Leaf
-  if (-not (Test-Task28FullyQualifiedPath -Path $Destination) -or
-      -not (Test-Task28FullyQualifiedPath -Path $MutableStatePath)) {
-    throw "Stage output paths must be absolute."
-  }
+  if (-not (Test-Task28FullyQualifiedPath -Path $Destination)) { throw "Stage destination must be absolute." }
   $Destination = [IO.Path]::GetFullPath($Destination)
-  $MutableStatePath = [IO.Path]::GetFullPath($MutableStatePath)
+  $State = Get-Task28StatePaths -RunId $RunId
   $FinalDestination = $Destination
   Assert-Task28NoReparsePath -Path (Split-Path -Parent $Destination)
-  Assert-Task28NoReparsePath -Path (Split-Path -Parent $MutableStatePath)
-  if (Test-Path -LiteralPath $FinalDestination -or Test-Path -LiteralPath $MutableStatePath) {
+  if (Test-Path -LiteralPath $FinalDestination -or Test-Path -LiteralPath $State.Root) {
     throw "Stage destinations must be absent."
   }
-  if ([string]::Equals($FinalDestination, $MutableStatePath, [StringComparison]::OrdinalIgnoreCase) -or
-      (Test-Task28DescendantPath -Path $MutableStatePath -Root $FinalDestination) -or
-      (Test-Task28DescendantPath -Path $FinalDestination -Root $MutableStatePath)) {
+  if ([string]::Equals($FinalDestination, $State.Root, [StringComparison]::OrdinalIgnoreCase) -or
+      (Test-Task28DescendantPath -Path $State.Root -Root $FinalDestination) -or
+      (Test-Task28DescendantPath -Path $FinalDestination -Root $State.Root)) {
     throw "Immutable and mutable paths must not overlap."
   }
   $StageRoot = Join-Path (Split-Path -Parent $FinalDestination) (
@@ -129,7 +126,8 @@ if ($Mode -eq "Stage") {
     runtime=[ordered]@{lock_sha256=$RuntimeRows[0].sha256; manifest_sha256=(Get-FileHash -LiteralPath $RuntimeManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()}
     allowed_task_name=$TaskName
     immutable_bundle_path=$FinalDestination
-    mutable_state_path=$MutableStatePath
+    run_id=$RunId
+    mutable_state_path=$State.Root
     controller_sha256=(Get-FileHash -LiteralPath $Controller -Algorithm SHA256).Hash.ToLowerInvariant()
     launcher_sha256=(Get-FileHash -LiteralPath $Launcher -Algorithm SHA256).Hash.ToLowerInvariant()
     common_sha256=(Get-FileHash -LiteralPath $Common -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -145,6 +143,10 @@ if ($Mode -eq "Stage") {
   $RunManifestHash = Get-StringSha256 -Value $ManifestJson
   $RunManifestPath = Join-Path $Destination ("run-manifest.$RunManifestHash.json")
   [IO.File]::WriteAllText($RunManifestPath, $ManifestJson, $Utf8)
+  $BundleRows = Get-Task28FileRows -Root $Destination
+  $BundleJson = (([ordered]@{schema_version=1; files=$BundleRows} | ConvertTo-Json -Compress -Depth 12) + "`n")
+  $BundleManifestHash = Get-StringSha256 -Value $BundleJson
+  [IO.File]::WriteAllText((Join-Path $Destination "bundle-manifest.$BundleManifestHash.json"), $BundleJson, $Utf8)
   [IO.Directory]::Move($StageRoot, $FinalDestination)
   $StageRoot = $null
   } finally {
@@ -159,9 +161,6 @@ if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) { throw "Verify requires an a
 $RepositoryRoot = Resolve-Task28ExistingPath -Path $RepositoryRoot -Type Container
 $Run = Read-BoundRunManifest -Path $Manifest
 $Bundle = Assert-ImmutableBundle -Run $Run
-if (Test-Path -LiteralPath ([string]$Run.Value.mutable_state_path)) {
-  throw "Correction 1 must not create mutable state."
-}
 $Tree = (& git -C $RepositoryRoot rev-parse "$($Run.Value.source.commit)^{tree}").Trim()
 if ($LASTEXITCODE -ne 0 -or -not [string]::Equals($Tree, [string]$Run.Value.source.tree, [StringComparison]::OrdinalIgnoreCase)) {
   throw "Declared source tree does not match the bound run."
@@ -193,17 +192,14 @@ try {
   Remove-Item -LiteralPath $VerifySourceRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 $Controller = Join-Path $Bundle "source/scripts/task28/private-shadow-controller.ps1"
-$VerifyRoot = Join-Path ([IO.Path]::GetTempPath()) ("oms-task28-verify-{0}" -f [Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $VerifyRoot | Out-Null
 try {
-  $Previous = $env:OMS_TASK28_COMPOSITION_VERIFY_ROOT
   $PreviousVerify = $env:OMS_TASK28_COMPOSITION_VERIFY
-  $env:OMS_TASK28_COMPOSITION_VERIFY_ROOT = $VerifyRoot
   $env:OMS_TASK28_COMPOSITION_VERIFY = "1"
   & $Controller -Manifest $Run.Path
   if ($LASTEXITCODE -ne 1) { throw "Synthetic controller path did not return blocked evidence." }
-  $Result = Join-Path $VerifyRoot "evidence/result.json"
-  $Status = Join-Path $VerifyRoot "evidence/status.json"
+  $State = Get-Task28StatePaths -RunId ([string]$Run.Value.run_id)
+  $Result = Join-Path $State.Evidence "result.json"
+  $Status = Join-Path $State.Evidence "status.json"
   if (-not (Test-Path -LiteralPath $Result -PathType Leaf) -or
       -not (Test-Path -LiteralPath $Status -PathType Leaf) -or
       ([IO.File]::ReadAllText($Result, $Utf8) | ConvertFrom-Json).status -cne "blocked" -or
@@ -215,7 +211,5 @@ try {
     throw "Hub health check failed."
   }
 } finally {
-  $env:OMS_TASK28_COMPOSITION_VERIFY_ROOT = $Previous
   $env:OMS_TASK28_COMPOSITION_VERIFY = $PreviousVerify
-  Remove-Item -LiteralPath $VerifyRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

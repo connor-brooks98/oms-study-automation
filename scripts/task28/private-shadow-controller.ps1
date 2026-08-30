@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $Run = Read-BoundRunManifest -Path $Manifest
 $Manifest = $Run.Path
 $Bundle = Assert-ImmutableBundle -Run $Run
+$State = Get-Task28StatePaths -RunId ([string]$Run.Value.run_id)
 $ExpectedController = Join-Path $Bundle "source/scripts/task28/private-shadow-controller.ps1"
 $ExpectedController = Resolve-Task28ExistingPath -Path $ExpectedController -Type Leaf
 $ActualController = Resolve-Task28ExistingPath -Path $PSCommandPath -Type Leaf
@@ -22,5 +23,8 @@ if (-not [string]::Equals((Get-FileHash -LiteralPath $Launcher -Algorithm SHA256
       [string]$Run.Value.launcher_sha256, [StringComparison]::OrdinalIgnoreCase)) {
   throw "Launcher is not the manifest-bound immutable file."
 }
+New-Task28ProtectedState -State $State
+Assert-ImmutableBundle -Run $Run | Out-Null
+Assert-ImmutableBundle -Run $Run | Out-Null
 & $Launcher -Manifest $Manifest
 exit $LASTEXITCODE

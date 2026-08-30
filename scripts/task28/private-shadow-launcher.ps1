@@ -17,18 +17,9 @@ if (-not [string]::Equals($ExpectedLauncher, $ActualLauncher, [StringComparison]
       [string]$Run.Value.launcher_sha256, [StringComparison]::OrdinalIgnoreCase)) {
   throw "Launcher is not the manifest-bound immutable file."
 }
-if (Test-Path -LiteralPath ([string]$Run.Value.mutable_state_path)) {
-  throw "Correction 1 must not create mutable state."
-}
-$VerifyRoot = $env:OMS_TASK28_COMPOSITION_VERIFY_ROOT
-if ([string]::IsNullOrWhiteSpace($VerifyRoot) -or -not (Test-Task28FullyQualifiedPath -Path $VerifyRoot) -or
-    -not (Test-Path -LiteralPath $VerifyRoot -PathType Container)) {
-  throw "Launcher is available only to tracked composition verification."
-}
-$VerifyRoot = Resolve-Task28ExistingPath -Path $VerifyRoot -Type Container
-if (Test-Task28DescendantPath -Path $VerifyRoot -Root $Bundle) {
-  throw "Verification output must remain outside the immutable bundle."
-}
+$State = Get-Task28StatePaths -RunId ([string]$Run.Value.run_id)
+Assert-Task28ProtectedState -State $State
+Assert-ImmutableBundle -Run $Run | Out-Null
 $EntryPoint = Join-Path $Source "scripts/private-shadow-operator-entry.py"
 $Wrapper = Join-Path $Source "scripts/run-private-shadow-evidence.ps1"
 $Evidence = Join-Path $Source "src/oms_hub/providers/gemini/evidence.py"
@@ -41,11 +32,16 @@ foreach ($Pair in @(
     throw "Launcher dependency is not the manifest-bound immutable file."
   }
 }
-$EvidenceRoot = Join-Path $VerifyRoot "evidence"
-New-Item -ItemType Directory -Path $EvidenceRoot | Out-Null
-& $Wrapper -CompositionVerify -PythonExecutable ([string]$Run.Value.python_executable) -ProjectRoot $Source `
-    -OperatorScript $EntryPoint -DiagnosticRoot (Join-Path $VerifyRoot "diagnostic") `
-    -SafeResultPath (Join-Path $EvidenceRoot "result.json") `
-    -SafeStatusPath (Join-Path $EvidenceRoot "status.json")
-$ExitCode = $LASTEXITCODE
+$EvidenceRoot = $State.Evidence
+$ExitCode = 54
+try {
+  & $Wrapper -CompositionVerify -PythonExecutable ([string]$Run.Value.python_executable) -ProjectRoot $Source `
+      -OperatorScript $EntryPoint -StateRoot $State.Root -DiagnosticRoot $State.Diagnostic `
+      -SafeResultPath (Join-Path $EvidenceRoot "result.json") `
+      -SafeStatusPath (Join-Path $EvidenceRoot "status.json")
+  $ExitCode = $LASTEXITCODE
+} finally {
+  Remove-Item -LiteralPath $State.Scratch -Recurse -Force -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $State.Scratch) { throw "Task28 scratch cleanup failed." }
+}
 exit $ExitCode

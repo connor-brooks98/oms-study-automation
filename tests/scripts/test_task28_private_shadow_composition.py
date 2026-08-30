@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -105,7 +107,7 @@ def test_verify_uses_only_the_explicit_offline_seam() -> None:
     )
 
     assert "OMS_TASK28_COMPOSITION_VERIFY" in composition
-    assert "OMS_TASK28_COMPOSITION_VERIFY" in launcher
+    assert "OMS_TASK28_COMPOSITION_VERIFY_ROOT" not in launcher
     assert "RUN_PRIVATE_GEMINI_SHADOW" not in launcher
     assert "OMS_TASK28_PRIVATE_PROJECT" not in launcher
     assert "OMS_TASK28_PRIVATE_SCRATCH" not in launcher
@@ -116,7 +118,7 @@ def test_stage_uses_an_atomic_sibling_and_rejects_equal_roots() -> None:
         encoding="utf-8"
     )
 
-    assert "[string]::Equals($FinalDestination, $MutableStatePath" in composition
+    assert "[string]::Equals($FinalDestination, $State.Root" in composition
     assert "$StageRoot" in composition
     assert "[IO.Directory]::Move($StageRoot, $FinalDestination)" in composition
 
@@ -282,6 +284,51 @@ def test_c5_requires_one_shared_protected_run_state_contract() -> None:
     assert controller.count("Assert-ImmutableBundle -Run $Run") >= 3
     assert "OMS_TASK28_COMPOSITION_VERIFY_ROOT" not in launcher
     assert "Assert-Task28ProtectedState" in launcher
-    assert "-StateRoot" in wrapper
+    assert "[string]$StateRoot" in wrapper
     assert "private-shadow-common.ps1" in wrapper
     assert "Remove-Item -LiteralPath $DiagnosticRoot -Recurse" not in wrapper
+    harness_path = (
+        ROOT / "tests" / "scripts" / "task28_private_shadow_composition_harness.ps1"
+    )
+    harness = harness_path.read_text(
+        encoding="utf-8"
+    )
+    assert "Get-ImmutableSnapshot" in harness
+    assert "Dirty state root was repaired or reused." in harness
+    assert "Remove-Item -LiteralPath $State -Recurse -Force" in harness
+
+
+def test_c5_runs_the_committed_windows_harness_when_available() -> None:
+    powershell = next(
+        (
+            executable
+            for name in ("powershell.exe", "powershell")
+            if (executable := shutil.which(name)) is not None
+        ),
+        None,
+    )
+    if powershell is None:
+        return
+    harness = ROOT / "tests" / "scripts" / "task28_private_shadow_composition_harness.ps1"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+            "-RepositoryRoot",
+            str(ROOT),
+            "-PythonExecutable",
+            sys.executable,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "TASK28_PRIVATE_SHADOW_COMPOSITION_HARNESS_VERIFIED" in result.stdout

@@ -22,6 +22,13 @@ $CasesRoot = Join-Path $Sandbox "cases"
 New-Item -ItemType Directory -Path $OperatorRoot,$CasesRoot | Out-Null
 Copy-Item -LiteralPath $SourceRoot -Destination $PackageRoot -Recurse
 $Emitter = Join-Path $OperatorRoot "emit_private_shadow_json.py"
+. (Join-Path (Split-Path -Parent $WrapperScript) "task28/private-shadow-common.ps1")
+
+function New-EvidenceState {
+  $State = Get-Task28StatePaths -RunId ([Guid]::NewGuid().ToString("N"))
+  New-Task28ProtectedState -State $State
+  return $State
+}
 
 [IO.File]::WriteAllText(
   $Emitter,
@@ -90,20 +97,21 @@ function Invoke-DirectEvidence {
 function Invoke-WrapperEvidence {
   param([Parameter(Mandatory = $true)][string]$Mode)
   $CaseRoot = Join-Path $CasesRoot ([Guid]::NewGuid().ToString("N"))
-  $EvidenceRoot = Join-Path $CaseRoot "evidence"
-  $DiagnosticRoot = Join-Path $CaseRoot "diagnostic"
-  New-Item -ItemType Directory -Path $EvidenceRoot | Out-Null
+  $State = New-EvidenceState
+  $EvidenceRoot = $State.Evidence
+  $DiagnosticRoot = $State.Diagnostic
   $SafeResult = Join-Path $EvidenceRoot "result.json"
   $SafeStatus = Join-Path $EvidenceRoot "status.json"
   $env:PRIVATE_SHADOW_FIXTURE_MODE = $Mode
   try {
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-      -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $ProjectRoot `
+      -File $WrapperScript -PythonExecutable $PythonExecutable -StateRoot $State.Root -ProjectRoot $ProjectRoot `
       -OperatorScript $Emitter -DiagnosticRoot $DiagnosticRoot `
       -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
     $ExitCode = $LASTEXITCODE
   } finally {
     Remove-Item Env:PRIVATE_SHADOW_FIXTURE_MODE -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $State.Root -Recurse -Force -ErrorAction SilentlyContinue
   }
   [pscustomobject]@{
     ExitCode = $ExitCode
@@ -139,20 +147,24 @@ function Invoke-EntrypointEvidence {
 
 function Invoke-WrapperReparseCase {
   $CaseRoot = Join-Path $CasesRoot ([Guid]::NewGuid().ToString("N"))
-  $EvidenceRoot = Join-Path $CaseRoot "evidence"
+  $State = New-EvidenceState
+  $EvidenceRoot = $State.Evidence
   $ExternalRoot = Join-Path $CaseRoot "external"
   $ReparseRoot = Join-Path $CaseRoot "reparse"
-  New-Item -ItemType Directory -Path $EvidenceRoot,$ExternalRoot | Out-Null
+  New-Item -ItemType Directory -Path $ExternalRoot | Out-Null
   New-Item -ItemType Junction -Path $ReparseRoot -Target $ExternalRoot | Out-Null
   $SafeResult = Join-Path $EvidenceRoot "result.json"
   $SafeStatus = Join-Path $EvidenceRoot "status.json"
   & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-    -File $WrapperScript -PythonExecutable $PythonExecutable -ProjectRoot $ProjectRoot `
+    -File $WrapperScript -PythonExecutable $PythonExecutable -StateRoot $State.Root -ProjectRoot $ProjectRoot `
     -OperatorScript $Emitter -DiagnosticRoot (Join-Path $ReparseRoot "diagnostic") `
     -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
+  $ExitCode = $LASTEXITCODE
+  $SafeResultExists = Test-Path -LiteralPath $SafeResult
+  Remove-Item -LiteralPath $State.Root -Recurse -Force -ErrorAction SilentlyContinue
   [pscustomobject]@{
-    ExitCode = $LASTEXITCODE
-    SafeResultExists = Test-Path -LiteralPath $SafeResult
+    ExitCode = $ExitCode
+    SafeResultExists = $SafeResultExists
   }
 }
 

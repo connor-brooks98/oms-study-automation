@@ -138,11 +138,15 @@ function Assert-Task28FileHash {
 function Assert-ManifestEquality {
   param(
     [Parameter(Mandatory = $true)][string]$Root,
-    [Parameter(Mandatory = $true)][string]$ManifestPath
+    [Parameter(Mandatory = $true)][string]$ManifestPath,
+    [string]$ExcludedRelativePath
   )
   $Root = Resolve-Task28ExistingPath -Path $Root -Type Container
   $ManifestPath = Resolve-Task28ExistingPath -Path $ManifestPath -Type Leaf
   $Manifest = [IO.File]::ReadAllText($ManifestPath, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
+  if (-not [string]::IsNullOrWhiteSpace($ExcludedRelativePath)) {
+    $ExcludedRelativePath = Get-Task28CanonicalRelativePath -Value $ExcludedRelativePath
+  }
   Assert-Task28PropertyNames -Value $Manifest -Expected @("schema_version", "files") -Label "Manifest"
   if (($Manifest.schema_version -isnot [int64] -and $Manifest.schema_version -isnot [int]) -or
       $Manifest.schema_version -ne 1 -or $Manifest.files -isnot [System.Collections.IEnumerable]) {
@@ -152,6 +156,7 @@ function Assert-ManifestEquality {
   foreach ($Row in @($Manifest.files)) {
     Assert-Task28PropertyNames -Value $Row -Expected @("path", "sha256", "size") -Label "Manifest row"
     $RelativePath = Get-Task28CanonicalRelativePath -Value $Row.path
+    if ($RelativePath -ceq $ExcludedRelativePath) { throw "Manifest must not include its self-bound file." }
     Assert-Task28Sha256 -Value $Row.sha256 -Label "Manifest row hash"
     $Size = Assert-Task28NonNegativeInt64 -Value $Row.size -Label "Manifest row size"
     if ($ExpectedByPath.ContainsKey($RelativePath)) {
@@ -164,6 +169,7 @@ function Assert-ManifestEquality {
   }
   $ActualByPath = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
   foreach ($Row in @(Get-Task28FileRows -Root $Root)) {
+    if ($Row.path -ceq $ExcludedRelativePath) { continue }
     if ($ActualByPath.ContainsKey([string]$Row.path)) { throw "Root contains a case-insensitive duplicate path." }
     $ActualByPath.Add([string]$Row.path, $Row)
   }
@@ -180,6 +186,89 @@ function Assert-ManifestEquality {
   return @($ExpectedByPath.Values | Sort-Object path)
 }
 
+function Get-Task28StatePaths {
+  param([Parameter(Mandatory = $true)][string]$RunId)
+  if ($RunId -cnotmatch "^[0-9a-f]{32}$") { throw "Run ID is invalid." }
+  $LocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+  if ([string]::IsNullOrWhiteSpace($LocalAppData)) { throw "Local application data root is unavailable." }
+  $Parent = [IO.Path]::GetFullPath((Join-Path $LocalAppData "Temp\\oms-task28-runs"))
+  Assert-Task28NoReparsePath -Path $Parent
+  $Root = [IO.Path]::GetFullPath((Join-Path $Parent $RunId))
+  return [pscustomobject]@{
+    Parent=$Parent; Root=$Root; Evidence=(Join-Path $Root "evidence");
+    Scratch=(Join-Path $Root "scratch"); Diagnostic=(Join-Path $Root "diagnostic")
+  }
+}
+
+function Get-Task28CurrentSid {
+  $Identity = & whoami.exe /user /fo csv /nh | ConvertFrom-Csv -Header Name,Sid
+  if ($LASTEXITCODE -ne 0 -or $Identity.Sid -notmatch '^S-1(?:-\d+)+$') {
+    throw "Current Windows SID was unavailable."
+  }
+  return [string]$Identity.Sid
+}
+
+function Assert-Task28ProtectedDirectory {
+  param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Sid)
+  $Path = Resolve-Task28ExistingPath -Path $Path -Type Container
+  $Acl = Get-Acl -LiteralPath $Path
+  $Rules = @($Acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))
+  $FullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
+  $Inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  if (-not $Acl.AreAccessRulesProtected -or $Rules.Count -ne 1 -or
+      $Rules[0].IdentityReference.Value -cne $Sid -or $Rules[0].IsInherited -or
+      $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+      ($Rules[0].FileSystemRights -band $FullControl) -ne $FullControl -or
+      ($Rules[0].InheritanceFlags -band $Inheritance) -ne $Inheritance -or
+      $Rules[0].PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None) {
+    throw "Task28 state DACL was not current-user-only."
+  }
+  & icacls.exe $Path /verify | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Task28 state DACL verification failed." }
+}
+
+function Protect-Task28Directory {
+  param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Sid)
+  & icacls.exe $Path /inheritance:r /grant:r "*$Sid`:(OI)(CI)F" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Task28 state DACL initialization failed." }
+  Assert-Task28ProtectedDirectory -Path $Path -Sid $Sid
+}
+
+function New-Task28ProtectedState {
+  param([Parameter(Mandatory = $true)][object]$State)
+  if (Test-Path -LiteralPath $State.Root) { throw "Task28 state root must be absent." }
+  Assert-Task28NoReparsePath -Path $State.Parent
+  New-Item -ItemType Directory -Path $State.Parent -Force | Out-Null
+  $Sibling = Join-Path $State.Parent (".{0}.stage-{1}" -f (Split-Path -Leaf $State.Root), [Guid]::NewGuid().ToString("N"))
+  if (Test-Path -LiteralPath $Sibling) { throw "Task28 state staging root already exists." }
+  $Sid = Get-Task28CurrentSid
+  New-Item -ItemType Directory -Path $Sibling -ErrorAction Stop | Out-Null
+  try {
+    Protect-Task28Directory -Path $Sibling -Sid $Sid
+    foreach ($Name in @("evidence", "scratch", "diagnostic")) {
+      $Child = Join-Path $Sibling $Name
+      New-Item -ItemType Directory -Path $Child -ErrorAction Stop | Out-Null
+      Protect-Task28Directory -Path $Child -Sid $Sid
+    }
+    [IO.Directory]::Move($Sibling, $State.Root)
+    $Sibling = $null
+  } finally {
+    if ($Sibling -and (Test-Path -LiteralPath $Sibling)) {
+      Remove-Item -LiteralPath $Sibling -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+  Assert-Task28ProtectedState -State $State
+}
+
+function Assert-Task28ProtectedState {
+  param([Parameter(Mandatory = $true)][object]$State)
+  $Sid = Get-Task28CurrentSid
+  foreach ($Path in @($State.Root, $State.Evidence, $State.Scratch, $State.Diagnostic)) {
+    Assert-Task28ProtectedDirectory -Path $Path -Sid $Sid
+  }
+}
+
 function Read-BoundRunManifest {
   param([Parameter(Mandatory = $true)][string]$Path)
   $Path = Resolve-Task28ExistingPath -Path $Path -Type Leaf
@@ -191,7 +280,7 @@ function Read-BoundRunManifest {
   }
   $Value = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
   Assert-Task28PropertyNames -Value $Value -Expected @(
-    "schema_version", "source", "runtime", "allowed_task_name", "immutable_bundle_path", "mutable_state_path",
+    "schema_version", "source", "runtime", "allowed_task_name", "immutable_bundle_path", "run_id", "mutable_state_path",
     "controller_sha256", "launcher_sha256", "common_sha256", "entrypoint_sha256", "wrapper_sha256",
     "evidence_sha256", "smoke_sha256", "python_executable", "hub_health_url", "authorization_count"
   ) -Label "Run manifest"
@@ -202,7 +291,8 @@ function Read-BoundRunManifest {
       ($Value.authorization_count -isnot [int64] -and $Value.authorization_count -isnot [int]) -or
       $Value.authorization_count -ne 0 -or $Value.source.commit -isnot [string] -or $Value.source.commit -cnotmatch "^[0-9a-f]{40}$" -or
       $Value.source.tree -isnot [string] -or $Value.source.tree -cnotmatch "^[0-9a-f]{40}$" -or
-      $Value.allowed_task_name -isnot [string] -or $Value.allowed_task_name -cnotmatch "^[A-Za-z0-9._-]{1,120}$") {
+      $Value.allowed_task_name -isnot [string] -or $Value.allowed_task_name -cnotmatch "^[A-Za-z0-9._-]{1,120}$" -or
+      $Value.run_id -isnot [string] -or $Value.run_id -cnotmatch "^[0-9a-f]{32}$") {
     throw "Run manifest is invalid."
   }
   foreach ($Name in @("archive_sha256", "manifest_sha256")) { Assert-Task28Sha256 -Value $Value.source.$Name -Label "Run source $Name" }
@@ -213,6 +303,10 @@ function Read-BoundRunManifest {
   foreach ($Name in @("immutable_bundle_path", "mutable_state_path", "python_executable")) {
     if ($Value.$Name -isnot [string] -or -not (Test-Task28FullyQualifiedPath -Path ([string]$Value.$Name))) { throw "Run $Name must be absolute." }
     $Value.$Name = [IO.Path]::GetFullPath([string]$Value.$Name)
+  }
+  $State = Get-Task28StatePaths -RunId ([string]$Value.run_id)
+  if (-not [string]::Equals([string]$Value.mutable_state_path, $State.Root, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Run mutable state path does not match its fixed run ID."
   }
   Resolve-Task28ExistingPath -Path ([string]$Value.python_executable) -Type Leaf | Out-Null
   if ($Value.hub_health_url -isnot [string] -or [string]::IsNullOrWhiteSpace($Value.hub_health_url)) { throw "Run health URL is invalid." }
@@ -253,11 +347,15 @@ function Assert-ImmutableBundle {
     )) {
     Assert-Task28FileHash -Path (Join-Path $Bundle $Pair[0]) -Expected $Pair[1] -Label $Pair[2]
   }
-  $ExpectedTopLevel = @("source", "runtime", "source.tar", "source-manifest.json", "runtime-manifest.json", (Split-Path -Leaf ([string]$Run.Path)))
-  $ActualTopLevel = @(Get-ChildItem -LiteralPath $Bundle -Force | ForEach-Object { $_.Name })
-  if ($ExpectedTopLevel.Count -ne $ActualTopLevel.Count -or
-      @($ExpectedTopLevel | Where-Object { $_ -notin $ActualTopLevel }).Count -ne 0) {
-    throw "Immutable bundle has an unexpected top-level inventory."
+  $BundleManifest = @(
+    Get-ChildItem -LiteralPath $Bundle -Force -File -Filter "bundle-manifest.*.json"
+  )
+  if ($BundleManifest.Count -ne 1) { throw "Immutable bundle has no unique self-bound file manifest." }
+  $BundleManifest = $BundleManifest[0]
+  $BundleHash = (Get-FileHash -LiteralPath $BundleManifest.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+  if (-not [string]::Equals($BundleManifest.Name, "bundle-manifest.$BundleHash.json", [StringComparison]::Ordinal)) {
+    throw "Immutable bundle manifest filename is not content-bound."
   }
+  Assert-ManifestEquality -Root $Bundle -ManifestPath $BundleManifest.FullName -ExcludedRelativePath $BundleManifest.Name | Out-Null
   return $Bundle
 }

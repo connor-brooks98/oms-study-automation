@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 $RepositoryRoot = (Get-Item -LiteralPath $RepositoryRoot -Force).FullName
 $PythonExecutable = (Get-Item -LiteralPath $PythonExecutable -Force).FullName
 $Composition = Join-Path $RepositoryRoot "scripts/task28/private-shadow-composition.ps1"
+. (Join-Path $RepositoryRoot "scripts/task28/private-shadow-common.ps1")
 $Commit = (& git -C $RepositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $Commit -notmatch "^[0-9a-f]{40}$") { throw "Harness commit is invalid." }
 $Sandbox = Join-Path ([IO.Path]::GetTempPath()) ("oms-task28-composition-{0}" -f [Guid]::NewGuid().ToString("N"))
@@ -16,6 +17,7 @@ $Archive = Join-Path $Sandbox "source.tar"
 $PartialArchive = Join-Path $Sandbox "partial-source.tar"
 $Destination = Join-Path $Sandbox "bundle"
 $RunId = "0123456789abcdef0123456789abcdef"
+$State = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) "Temp\\oms-task28-runs\\$RunId"
 $Lock = Join-Path $RepositoryRoot "uv.lock"
 $Socket = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $Socket.Start()
@@ -37,6 +39,18 @@ $HealthJob = Start-Job -ArgumentList $Port -ScriptBlock {
   } finally {
     $Listener.Stop()
   }
+}
+
+function Get-ImmutableSnapshot {
+  param([Parameter(Mandatory = $true)][string]$Root)
+  $Prefix = $Root.TrimEnd('\\', '/') + [IO.Path]::DirectorySeparatorChar
+  return @(
+    Get-ChildItem -LiteralPath $Root -Force -Recurse | Sort-Object FullName | ForEach-Object {
+      $Relative = $_.FullName.Substring($Prefix.Length).Replace('\\', '/')
+      if ($_.PSIsContainer) { "d|$Relative|$($_.LastWriteTimeUtc.Ticks)" }
+      else { "f|$Relative|$($_.Length)|$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)|$($_.LastWriteTimeUtc.Ticks)" }
+    }
+  )
 }
 New-Item -ItemType Directory -Path $Sandbox | Out-Null
 try {
@@ -84,15 +98,28 @@ try {
   $FirstManifest = [IO.File]::ReadAllBytes($ManifestPath)
   $FirstSourceManifest = [IO.File]::ReadAllBytes((Join-Path $Destination "source-manifest.json"))
   $FirstRuntimeManifest = [IO.File]::ReadAllBytes((Join-Path $Destination "runtime-manifest.json"))
+  $BeforeVerify = Get-ImmutableSnapshot -Root $Destination
   & $Composition -Mode Verify -RepositoryRoot $RepositoryRoot -Manifest $ManifestPath
-  $State = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) "Temp\\oms-task28-runs\\$RunId"
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $State "evidence"))) {
     throw "Verify did not provision protected mutable state."
   }
-  $ExpectedInventory = @("source", "runtime", "source.tar", "source-manifest.json", "runtime-manifest.json", (Split-Path -Leaf $ManifestPath))
-  $ActualInventory = @(Get-ChildItem -LiteralPath $Destination -Force | ForEach-Object { $_.Name })
-  if ($ExpectedInventory.Count -ne $ActualInventory.Count -or @($ExpectedInventory | Where-Object { $_ -notin $ActualInventory }).Count -ne 0) {
-    throw "Stage did not create the exact immutable bundle inventory."
+  $StateView = Get-Task28StatePaths -RunId $RunId
+  if (Test-Path -LiteralPath $StateView.Scratch) { throw "Verify did not remove scratch state." }
+  foreach ($Path in @($StateView.Root, $StateView.Evidence, $StateView.Diagnostic)) {
+    Assert-Task28ProtectedDirectory -Path $Path -Sid (Get-Task28CurrentSid)
+  }
+  if (-not [System.Linq.Enumerable]::SequenceEqual($BeforeVerify, (Get-ImmutableSnapshot -Root $Destination))) {
+    throw "Controller execution changed the immutable bundle."
+  }
+  Remove-Item -LiteralPath (Join-Path $State "evidence") -Recurse -Force
+  $Controller = Join-Path $Destination "source/scripts/task28/private-shadow-controller.ps1"
+  & $Controller -Manifest $ManifestPath
+  if ($LASTEXITCODE -eq 0) { throw "Dirty state root was repaired or reused." }
+  if (-not [System.Linq.Enumerable]::SequenceEqual($BeforeVerify, (Get-ImmutableSnapshot -Root $Destination))) {
+    throw "Dirty-state rejection changed the immutable bundle."
+  }
+  if (@(Get-ChildItem -LiteralPath $Destination -File -Filter "bundle-manifest.*.json").Count -ne 1) {
+    throw "Stage did not create one self-bound immutable file manifest."
   }
   $TamperedRuntime = Join-Path $Destination "runtime/requirements.lock"
   $OriginalRuntime = [IO.File]::ReadAllBytes($TamperedRuntime)
@@ -123,6 +150,7 @@ try {
   } catch { $Rejected = $true }
   if (-not $Rejected) { throw "Unexpected bundle inventory was not rejected." }
   Remove-Item -LiteralPath $Unexpected -Force
+  Remove-Item -LiteralPath $State -Recurse -Force
   Remove-Item -LiteralPath $Destination -Recurse -Force
   & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
     -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
@@ -142,4 +170,5 @@ try {
 } finally {
   if ($HealthJob) { Remove-Job -Job $HealthJob -Force -ErrorAction SilentlyContinue }
   if (Test-Path -LiteralPath $Sandbox) { Remove-Item -LiteralPath $Sandbox -Recurse -Force }
+  if (Test-Path -LiteralPath $State) { Remove-Item -LiteralPath $State -Recurse -Force }
 }
