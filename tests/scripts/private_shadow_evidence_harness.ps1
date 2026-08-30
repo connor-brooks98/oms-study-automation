@@ -43,7 +43,7 @@ if Path(os.environ["TMP"]).resolve() != scratch:
     raise RuntimeError("temp_mismatch")
 if os.environ.get("PYTHONDONTWRITEBYTECODE") != "1":
     raise RuntimeError("bytecode_not_disabled")
-with tempfile.NamedTemporaryFile(dir=scratch, delete=True) as handle:
+with tempfile.NamedTemporaryFile(delete=True) as handle:
     if Path(handle.name).resolve().parent != scratch:
         raise RuntimeError("tempfile_escaped")
 (scratch / "environment-probe.json").write_text(
@@ -97,6 +97,7 @@ function Invoke-DirectEvidence {
   $Start.StandardOutputEncoding = $Utf8
   $Start.StandardErrorEncoding = $Utf8
   $Start.EnvironmentVariables["PYTHONPATH"] = $PackageRoot
+  $Start.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1"
   $Process = [Diagnostics.Process]::new()
   $Process.StartInfo = $Start
   if (-not $Process.Start()) { throw "Evidence validator did not start." }
@@ -211,7 +212,9 @@ try {
   $WrappedComposition = Invoke-WrapperEvidence -Mode "valid" -CompositionVerify
   foreach ($ProbeResult in @($WrappedValid, $WrappedComposition)) {
     $Probe = $ProbeResult.EnvironmentProbe | ConvertFrom-Json
-    if ($Probe.temp -cne $ProbeResult.ScratchRoot -or $Probe.tmp -cne $ProbeResult.ScratchRoot -or
+    $ExpectedScratch = [IO.Path]::GetFullPath($ProbeResult.ScratchRoot)
+    if (-not [string]::Equals([IO.Path]::GetFullPath($Probe.temp), $ExpectedScratch, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([IO.Path]::GetFullPath($Probe.tmp), $ExpectedScratch, [StringComparison]::OrdinalIgnoreCase) -or
         $Probe.bytecode -cne "1") {
       throw "Child environment did not bind TEMP/TMP and bytecode policy to protected scratch."
     }

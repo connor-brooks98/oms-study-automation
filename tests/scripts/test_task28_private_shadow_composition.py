@@ -254,7 +254,7 @@ def test_wrapper_preserves_fixture_environment_outside_composition_verify() -> N
     assert "[switch]$CompositionVerify" in wrapper
     assert "if ($CompositionVerify) {" in wrapper
     assert "Set-CompositionVerifyEnvironment -ProcessInfo $ProcessInfo" in wrapper
-    assert "-CompositionVerify" not in evidence_harness
+    assert "-CompositionVerify:$CompositionVerify" in evidence_harness
     assert '"PRIVATE_SHADOW_FIXTURE_MODE"' in evidence_harness
 
 

@@ -31,13 +31,21 @@ $StateContainmentValidated = $false
 function Set-CompositionVerifyEnvironment {
   param([Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$ProcessInfo)
   $ProcessInfo.EnvironmentVariables.Clear()
-  foreach ($Name in @("SystemRoot", "WINDIR", "ComSpec", "PATH", "TEMP", "TMP")) {
+  foreach ($Name in @("SystemRoot", "WINDIR", "ComSpec", "PATH")) {
     $Value = [Environment]::GetEnvironmentVariable($Name)
     if ($Value) { $ProcessInfo.EnvironmentVariables[$Name] = $Value }
   }
   $ProcessInfo.EnvironmentVariables["OMS_TASK28_COMPOSITION_VERIFY"] = "1"
   $ProcessInfo.EnvironmentVariables["OMS_TASK28_PRIVATE_PROJECT"] = $ProjectRoot
   $ProcessInfo.EnvironmentVariables["PYTHONPATH"] = $SourceRoot
+  Set-PrivateShadowScratchEnvironment -ProcessInfo $ProcessInfo
+}
+
+function Set-PrivateShadowScratchEnvironment {
+  param([Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$ProcessInfo)
+  $ProcessInfo.EnvironmentVariables["TEMP"] = $ScratchRoot
+  $ProcessInfo.EnvironmentVariables["TMP"] = $ScratchRoot
+  $ProcessInfo.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1"
 }
 
 function Resolve-PrivateShadowSafePath {
@@ -177,6 +185,7 @@ try {
     Set-CompositionVerifyEnvironment -ProcessInfo $ProcessInfo
   } else {
     $ProcessInfo.EnvironmentVariables["PYTHONPATH"] = $SourceRoot
+    Set-PrivateShadowScratchEnvironment -ProcessInfo $ProcessInfo
   }
   $Process = [System.Diagnostics.Process]::new()
   $Process.StartInfo = $ProcessInfo
