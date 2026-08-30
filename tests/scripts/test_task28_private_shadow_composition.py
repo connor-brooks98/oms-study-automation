@@ -154,3 +154,50 @@ def test_all_task28_executables_use_the_tracked_common_validator() -> None:
         assert "private-shadow-common.ps1" in text
         assert "Read-BoundRunManifest" in text
         assert "Assert-ImmutableBundle" in text
+
+
+def test_common_validator_owns_strict_manifest_and_bundle_contracts() -> None:
+    common = (ROOT / "scripts" / "task28" / "private-shadow-common.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function Assert-ManifestEquality" in common
+    assert "function Assert-ImmutableBundle" in common
+    assert "[string]::Equals" in common
+    assert "[StringComparison]::OrdinalIgnoreCase" in common
+    assert '"^run-manifest\\.([0-9a-f]{64})\\.json$"' in common
+    assert "Path must not cross a reparse point." in common
+    assert "source-manifest.json" in common
+    assert "runtime-manifest.json" in common
+    assert "source.tar" in common
+    assert "runtime/requirements.lock" in common
+    assert "smoke_sha256" in common
+    assert "private-shadow-common.ps1" in common
+    assert "run-manifest.$Hash.json" in common
+
+
+def test_stage_and_verify_use_the_bound_runtime_contract() -> None:
+    composition = (ROOT / "scripts" / "task28" / "private-shadow-composition.ps1").read_text(
+        encoding="utf-8"
+    )
+    controller = (ROOT / "scripts" / "task28" / "private-shadow-controller.ps1").read_text(
+        encoding="utf-8"
+    )
+    launcher = (ROOT / "scripts" / "task28" / "private-shadow-launcher.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'Join-Path $Destination "runtime"' in composition
+    assert 'Join-Path $RuntimeRoot "requirements.lock"' in composition
+    assert "smoke_sha256=" in composition
+    assert "Assert-ImmutableBundle -Run $Run" in composition
+    assert "git -C $RepositoryRoot archive" in composition
+    assert "oms-task28-verify-source-" in composition
+    assert "Assert-ManifestFile" not in composition
+    assert "Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json" not in controller
+    assert "Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json" not in launcher
+    assert "Assert-ImmutableBundle -Run $Run" in controller
+    assert "Assert-ImmutableBundle -Run $Run" in launcher
+    assert "[IO.Directory]::Move($StageRoot, $FinalDestination)" in composition
+    promotion = composition.split("[IO.Directory]::Move($StageRoot, $FinalDestination)", 1)[1]
+    assert "Get-Item -LiteralPath $FinalDestination" not in promotion.split("$StageRoot = $null", 1)[0]
