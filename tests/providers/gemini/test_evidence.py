@@ -319,6 +319,18 @@ def test_private_shadow_evidence_cli_is_canonical_utf8_and_maps_errors() -> None
     assert invalid.stderr == ""
 
 
+def test_private_shadow_evidence_cli_accepts_windows_utf8_bom() -> None:
+    raw = "\ufeff" + json.dumps(_blocked_record(), separators=(",", ":"))
+
+    result = _raw_cli(raw)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout == (
+        json.dumps(_blocked_record(), sort_keys=True, separators=(",", ":")) + "\n"
+    )
+
+
 @pytest.mark.parametrize("raw", ("PRIVATE SOURCE CONTENT", "{"))
 def test_private_shadow_evidence_cli_silently_rejects_malformed_input(raw: str) -> None:
     result = _raw_cli(raw)
