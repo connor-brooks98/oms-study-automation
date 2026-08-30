@@ -10,7 +10,7 @@ MANIFEST = REPO_ROOT / "docs/superpowers/plans/study-hub-parallel-workstream-man
 
 
 def _load_manifest() -> dict[str, Any]:
-    return cast(dict[str, Any], yaml.safe_load(MANIFEST.read_text()))
+    return cast(dict[str, Any], yaml.safe_load(MANIFEST.read_text(encoding="utf-8")))
 
 
 def test_gate_2b_is_delivered_only_by_the_final_evidence_integration_task() -> None:

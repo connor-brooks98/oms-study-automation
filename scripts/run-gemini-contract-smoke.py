@@ -7,14 +7,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-import csv
 import hashlib
 import importlib.metadata
 import json
 import os
 import re
 import stat
-import subprocess
 import tempfile
 import traceback
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable, Mapping
@@ -417,18 +415,8 @@ class _SyntheticDiagnosticSink:
                 reason="diagnostic_overflow",
             )
         output = self.request.output_path
-        file_descriptor, temporary_name = tempfile.mkstemp(
-            dir=output.parent,
-            prefix=f".{output.name}.",
-            suffix=".tmp",
-        )
-        temporary = Path(temporary_name)
+        file_descriptor, temporary = _open_restricted_diagnostic_temp(output)
         try:
-            try:
-                _restrict_diagnostic_file(file_descriptor, temporary)
-            except BaseException:
-                os.close(file_descriptor)
-                raise
             with os.fdopen(file_descriptor, "wb") as handle:
                 handle.write(payload)
                 handle.flush()
@@ -445,98 +433,99 @@ class _SyntheticDiagnosticSink:
 
 
 def _restrict_diagnostic_file(file_descriptor: int, path: Path) -> None:
+    fchmod = getattr(os, "fchmod", None)
+    if callable(fchmod):
+        fchmod(file_descriptor, 0o600)
+    else:
+        os.chmod(path, 0o600)
+
+
+def _open_restricted_diagnostic_temp(output: Path) -> tuple[int, Path]:
     if not _IS_WINDOWS:
-        fchmod = getattr(os, "fchmod", None)
-        if callable(fchmod):
-            fchmod(file_descriptor, 0o600)
-        else:
-            os.chmod(path, 0o600)
-        return
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        try:
+            _restrict_diagnostic_file(file_descriptor, temporary)
+        except BaseException:
+            os.close(file_descriptor)
+            temporary.unlink(missing_ok=True)
+            raise
+        return file_descriptor, temporary
+
+    temporary = output.parent / f".{output.name}.{uuid4().hex}.tmp"
+    handle = None
     try:
-        identity = subprocess.run(
-            ["whoami", "/user", "/fo", "csv", "/nh"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
+        msvcrt = import_module("msvcrt")
+        ntsecuritycon = import_module("ntsecuritycon")
+        win32api = import_module("win32api")
+        win32con = import_module("win32con")
+        win32file = import_module("win32file")
+        win32security = import_module("win32security")
+
+        token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(), win32security.TOKEN_QUERY
         )
-        row = next(csv.reader([identity.stdout.strip()]))
-        sid = row[1].strip() if len(row) == 2 else ""
-        if identity.returncode != 0 or re.fullmatch(r"S-1(?:-\d+)+", sid) is None:
-            raise ValueError
-        secured = subprocess.run(
-            [
-                "icacls",
-                str(path),
-                "/inheritance:r",
-                "/grant:r",
-                f"*{sid}:(F)",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
+        try:
+            sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        finally:
+            token.Close()
+        dacl = win32security.ACL()
+        dacl.AddAccessAllowedAce(
+            win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, sid
         )
-        verified = subprocess.run(
-            ["icacls", str(path), "/verify"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
+        attributes = win32security.SECURITY_ATTRIBUTES()
+        attributes.Initialize()
+        attributes.bInheritHandle = False
+        attributes.SetSecurityDescriptorDacl(True, dacl, False)
+        attributes.SetSecurityDescriptorControl(
+            win32security.SE_DACL_PROTECTED,
+            win32security.SE_DACL_PROTECTED,
         )
-        if secured.returncode != 0 or verified.returncode != 0:
-            raise ValueError
-        inspection_environment = dict(os.environ)
-        inspection_environment["OMS_TASK28_DIAGNOSTIC_PATH"] = str(path)
-        inspected = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                (
-                    "$acl=Get-Acl -LiteralPath $env:OMS_TASK28_DIAGNOSTIC_PATH;"
-                    "$rules=@($acl.GetAccessRules($true,$false,"
-                    "[System.Security.Principal.SecurityIdentifier]));"
-                    "$items=@($rules|ForEach-Object{[pscustomobject]@{"
-                    "Sid=$_.IdentityReference.Value;"
-                    "Allow=($_.AccessControlType -eq "
-                    "[System.Security.AccessControl.AccessControlType]::Allow);"
-                    "FullControl=(($_.FileSystemRights -band "
-                    "[System.Security.AccessControl.FileSystemRights]::FullControl) "
-                    "-eq [System.Security.AccessControl.FileSystemRights]::FullControl);"
-                    "Inherited=$_.IsInherited}});"
-                    "[pscustomobject]@{Protected=$acl.AreAccessRulesProtected;"
-                    "Rules=$items}|ConvertTo-Json -Compress -Depth 4"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-            env=inspection_environment,
+        handle = win32file.CreateFile(
+            str(temporary),
+            win32con.GENERIC_READ | win32con.GENERIC_WRITE,
+            0,
+            attributes,
+            win32con.CREATE_NEW,
+            win32con.FILE_ATTRIBUTE_NORMAL,
+            None,
         )
-        inspection = json.loads(inspected.stdout)
-        rules = inspection.get("Rules") if isinstance(inspection, Mapping) else None
-        if isinstance(rules, Mapping):
-            rule_list = [rules]
-        elif isinstance(rules, list):
-            rule_list = rules
-        else:
-            rule_list = []
-        rule = rule_list[0] if len(rule_list) == 1 else None
+        descriptor = win32security.GetSecurityInfo(
+            handle,
+            win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION,
+        )
+        applied = descriptor.GetSecurityDescriptorDacl()
+        control, _revision = descriptor.GetSecurityDescriptorControl()
+        ace = applied.GetAce(0) if applied is not None and applied.GetAceCount() == 1 else None
         if (
-            inspected.returncode != 0
-            or not isinstance(inspection, Mapping)
-            or inspection.get("Protected") is not True
-            or not isinstance(rule, Mapping)
-            or rule.get("Sid") != sid
-            or rule.get("Allow") is not True
-            or rule.get("FullControl") is not True
-            or rule.get("Inherited") is not False
+            applied is None
+            or ace is None
+            or control & win32security.SE_DACL_PROTECTED == 0
+            or ace[0][0] != win32security.ACCESS_ALLOWED_ACE_TYPE
+            or ace[0][1] & win32security.INHERITED_ACE != 0
+            or ace[1] & ntsecuritycon.FILE_ALL_ACCESS != ntsecuritycon.FILE_ALL_ACCESS
+            or not win32security.EqualSid(ace[2], sid)
         ):
             raise ValueError
-    except (OSError, StopIteration, subprocess.SubprocessError, ValueError):
+        raw_handle = int(handle.Detach())
+        handle = None
+        try:
+            file_descriptor = msvcrt.open_osfhandle(
+                raw_handle, os.O_RDWR | getattr(os, "O_BINARY", 0)
+            )
+        except BaseException:
+            win32api.CloseHandle(raw_handle)
+            raise
+        return file_descriptor, temporary
+    except Exception:
+        if handle is not None:
+            handle.Close()
+        temporary.unlink(missing_ok=True)
         raise SmokeContractError(
             "synthetic diagnostic permissions were unavailable",
             reason="diagnostic_permissions_unavailable",
@@ -659,18 +648,8 @@ def _write_private_terminal_diagnostic_payload(output: Path, payload: bytes) -> 
         raise LiveSmokeBlocked("private diagnostic output already exists")
     if len(payload) > _MAX_PRIVATE_DIAGNOSTIC_BYTES:
         raise SmokeContractError("private diagnostic overflow", reason="diagnostic_overflow")
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=output.parent,
-        prefix=f".{output.name}.",
-        suffix=".tmp",
-    )
-    temporary = Path(temporary_name)
+    descriptor, temporary = _open_restricted_diagnostic_temp(output)
     try:
-        try:
-            _restrict_diagnostic_file(descriptor, temporary)
-        except BaseException:
-            os.close(descriptor)
-            raise
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(payload)
             handle.flush()

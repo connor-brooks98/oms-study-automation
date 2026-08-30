@@ -196,7 +196,12 @@ server.server_close()
     -DiagnosticRoot $WrapperDiagnostic -SafeResultPath $WrapperSafe `
     -SafeStatusPath $WrapperStatus -HubHealthUri "http://127.0.0.1:$Port/health"
   if ($LASTEXITCODE -ne 0) {
-    throw "Committed wrapper rejected valid Python JSON."
+    $SafeStatus = if (Test-Path -LiteralPath $WrapperStatus) {
+      [IO.File]::ReadAllText($WrapperStatus, $Utf8)
+    } else {
+      "missing"
+    }
+    throw "Committed wrapper rejected valid Python JSON; safe_status=$SafeStatus"
   }
   $WrapperStatusRecord = Get-Content -LiteralPath $WrapperStatus -Raw | ConvertFrom-Json
   if (-not $WrapperStatusRecord.evidence_usable -or
