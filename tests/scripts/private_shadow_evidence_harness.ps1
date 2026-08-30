@@ -20,7 +20,15 @@ $PackageRoot = Join-Path $ProjectRoot "src"
 $EvidenceModule = Join-Path $PackageRoot "oms_hub/providers/gemini/evidence.py"
 $CasesRoot = Join-Path $Sandbox "cases"
 $ValidatorScratch = Join-Path $Sandbox "validator-scratch"
-New-Item -ItemType Directory -Path $OperatorRoot,$CasesRoot,$ValidatorScratch | Out-Null
+$HostTempRoot = Join-Path $Sandbox "host-temp"
+$DirectConverterSiteCustomize = $null
+$DirectConverterProbePath = $null
+$HostTempProbePath = Join-Path $HostTempRoot "direct-converter-environment.json"
+$HadCompositionVerify = Test-Path Env:OMS_TASK28_COMPOSITION_VERIFY
+$PriorCompositionVerify = $env:OMS_TASK28_COMPOSITION_VERIFY
+$HadPrivateProject = Test-Path Env:OMS_TASK28_PRIVATE_PROJECT
+$PriorPrivateProject = $env:OMS_TASK28_PRIVATE_PROJECT
+New-Item -ItemType Directory -Path $OperatorRoot,$CasesRoot,$ValidatorScratch,$HostTempRoot | Out-Null
 Copy-Item -LiteralPath $SourceRoot -Destination $PackageRoot -Recurse
 $Emitter = Join-Path $OperatorRoot "emit_private_shadow_json.py"
 . (Join-Path (Split-Path -Parent $WrapperScript) "task28/private-shadow-common.ps1")
@@ -48,7 +56,13 @@ with tempfile.NamedTemporaryFile(delete=True) as handle:
     if Path(handle.name).resolve().parent != scratch:
         raise RuntimeError("tempfile_escaped")
 (scratch / "environment-probe.json").write_text(
-    json.dumps({"temp": str(scratch), "tmp": os.environ["TMP"], "bytecode": os.environ.get("PYTHONDONTWRITEBYTECODE")}),
+    json.dumps({
+        "temp": str(scratch),
+        "tmp": os.environ["TMP"],
+        "bytecode": os.environ.get("PYTHONDONTWRITEBYTECODE"),
+        "composition_verify": os.environ.get("OMS_TASK28_COMPOSITION_VERIFY"),
+        "private_project": os.environ.get("OMS_TASK28_PRIVATE_PROJECT"),
+    }),
     encoding="utf-8",
 )
 project = Path(__file__).resolve().parents[1]
@@ -84,7 +98,7 @@ raise SystemExit(1)
 )
 
 function Invoke-DirectEvidence {
-  param([Parameter(Mandatory = $true)][string]$Raw)
+  param([Parameter(Mandatory = $true)][string]$Raw, [string]$TempRoot)
   $Start = [Diagnostics.ProcessStartInfo]::new()
   $Start.FileName = $PythonExecutable
   $Start.Arguments = "-m oms_hub.providers.gemini.evidence --process-exit-code 1"
@@ -99,6 +113,10 @@ function Invoke-DirectEvidence {
   $Start.StandardErrorEncoding = $Utf8
   $Start.EnvironmentVariables["PYTHONPATH"] = $PackageRoot
   $Start.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1"
+  if ($TempRoot) {
+    $Start.EnvironmentVariables["TEMP"] = $TempRoot
+    $Start.EnvironmentVariables["TMP"] = $TempRoot
+  }
   $Process = [Diagnostics.Process]::new()
   $Process.StartInfo = $Start
   if (-not $Process.Start()) { throw "Evidence validator did not start." }
@@ -205,6 +223,8 @@ try {
   . $EvidenceScript
   $ValidRaw = '{"status":"blocked","source_revision_hash":"' + ("a" * 64) + '","document_types":["markdown"],"page_count":1,"slide_count":1,"provider_operation_states":["private_shadow_failed"],"byte_usage":{"index_inputs":1},"transient_attempts":0,"failure_class":"unclassified","failure_stage":"prior_state_check","failure_input_identity":"none","provider_error_category":"provider","provider_status_code":400,"provider_reason":"provider_bad_request","provider_cleanup_outcome":"unknown","provider_reconciliation_outcome":"unknown","warnings":["private_shadow_failed","private_cleanup_unknown"]}' + "`n"
   $DirectValid = Invoke-DirectEvidence -Raw $ValidRaw
+  $env:OMS_TASK28_COMPOSITION_VERIFY = "stale-composition"
+  $env:OMS_TASK28_PRIVATE_PROJECT = "stale-private-project"
   $WrappedValid = Invoke-WrapperEvidence -Mode "valid"
   if ($DirectValid.ExitCode -ne 0 -or -not [string]::IsNullOrEmpty($DirectValid.Stderr) -or
       $WrappedValid.ExitCode -ne 1 -or $WrappedValid.SafeResult -cne $DirectValid.Stdout) {
@@ -220,6 +240,18 @@ try {
       throw "Child environment did not bind TEMP/TMP and bytecode policy to protected scratch."
     }
   }
+  $NormalProbe = $WrappedValid.EnvironmentProbe | ConvertFrom-Json
+  if ($null -ne $NormalProbe.composition_verify -or $null -ne $NormalProbe.private_project) {
+    throw "Normal child inherited stale composition environment."
+  }
+  $CompositionProbe = $WrappedComposition.EnvironmentProbe | ConvertFrom-Json
+  if ($CompositionProbe.composition_verify -cne "1" -or -not [string]::Equals(
+      [IO.Path]::GetFullPath($CompositionProbe.private_project), [IO.Path]::GetFullPath($ProjectRoot),
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw "Composition child did not receive exact composition environment."
+  }
+  Write-Output "PRIVATE_SHADOW_COMPOSITION_ENVIRONMENT_VERIFIED"
   if (@(Get-ChildItem -LiteralPath $ProjectRoot -Force -Recurse -Directory -Filter "__pycache__").Count -ne 0) {
     throw "Child execution wrote Python bytecode into immutable project content."
   }
@@ -282,16 +314,24 @@ with tempfile.NamedTemporaryFile(delete=True) as handle:
   if (@(Get-ChildItem -LiteralPath $ProjectRoot -Force -Recurse -Directory -Filter "__pycache__").Count -ne 0) {
     throw "Direct converter wrote Python bytecode into immutable project content."
   }
+  Remove-Item -LiteralPath $DirectConverterSiteCustomize -Force
+  if (Test-Path -LiteralPath $DirectConverterSiteCustomize) {
+    throw "Direct converter sitecustomize remained after its dedicated call."
+  }
+  Write-Output "DIRECT_CONVERTER_SITECUSTOMIZE_REMOVED"
   Write-Output "PRIVATE_SHADOW_ENTRYPOINT_CONVERTER_VERIFIED"
   Write-Output "DIRECT_CONVERTER_ENVIRONMENT_VERIFIED"
 
   $InvalidRaw = '{"status":"blocked"}' + "`n"
-  $DirectInvalid = Invoke-DirectEvidence -Raw $InvalidRaw
+  $DirectInvalid = Invoke-DirectEvidence -Raw $InvalidRaw -TempRoot $HostTempRoot
   $WrappedInvalid = Invoke-WrapperEvidence -Mode "invalid"
   if ($DirectInvalid.ExitCode -ne 52 -or -not [string]::IsNullOrEmpty($DirectInvalid.Stdout) -or
       -not [string]::IsNullOrEmpty($DirectInvalid.Stderr) -or $WrappedInvalid.ExitCode -ne 52 -or
       -not [string]::IsNullOrEmpty($WrappedInvalid.SafeResult)) {
     throw "Invalid private-shadow evidence did not fail closed through both paths."
+  }
+  if (Test-Path -LiteralPath $HostTempProbePath) {
+    throw "Direct converter probe escaped the protected validator scratch root."
   }
 
   $WriteRoot = Join-Path $CasesRoot ([Guid]::NewGuid().ToString("N"))
@@ -315,6 +355,23 @@ with tempfile.NamedTemporaryFile(delete=True) as handle:
   }
   Write-Output "PRIVATE_SHADOW_EVIDENCE_HARNESS_VERIFIED"
 } finally {
+  if ($DirectConverterSiteCustomize) {
+    Remove-Item -LiteralPath $DirectConverterSiteCustomize -Force -ErrorAction SilentlyContinue
+  }
+  if ($DirectConverterProbePath) {
+    Remove-Item -LiteralPath $DirectConverterProbePath -Force -ErrorAction SilentlyContinue
+  }
+  Remove-Item -LiteralPath $HostTempProbePath -Force -ErrorAction SilentlyContinue
+  if ($HadCompositionVerify) {
+    $env:OMS_TASK28_COMPOSITION_VERIFY = $PriorCompositionVerify
+  } else {
+    Remove-Item Env:OMS_TASK28_COMPOSITION_VERIFY -ErrorAction SilentlyContinue
+  }
+  if ($HadPrivateProject) {
+    $env:OMS_TASK28_PRIVATE_PROJECT = $PriorPrivateProject
+  } else {
+    Remove-Item Env:OMS_TASK28_PRIVATE_PROJECT -ErrorAction SilentlyContinue
+  }
   if (Test-Path -LiteralPath $Sandbox) {
     Remove-Item -LiteralPath $Sandbox -Recurse -Force
   }

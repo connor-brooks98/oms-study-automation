@@ -54,6 +54,10 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     assert "Set-CompositionVerifyEnvironment" not in evidence
     assert "Set-CompositionVerifyEnvironment" not in wrapper
     assert "DIRECT_CONVERTER_ENVIRONMENT_VERIFIED" in harness
+    assert 'EnvironmentVariables.Remove("OMS_TASK28_COMPOSITION_VERIFY")' in evidence
+    assert 'EnvironmentVariables.Remove("OMS_TASK28_PRIVATE_PROJECT")' in evidence
+    assert "PRIVATE_SHADOW_COMPOSITION_ENVIRONMENT_VERIFIED" in harness
+    assert "DIRECT_CONVERTER_SITECUSTOMIZE_REMOVED" in harness
 
 
 def test_private_shadow_wrapper_runs_committed_synthetic_fault_matrix() -> None:
