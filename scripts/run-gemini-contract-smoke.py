@@ -654,20 +654,9 @@ def _private_terminal_diagnostic_payload(
     )
 
 
-def _write_private_terminal_diagnostic(
-    output: Path,
-    error: BaseException,
-    *,
-    failure_stage: str,
-    input_identity: str,
-) -> str:
+def _write_private_terminal_diagnostic_payload(output: Path, payload: bytes) -> str:
     if output.exists() or output.is_symlink():
         raise LiveSmokeBlocked("private diagnostic output already exists")
-    payload = _private_terminal_diagnostic_payload(
-        error,
-        failure_stage=failure_stage,
-        input_identity=input_identity,
-    )
     if len(payload) > _MAX_PRIVATE_DIAGNOSTIC_BYTES:
         raise SmokeContractError("private diagnostic overflow", reason="diagnostic_overflow")
     descriptor, temporary_name = tempfile.mkstemp(
@@ -692,6 +681,23 @@ def _write_private_terminal_diagnostic(
     return hashlib.sha256(payload).hexdigest()
 
 
+def _write_private_terminal_diagnostic(
+    output: Path,
+    error: BaseException,
+    *,
+    failure_stage: str,
+    input_identity: str,
+) -> str:
+    return _write_private_terminal_diagnostic_payload(
+        output,
+        _private_terminal_diagnostic_payload(
+            error,
+            failure_stage=failure_stage,
+            input_identity=input_identity,
+        ),
+    )
+
+
 def _finalize_private_terminal_diagnostic(
     mode: Literal["public_matrix", "private_acceptance"],
     private_diagnostic_path: Path | None,
@@ -702,12 +708,15 @@ def _finalize_private_terminal_diagnostic(
 ) -> str | None:
     if mode != "private_acceptance" or private_diagnostic_path is None:
         return None
-    verified_path = _validate_private_diagnostic_capability(private_diagnostic_path)
-    return _write_private_terminal_diagnostic(
-        verified_path,
+    payload = _private_terminal_diagnostic_payload(
         error,
         failure_stage=failure_stage,
         input_identity=input_identity,
+    )
+    verified_path = _validate_private_diagnostic_capability(private_diagnostic_path)
+    return _write_private_terminal_diagnostic_payload(
+        verified_path,
+        payload,
     )
 
 
