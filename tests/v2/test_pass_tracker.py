@@ -1,7 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from threading import Barrier, Event
 
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
@@ -54,6 +56,31 @@ def _stored_pass(client: TestClient, lecture_id: int, position: int):
             ),
             {"lecture_id": lecture_id, "position": position},
         ).one()
+
+
+def _run_together(first, second):
+    ready = Barrier(3)
+
+    def run(call):
+        ready.wait(timeout=5)
+        return call()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_result = executor.submit(run, first)
+        second_result = executor.submit(run, second)
+        ready.wait(timeout=5)
+        return first_result.result(), second_result.result()
+
+
+def _synchronize_pass_reads(app):
+    ready = Barrier(2)
+
+    def synchronize(_connection, _cursor, statement, _parameters, _context, _many):
+        if "FROM lecture_passes" in statement and statement.lstrip().startswith("SELECT"):
+            ready.wait(timeout=5)
+
+    event.listen(app.state.database.engine, "after_cursor_execute", synchronize)
+    return synchronize
 
 
 def test_new_lecture_seeds_exactly_five_passes(tmp_path) -> None:
@@ -177,6 +204,63 @@ def test_pass_patch_requires_csrf_and_rejects_oversized_resource(tmp_path) -> No
     assert empty.status_code == 422
 
 
+def test_overlapping_completion_and_resource_updates_preserve_both(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = _app(tmp_path)
+    lecture_id = _lecture(app)
+    clients = (TestClient(app), TestClient(app))
+    for client in clients:
+        client.get(f"/lectures/{lecture_id}")
+    original_get_lecture = app.state.catalog_repository.get_lecture
+    original_update_pass = app.state.catalog_repository.update_pass
+    reads_ready = Barrier(2)
+    completion_saved = Event()
+
+    def synchronized_get_lecture(self, requested_id):
+        lecture = original_get_lecture(requested_id)
+        reads_ready.wait(timeout=5)
+        return lecture
+
+    monkeypatch.setattr(
+        "oms_hub.repositories.CatalogRepository.get_lecture",
+        synchronized_get_lecture,
+    )
+
+    def ordered_update_pass(self, *args, **kwargs):
+        if kwargs["completed_on"] is not None:
+            result = original_update_pass(*args, **kwargs)
+            completion_saved.set()
+            return result
+        assert completion_saved.wait(timeout=5)
+        return original_update_pass(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "oms_hub.repositories.CatalogRepository.update_pass",
+        ordered_update_pass,
+    )
+
+    completed, resource = _run_together(
+        lambda: clients[0].patch(
+            f"/api/lectures/{lecture_id}/passes/1",
+            json={"completed": True},
+            headers=_csrf_headers(clients[0]),
+        ),
+        lambda: clients[1].patch(
+            f"/api/lectures/{lecture_id}/passes/1",
+            json={"resource": "Anki"},
+            headers=_csrf_headers(clients[1]),
+        ),
+    )
+
+    assert completed.status_code == 200
+    assert resource.status_code == 200
+    stored = _stored_pass(clients[0], lecture_id, 1)
+    assert stored[1] is not None
+    assert stored[2] == "Anki"
+
+
 def test_extra_pass_requires_all_current_passes_then_appends_position_six(tmp_path) -> None:
     client, lecture_id = _client_with_lecture(tmp_path)
     url = f"/api/lectures/{lecture_id}/passes"
@@ -211,6 +295,48 @@ def test_extra_pass_requires_all_current_passes_then_appends_position_six(tmp_pa
             .scalars()
             .all()
         )
+    assert positions == list(range(1, 7))
+
+
+def test_overlapping_add_pass_requests_return_created_and_conflict(tmp_path) -> None:
+    app = _app(tmp_path)
+    lecture_id = _lecture(app)
+    with app.state.database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE lecture_passes SET completed_on = '2026-08-30' "
+                "WHERE lecture_id = :lecture_id"
+            ),
+            {"lecture_id": lecture_id},
+        )
+    clients = (TestClient(app), TestClient(app))
+    for client in clients:
+        client.get(f"/lectures/{lecture_id}")
+    synchronize = _synchronize_pass_reads(app)
+
+    try:
+        responses = _run_together(
+            lambda: clients[0].post(
+                f"/api/lectures/{lecture_id}/passes",
+                headers=_csrf_headers(clients[0]),
+            ),
+            lambda: clients[1].post(
+                f"/api/lectures/{lecture_id}/passes",
+                headers=_csrf_headers(clients[1]),
+            ),
+        )
+    finally:
+        event.remove(app.state.database.engine, "after_cursor_execute", synchronize)
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    with app.state.database.engine.connect() as connection:
+        positions = connection.execute(
+            text(
+                "SELECT position FROM lecture_passes "
+                "WHERE lecture_id = :lecture_id ORDER BY position"
+            ),
+            {"lecture_id": lecture_id},
+        ).scalars().all()
     assert positions == list(range(1, 7))
 
 
