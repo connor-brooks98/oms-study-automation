@@ -196,9 +196,11 @@ $WindowsPowerShell = Join-Path $PSHOME "powershell.exe"
 try {
   $PreviousVerify = $env:OMS_TASK28_COMPOSITION_VERIFY
   $env:OMS_TASK28_COMPOSITION_VERIFY = "1"
-  & $WindowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-    -File $Controller -Manifest $Run.Path
-  $ControllerExit = $LASTEXITCODE
+  $ControllerProcess = Start-Process -FilePath $WindowsPowerShell -ArgumentList @(
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", ('"{0}"' -f $Controller), "-Manifest", ('"{0}"' -f $Run.Path)
+  ) -NoNewWindow -Wait -PassThru
+  $ControllerExit = $ControllerProcess.ExitCode
   $State = Get-Task28StatePaths -RunId ([string]$Run.Value.run_id)
   if ($ControllerExit -ne 1) {
     $WrapperStage = "missing"
