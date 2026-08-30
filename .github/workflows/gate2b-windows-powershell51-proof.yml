@@ -1,0 +1,49 @@
+name: Gate 2B Windows PowerShell 5.1 proof
+
+on:
+  push:
+    branches: [codex/gate2b-windows-proof]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  powershell51:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify immutable parent and Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          if ((git rev-parse HEAD^) -ne "331e695c894601af3de925ae0e5253331fe1d4bc") {
+            throw "Proof commit is not based on the reviewed integration candidate."
+          }
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+            throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)."
+          }
+
+      - name: Install provider-free test dependencies
+        shell: powershell
+        run: |
+          py -3.12 -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+
+      - name: Run Gate 2B integration and PowerShell harnesses
+        shell: powershell
+        env:
+          RUN_LIVE_GEMINI_TESTS: "0"
+          RUN_PRIVATE_GEMINI_SHADOW: "0"
+        run: |
+          .\.venv\Scripts\python.exe -m pytest -q `
+            tests\contracts\test_gate2b_manifest_split.py `
+            tests\providers\gemini\test_client.py `
+            tests\providers\gemini\test_evidence.py `
+            tests\live\test_gemini_file_search_contract.py `
+            tests\scripts
