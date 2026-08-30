@@ -178,6 +178,94 @@ def test_private_shadow_model_rejects_lifecycle_warning_and_count_contradictions
             validate_private_shadow_record(record, exit_code)
 
 
+def test_private_shadow_unknown_stage_rejects_invalid_progress() -> None:
+    record = _blocked_record()
+    record["failure_stage"] = "unknown"
+    record["provider_operation_states"] = [
+        "store_created",
+        "documents_delete_attempted:0",
+        "files_delete_attempted:0",
+        "stores_delete_attempted:0",
+        "private_shadow_failed",
+    ]
+
+    with pytest.raises(ValueError):
+        validate_private_shadow_record(record, 1)
+
+
+@pytest.mark.parametrize(
+    ("progress", "cleanup"),
+    (
+        (
+            ["prior_operator_state_empty"],
+            [
+                "documents_delete_attempted:0",
+                "files_delete_attempted:0",
+                "stores_delete_attempted:0",
+            ],
+        ),
+        (
+            ["prior_operator_state_empty", "store_created"],
+            [
+                "documents_delete_attempted:0",
+                "files_delete_attempted:0",
+                "stores_delete_attempted:1",
+            ],
+        ),
+        (
+            [
+                "prior_operator_state_empty",
+                "store_created",
+                "inputs_uploaded:1",
+                "inputs_imported:1",
+            ],
+            [
+                "documents_delete_attempted:1",
+                "files_delete_attempted:1",
+                "stores_delete_attempted:1",
+            ],
+        ),
+        (
+            [
+                "prior_operator_state_empty",
+                "store_created",
+                "inputs_uploaded:1",
+                "inputs_imported:1",
+                "positive_query_complete",
+            ],
+            [
+                "documents_delete_attempted:1",
+                "files_delete_attempted:1",
+                "stores_delete_attempted:1",
+            ],
+        ),
+        (
+            [
+                "prior_operator_state_empty",
+                "store_created",
+                "inputs_uploaded:1",
+                "inputs_imported:1",
+                "positive_query_complete",
+                "wrong_scope_query_complete",
+            ],
+            [
+                "documents_delete_attempted:1",
+                "files_delete_attempted:1",
+                "stores_delete_attempted:1",
+            ],
+        ),
+    ),
+)
+def test_private_shadow_unknown_stage_accepts_valid_progress_shapes(
+    progress: list[str], cleanup: list[str]
+) -> None:
+    record = _blocked_record()
+    record["failure_stage"] = "unknown"
+    record["provider_operation_states"] = [*progress, *cleanup, "private_shadow_failed"]
+
+    assert validate_private_shadow_record(record, 1)["failure_stage"] == "unknown"
+
+
 def test_private_shadow_evidence_cli_is_canonical_utf8_and_maps_errors() -> None:
     valid = _cli(_blocked_record(), 1)
 
