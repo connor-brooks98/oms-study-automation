@@ -21,7 +21,7 @@ if (Test-Path -LiteralPath ([string]$Run.Value.mutable_state_path)) {
   throw "Correction 1 must not create mutable state."
 }
 $VerifyRoot = $env:OMS_TASK28_COMPOSITION_VERIFY_ROOT
-if ([string]::IsNullOrWhiteSpace($VerifyRoot) -or -not [IO.Path]::IsPathFullyQualified($VerifyRoot) -or
+if ([string]::IsNullOrWhiteSpace($VerifyRoot) -or -not (Test-Task28FullyQualifiedPath -Path $VerifyRoot) -or
     -not (Test-Path -LiteralPath $VerifyRoot -PathType Container)) {
   throw "Launcher is available only to tracked composition verification."
 }

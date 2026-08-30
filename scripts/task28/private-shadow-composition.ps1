@@ -55,8 +55,8 @@ if ($Mode -eq "Stage") {
   $RepositoryRoot = Resolve-Task28ExistingPath -Path $RepositoryRoot -Type Container
   $LockedRequirements = Resolve-Task28ExistingPath -Path $LockedRequirements -Type Leaf
   $PythonExecutable = Resolve-Task28ExistingPath -Path $PythonExecutable -Type Leaf
-  if (-not [IO.Path]::IsPathFullyQualified($Destination) -or
-      -not [IO.Path]::IsPathFullyQualified($MutableStatePath)) {
+  if (-not (Test-Task28FullyQualifiedPath -Path $Destination) -or
+      -not (Test-Task28FullyQualifiedPath -Path $MutableStatePath)) {
     throw "Stage output paths must be absolute."
   }
   $Destination = [IO.Path]::GetFullPath($Destination)

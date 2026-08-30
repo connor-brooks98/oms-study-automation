@@ -140,7 +140,7 @@ def test_launcher_uses_a_sanitized_explicit_composition_verify_child() -> None:
     )
 
     assert "-CompositionVerify" in launcher
-    assert "[Parameter(Mandatory = $true)][switch]$CompositionVerify" in wrapper
+    assert "[switch]$CompositionVerify" in wrapper
     assert ".EnvironmentVariables.Clear()" in wrapper
     assert '"OMS_TASK28_PRIVATE_PROJECT"' in wrapper
     assert '"PYTHONPATH"' in wrapper
@@ -241,7 +241,8 @@ def test_wrapper_preserves_fixture_environment_outside_composition_verify() -> N
     wrapper = (ROOT / "scripts" / "run-private-shadow-evidence.ps1").read_text(
         encoding="utf-8"
     )
-    evidence_harness = (ROOT / "tests" / "scripts" / "private_shadow_evidence_harness.ps1").read_text(
+    evidence_harness_path = ROOT / "tests" / "scripts" / "private_shadow_evidence_harness.ps1"
+    evidence_harness = evidence_harness_path.read_text(
         encoding="utf-8"
     )
 

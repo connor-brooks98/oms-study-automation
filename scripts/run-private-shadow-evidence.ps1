@@ -6,7 +6,7 @@ param(
   [Parameter(Mandatory = $true)][string]$DiagnosticRoot,
   [Parameter(Mandatory = $true)][string]$SafeResultPath,
   [Parameter(Mandatory = $true)][string]$SafeStatusPath,
-  [Parameter(Mandatory = $true)][switch]$CompositionVerify
+  [switch]$CompositionVerify
 )
 
 Set-StrictMode -Version Latest
@@ -209,7 +209,11 @@ try {
   $ProcessInfo.RedirectStandardError = $true
   $ProcessInfo.StandardOutputEncoding = $Utf8
   $ProcessInfo.StandardErrorEncoding = $Utf8
-  Set-CompositionVerifyEnvironment -ProcessInfo $ProcessInfo
+  if ($CompositionVerify) {
+    Set-CompositionVerifyEnvironment -ProcessInfo $ProcessInfo
+  } else {
+    $ProcessInfo.EnvironmentVariables["PYTHONPATH"] = $SourceRoot
+  }
   $Process = [System.Diagnostics.Process]::new()
   $Process.StartInfo = $ProcessInfo
   if (-not $Process.Start()) {

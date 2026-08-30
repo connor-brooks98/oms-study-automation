@@ -16,12 +16,19 @@ function Assert-Task28NoReparsePath {
   }
 }
 
+function Test-Task28FullyQualifiedPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  if ([IO.Path]::DirectorySeparatorChar -eq '/' -and $Path.StartsWith('/')) { return $true }
+  return $Path -match '^[A-Za-z]:[\\/]' -or $Path -match '^\\\\[^\\/]+[\\/][^\\/]+'
+}
+
 function Resolve-Task28ExistingPath {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
     [Parameter(Mandatory = $true)][ValidateSet("Leaf", "Container")][string]$Type
   )
-  if (-not [IO.Path]::IsPathFullyQualified($Path) -or -not (Test-Path -LiteralPath $Path -PathType $Type)) {
+  if (-not (Test-Task28FullyQualifiedPath -Path $Path) -or -not (Test-Path -LiteralPath $Path -PathType $Type)) {
     throw "Expected an absolute existing $Type path."
   }
   $Resolved = [IO.Path]::GetFullPath((Get-Item -LiteralPath $Path -Force).FullName)
@@ -137,7 +144,8 @@ function Assert-ManifestEquality {
   $ManifestPath = Resolve-Task28ExistingPath -Path $ManifestPath -Type Leaf
   $Manifest = [IO.File]::ReadAllText($ManifestPath, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
   Assert-Task28PropertyNames -Value $Manifest -Expected @("schema_version", "files") -Label "Manifest"
-  if ($Manifest.schema_version -isnot [int64] -or $Manifest.schema_version -ne 1 -or $Manifest.files -isnot [System.Collections.IEnumerable]) {
+  if (($Manifest.schema_version -isnot [int64] -and $Manifest.schema_version -isnot [int]) -or
+      $Manifest.schema_version -ne 1 -or $Manifest.files -isnot [System.Collections.IEnumerable]) {
     throw "Manifest has an invalid schema."
   }
   $ExpectedByPath = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -189,7 +197,8 @@ function Read-BoundRunManifest {
   ) -Label "Run manifest"
   Assert-Task28PropertyNames -Value $Value.source -Expected @("commit", "tree", "archive_sha256", "manifest_sha256") -Label "Run source"
   Assert-Task28PropertyNames -Value $Value.runtime -Expected @("lock_sha256", "manifest_sha256") -Label "Run runtime"
-  if ($Value.schema_version -isnot [int64] -or $Value.schema_version -ne 1 -or
+  if (($Value.schema_version -isnot [int64] -and $Value.schema_version -isnot [int]) -or
+      $Value.schema_version -ne 1 -or
       ($Value.authorization_count -isnot [int64] -and $Value.authorization_count -isnot [int]) -or
       $Value.authorization_count -ne 0 -or $Value.source.commit -isnot [string] -or $Value.source.commit -cnotmatch "^[0-9a-f]{40}$" -or
       $Value.source.tree -isnot [string] -or $Value.source.tree -cnotmatch "^[0-9a-f]{40}$" -or
@@ -202,7 +211,7 @@ function Read-BoundRunManifest {
     Assert-Task28Sha256 -Value $Value.$Name -Label "Run $Name"
   }
   foreach ($Name in @("immutable_bundle_path", "mutable_state_path", "python_executable")) {
-    if ($Value.$Name -isnot [string] -or -not [IO.Path]::IsPathFullyQualified([string]$Value.$Name)) { throw "Run $Name must be absolute." }
+    if ($Value.$Name -isnot [string] -or -not (Test-Task28FullyQualifiedPath -Path ([string]$Value.$Name))) { throw "Run $Name must be absolute." }
     $Value.$Name = [IO.Path]::GetFullPath([string]$Value.$Name)
   }
   Resolve-Task28ExistingPath -Path ([string]$Value.python_executable) -Type Leaf | Out-Null
