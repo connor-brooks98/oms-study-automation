@@ -2431,8 +2431,9 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 .exam-pass-last,
 .exam-pass-count { color: var(--text-3-strong); font: var(--fs-xs) var(--font-mono); font-variant-numeric: tabular-nums; }
 .pass-ledger-row.is-complete .pass-date { color: var(--st-ok-tx); }
-.pass-resource-label { min-width: 0; margin: 0; }
+.pass-resource-label { display: grid; min-width: 0; margin: 0; }
 .pass-resource.sh-select { width: 100%; max-width: none; }
+.pass-resource-custom { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-2); margin-block-start: var(--sp-2); min-width: 0; }
 .pass-tracker-actions {
   display: flex;
   align-items: center;
@@ -2545,6 +2546,8 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
   .pass-ledger-row { grid-template-columns: 44px minmax(0, 1fr); gap: var(--sp-1) var(--sp-2); }
   .pass-check { grid-row: 1 / span 2; }
   .pass-resource-label { grid-column: 1 / -1; margin-block-start: var(--sp-2); }
+  .pass-resource-custom { grid-template-columns: minmax(0, 1fr); }
+  .pass-resource-custom .sh-btn { width: 100%; }
   .pass-tracker-actions { align-items: stretch; flex-direction: column; }
   .pass-tracker-actions .sh-btn { width: 100%; }
   .exam-pass-heading { align-items: flex-start; }

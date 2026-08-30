@@ -141,7 +141,6 @@
 
   {% set completed_passes = lecture.passes|selectattr('completed_on')|list|length %}
   {% set pass_total = lecture.passes|length %}
-  {% set pass_resources = ("Lecture", "Anki", "Lecture outline", "Practice questions", "Other") %}
   <details class="pass-tracker sh-card t-accordion" data-pass-tracker open>
     <summary class="lecture-panel-summary pass-tracker-summary">
       <span class="lecture-panel-summary__copy">
@@ -163,14 +162,20 @@
           </label>
           <strong class="pass-name">Pass {{ pass_item.position }}</strong>
           <time class="pass-date" data-pass-date datetime="{{ pass_item.completed_on or '' }}">{{ pass_item.completed_on or 'Not completed' }}</time>
-          <label class="pass-resource-label">
+          <div class="pass-resource-label">
             <span class="sr-only">Resource used for pass {{ pass_item.position }}</span>
             <select class="pass-resource sh-select" data-pass-resource data-pass-position="{{ pass_item.position }}" aria-label="Resource used for pass {{ pass_item.position }}">
               <option value="">Choose resource</option>
-              {% if pass_item.resource and pass_item.resource not in pass_resources %}<option value="{{ pass_item.resource }}" selected>{{ pass_item.resource }}</option>{% endif %}
+              {% if pass_item.resource and pass_item.resource not in pass_resources and pass_item.resource != "Other" %}<option value="{{ pass_item.resource }}" selected>{{ pass_item.resource }}</option>{% endif %}
               {% for resource in pass_resources %}<option value="{{ resource }}" {% if pass_item.resource == resource %}selected{% endif %}>{{ resource }}</option>{% endfor %}
+              <option value="Other" {% if pass_item.resource == "Other" %}selected{% endif %}>Other</option>
             </select>
-          </label>
+            <div class="pass-resource-custom t-page-enter" data-pass-resource-custom hidden>
+              <label class="sr-only" for="pass-resource-name-{{ pass_item.position }}">Resource name for pass {{ pass_item.position }}</label>
+              <input class="sh-input" id="pass-resource-name-{{ pass_item.position }}" maxlength="100" required autocomplete="off" data-pass-resource-name>
+              <button class="sh-btn sh-btn--secondary" type="button" data-add-pass-resource>Add &amp; use</button>
+            </div>
+          </div>
         </div>
         {% endfor %}
       </div>

@@ -143,15 +143,36 @@
       if (!response.ok) throw new Error(payload.detail || "Pass update failed.");
       return payload;
     };
+    const ensureResourceOption = (name) => {
+      documentRef.querySelectorAll("[data-pass-resource]").forEach((select) => {
+        const exists = [...select.options].some((option) => (
+          String(option.value).toLowerCase() === String(name).toLowerCase()
+        ));
+        if (!exists) {
+          const option = documentRef.createElement("option");
+          option.value = name;
+          option.textContent = name;
+          select.append(option);
+        }
+      });
+    };
 
     rows.forEach((row) => {
       const position = row.dataset.passPosition;
       const checkbox = row.querySelector("[data-pass-complete]");
       const date = row.querySelector("[data-pass-date]");
       const resource = row.querySelector("[data-pass-resource]");
+      const custom = row.querySelector("[data-pass-resource-custom]");
+      const customInput = row.querySelector("[data-pass-resource-name]");
+      const addResource = row.querySelector("[data-add-pass-resource]");
       const initialDate = date.getAttribute?.("datetime");
       if (initialDate) date.textContent = formatCompletedOn(initialDate);
       let savedResource = resource.value;
+      const hideCustomResource = () => {
+        if (!custom) return;
+        custom.hidden = true;
+        if (customInput) customInput.value = "";
+      };
 
       checkbox.addEventListener("change", async () => {
         const previousCompleted = !checkbox.checked;
@@ -173,6 +194,12 @@
       });
 
       resource.addEventListener("change", async () => {
+        if (resource.value === "Other") {
+          custom.hidden = false;
+          customInput.focus();
+          return;
+        }
+        hideCustomResource();
         resource.disabled = true;
         updateSummary();
         try {
@@ -185,6 +212,37 @@
           announce(`Pass ${position} resource update failed: ${error.message}`);
         } finally {
           resource.disabled = false;
+          updateSummary();
+        }
+      });
+
+      addResource?.addEventListener("click", async () => {
+        const name = customInput.value.trim();
+        if (!name) {
+          announce(`Pass ${position} resource name is required.`);
+          customInput.focus();
+          return;
+        }
+        checkbox.disabled = true;
+        resource.disabled = true;
+        customInput.disabled = true;
+        addResource.disabled = true;
+        updateSummary();
+        try {
+          const payload = await patchPass(position, { resource: name });
+          ensureResourceOption(payload.resource);
+          renderPass(row, payload);
+          savedResource = resource.value;
+          hideCustomResource();
+          announce(`Pass ${position} resource saved.`);
+        } catch (error) {
+          resource.value = savedResource;
+          announce(`Pass ${position} resource update failed: ${error.message}`);
+        } finally {
+          checkbox.disabled = false;
+          resource.disabled = false;
+          customInput.disabled = false;
+          addResource.disabled = false;
           updateSummary();
         }
       });
