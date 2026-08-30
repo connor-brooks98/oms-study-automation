@@ -123,6 +123,7 @@ function Convert-PrivateShadowEvidence {
         $Payload.TrimEnd("`r", "`n") -match "`r|`n") {
       return New-PrivateShadowEvidenceResult $script:PrivateShadowValidationExit "validation" $false
     }
+    $Payload = $Payload.TrimEnd("`r", "`n") + "`n"
   } catch {
     return New-PrivateShadowEvidenceResult $script:PrivateShadowValidationExit "validation" $false
   }

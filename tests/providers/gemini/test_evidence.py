@@ -338,7 +338,7 @@ def test_private_shadow_evidence_cli_accepts_windows_utf8_bom() -> None:
 
     assert result.returncode == 0
     assert result.stderr == b""
-    assert result.stdout == (
+    assert result.stdout.replace(b"\r\n", b"\n") == (
         json.dumps(_blocked_record(), sort_keys=True, separators=(",", ":")).encode() + b"\n"
     )
 
