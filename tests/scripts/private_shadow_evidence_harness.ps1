@@ -38,6 +38,8 @@ if os.environ["PRIVATE_SHADOW_FIXTURE_MODE"] == "valid":
         "slide_count": 1,
         "provider_operation_states": ["private_shadow_failed"],
         "byte_usage": {"index_inputs": 1},
+        "transient_attempts": 0,
+        "failure_class": "unclassified",
         "failure_stage": "prior_state_check",
         "failure_input_identity": "none",
         "provider_error_category": "provider",
@@ -156,7 +158,7 @@ function Invoke-WrapperReparseCase {
 
 try {
   . $EvidenceScript
-  $ValidRaw = '{"status":"blocked","source_revision_hash":"' + ("a" * 64) + '","document_types":["markdown"],"page_count":1,"slide_count":1,"provider_operation_states":["private_shadow_failed"],"byte_usage":{"index_inputs":1},"failure_stage":"prior_state_check","failure_input_identity":"none","provider_error_category":"provider","provider_status_code":400,"provider_reason":"provider_bad_request","provider_cleanup_outcome":"unknown","provider_reconciliation_outcome":"unknown","warnings":["private_shadow_failed","private_cleanup_unknown"]}' + "`n"
+  $ValidRaw = '{"status":"blocked","source_revision_hash":"' + ("a" * 64) + '","document_types":["markdown"],"page_count":1,"slide_count":1,"provider_operation_states":["private_shadow_failed"],"byte_usage":{"index_inputs":1},"transient_attempts":0,"failure_class":"unclassified","failure_stage":"prior_state_check","failure_input_identity":"none","provider_error_category":"provider","provider_status_code":400,"provider_reason":"provider_bad_request","provider_cleanup_outcome":"unknown","provider_reconciliation_outcome":"unknown","warnings":["private_shadow_failed","private_cleanup_unknown"]}' + "`n"
   $DirectValid = Invoke-DirectEvidence -Raw $ValidRaw
   $WrappedValid = Invoke-WrapperEvidence -Mode "valid"
   if ($DirectValid.ExitCode -ne 0 -or -not [string]::IsNullOrEmpty($DirectValid.Stderr) -or

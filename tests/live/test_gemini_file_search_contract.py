@@ -469,6 +469,12 @@ class _SdkInteractions:
         )
 
 
+def _transient_500() -> httpx.HTTPStatusError:
+    return httpx.HTTPStatusError(
+        "synthetic", request=httpx.Request("POST", "https://example.invalid"), response=httpx.Response(500)
+    )
+
+
 class _PrivateSdkInteractions:
     def __init__(self, smoke: ModuleType, view: object, manifest: object) -> None:
         self.smoke = smoke
@@ -2035,6 +2041,108 @@ def test_operation_poll_is_bounded_by_remaining_deadline(
         asyncio.run(session.wait_for_import("operations/sdk-operation"))
 
 
+def test_import_poll_retry_does_not_sleep_past_its_existing_deadline() -> None:
+    smoke = _load_smoke()
+    delays: list[float] = []
+
+    class TransientOperations(_SdkOperations):
+        async def get(self, operation: object) -> object:
+            self.calls.append(operation)
+            raise _transient_500()
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    ticks = iter((0.0, 0.0, 0.0))
+    client = _SdkClient(smoke)
+    client.aio.operations = TransientOperations()
+    session = smoke.GoogleGenaiSmokeSession(
+        "synthetic-sdk-key",
+        sdk_factory=lambda **kwargs: client,
+        sleep=sleep,
+        clock=lambda: next(ticks),
+    )
+
+    with pytest.raises(smoke.GeminiProviderError):
+        asyncio.run(session.wait_for_import("operations/sdk-operation"))
+
+    assert len(client.aio.operations.calls) == 1
+    assert delays == []
+
+
+def test_idempotent_query_retries_transient_failures_without_mutations() -> None:
+    smoke = _load_smoke()
+    delays: list[float] = []
+
+    class TransientInteractions(_SdkInteractions):
+        async def create(self, **body: object) -> object:
+            if len(self.calls) < 2:
+                self.calls.append(body)
+                raise _transient_500()
+            return await super().create(**body)
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    client = _SdkClient(smoke)
+    client.aio.interactions = TransientInteractions(smoke)
+    session = smoke.GoogleGenaiSmokeSession(
+        "synthetic-sdk-key", sdk_factory=lambda **kwargs: client, sleep=sleep
+    )
+    session._store_name = "fileSearchStores/sdk-store"
+    session._document_name = "fileSearchStores/sdk-store/documents/sdk-document"
+    session._file_name = "files/sdk-file"
+
+    result = asyncio.run(
+        session.query_private(
+            "fileSearchStores/sdk-store",
+            "prompt",
+            smoke.SmokeScope(
+                smoke.SYNTHETIC_COURSE_ID,
+                smoke.SYNTHETIC_EXAM_ID,
+                smoke.SYNTHETIC_LECTURE_ID,
+            ),
+            source_revision_id=smoke.SYNTHETIC_REVISION_ID,
+            manifest=SimpleNamespace(inputs=()),
+            file_bindings=(),
+            require_structured_supported=True,
+        )
+    )
+
+    assert result.supported is True
+    assert len(client.aio.interactions.calls) == 3
+    assert delays == [1.0, 2.0]
+    assert session.transient_attempts == 2
+    assert not client.aio.file_search_stores.calls
+    assert not client.aio.files.calls
+
+
+def test_create_store_transient_failure_is_not_retried() -> None:
+    smoke = _load_smoke()
+    delays: list[float] = []
+
+    class TransientStores(_SdkStores):
+        async def create(self, *, config: object) -> object:
+            self.calls.append(("create", config))
+            raise _transient_500()
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    client = _SdkClient(smoke)
+    client.aio.file_search_stores = TransientStores()
+    session = smoke.GoogleGenaiSmokeSession(
+        "synthetic-sdk-key", sdk_factory=lambda **kwargs: client, sleep=sleep
+    )
+
+    with pytest.raises(smoke.GeminiProviderError):
+        asyncio.run(session.create_store("synthetic", "models/gemini-embedding-2"))
+
+    assert [call[0] for call in client.aio.file_search_stores.calls] == ["create"]
+    assert delays == []
+    assert session.transient_attempts == 0
+
+
 def test_completed_import_rejects_full_document_from_another_store() -> None:
     smoke = _load_smoke()
 
@@ -2081,6 +2189,53 @@ def test_primary_provider_failure_wins_when_cleanup_also_fails() -> None:
     assert [name for name, _ in session.calls][-2:] == ["delete_file", "delete_store"]
     assert evidence["cleanup"] == {"attempted": 10, "status": "unknown"}
     assert evidence["reconciliation"] == "unknown"
+
+
+def test_terminal_query_transient_is_classified_after_cleanup_without_duplicate_mutations() -> None:
+    smoke = _load_smoke()
+    evidence: dict[str, object] = {}
+    delays: list[float] = []
+
+    class AlwaysTransientInteractions(_PrivateSdkInteractions):
+        async def create(self, **body: object) -> object:
+            self.calls.append(body)
+            raise _transient_500()
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    with tempfile.TemporaryDirectory() as directory:
+        view = smoke._synthetic_index_input(Path(directory))
+        manifest = smoke._private_shadow_manifest(view)
+        client = _SdkClient(smoke)
+        client.aio.interactions = AlwaysTransientInteractions(smoke, view, manifest)
+        session = smoke.GoogleGenaiSmokeSession(
+            "synthetic-sdk-key", sdk_factory=lambda **kwargs: client, sleep=sleep
+        )
+
+        with pytest.raises(smoke.GeminiTransientError):
+            asyncio.run(
+                smoke._run_shadow_sequence(
+                    session,
+                    view,
+                    smoke._private_shadow_preflight_from_view(view),
+                    mode="private_acceptance",
+                    clock=lambda: 100.0,
+                    failure_evidence=evidence,
+                )
+            )
+
+    assert len(client.aio.interactions.calls) == 3
+    assert delays == [1.0, 2.0]
+    assert evidence["failure_class"] == "infrastructure_transient"
+    assert evidence["transient_attempts"] == 2
+    assert evidence["provider_cleanup_outcome"] == "complete"
+    assert [call[0] for call in client.aio.file_search_stores.calls].count("create") == 1
+    assert [call[0] for call in client.aio.file_search_stores.calls].count("import_file") == 5
+    assert [call[0] for call in client.aio.files.calls].count("upload") == 5
+    assert [call[0] for call in client.aio.file_search_stores.documents.calls].count("delete") == 5
+    assert [call[0] for call in client.aio.files.calls].count("delete") == 5
+    assert [call[0] for call in client.aio.file_search_stores.calls].count("delete") == 1
 
 
 def test_failed_smoke_emits_only_redacted_stage_error_and_cleanup_evidence() -> None:

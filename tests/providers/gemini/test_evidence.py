@@ -24,6 +24,8 @@ def _blocked_record(*, category: str = "provider", status: int | None = 400) -> 
         "slide_count": 1,
         "provider_operation_states": ["private_shadow_failed"],
         "byte_usage": {"index_inputs": 1},
+        "transient_attempts": 0,
+        "failure_class": "unclassified",
         "failure_stage": "prior_state_check",
         "failure_input_identity": "none",
         "provider_error_category": category,
@@ -58,6 +60,8 @@ def _passed_record() -> dict[str, object]:
         "citation_resolution_rate": 1.0,
         "duration_ms": 1,
         "byte_usage": {"index_inputs": 1},
+        "transient_attempts": 0,
+        "failure_class": "none",
         "token_usage": {"input": 0, "output": 0},
         "warnings": [],
     }
@@ -100,6 +104,22 @@ def test_private_shadow_evidence_accepts_known_generic_bad_request() -> None:
 
     assert record["provider_reason"] == "provider_bad_request"
     assert record["provider_status_code"] == 400
+
+
+def test_private_shadow_transient_failure_class_requires_bounded_retry_aggregate() -> None:
+    record = _blocked_record(category="transient", status=500)
+    record["provider_reason"] = "transport_error"
+    record["failure_class"] = "infrastructure_transient"
+    record["transient_attempts"] = 2
+
+    validated = validate_private_shadow_record(record, process_exit_code=1)
+
+    assert validated["failure_class"] == "infrastructure_transient"
+    assert validated["transient_attempts"] == 2
+
+    record["failure_class"] = "unclassified"
+    with pytest.raises(ValueError):
+        validate_private_shadow_record(record, process_exit_code=1)
 
 
 @pytest.mark.parametrize(

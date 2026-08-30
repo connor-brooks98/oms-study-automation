@@ -27,6 +27,8 @@ LIVE_KEYS = PREFLIGHT_KEYS | {
     "citation_resolution_rate",
     "duration_ms",
     "token_usage",
+    "transient_attempts",
+    "failure_class",
 }
 
 
