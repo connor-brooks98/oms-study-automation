@@ -133,6 +133,7 @@ def test_stage_uses_an_atomic_sibling_and_rejects_equal_roots() -> None:
     assert "[string]::Equals($FinalDestination, $State.Root" in composition
     assert "$StageRoot" in composition
     assert "[IO.Directory]::Move($StageRoot, $FinalDestination)" in composition
+    assert "$RuntimeRows = @(Get-Task28FileRows -Root $RuntimeRoot)" in composition
 
 
 def test_composition_uses_case_insensitive_path_equality_and_hashed_manifest() -> None:

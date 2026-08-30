@@ -65,6 +65,7 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     assert "StandardInput.BaseStream" in harness
     assert "PRIVATE_SHADOW_COMPOSITION_ENVIRONMENT_VERIFIED" in harness
     assert "DIRECT_CONVERTER_SITECUSTOMIZE_REMOVED" in harness
+    assert '$DirectValid.Stdout.TrimEnd("`r", "`n") + "`n"' in harness
     assert "SetAccessRuleProtection($true, $false)" in common
     assert "RemoveAccessRuleSpecific" in common
     assert 'icacls.exe $Path /inheritance:r /grant:r' not in common
