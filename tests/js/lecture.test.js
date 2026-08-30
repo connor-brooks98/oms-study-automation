@@ -58,6 +58,12 @@ class FakeLectureElement {
     if (node.tagName === "option") this.options.push(node);
   }
 
+  insertBefore(node, before) {
+    const index = this.options.indexOf(before);
+    if (index === -1) this.options.push(node);
+    else this.options.splice(index, 0, node);
+  }
+
   focus() {
     this.focused = true;
   }
@@ -113,7 +119,7 @@ const buildCard = (kind) => {
   return { card, message, generateButton };
 };
 
-const buildPassRow = ({ position, completed = false, resource = "" }) => {
+const buildPassRow = ({ position, completed = false, resource = "", options = [] }) => {
   const row = new FakeLectureElement();
   row.dataset.passPosition = String(position);
   const checkbox = new FakeLectureElement();
@@ -124,6 +130,7 @@ const buildPassRow = ({ position, completed = false, resource = "" }) => {
   const select = new FakeLectureElement();
   select.dataset.passPosition = String(position);
   select.value = resource;
+  select.options = options.map((value) => ({ tagName: "option", value, textContent: value }));
   const custom = new FakeLectureElement();
   custom.hidden = true;
   const customInput = new FakeLectureElement();
@@ -437,8 +444,33 @@ test("selecting Other reveals the inline editor without saving a sentinel", asyn
   }
 });
 
+test("a legacy Other resource reveals the inline editor during initialization", () => {
+  const pass = buildPassRow({ position: 1, resource: "Other" });
+  const documentRef = new FakeLectureDocument([], {
+    passRows: [pass.row],
+    passCount: new FakeLectureElement(),
+    addPass: new FakeLectureElement(),
+  });
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42" };
+
+  try {
+    lecture.initialize(documentRef, async () => ({ ok: true, async json() { return {}; } }));
+
+    assert.equal(pass.custom.hidden, false);
+    assert.equal(pass.customInput.focused, true);
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
 test("adding a custom resource trims, saves, and shares a text-safe option", async () => {
-  const passes = [buildPassRow({ position: 1, resource: "Lecture" }), buildPassRow({ position: 2 })];
+  const options = ["Lecture", "Anki", "Other"];
+  const passes = [
+    buildPassRow({ position: 1, resource: "Lecture", options }),
+    buildPassRow({ position: 2, options }),
+  ];
   const requests = [];
   const documentRef = new FakeLectureDocument([], {
     passRows: passes.map(({ row }) => row),
@@ -467,6 +499,7 @@ test("adding a custom resource trims, saves, and shares a text-safe option", asy
     for (const { select } of passes) {
       assert.equal(select.options.filter(({ value }) => value === "Pathoma").length, 1);
       assert.equal(select.options.find(({ value }) => value === "Pathoma").textContent, "Pathoma");
+      assert.deepEqual(select.options.map(({ value }) => value), ["Lecture", "Anki", "Pathoma", "Other"]);
     }
     assert.equal(passes[0].select.value, "Pathoma");
     assert.equal(passes[0].custom.hidden, true);

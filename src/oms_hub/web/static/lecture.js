@@ -152,7 +152,9 @@
           const option = documentRef.createElement("option");
           option.value = name;
           option.textContent = name;
-          select.append(option);
+          const other = [...select.options].find((option) => option.value === "Other");
+          if (other) select.insertBefore(option, other);
+          else select.append(option);
         }
       });
     };
@@ -173,6 +175,11 @@
         custom.hidden = true;
         if (customInput) customInput.value = "";
       };
+      const showCustomResource = () => {
+        custom.hidden = false;
+        customInput.focus();
+      };
+      if (resource.value === "Other") showCustomResource();
 
       checkbox.addEventListener("change", async () => {
         const previousCompleted = !checkbox.checked;
@@ -195,8 +202,7 @@
 
       resource.addEventListener("change", async () => {
         if (resource.value === "Other") {
-          custom.hidden = false;
-          customInput.focus();
+          showCustomResource();
           return;
         }
         hideCustomResource();
