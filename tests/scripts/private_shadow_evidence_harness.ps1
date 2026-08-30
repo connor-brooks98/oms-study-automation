@@ -149,15 +149,16 @@ function Invoke-EntrypointEvidence {
 
 function Invoke-WrapperReparseCase {
   $CaseRoot = Join-Path $CasesRoot ([Guid]::NewGuid().ToString("N"))
-  $State = New-EvidenceState
-  $EvidenceRoot = $State.Evidence
+  $State = $null
   $ExternalRoot = Join-Path $CaseRoot "external"
-  New-Item -ItemType Directory -Path $ExternalRoot | Out-Null
-  Remove-Item -LiteralPath $State.Diagnostic -Recurse -Force
-  New-Item -ItemType Junction -Path $State.Diagnostic -Target $ExternalRoot | Out-Null
-  $SafeResult = Join-Path $EvidenceRoot "result.json"
-  $SafeStatus = Join-Path $EvidenceRoot "status.json"
   try {
+    New-Item -ItemType Directory -Path $CaseRoot | Out-Null
+    $State = New-EvidenceState
+    New-Item -ItemType Directory -Path $ExternalRoot | Out-Null
+    Remove-Item -LiteralPath $State.Diagnostic -Recurse -Force
+    New-Item -ItemType Junction -Path $State.Diagnostic -Target $ExternalRoot | Out-Null
+    $SafeResult = Join-Path $State.Evidence "result.json"
+    $SafeStatus = Join-Path $State.Evidence "status.json"
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
       -File $WrapperScript -PythonExecutable $PythonExecutable -StateRoot $State.Root -ProjectRoot $ProjectRoot `
       -OperatorScript $Emitter -DiagnosticRoot $State.Diagnostic `
@@ -167,7 +168,9 @@ function Invoke-WrapperReparseCase {
       SafeResultExists = Test-Path -LiteralPath $SafeResult
     }
   } finally {
-    Remove-Item -LiteralPath $State.Root -Recurse -Force -ErrorAction SilentlyContinue
+    if ($State) { Remove-Item -LiteralPath $State.Root -Recurse -Force -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $ExternalRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $CaseRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
 
