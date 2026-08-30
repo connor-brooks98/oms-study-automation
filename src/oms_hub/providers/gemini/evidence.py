@@ -111,6 +111,7 @@ _WARNINGS = frozenset(
     }
 )
 _MAX_INDEX_INPUT_BYTES = 1_099_511_627_776
+_MAX_TRANSIENT_ATTEMPTS = 10_000
 
 
 def _validate_common(record: PrivateShadowPassed | PrivateShadowBlocked) -> None:
@@ -148,6 +149,8 @@ class PrivateShadowPassed(BaseModel):
     citation_resolution_rate: float
     duration_ms: int = Field(ge=0, le=86_400_000)
     byte_usage: dict[str, int]
+    transient_attempts: int = Field(ge=0, le=_MAX_TRANSIENT_ATTEMPTS)
+    failure_class: Literal["none"]
     token_usage: dict[str, int]
     warnings: list[str]
 
@@ -211,6 +214,8 @@ class PrivateShadowBlocked(BaseModel):
     slide_count: int = Field(ge=1, le=10_000)
     provider_operation_states: list[str] = Field(min_length=1, max_length=32)
     byte_usage: dict[str, int]
+    transient_attempts: int = Field(ge=0, le=_MAX_TRANSIENT_ATTEMPTS)
+    failure_class: Literal["infrastructure_transient", "unclassified"]
     failure_stage: Literal[
         "prior_state_check",
         "create_store",
@@ -255,6 +260,10 @@ class PrivateShadowBlocked(BaseModel):
             self.provider_status_code is not None or self.provider_reason != "none"
         ):
             raise ValueError("absent diagnostics are inconsistent")
+        if (self.failure_class == "infrastructure_transient") != (
+            self.provider_error_category == "transient"
+        ):
+            raise ValueError("failure class contradicts provider category")
         if self.provider_reason in {
             "invalid_argument",
             "provider_bad_request",
@@ -427,6 +436,7 @@ def failure_record(
     cleanup_outcome: str,
     reconciliation_outcome: str,
     input_identity: str = "none",
+    transient_attempts: int = 0,
 ) -> PrivateShadowBlocked:
     """Build a bounded blocked record without retaining exception content."""
 
@@ -464,6 +474,11 @@ def failure_record(
         "byte_usage": {"index_inputs": 1},
     }
     source = fallback if preflight is None else preflight
+    if (
+        type(transient_attempts) is not int
+        or not 0 <= transient_attempts <= _MAX_TRANSIENT_ATTEMPTS
+    ):
+        transient_attempts = 0
     return PrivateShadowBlocked.model_validate(
         {
             "status": "blocked",
@@ -473,6 +488,10 @@ def failure_record(
             "slide_count": source["slide_count"],
             "provider_operation_states": [*states, "private_shadow_failed"],
             "byte_usage": source["byte_usage"],
+            "transient_attempts": transient_attempts,
+            "failure_class": (
+                "infrastructure_transient" if category == "transient" else "unclassified"
+            ),
             "failure_stage": failure_stage if failure_stage in _FAILURE_STAGES else "unknown",
             "failure_input_identity": (
                 input_identity if input_identity in _INPUT_IDENTITIES else "unknown"

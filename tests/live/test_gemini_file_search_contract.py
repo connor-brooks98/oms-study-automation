@@ -1495,6 +1495,7 @@ def test_public_matrix_collects_each_input_failure_before_cleanup(
     assert evidence["aggregate"] == {
         "input_count": 5,
         "indexed_bytes": sum(value[3] for value in uploads),
+        "transient_attempts": 0,
     }
     assert evidence["cleanup"] == {"attempted": 10, "status": "unknown"}
     assert evidence["reconciliation"] == "unknown"
@@ -1832,9 +1833,9 @@ def test_shared_sdk_paths_label_diagnostic_provider_failures(
             captures.append(label)
 
     async def fail_provider(
-        request: object, *, diagnostic_sink: object | None = None, label: str = ""
+        request: object, *, diagnostic_sink: object | None = None, label: str = "", **kwargs: object
     ) -> object:
-        del request
+        del request, kwargs
         if diagnostic_sink is not None:
             diagnostic_sink.capture_exception(label, RuntimeError("synthetic"))
         raise smoke.GeminiProviderError("synthetic")
@@ -2053,7 +2054,7 @@ def test_import_poll_retry_does_not_sleep_past_its_existing_deadline() -> None:
     async def sleep(delay: float) -> None:
         delays.append(delay)
 
-    ticks = iter((0.0, 0.0, 0.0))
+    ticks = iter((0.0, 0.0, 899.5))
     client = _SdkClient(smoke)
     client.aio.operations = TransientOperations()
     session = smoke.GoogleGenaiSmokeSession(
@@ -3991,6 +3992,8 @@ def test_private_shadow_indexes_every_input_queries_and_returns_only_aggregates(
         "duration_ms",
         "byte_usage",
         "token_usage",
+        "transient_attempts",
+        "failure_class",
         "warnings",
     }
     assert record["status"] == "passed"
@@ -4139,6 +4142,8 @@ def test_private_shadow_primary_failure_retains_safe_cleanup_evidence(
         "slide_count",
         "provider_operation_states",
         "byte_usage",
+        "transient_attempts",
+        "failure_class",
         "failure_stage",
         "failure_input_identity",
         "provider_error_category",

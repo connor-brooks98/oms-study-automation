@@ -19,6 +19,7 @@ import traceback
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from importlib import import_module
 from io import BytesIO
 from pathlib import Path
@@ -36,7 +37,7 @@ from oms_hub.providers.gemini.client import (
     SdkFactory,
     translate_gemini_error,
 )
-from oms_hub.providers.gemini.errors import GeminiProviderError
+from oms_hub.providers.gemini.errors import GeminiProviderError, GeminiTransientError
 from oms_hub.providers.gemini.evidence import (
     failure_record as private_shadow_failure_record,
 )
@@ -69,6 +70,8 @@ PRIVATE_SHADOW_MODEL_CONTRACT = (
 PRIVATE_SHADOW_WRONG_LECTURE_ID = "task-2-8-private-wrong-lecture"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _MAX_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
+_MAX_TRANSIENT_ATTEMPTS = 10_000
+_RETRY_DELAYS = (1.0, 2.0)
 _IS_WINDOWS = os.name == "nt"
 _CITATION_CHECKS = (
     "citation_presence",
@@ -571,10 +574,15 @@ class GoogleGenaiSmokeSession:
         *,
         sdk_factory: SdkFactory | None = None,
         diagnostic_sink: DiagnosticSink | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._config = GeminiConfig(api_key=SecretStr(api_key))
         self._clients = GeminiClientFactory(self._config, sdk_factory=sdk_factory)
         self._diagnostic_sink = diagnostic_sink
+        self._sleep = asyncio.sleep if sleep is None else sleep
+        self._clock = monotonic if clock is None else clock
+        self._transient_attempts = 0
         self.model_contract = (
             self._config.sdk_version,
             self._config.file_search_model,
@@ -584,6 +592,13 @@ class GoogleGenaiSmokeSession:
         self._store_name: str | None = None
         self._document_name: str | None = None
         self._file_name: str | None = None
+
+    @property
+    def transient_attempts(self) -> int:
+        return self._transient_attempts
+
+    def _record_transient_retry(self) -> None:
+        self._transient_attempts += 1
 
     async def create_store(self, display_name: str, embedding_model: str) -> str:
         async with self._clients.client() as client:
@@ -607,6 +622,10 @@ class GoogleGenaiSmokeSession:
                 diagnostic_sink=self._diagnostic_sink,
                 label="find_stores.request",
                 capture_response=False,
+                idempotent=True,
+                sleep=self._sleep,
+                clock=self._clock,
+                on_transient_retry=self._record_transient_retry,
             )
             if not isinstance(listed, AsyncIterable):
                 raise SmokeContractError(
@@ -685,6 +704,10 @@ class GoogleGenaiSmokeSession:
                 diagnostic_sink=self._diagnostic_sink,
                 label="find_files.request",
                 capture_response=False,
+                idempotent=True,
+                sleep=self._sleep,
+                clock=self._clock,
+                on_transient_retry=self._record_transient_retry,
             )
             if not isinstance(listed, AsyncIterable):
                 raise SmokeContractError(
@@ -715,15 +738,25 @@ class GoogleGenaiSmokeSession:
             operation = operation_type(name=operation_name)
         except Exception as error:
             raise translate_gemini_error(error) from None
-        deadline = monotonic() + self._config.operation_timeout_seconds
+        deadline = self._clock() + self._config.operation_timeout_seconds
         async with self._clients.client() as client:
             while True:
-                remaining = deadline - monotonic()
+                remaining = deadline - self._clock()
                 if remaining <= 0:
                     raise SmokeTemporaryFailure("Gemini import operation timed out")
                 try:
                     async with asyncio.timeout(remaining):
-                        operation = await client.operations.get(operation)
+                        current_operation = operation
+                        operation = await _provider_call(
+                            partial(client.operations.get, current_operation),
+                            diagnostic_sink=self._diagnostic_sink,
+                            label="wait_for_import.response",
+                            idempotent=True,
+                            sleep=self._sleep,
+                            clock=self._clock,
+                            retry_deadline=deadline,
+                            on_transient_retry=self._record_transient_retry,
+                        )
                 except TimeoutError:
                     if self._diagnostic_sink is not None:
                         self._diagnostic_sink.capture_exception(
@@ -740,8 +773,6 @@ class GoogleGenaiSmokeSession:
                             error,
                         )
                     raise translate_gemini_error(error) from None
-                if self._diagnostic_sink is not None:
-                    self._diagnostic_sink.capture("wait_for_import.response", operation)
                 if bool(_field(operation, "done")):
                     break
                 await asyncio.sleep(self._config.operation_poll_seconds)
@@ -806,6 +837,10 @@ class GoogleGenaiSmokeSession:
                 lambda: client.interactions.create(**body),
                 diagnostic_sink=self._diagnostic_sink,
                 label="query.response",
+                idempotent=True,
+                sleep=self._sleep,
+                clock=self._clock,
+                on_transient_retry=self._record_transient_retry,
             )
         output_text = _interaction_output(response)
         if response_schema is None:
@@ -868,6 +903,10 @@ class GoogleGenaiSmokeSession:
             response = await _provider_call(
                 lambda: client.interactions.create(**body), diagnostic_sink=self._diagnostic_sink,
                 label="query_private",
+                idempotent=True,
+                sleep=self._sleep,
+                clock=self._clock,
+                on_transient_retry=self._record_transient_retry,
             )
         output_text = _interaction_output(response)
         supported: bool | None = None
@@ -925,6 +964,10 @@ class GoogleGenaiSmokeSession:
                 lambda: client.file_search_stores.documents.list(parent=store_name),
                 diagnostic_sink=self._diagnostic_sink,
                 label="list_documents",
+                idempotent=True,
+                sleep=self._sleep,
+                clock=self._clock,
+                on_transient_retry=self._record_transient_retry,
             )
             documents = await _collect(listed)
         return tuple(sorted(_provider_identity(item, "document") for item in documents))
@@ -1007,18 +1050,42 @@ async def _provider_call(
     diagnostic_sink: DiagnosticSink | None = None,
     label: str = "provider_call",
     capture_response: bool = True,
+    idempotent: bool = False,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
+    clock: Callable[[], float] | None = None,
+    retry_deadline: float | None = None,
+    on_transient_retry: Callable[[], None] | None = None,
 ) -> Any:
-    try:
-        response = await request()
-    except GeminiProviderError:
-        raise
-    except Exception as error:
-        if diagnostic_sink is not None:
-            diagnostic_sink.capture_exception(f"{label}.failed", error)
-        raise translate_gemini_error(error) from None
-    if capture_response and diagnostic_sink is not None:
-        diagnostic_sink.capture(label, response)
-    return response
+    retry_sleep = asyncio.sleep if sleep is None else sleep
+    retry_clock = monotonic if clock is None else clock
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        try:
+            response = await request()
+        except GeminiProviderError as error:
+            translated = error
+        except Exception as error:
+            if diagnostic_sink is not None:
+                diagnostic_sink.capture_exception(f"{label}.failed", error)
+            translated = translate_gemini_error(error)
+        else:
+            if capture_response and diagnostic_sink is not None:
+                diagnostic_sink.capture(label, response)
+            return response
+        if not idempotent or not isinstance(translated, GeminiTransientError) or attempt == len(_RETRY_DELAYS):
+            raise translated from None
+        delay = _RETRY_DELAYS[attempt]
+        if retry_deadline is not None and retry_clock() + delay >= retry_deadline:
+            raise translated from None
+        if on_transient_retry is not None:
+            on_transient_retry()
+        await retry_sleep(delay)
+
+
+def _session_transient_attempts(session: object) -> int:
+    value = getattr(session, "transient_attempts", 0)
+    if type(value) is int and 0 <= value <= _MAX_TRANSIENT_ATTEMPTS:
+        return value
+    return 0
 
 
 def _provider_identity(value: object, label: str, field: str = "name") -> str:
@@ -1900,7 +1967,11 @@ async def _run_shadow_sequence(
     aggregate = {
         "input_count": len(manifest.inputs),
         "indexed_bytes": sum(item.path.stat().st_size for item in manifest.inputs),
+        "transient_attempts": 0,
     }
+
+    def refresh_transient_attempts() -> None:
+        aggregate["transient_attempts"] = _session_transient_attempts(session)
     store_name: str | None = None
     stores: list[str] = []
     files: list[tuple[str, str]] = []
@@ -1966,6 +2037,7 @@ async def _run_shadow_sequence(
             or await session.find_files(display_names)
         )
     except BaseException as prior_check_error:
+        refresh_transient_attempts()
         if failure_evidence is not None:
             if mode == "public_matrix":
                 failure_evidence.update(
@@ -1988,12 +2060,14 @@ async def _run_shadow_sequence(
                         states=states,
                         cleanup_outcome="unknown",
                         reconciliation_outcome="unknown",
+                        transient_attempts=_session_transient_attempts(session),
                     ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
             diagnostic_sink.capture("contract.check_matrix", public_checks)
         raise
     if prior_state_present:
+        refresh_transient_attempts()
         prior_state_mismatch = LiveSmokeBlocked(
             "private shadow prior operator state mismatch"
         )
@@ -2019,6 +2093,7 @@ async def _run_shadow_sequence(
                         states=states,
                         cleanup_outcome="unknown",
                         reconciliation_outcome="not_empty",
+                        transient_attempts=_session_transient_attempts(session),
                     ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
@@ -2364,6 +2439,7 @@ async def _run_shadow_sequence(
                 or cleanup_successes[resource] != cleanup_attempts[resource]
                 else "passed"
             )
+    refresh_transient_attempts()
     if failure is not None:
         if mode == "public_matrix":
             if failure_stage == "create_store":
@@ -2410,6 +2486,7 @@ async def _run_shadow_sequence(
                         cleanup_outcome=cleanup_outcome,
                         reconciliation_outcome=reconciliation_outcome,
                         input_identity=active_input_identity,
+                        transient_attempts=_session_transient_attempts(session),
                     ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
@@ -2446,6 +2523,7 @@ async def _run_shadow_sequence(
                     cleanup_outcome=cleanup_outcome,
                     reconciliation_outcome=reconciliation_outcome,
                     input_identity="none",
+                    transient_attempts=_session_transient_attempts(session),
                 ).model_dump(mode="json")
                 )
         if diagnostic_sink is not None and mode == "public_matrix":
@@ -2456,6 +2534,8 @@ async def _run_shadow_sequence(
         **preflight,
         "status": "passed",
         "provider_operation_states": states,
+        "transient_attempts": _session_transient_attempts(session),
+        "failure_class": "none",
         "citation_resolution_rate": (
             positive.resolved_citation_count / positive.citation_count
         ),
