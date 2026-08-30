@@ -192,10 +192,12 @@ try {
   Remove-Item -LiteralPath $VerifySourceRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 $Controller = Join-Path $Bundle "source/scripts/task28/private-shadow-controller.ps1"
+$WindowsPowerShell = Join-Path $PSHOME "powershell.exe"
 try {
   $PreviousVerify = $env:OMS_TASK28_COMPOSITION_VERIFY
   $env:OMS_TASK28_COMPOSITION_VERIFY = "1"
-  & $Controller -Manifest $Run.Path
+  & $WindowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $Controller -Manifest $Run.Path
   $ControllerExit = $LASTEXITCODE
   $State = Get-Task28StatePaths -RunId ([string]$Run.Value.run_id)
   if ($ControllerExit -ne 1) {
