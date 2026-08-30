@@ -77,7 +77,7 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     assert "InputByteLength = $InputBytes.Length" in harness
     assert "RawLength = $Raw.Length" in harness
     assert "LocalJsonValid = $LocalJsonValid" in harness
-    assert '$_.PSObject.Properties["Stdout"]' in harness
+    assert "$script:EntrypointStdout = $Stdout.GetAwaiter().GetResult()" in harness
     assert "PRIVATE_SHADOW_COMPOSITION_ENVIRONMENT_VERIFIED" in harness
     assert "DIRECT_CONVERTER_SITECUSTOMIZE_REMOVED" in harness
     assert '$DirectValid.Stdout.TrimEnd("`r", "`n") + "`n"' in harness

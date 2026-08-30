@@ -202,11 +202,9 @@ function Invoke-EntrypointEvidence {
   $Stdout = $Process.StandardOutput.ReadToEndAsync()
   $Stderr = $Process.StandardError.ReadToEndAsync()
   $Process.WaitForExit()
-  [pscustomobject]@{
-    ExitCode = $Process.ExitCode
-    Stdout = $Stdout.GetAwaiter().GetResult()
-    Stderr = $Stderr.GetAwaiter().GetResult()
-  }
+  $script:EntrypointExitCode = $Process.ExitCode
+  $script:EntrypointStdout = $Stdout.GetAwaiter().GetResult()
+  $script:EntrypointStderr = $Stderr.GetAwaiter().GetResult()
 }
 
 function Invoke-WrapperReparseCase {
@@ -314,10 +312,8 @@ with tempfile.NamedTemporaryFile(delete=True) as handle:
 '@,
     $Utf8
   )
-  $Entrypoint = Invoke-EntrypointEvidence |
-    Where-Object { $_.PSObject.Properties["Stdout"] } |
-    Select-Object -First 1
-  $EntrypointRaw = $Entrypoint.Stdout.TrimEnd("`r", "`n")
+  Invoke-EntrypointEvidence
+  $EntrypointRaw = $script:EntrypointStdout.TrimEnd("`r", "`n")
   $EntrypointRoot = Join-Path $CasesRoot ([Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $EntrypointRoot | Out-Null
   $EntrypointRawPath = Join-Path $EntrypointRoot "entrypoint.stdout"
@@ -325,9 +321,10 @@ with tempfile.NamedTemporaryFile(delete=True) as handle:
   [IO.File]::WriteAllText($EntrypointRawPath, $EntrypointRaw, $Utf8)
   $EntrypointEvidence = Convert-PrivateShadowEvidence `
     -RawStdoutPath $EntrypointRawPath -SafeResultPath $EntrypointSafeResult `
-    -ProcessExitCode $Entrypoint.ExitCode -PythonExecutable $PythonExecutable `
+    -ProcessExitCode $script:EntrypointExitCode -PythonExecutable $PythonExecutable `
     -SourceRoot $PackageRoot -EvidenceModule $EvidenceModule -ScratchRoot $ValidatorScratch
-  if ($Entrypoint.ExitCode -ne 1 -or -not [string]::IsNullOrEmpty($Entrypoint.Stderr) -or
+  if ($script:EntrypointExitCode -ne 1 -or
+      -not [string]::IsNullOrEmpty($script:EntrypointStderr) -or
       $EntrypointEvidence.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $EntrypointSafeResult)) {
     throw "Real entrypoint evidence did not pass through the real converter."
   }
