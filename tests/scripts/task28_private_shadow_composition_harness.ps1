@@ -76,7 +76,11 @@ try {
     -TaskName "task28-composition-harness" -MutableStatePath $State `
     -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
   if ($LASTEXITCODE -ne 0) { throw "First Stage failed." }
-  $ManifestPath = Join-Path $Destination "run-manifest.json"
+  $ManifestPath = @(
+    Get-ChildItem -LiteralPath $Destination -File -Filter "run-manifest.*.json"
+  )
+  if ($ManifestPath.Count -ne 1) { throw "Stage did not create one self-bound run manifest." }
+  $ManifestPath = $ManifestPath[0].FullName
   $FirstManifest = [IO.File]::ReadAllBytes($ManifestPath)
   $FirstSourceManifest = [IO.File]::ReadAllBytes((Join-Path $Destination "source-manifest.json"))
   $FirstRuntimeManifest = [IO.File]::ReadAllBytes((Join-Path $Destination "runtime-manifest.json"))

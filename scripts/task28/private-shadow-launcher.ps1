@@ -69,15 +69,9 @@ foreach ($Pair in @(
 }
 $EvidenceRoot = Join-Path $VerifyRoot "evidence"
 New-Item -ItemType Directory -Path $EvidenceRoot | Out-Null
-$PreviousVerify = $env:OMS_TASK28_COMPOSITION_VERIFY
-try {
-  $env:OMS_TASK28_COMPOSITION_VERIFY = "1"
-  & $Wrapper -PythonExecutable ([string]$Run.python_executable) -ProjectRoot $Source `
+& $Wrapper -CompositionVerify -PythonExecutable ([string]$Run.python_executable) -ProjectRoot $Source `
     -OperatorScript $EntryPoint -DiagnosticRoot (Join-Path $VerifyRoot "diagnostic") `
     -SafeResultPath (Join-Path $EvidenceRoot "result.json") `
     -SafeStatusPath (Join-Path $EvidenceRoot "status.json")
-  $ExitCode = $LASTEXITCODE
-} finally {
-  $env:OMS_TASK28_COMPOSITION_VERIFY = $PreviousVerify
-}
+$ExitCode = $LASTEXITCODE
 exit $ExitCode

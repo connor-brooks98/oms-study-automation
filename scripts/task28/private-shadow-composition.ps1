@@ -95,6 +95,13 @@ function Write-CanonicalJson {
   }
 }
 
+function Get-StringSha256 {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  $Hasher = [Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($Hasher.ComputeHash($Utf8.GetBytes($Value)))).Replace("-", "").ToLowerInvariant() }
+  finally { $Hasher.Dispose() }
+}
+
 function Read-RunManifest {
   param([Parameter(Mandatory = $true)][string]$Path)
   $ManifestPath = Resolve-ExistingFile -Path $Path
@@ -219,8 +226,14 @@ if ($Mode -eq "Stage") {
     hub_health_url=$HealthUri.AbsoluteUri.TrimEnd("/")
     authorization_count=0
   }
-  Write-CanonicalJson -Path (Join-Path $Destination "run-manifest.json") -Value $RunManifest
-  Move-Item -LiteralPath $StageRoot -Destination $FinalDestination
+  $ManifestJson = ($RunManifest | ConvertTo-Json -Compress -Depth 12) + "`n"
+  $RunManifestHash = Get-StringSha256 -Value $ManifestJson
+  $RunManifestPath = Join-Path $Destination ("run-manifest.$RunManifestHash.json")
+  [IO.File]::WriteAllText($RunManifestPath, $ManifestJson, $Utf8)
+  [IO.Directory]::Move($StageRoot, $FinalDestination)
+  if ((Get-Item -LiteralPath $FinalDestination -Force).FullName -cne $FinalDestination) {
+    throw "Final bundle identity changed during promotion."
+  }
   $StageRoot = $null
   } finally {
     if ($StageRoot -and (Test-Path -LiteralPath $StageRoot)) {
@@ -231,6 +244,10 @@ if ($Mode -eq "Stage") {
 }
 
 $Run = Read-RunManifest -Path $Manifest
+$ManifestHash = (Get-FileHash -LiteralPath $Run.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+if ((Split-Path -Leaf $Run.Path) -cne "run-manifest.$ManifestHash.json") {
+  throw "Run manifest filename is not bound to its contents."
+}
 $Bundle = Resolve-ExistingDirectory -Path ([string]$Run.Value.immutable_bundle_path)
 Assert-UnderRoot -Path $Run.Path -Root $Bundle
 if (Test-Path -LiteralPath ([string]$Run.Value.mutable_state_path)) {
@@ -242,6 +259,12 @@ Assert-ManifestFile -Path (Join-Path $Bundle "source-manifest.json") -Row ([pscu
 Assert-ManifestFile -Path (Join-Path $Bundle "runtime-manifest.json") -Row ([pscustomobject]@{sha256=$Run.Value.runtime.manifest_sha256})
 foreach ($Row in @((Get-Content -LiteralPath (Join-Path $Bundle "source-manifest.json") -Raw | ConvertFrom-Json).files)) {
   Assert-ManifestFile -Path (Join-Path $SourceRoot ([string]$Row.path)) -Row $Row
+}
+$ExpectedSourceRows = @((Get-Content -LiteralPath (Join-Path $Bundle "source-manifest.json") -Raw | ConvertFrom-Json).files)
+$ActualSourceRows = @(Get-FileRows -Root $SourceRoot)
+if (($ExpectedSourceRows | ConvertTo-Json -Compress -Depth 5) -cne
+    ($ActualSourceRows | ConvertTo-Json -Compress -Depth 5)) {
+  throw "Source manifest does not exactly match immutable source files."
 }
 foreach ($Row in @((Get-Content -LiteralPath (Join-Path $Bundle "runtime-manifest.json") -Raw | ConvertFrom-Json).files)) {
   Assert-ManifestFile -Path (Join-Path $Bundle ([string]$Row.path)) -Row $Row

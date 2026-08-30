@@ -5,7 +5,8 @@ param(
   [Parameter(Mandatory = $true)][string]$OperatorScript,
   [Parameter(Mandatory = $true)][string]$DiagnosticRoot,
   [Parameter(Mandatory = $true)][string]$SafeResultPath,
-  [Parameter(Mandatory = $true)][string]$SafeStatusPath
+  [Parameter(Mandatory = $true)][string]$SafeStatusPath,
+  [Parameter(Mandatory = $true)][switch]$CompositionVerify
 )
 
 Set-StrictMode -Version Latest
@@ -22,6 +23,18 @@ $ExitCode = 54
 $WrapperStage = "bootstrap"
 $EvidenceUsable = $false
 $OperatorArtifactsDeleted = $false
+
+function Set-CompositionVerifyEnvironment {
+  param([Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$ProcessInfo)
+  $ProcessInfo.EnvironmentVariables.Clear()
+  foreach ($Name in @("SystemRoot", "WINDIR", "ComSpec", "PATH", "TEMP", "TMP")) {
+    $Value = [Environment]::GetEnvironmentVariable($Name)
+    if ($Value) { $ProcessInfo.EnvironmentVariables[$Name] = $Value }
+  }
+  $ProcessInfo.EnvironmentVariables["OMS_TASK28_COMPOSITION_VERIFY"] = "1"
+  $ProcessInfo.EnvironmentVariables["OMS_TASK28_PRIVATE_PROJECT"] = $ProjectRoot
+  $ProcessInfo.EnvironmentVariables["PYTHONPATH"] = $SourceRoot
+}
 
 function Protect-PrivateShadowDirectory {
   param([Parameter(Mandatory = $true)][string]$Path)
@@ -196,6 +209,7 @@ try {
   $ProcessInfo.RedirectStandardError = $true
   $ProcessInfo.StandardOutputEncoding = $Utf8
   $ProcessInfo.StandardErrorEncoding = $Utf8
+  Set-CompositionVerifyEnvironment -ProcessInfo $ProcessInfo
   $Process = [System.Diagnostics.Process]::new()
   $Process.StartInfo = $ProcessInfo
   if (-not $Process.Start()) {

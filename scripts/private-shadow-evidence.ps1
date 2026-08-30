@@ -64,7 +64,7 @@ function Convert-PrivateShadowEvidence {
     $Start.StandardInputEncoding = $script:PrivateShadowUtf8
     $Start.StandardOutputEncoding = $script:PrivateShadowUtf8
     $Start.StandardErrorEncoding = $script:PrivateShadowUtf8
-    $Start.EnvironmentVariables["PYTHONPATH"] = $SourceRoot
+    Set-CompositionVerifyEnvironment -ProcessInfo $Start
     $Process = [Diagnostics.Process]::new()
     $Process.StartInfo = $Start
     if (-not $Process.Start()) { throw "Private-shadow evidence validator did not start." }
