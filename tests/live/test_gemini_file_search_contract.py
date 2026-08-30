@@ -4618,6 +4618,63 @@ def test_private_terminal_finalization_revalidates_swapped_diagnostic_parent(
     assert not list(external.glob(".provider-diagnostic.json.*.tmp"))
 
 
+def test_private_terminal_finalization_revalidates_after_exception_property_swap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    diagnostic_path = _private_diagnostic_capability(monkeypatch, tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+
+    class SwappingProviderError(smoke.GeminiProviderError):
+        def __init__(self) -> None:
+            super().__init__(
+                "safe failure", provider_status_code=400, diagnostic_code="unsupported_mime_type"
+            )
+            self.swapped = False
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "provider_status_code" and not object.__getattribute__(self, "swapped"):
+                object.__setattr__(self, "swapped", True)
+                diagnostic_path.parent.rmdir()
+                diagnostic_path.parent.symlink_to(external, target_is_directory=True)
+            return super().__getattribute__(name)
+
+    class GetterSwapSession(_PrivateShadowSession):
+        async def import_input(
+            self,
+            store_name: str,
+            file_name: str,
+            metadata: tuple[tuple[str, str], ...],
+            chunking: object | None,
+        ) -> str:
+            del store_name, file_name, metadata, chunking
+            raise SwappingProviderError()
+
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="diagnostic capability"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: GetterSwapSession(smoke),
+                diagnostic_path=diagnostic_path,
+            )
+        )
+
+    assert not external.exists() or not list(external.iterdir())
+    assert not list(external.glob(".provider-diagnostic.json.*.tmp"))
+
+
 def test_private_terminal_diagnostic_rejects_preexisting_and_overflow_without_partial(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
