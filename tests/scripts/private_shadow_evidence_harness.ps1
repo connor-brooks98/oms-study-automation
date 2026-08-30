@@ -241,7 +241,15 @@ try {
   $DirectCanonical = $DirectValid.Stdout.TrimEnd("`r", "`n") + "`n"
   if ($DirectValid.ExitCode -ne 0 -or -not [string]::IsNullOrEmpty($DirectValid.Stderr) -or
       $WrappedValid.ExitCode -ne 1 -or $WrappedValid.SafeResult -cne $DirectCanonical) {
-    throw "Valid private-shadow evidence did not match the shared Python contract."
+    $SafeStatus = [ordered]@{
+      direct_exit = $DirectValid.ExitCode
+      direct_stderr_empty = [string]::IsNullOrEmpty($DirectValid.Stderr)
+      wrapped_exit = $WrappedValid.ExitCode
+      safe_equal = $WrappedValid.SafeResult -ceq $DirectCanonical
+      direct_length = $DirectCanonical.Length
+      safe_length = $WrappedValid.SafeResult.Length
+    } | ConvertTo-Json -Compress
+    throw "Valid private-shadow evidence did not match the shared Python contract; safe_status=$SafeStatus"
   }
   $WrappedComposition = Invoke-WrapperEvidence -Mode "valid" -CompositionVerify
   foreach ($ProbeResult in @($WrappedValid, $WrappedComposition)) {
