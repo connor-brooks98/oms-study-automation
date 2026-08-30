@@ -230,6 +230,8 @@ def test_stage_and_verify_use_the_bound_runtime_contract() -> None:
     assert "[IO.File]::ReadAllText($LauncherStatus" in controller
     assert ").exit_code" in controller
     assert "exit $LauncherExit" in controller
+    assert '$WindowsPowerShell = Join-Path $PSHOME "powershell.exe"' in composition
+    assert "& $WindowsPowerShell -NoProfile -NonInteractive" in composition
     assert "Assert-ImmutableBundle -Run $Run" in launcher
     assert "[IO.Directory]::Move($StageRoot, $FinalDestination)" in composition
     promotion = composition.split("[IO.Directory]::Move($StageRoot, $FinalDestination)", 1)[1]
