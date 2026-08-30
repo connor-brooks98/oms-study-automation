@@ -40,6 +40,20 @@ def test_entrypoint_loads_only_the_hash_bound_evidence_module() -> None:
     assert "private-shadow-operator-reviewed.py" not in ENTRYPOINT.read_text(encoding="utf-8")
 
 
+def test_entrypoint_runs_the_real_source_bound_composition_probe(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_entrypoint()
+    monkeypatch.setenv("OMS_TASK28_COMPOSITION_VERIFY", "1")
+    monkeypatch.setenv("OMS_TASK28_PRIVATE_PROJECT", str(ROOT))
+    monkeypatch.delenv("RUN_PRIVATE_GEMINI_SHADOW", raising=False)
+
+    assert module.main() == 0
+    record = json.loads(capsys.readouterr().out)
+
+    assert validate_private_shadow_record(record, 0)["status"] == "passed"
+
+
 def test_entrypoint_rejects_an_evidence_package_symlink_escape(tmp_path: Path) -> None:
     module = _load_entrypoint()
     project = tmp_path / "project"
