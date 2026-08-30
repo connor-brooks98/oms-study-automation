@@ -534,7 +534,7 @@ def _main(argv: list[str] | None = None) -> int:
         raw_bytes = sys.stdin.buffer.read(200 * 1024 + 1)
         if len(raw_bytes) > 200 * 1024:
             return 51
-        raw = raw_bytes.decode("utf-8")
+        raw = raw_bytes.decode("utf-8-sig")
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError, MemoryError, OverflowError, RecursionError):
         return 51
