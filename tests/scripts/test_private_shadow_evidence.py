@@ -49,6 +49,11 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     assert '"TEMP"] = $ScratchRoot' in wrapper
     assert '"TMP"] = $ScratchRoot' in wrapper
     assert "PRIVATE_SHADOW_ENVIRONMENT_VERIFIED" in harness
+    assert "function Set-PrivateShadowChildEnvironment" in evidence
+    assert "[string]$ScratchRoot" in evidence
+    assert "Set-CompositionVerifyEnvironment" not in evidence
+    assert "Set-CompositionVerifyEnvironment" not in wrapper
+    assert "DIRECT_CONVERTER_ENVIRONMENT_VERIFIED" in harness
 
 
 def test_private_shadow_wrapper_runs_committed_synthetic_fault_matrix() -> None:

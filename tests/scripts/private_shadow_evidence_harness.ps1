@@ -19,7 +19,8 @@ $OperatorRoot = Join-Path $ProjectRoot "scripts"
 $PackageRoot = Join-Path $ProjectRoot "src"
 $EvidenceModule = Join-Path $PackageRoot "oms_hub/providers/gemini/evidence.py"
 $CasesRoot = Join-Path $Sandbox "cases"
-New-Item -ItemType Directory -Path $OperatorRoot,$CasesRoot | Out-Null
+$ValidatorScratch = Join-Path $Sandbox "validator-scratch"
+New-Item -ItemType Directory -Path $OperatorRoot,$CasesRoot,$ValidatorScratch | Out-Null
 Copy-Item -LiteralPath $SourceRoot -Destination $PackageRoot -Recurse
 $Emitter = Join-Path $OperatorRoot "emit_private_shadow_json.py"
 . (Join-Path (Split-Path -Parent $WrapperScript) "task28/private-shadow-common.ps1")
@@ -234,12 +235,13 @@ try {
   $EntrypointEvidence = Convert-PrivateShadowEvidence `
     -RawStdoutPath $EntrypointRawPath -SafeResultPath $EntrypointSafeResult `
     -ProcessExitCode $Entrypoint.ExitCode -PythonExecutable $PythonExecutable `
-    -SourceRoot $PackageRoot -EvidenceModule $EvidenceModule
+    -SourceRoot $PackageRoot -EvidenceModule $EvidenceModule -ScratchRoot $ValidatorScratch
   if ($Entrypoint.ExitCode -ne 1 -or -not [string]::IsNullOrEmpty($Entrypoint.Stderr) -or
       $EntrypointEvidence.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $EntrypointSafeResult)) {
     throw "Real entrypoint evidence did not pass through the real converter."
   }
   Write-Output "PRIVATE_SHADOW_ENTRYPOINT_CONVERTER_VERIFIED"
+  Write-Output "DIRECT_CONVERTER_ENVIRONMENT_VERIFIED"
 
   $InvalidRaw = '{"status":"blocked"}' + "`n"
   $DirectInvalid = Invoke-DirectEvidence -Raw $InvalidRaw
@@ -259,7 +261,7 @@ try {
   $WriteFailure = Convert-PrivateShadowEvidence `
     -RawStdoutPath $WriteRawPath -SafeResultPath $WriteTarget -ProcessExitCode 1 `
     -PythonExecutable $PythonExecutable -SourceRoot $PackageRoot `
-    -EvidenceModule $EvidenceModule
+    -EvidenceModule $EvidenceModule -ScratchRoot $ValidatorScratch
   if ($WriteFailure.ExitCode -ne 53 -or $WriteFailure.Stage -cne "safe_result_write" -or
       $WriteFailure.EvidenceUsable) {
     throw "Safe evidence write failure did not remain distinct."
