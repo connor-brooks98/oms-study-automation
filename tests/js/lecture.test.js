@@ -11,6 +11,9 @@ class FakeLectureElement {
     this.className = "";
     this.textContent = "";
     this.disabled = false;
+    this.hidden = false;
+    this.focused = false;
+    this.options = [];
     this.attributes = {};
     this._listeners = {};
     this._children = {};
@@ -52,6 +55,11 @@ class FakeLectureElement {
 
   append(node) {
     this.appended = node;
+    if (node.tagName === "option") this.options.push(node);
+  }
+
+  focus() {
+    this.focused = true;
   }
 }
 
@@ -65,6 +73,12 @@ class FakeLectureDocument {
     this.addPass = addPass;
     this.feedback = feedback;
     this.cookie = "";
+  }
+
+  createElement(tagName) {
+    const element = new FakeLectureElement();
+    element.tagName = tagName;
+    return element;
   }
 
   addEventListener() {}
@@ -110,12 +124,19 @@ const buildPassRow = ({ position, completed = false, resource = "" }) => {
   const select = new FakeLectureElement();
   select.dataset.passPosition = String(position);
   select.value = resource;
+  const custom = new FakeLectureElement();
+  custom.hidden = true;
+  const customInput = new FakeLectureElement();
+  const addResource = new FakeLectureElement();
   row._children["[data-pass-complete]"] = checkbox;
   row._children["[data-pass-date]"] = date;
   row._children["[data-pass-resource]"] = select;
+  row._children["[data-pass-resource-custom]"] = custom;
+  row._children["[data-pass-resource-name]"] = customInput;
+  row._children["[data-add-pass-resource]"] = addResource;
   checkbox.closest = () => row;
   select.closest = () => row;
-  return { row, checkbox, date, select };
+  return { row, checkbox, date, select, custom, customInput, addResource };
 };
 
 test("completed generation refresh names the ready artifact", () => {
@@ -382,6 +403,112 @@ test("failed pass updates restore the prior completion, date, count, and resourc
     await passes[0].select.dispatch("change");
     await flushMicrotasks();
     assert.equal(passes[0].select.value, "Lecture");
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
+test("selecting Other reveals the inline editor without saving a sentinel", async () => {
+  const pass = buildPassRow({ position: 1, resource: "Lecture" });
+  const requests = [];
+  const documentRef = new FakeLectureDocument([], {
+    passRows: [pass.row],
+    passCount: new FakeLectureElement(),
+    addPass: new FakeLectureElement(),
+  });
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42" };
+
+  try {
+    lecture.initialize(documentRef, async (_url, options = {}) => {
+      requests.push(options);
+      return { ok: true, async json() { return {}; } };
+    });
+    pass.select.value = "Other";
+    await pass.select.dispatch("change");
+
+    assert.equal(pass.custom.hidden, false);
+    assert.equal(pass.customInput.focused, true);
+    assert.equal(requests.filter(({ method }) => method === "PATCH").length, 0);
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
+test("adding a custom resource trims, saves, and shares a text-safe option", async () => {
+  const passes = [buildPassRow({ position: 1, resource: "Lecture" }), buildPassRow({ position: 2 })];
+  const requests = [];
+  const documentRef = new FakeLectureDocument([], {
+    passRows: passes.map(({ row }) => row),
+    passCount: new FakeLectureElement(),
+    addPass: new FakeLectureElement(),
+  });
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42" };
+
+  try {
+    lecture.initialize(documentRef, async (_url, options = {}) => {
+      requests.push(options);
+      if (!options.method) return { ok: true, async json() { return {}; } };
+      return {
+        ok: true,
+        async json() { return { position: 1, completed_on: null, resource: "Pathoma" }; },
+      };
+    });
+    passes[0].select.value = "Other";
+    await passes[0].select.dispatch("change");
+    passes[0].customInput.value = "  Pathoma  ";
+    await passes[0].addResource.dispatch("click");
+
+    const patches = requests.filter(({ method }) => method === "PATCH");
+    assert.deepEqual(patches.map(({ body }) => JSON.parse(body)), [{ resource: "Pathoma" }]);
+    for (const { select } of passes) {
+      assert.equal(select.options.filter(({ value }) => value === "Pathoma").length, 1);
+      assert.equal(select.options.find(({ value }) => value === "Pathoma").textContent, "Pathoma");
+    }
+    assert.equal(passes[0].select.value, "Pathoma");
+    assert.equal(passes[0].custom.hidden, true);
+    assert.equal(passes[0].customInput.value, "");
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
+test("custom resource validation and save failures keep the editor available", async () => {
+  const pass = buildPassRow({ position: 1, resource: "Lecture" });
+  const feedback = new FakeLectureElement();
+  const requests = [];
+  const documentRef = new FakeLectureDocument([], {
+    passRows: [pass.row],
+    passCount: new FakeLectureElement(),
+    addPass: new FakeLectureElement(),
+    feedback,
+  });
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42" };
+
+  try {
+    lecture.initialize(documentRef, async (_url, options = {}) => {
+      requests.push(options);
+      if (!options.method) return { ok: true, async json() { return {}; } };
+      return { ok: false, async json() { return { detail: "Resource rejected." }; } };
+    });
+    pass.select.value = "Other";
+    await pass.select.dispatch("change");
+    pass.customInput.value = "   ";
+    await pass.addResource.dispatch("click");
+    assert.equal(requests.filter(({ method }) => method === "PATCH").length, 0);
+    assert.match(feedback.textContent, /resource name/i);
+
+    pass.customInput.value = "Pathoma";
+    await pass.addResource.dispatch("click");
+    assert.equal(pass.select.value, "Lecture");
+    assert.equal(pass.custom.hidden, false);
+    assert.equal(pass.customInput.value, "Pathoma");
+    assert.equal(feedback.textContent, "Pass 1 resource update failed: Resource rejected.");
   } finally {
     if (originalLocation === undefined) delete global.location;
     else global.location = originalLocation;

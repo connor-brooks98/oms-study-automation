@@ -76,9 +76,60 @@ def test_lecture_page_shows_five_pass_ledger_rows_between_expandable_panels(tmp_
         assert completion is not None and completion.attributes["type"] == "checkbox"
         assert row.css_first("[data-pass-date]") is not None
         assert row.css_first("select[data-pass-resource]") is not None
+        custom = row.css_first("[data-pass-resource-custom]")
+        assert custom is not None and "hidden" in custom.attributes
+        custom_input = custom.css_first("[data-pass-resource-name]")
+        assert custom_input is not None
+        assert custom_input.attributes["maxlength"] == "100"
+        assert "required" in custom_input.attributes
+        assert custom_input.attributes["id"] == f"pass-resource-name-{position}"
+        label = custom.css_first("label")
+        assert label is not None
+        assert label.attributes["for"] == custom_input.attributes["id"]
+        add_resource = custom.css_first("[data-add-pass-resource]")
+        assert add_resource is not None
+        assert add_resource.text(strip=True) == "Add & use"
     assert tracker.css_first("[data-pass-count]").text(strip=True) == "0/5"
     add_pass = tracker.css_first("[data-add-pass]")
     assert add_pass is not None and "disabled" in add_pass.attributes
+
+
+def test_lecture_page_renders_reusable_custom_resources_for_other_lectures(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+    original_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 1, "Seizures", "Faculty", None)
+    )
+    other_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 2, "Spine", "Faculty", None)
+    )
+    client = TestClient(app)
+    client.get(f"/lectures/{original_id}")
+    csrf_token = client.cookies.get("study_hub_csrf")
+    assert csrf_token is not None
+    headers = {"X-CSRF-Token": csrf_token}
+
+    saved = client.patch(
+        f"/api/lectures/{original_id}/passes/1",
+        json={"resource": "Pathoma"},
+        headers=headers,
+    )
+    changed = client.patch(
+        f"/api/lectures/{original_id}/passes/1",
+        json={"resource": "Anki"},
+        headers=headers,
+    )
+    document = HTMLParser(client.get(f"/lectures/{other_id}").text)
+    options = document.css_first("[data-pass-resource]").css("option")
+
+    assert saved.status_code == 200
+    assert changed.status_code == 200
+    assert [option.attributes.get("value") for option in options].count("Pathoma") == 1
 
 
 def test_lecture_page_links_previous_and_next_within_subject_exam_order(tmp_path):

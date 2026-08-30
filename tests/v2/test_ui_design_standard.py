@@ -548,6 +548,9 @@ def test_option_a_pass_tracker_keeps_the_three_lecture_panels_in_order() -> None
         "data-pass-complete",
         "data-pass-date",
         "data-pass-resource",
+        "data-pass-resource-custom",
+        "data-pass-resource-name",
+        "data-add-pass-resource",
         "data-pass-count",
         "data-add-pass",
     ):
