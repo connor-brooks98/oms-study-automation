@@ -46,11 +46,11 @@ $HealthJob = Start-Job -ArgumentList $Port -ScriptBlock {
 
 function Get-ImmutableSnapshot {
   param([Parameter(Mandatory = $true)][string]$Root)
-  $Prefix = $Root.TrimEnd('\\', '/') + [IO.Path]::DirectorySeparatorChar
+  $Prefix = $Root.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
   return @(
     "d|.|$((Get-Item -LiteralPath $Root).LastWriteTimeUtc.Ticks)"
     Get-ChildItem -LiteralPath $Root -Force -Recurse | Sort-Object FullName | ForEach-Object {
-      $Relative = $_.FullName.Substring($Prefix.Length).Replace('\\', '/')
+      $Relative = $_.FullName.Substring($Prefix.Length).Replace('\', '/')
       if ($_.PSIsContainer) { "d|$Relative|$($_.LastWriteTimeUtc.Ticks)" }
       else { "f|$Relative|$($_.Length)|$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)|$($_.LastWriteTimeUtc.Ticks)" }
     }
