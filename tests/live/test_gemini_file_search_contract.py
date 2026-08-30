@@ -3989,6 +3989,44 @@ def test_private_shadow_requires_terminal_diagnostic_capability_before_preflight
     assert secrets.calls == []
 
 
+@pytest.mark.parametrize("invalid_path", (None, "not-a-path", object()))
+def test_private_shadow_rejects_non_path_diagnostic_capability_before_preflight_or_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    invalid_path: object,
+) -> None:
+    smoke = _load_smoke()
+    supplied = _private_diagnostic_capability(monkeypatch, tmp_path)
+    projected = False
+    secrets = _FakeSecrets("must-not-be-read")
+
+    def project(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        nonlocal projected
+        projected = True
+        return object()
+
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", project)
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="diagnostic capability"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight={},
+                secret_store=secrets,
+                diagnostic_path=invalid_path,
+            )
+        )
+
+    assert supplied.parent.is_dir()
+    assert projected is False
+    assert secrets.calls == []
+
+
 def test_private_shadow_mismatch_fails_before_secret_and_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -4531,6 +4569,53 @@ def test_private_shadow_prior_state_mismatch_retains_terminal_diagnostic(
         "failure_stage": "prior_state_check",
         "failure_input_identity": "none",
     }
+
+
+def test_private_terminal_finalization_revalidates_swapped_diagnostic_parent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke = _load_smoke()
+    view = _private_shadow_view(smoke, tmp_path)
+    diagnostic_path = _private_diagnostic_capability(monkeypatch, tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+
+    class SwappedDiagnosticSession(_PrivateShadowSession):
+        async def import_input(
+            self,
+            store_name: str,
+            file_name: str,
+            metadata: tuple[tuple[str, str], ...],
+            chunking: object | None,
+        ) -> str:
+            del store_name, file_name, metadata, chunking
+            diagnostic_path.parent.rmdir()
+            diagnostic_path.parent.symlink_to(external, target_is_directory=True)
+            raise smoke.GeminiProviderError(
+                "safe failure", provider_status_code=400, diagnostic_code="unsupported_mime_type"
+            )
+
+    monkeypatch.setenv("RUN_PRIVATE_GEMINI_SHADOW", "1")
+    monkeypatch.setattr(smoke, "prepare_private_shadow_index_input", lambda *a, **k: view)
+    approved = smoke._private_shadow_preflight_from_view(view)
+
+    with pytest.raises(smoke.LiveSmokeBlocked, match="diagnostic capability"):
+        asyncio.run(
+            smoke.run_authorized_private_shadow(
+                "29",
+                schema_version=29,
+                artifacts=SimpleNamespace(),
+                materialization_root=tmp_path,
+                approved_preflight=approved,
+                secret_store=_FakeSecrets("stored-private-key"),
+                session_factory=lambda key: SwappedDiagnosticSession(smoke),
+                diagnostic_path=diagnostic_path,
+            )
+        )
+
+    assert not external.exists() or not list(external.iterdir())
+    assert not list(external.glob(".provider-diagnostic.json.*.tmp"))
 
 
 def test_private_terminal_diagnostic_rejects_preexisting_and_overflow_without_partial(
