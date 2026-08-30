@@ -138,7 +138,7 @@ try {
   )) {
     throw "Private-shadow source root must be inside the project root."
   }
-  $SourcePrefix = $SourceRoot.TrimEnd('\\', '/') +
+  $SourcePrefix = $SourceRoot.TrimEnd('\', '/') +
     [System.IO.Path]::DirectorySeparatorChar
   if (-not $EvidenceModule.StartsWith(
       $SourcePrefix, [System.StringComparison]::OrdinalIgnoreCase
