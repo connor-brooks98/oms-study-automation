@@ -121,6 +121,8 @@ function Invoke-DirectEvidence {
   $Process.StartInfo = $Start
   if (-not $Process.Start()) { throw "Evidence validator did not start." }
   $InputBytes = $Utf8.GetBytes($Raw)
+  $LocalJsonValid = $true
+  try { $null = $Raw | ConvertFrom-Json -ErrorAction Stop } catch { $LocalJsonValid = $false }
   $InputStream = $Process.StandardInput.BaseStream
   $InputStream.Write($InputBytes, 0, $InputBytes.Length)
   $InputStream.Flush()
@@ -132,6 +134,9 @@ function Invoke-DirectEvidence {
     ExitCode = $Process.ExitCode
     Stdout = $Stdout.GetAwaiter().GetResult()
     Stderr = $Stderr.GetAwaiter().GetResult()
+    InputByteLength = $InputBytes.Length
+    RawLength = $Raw.Length
+    LocalJsonValid = $LocalJsonValid
   }
 }
 
@@ -250,6 +255,9 @@ try {
       safe_equal = $WrappedValid.SafeResult -ceq $DirectCanonical
       direct_length = $DirectCanonical.Length
       safe_length = $WrappedValid.SafeResult.Length
+      input_byte_length = $DirectValid.InputByteLength
+      raw_length = $DirectValid.RawLength
+      local_json_valid = $DirectValid.LocalJsonValid
     } | ConvertTo-Json -Compress
     throw "Valid private-shadow evidence did not match the shared Python contract; safe_status=$SafeStatus"
   }
