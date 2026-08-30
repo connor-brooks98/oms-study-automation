@@ -17,7 +17,8 @@ $Archive = Join-Path $Sandbox "source.tar"
 $PartialArchive = Join-Path $Sandbox "partial-source.tar"
 $Destination = Join-Path $Sandbox "bundle"
 $RunId = "0123456789abcdef0123456789abcdef"
-$State = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) "Temp\\oms-task28-runs\\$RunId"
+$StateView = Get-Task28StatePaths -RunId $RunId
+$State = $StateView.Root
 $Lock = Join-Path $RepositoryRoot "uv.lock"
 $Socket = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $Socket.Start()
@@ -45,6 +46,7 @@ function Get-ImmutableSnapshot {
   param([Parameter(Mandatory = $true)][string]$Root)
   $Prefix = $Root.TrimEnd('\\', '/') + [IO.Path]::DirectorySeparatorChar
   return @(
+    "d|.|$((Get-Item -LiteralPath $Root).LastWriteTimeUtc.Ticks)"
     Get-ChildItem -LiteralPath $Root -Force -Recurse | Sort-Object FullName | ForEach-Object {
       $Relative = $_.FullName.Substring($Prefix.Length).Replace('\\', '/')
       if ($_.PSIsContainer) { "d|$Relative|$($_.LastWriteTimeUtc.Ticks)" }
@@ -55,6 +57,7 @@ function Get-ImmutableSnapshot {
 New-Item -ItemType Directory -Path $Sandbox | Out-Null
 try {
   Start-Sleep -Milliseconds 200
+  New-Item -ItemType Directory -Path $StateView.Parent -Force | Out-Null
   $ControllerCommit = (& git -C $RepositoryRoot log --format=%H --reverse -- `
     scripts/task28/private-shadow-controller.ps1 | Select-Object -First 1).Trim()
   $PartialCommit = (& git -C $RepositoryRoot rev-parse "$ControllerCommit^").Trim()
@@ -77,14 +80,12 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Harness archive creation failed." }
   try {
     & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
-      -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
+      -SourceCommit $Commit -LockedRequirements $Lock -Destination $StateView.Parent `
       -TaskName "task28-composition-harness" -RunId $RunId `
       -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
-    if ($LASTEXITCODE -eq 0) { throw "Equal immutable and mutable roots unexpectedly succeeded." }
+    if ($LASTEXITCODE -eq 0) { throw "Fixed-state ancestor overlap unexpectedly succeeded." }
   } catch {}
-  if (Test-Path -LiteralPath $Destination) {
-    throw "Equal-root rejection created a final destination."
-  }
+  if (-not (Test-Path -LiteralPath $StateView.Parent)) { throw "Overlap rejection removed the fixed state parent." }
   & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
     -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
     -TaskName "task28-composition-harness" -RunId $RunId `

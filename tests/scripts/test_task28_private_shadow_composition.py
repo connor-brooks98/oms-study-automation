@@ -332,3 +332,30 @@ def test_c5_runs_the_committed_windows_harness_when_available() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "TASK28_PRIVATE_SHADOW_COMPOSITION_HARNESS_VERIFIED" in result.stdout
+
+
+def test_fix_first_state_and_wrapper_boundaries_are_executable() -> None:
+    common = (ROOT / "scripts" / "task28" / "private-shadow-common.ps1").read_text(
+        encoding="utf-8"
+    )
+    wrapper = (ROOT / "scripts" / "run-private-shadow-evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+    composition_harness = (
+        ROOT / "tests" / "scripts" / "task28_private_shadow_composition_harness.ps1"
+    ).read_text(encoding="utf-8")
+    evidence_harness = (
+        ROOT / "tests" / "scripts" / "private_shadow_evidence_harness.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "Assert-Task28StateInventory" in common
+    assert "$ExpectedNames = @(\"evidence\", \"scratch\", \"diagnostic\")" in common
+    assert "StateContainmentValidated" in wrapper
+    assert "if ($StateContainmentValidated)" in wrapper
+    assert '"d|.|$((Get-Item -LiteralPath $Root).LastWriteTimeUtc.Ticks)"' in composition_harness
+    assert "Fixed-state ancestor overlap unexpectedly succeeded." in composition_harness
+    assert "Preexisting valid state root was accepted." in composition_harness
+    assert "Missing state child was accepted." in composition_harness
+    assert "Extra state child was accepted." in composition_harness
+    assert "State child junction was accepted." in composition_harness
+    assert "$SafeResultContent" in evidence_harness

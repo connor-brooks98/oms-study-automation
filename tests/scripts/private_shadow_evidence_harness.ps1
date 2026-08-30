@@ -102,6 +102,7 @@ function Invoke-WrapperEvidence {
   $DiagnosticRoot = $State.Diagnostic
   $SafeResult = Join-Path $EvidenceRoot "result.json"
   $SafeStatus = Join-Path $EvidenceRoot "status.json"
+  $SafeResultContent = ""
   $env:PRIVATE_SHADOW_FIXTURE_MODE = $Mode
   try {
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
@@ -109,15 +110,16 @@ function Invoke-WrapperEvidence {
       -OperatorScript $Emitter -DiagnosticRoot $DiagnosticRoot `
       -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
     $ExitCode = $LASTEXITCODE
+    if (Test-Path -LiteralPath $SafeResult) {
+      $SafeResultContent = [IO.File]::ReadAllText($SafeResult, $Utf8)
+    }
   } finally {
     Remove-Item Env:PRIVATE_SHADOW_FIXTURE_MODE -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $State.Root -Recurse -Force -ErrorAction SilentlyContinue
   }
   [pscustomobject]@{
     ExitCode = $ExitCode
-    SafeResult = if (Test-Path -LiteralPath $SafeResult) {
-      [IO.File]::ReadAllText($SafeResult, $Utf8)
-    } else { "" }
+    SafeResult = $SafeResultContent
   }
 }
 
