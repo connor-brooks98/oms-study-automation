@@ -6,6 +6,8 @@ import sys
 import tarfile
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 EXECUTABLES = (
     "scripts/task28/private-shadow-controller.ps1",
@@ -308,7 +310,7 @@ def test_c5_runs_the_committed_windows_harness_when_available() -> None:
         None,
     )
     if powershell is None:
-        return
+        pytest.skip("PowerShell is unavailable")
     harness = ROOT / "tests" / "scripts" / "task28_private_shadow_composition_harness.ps1"
     result = subprocess.run(
         [
@@ -361,3 +363,15 @@ def test_fix_first_state_and_wrapper_boundaries_are_executable() -> None:
     assert "Overlap rejection had the wrong reason." in composition_harness
     assert "$SafeResultContent" in evidence_harness
     assert "New-Item -ItemType Directory -Path $CaseRoot" in evidence_harness
+
+
+def test_stage_parenthesizes_test_path_operands_before_or() -> None:
+    composition = (ROOT / "scripts" / "task28" / "private-shadow-composition.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "if ((Test-Path -LiteralPath $FinalDestination) -or "
+        "(Test-Path -LiteralPath $State.Root)) {" in composition
+    )
+    assert "if (Test-Path -LiteralPath $FinalDestination -or Test-Path" not in composition
