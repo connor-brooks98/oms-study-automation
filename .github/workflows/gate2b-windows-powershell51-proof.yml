@@ -17,7 +17,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - lane: native-acl-probe
+          - lane: contracts-providers
+            targets: tests\contracts\test_gate2b_manifest_split.py tests\providers\gemini\test_client.py tests\providers\gemini\test_evidence.py
+          - lane: live-contract-mocks
+            targets: tests\live\test_gemini_file_search_contract.py
+          - lane: composition-harness
+            targets: tests\scripts\test_task28_private_shadow_composition.py::test_c5_runs_the_committed_windows_harness_when_available
+          - lane: private-evidence-harness
+            targets: tests\scripts\test_private_shadow_evidence.py::test_private_shadow_wrapper_runs_committed_synthetic_fault_matrix
+          - lane: reconciliation-harness
+            targets: tests\scripts\test_gemini_reconciliation_evidence.py::test_python_json_to_powershell_evidence_path_runs_in_committed_harness
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,7 +39,7 @@ jobs:
       - name: Verify immutable parent and Windows PowerShell 5.1
         shell: powershell
         run: |
-          $Candidate = "31fa7a6a217978e20a2b071c9dd4caa5c0378aaf"
+          $Candidate = "2ff8d83272d7206113f08a2659698a00bab34e8e"
           git merge-base --is-ancestor $Candidate HEAD
           if ($LASTEXITCODE -ne 0) {
             throw "Reviewed integration candidate is not an ancestor of the proof commit."
@@ -43,106 +52,17 @@ jobs:
             throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)."
           }
 
-      - name: Install native ACL dependency
+      - name: Install provider-free test dependencies
         shell: powershell
         run: |
-          py -3.12 -m pip install pywin32==312
+          py -3.12 -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 
-      - name: Probe native secure-file API
+      - name: Run isolated Gate 2B lane
         shell: powershell
+        env:
+          RUN_LIVE_GEMINI_TESTS: "0"
+          RUN_PRIVATE_GEMINI_SHADOW: "0"
         run: |
-          $Probe = Join-Path $env:RUNNER_TEMP "gate2b_native_acl_probe.py"
-          [IO.File]::WriteAllText($Probe, @'
-          import json
-          import msvcrt
-          import ntsecuritycon
-          import os
-          import uuid
-          import win32api
-          import win32con
-          import win32file
-          import win32security
-          from pathlib import Path
-
-          path = Path(os.environ["RUNNER_TEMP"]) / f"gate2b-{uuid.uuid4().hex}.tmp"
-          stage = "token"
-          handle = None
-          fd = None
-          checks = {}
-          try:
-              token = win32security.OpenProcessToken(
-                  win32api.GetCurrentProcess(), win32security.TOKEN_QUERY
-              )
-              try:
-                  sid = win32security.GetTokenInformation(
-                      token, win32security.TokenUser
-                  )[0]
-              finally:
-                  token.Close()
-              stage = "descriptor"
-              dacl = win32security.ACL()
-              dacl.AddAccessAllowedAce(
-                  win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, sid
-              )
-              attributes = win32security.SECURITY_ATTRIBUTES()
-              attributes.bInheritHandle = False
-              attributes.SetSecurityDescriptorDacl(True, dacl, False)
-              attributes.SetSecurityDescriptorControl(
-                  win32security.SE_DACL_PROTECTED,
-                  win32security.SE_DACL_PROTECTED,
-              )
-              stage = "create"
-              handle = win32file.CreateFile(
-                  str(path),
-                  win32con.GENERIC_READ | win32con.GENERIC_WRITE,
-                  0,
-                  attributes,
-                  win32con.CREATE_NEW,
-                  win32con.FILE_ATTRIBUTE_NORMAL,
-                  None,
-              )
-              stage = "inspect"
-              descriptor = win32security.GetSecurityInfo(
-                  handle,
-                  win32security.SE_FILE_OBJECT,
-                  win32security.DACL_SECURITY_INFORMATION,
-              )
-              applied = descriptor.GetSecurityDescriptorDacl()
-              control, _revision = descriptor.GetSecurityDescriptorControl()
-              ace_count = applied.GetAceCount() if applied is not None else 0
-              ace = applied.GetAce(0) if ace_count == 1 else None
-              checks = {
-                  "dacl_present": applied is not None,
-                  "ace_count": ace_count,
-                  "protected": bool(control & win32security.SE_DACL_PROTECTED),
-                  "type_ok": bool(ace and ace[0][0] == win32security.ACCESS_ALLOWED_ACE_TYPE),
-                  "not_inherited": bool(ace and not ace[0][1] & win32security.INHERITED_ACE),
-                  "full_access": bool(ace and ace[1] & ntsecuritycon.FILE_ALL_ACCESS == ntsecuritycon.FILE_ALL_ACCESS),
-                  "sid_match": bool(ace and win32security.EqualSid(ace[2], sid)),
-              }
-              stage = "detach"
-              raw_handle = int(handle.Detach())
-              handle = None
-              stage = "crt"
-              fd = msvcrt.open_osfhandle(
-                  raw_handle,
-                  os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0),
-              )
-              print(json.dumps({"status": "passed", "checks": checks}, sort_keys=True))
-          except BaseException as error:
-              print(json.dumps({
-                  "status": "failed",
-                  "stage": stage,
-                  "error_type": type(error).__name__,
-                  "winerror": getattr(error, "winerror", None),
-                  "checks": checks,
-              }, sort_keys=True))
-              raise
-          finally:
-              if fd is not None:
-                  os.close(fd)
-              elif handle is not None:
-                  handle.Close()
-              path.unlink(missing_ok=True)
-          '@, [Text.UTF8Encoding]::new($false, $true))
-          py -3.12 $Probe
+          $Targets = "${{ matrix.targets }}".Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
+          & .\.venv\Scripts\python.exe -m pytest -vv --tb=short --maxfail=20 @Targets
