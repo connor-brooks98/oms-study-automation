@@ -27,5 +27,17 @@ New-Task28ProtectedState -State $State
 Assert-ImmutableBundle -Run $Run | Out-Null
 Assert-ImmutableBundle -Run $Run | Out-Null
 & $Launcher -Manifest $Manifest
-$LauncherExit = $LASTEXITCODE
+$LauncherStatus = Join-Path $State.Evidence "status.json"
+if (-not (Test-Path -LiteralPath $LauncherStatus -PathType Leaf)) {
+  throw "Launcher did not produce canonical status evidence."
+}
+try {
+  $LauncherExit = [int]([IO.File]::ReadAllText($LauncherStatus,
+      [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json).exit_code
+} catch {
+  throw "Launcher status evidence is invalid."
+}
+if ($LauncherExit -lt 0 -or $LauncherExit -gt 255) {
+  throw "Launcher status exit code is invalid."
+}
 exit $LauncherExit
