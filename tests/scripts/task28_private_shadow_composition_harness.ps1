@@ -15,7 +15,7 @@ $Sandbox = Join-Path ([IO.Path]::GetTempPath()) ("oms-task28-composition-{0}" -f
 $Archive = Join-Path $Sandbox "source.tar"
 $PartialArchive = Join-Path $Sandbox "partial-source.tar"
 $Destination = Join-Path $Sandbox "bundle"
-$State = Join-Path $Sandbox "reserved-state"
+$RunId = "0123456789abcdef0123456789abcdef"
 $Lock = Join-Path $RepositoryRoot "uv.lock"
 $Socket = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $Socket.Start()
@@ -51,7 +51,7 @@ try {
   try {
     & $Composition -Mode Stage -SourceArchive $PartialArchive -RepositoryRoot $RepositoryRoot `
       -SourceCommit $PartialCommit -LockedRequirements $Lock -Destination $Destination `
-      -TaskName "task28-composition-harness" -MutableStatePath $State `
+      -TaskName "task28-composition-harness" -RunId $RunId `
       -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
     if ($LASTEXITCODE -eq 0) { throw "Partial Stage unexpectedly succeeded." }
   } catch {}
@@ -64,7 +64,7 @@ try {
   try {
     & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
       -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
-      -TaskName "task28-composition-harness" -MutableStatePath $Destination `
+      -TaskName "task28-composition-harness" -RunId $RunId `
       -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
     if ($LASTEXITCODE -eq 0) { throw "Equal immutable and mutable roots unexpectedly succeeded." }
   } catch {}
@@ -73,7 +73,7 @@ try {
   }
   & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
     -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
-    -TaskName "task28-composition-harness" -MutableStatePath $State `
+    -TaskName "task28-composition-harness" -RunId $RunId `
     -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
   if ($LASTEXITCODE -ne 0) { throw "First Stage failed." }
   $ManifestPath = @(
@@ -85,8 +85,9 @@ try {
   $FirstSourceManifest = [IO.File]::ReadAllBytes((Join-Path $Destination "source-manifest.json"))
   $FirstRuntimeManifest = [IO.File]::ReadAllBytes((Join-Path $Destination "runtime-manifest.json"))
   & $Composition -Mode Verify -RepositoryRoot $RepositoryRoot -Manifest $ManifestPath
-  if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $State)) {
-    throw "Verify did not leave the reserved mutable state absent."
+  $State = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) "Temp\\oms-task28-runs\\$RunId"
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $State "evidence"))) {
+    throw "Verify did not provision protected mutable state."
   }
   $ExpectedInventory = @("source", "runtime", "source.tar", "source-manifest.json", "runtime-manifest.json", (Split-Path -Leaf $ManifestPath))
   $ActualInventory = @(Get-ChildItem -LiteralPath $Destination -Force | ForEach-Object { $_.Name })
@@ -125,7 +126,7 @@ try {
   Remove-Item -LiteralPath $Destination -Recurse -Force
   & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
     -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
-    -TaskName "task28-composition-harness" -MutableStatePath $State `
+    -TaskName "task28-composition-harness" -RunId $RunId `
     -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
   if ($LASTEXITCODE -ne 0) { throw "Second Stage failed." }
   if (-not [System.Linq.Enumerable]::SequenceEqual(

@@ -252,3 +252,36 @@ def test_wrapper_preserves_fixture_environment_outside_composition_verify() -> N
     assert "Set-CompositionVerifyEnvironment -ProcessInfo $ProcessInfo" in wrapper
     assert "-CompositionVerify" not in evidence_harness
     assert '"PRIVATE_SHADOW_FIXTURE_MODE"' in evidence_harness
+
+
+def test_c5_requires_one_shared_protected_run_state_contract() -> None:
+    common = (ROOT / "scripts" / "task28" / "private-shadow-common.ps1").read_text(
+        encoding="utf-8"
+    )
+    composition = (ROOT / "scripts" / "task28" / "private-shadow-composition.ps1").read_text(
+        encoding="utf-8"
+    )
+    controller = (ROOT / "scripts" / "task28" / "private-shadow-controller.ps1").read_text(
+        encoding="utf-8"
+    )
+    launcher = (ROOT / "scripts" / "task28" / "private-shadow-launcher.ps1").read_text(
+        encoding="utf-8"
+    )
+    wrapper = (ROOT / "scripts" / "run-private-shadow-evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function Get-Task28StatePaths" in common
+    assert "function New-Task28ProtectedState" in common
+    assert "function Assert-Task28ProtectedState" in common
+    assert '"run_id"' in common
+    assert "bundle-manifest.$BundleManifestHash.json" in composition
+    assert "-RunId" in composition
+    assert "-MutableStatePath" not in composition
+    assert "New-Task28ProtectedState" in controller
+    assert controller.count("Assert-ImmutableBundle -Run $Run") >= 3
+    assert "OMS_TASK28_COMPOSITION_VERIFY_ROOT" not in launcher
+    assert "Assert-Task28ProtectedState" in launcher
+    assert "-StateRoot" in wrapper
+    assert "private-shadow-common.ps1" in wrapper
+    assert "Remove-Item -LiteralPath $DiagnosticRoot -Recurse" not in wrapper
