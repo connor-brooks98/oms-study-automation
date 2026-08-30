@@ -225,6 +225,30 @@ try {
   }
   Write-Output "PRIVATE_SHADOW_ENVIRONMENT_VERIFIED"
 
+  $DirectConverterSiteCustomize = Join-Path $PackageRoot "sitecustomize.py"
+  [IO.File]::WriteAllText(
+    $DirectConverterSiteCustomize,
+    @'
+import json
+import os
+import tempfile
+from pathlib import Path
+
+scratch = Path(os.environ["TEMP"]).resolve()
+if Path(os.environ["TMP"]).resolve() != scratch:
+    raise RuntimeError("temp_mismatch")
+if os.environ.get("PYTHONDONTWRITEBYTECODE") != "1":
+    raise RuntimeError("bytecode_not_disabled")
+with tempfile.NamedTemporaryFile(delete=True) as handle:
+    if Path(handle.name).resolve().parent != scratch:
+        raise RuntimeError("tempfile_escaped")
+(scratch / "direct-converter-environment.json").write_text(
+    json.dumps({"temp": str(scratch), "tmp": os.environ["TMP"], "bytecode": os.environ.get("PYTHONDONTWRITEBYTECODE")}),
+    encoding="utf-8",
+)
+'@,
+    $Utf8
+  )
   $Entrypoint = Invoke-EntrypointEvidence
   $EntrypointRaw = $Entrypoint.Stdout.TrimEnd("`r", "`n")
   $EntrypointRoot = Join-Path $CasesRoot ([Guid]::NewGuid().ToString("N"))
@@ -239,6 +263,24 @@ try {
   if ($Entrypoint.ExitCode -ne 1 -or -not [string]::IsNullOrEmpty($Entrypoint.Stderr) -or
       $EntrypointEvidence.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $EntrypointSafeResult)) {
     throw "Real entrypoint evidence did not pass through the real converter."
+  }
+  $DirectConverterProbePath = Join-Path $ValidatorScratch "direct-converter-environment.json"
+  if (-not (Test-Path -LiteralPath $DirectConverterProbePath)) {
+    throw "Direct converter did not use the protected validator scratch root."
+  }
+  $DirectConverterProbe = [IO.File]::ReadAllText($DirectConverterProbePath, $Utf8) | ConvertFrom-Json
+  $ExpectedValidatorScratch = [IO.Path]::GetFullPath($ValidatorScratch)
+  if (-not [string]::Equals(
+      [IO.Path]::GetFullPath($DirectConverterProbe.temp), $ExpectedValidatorScratch,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -or -not [string]::Equals(
+      [IO.Path]::GetFullPath($DirectConverterProbe.tmp), $ExpectedValidatorScratch,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -or $DirectConverterProbe.bytecode -cne "1") {
+    throw "Direct converter child environment escaped protected validator scratch."
+  }
+  if (@(Get-ChildItem -LiteralPath $ProjectRoot -Force -Recurse -Directory -Filter "__pycache__").Count -ne 0) {
+    throw "Direct converter wrote Python bytecode into immutable project content."
   }
   Write-Output "PRIVATE_SHADOW_ENTRYPOINT_CONVERTER_VERIFIED"
   Write-Output "DIRECT_CONVERTER_ENVIRONMENT_VERIFIED"

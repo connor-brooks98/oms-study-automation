@@ -24,6 +24,33 @@ function Write-PrivateShadowSafeResult {
   }
 }
 
+function Set-PrivateShadowChildEnvironment {
+  param(
+    [Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$ProcessInfo,
+    [Parameter(Mandatory = $true)][string]$SourceRoot,
+    [Parameter(Mandatory = $true)][string]$ScratchRoot,
+    [switch]$Sanitize,
+    [switch]$CompositionVerify,
+    [string]$ProjectRoot
+  )
+  if ($Sanitize) {
+    $ProcessInfo.EnvironmentVariables.Clear()
+    foreach ($Name in @("SystemRoot", "WINDIR", "ComSpec", "PATH")) {
+      $Value = [Environment]::GetEnvironmentVariable($Name)
+      if ($Value) { $ProcessInfo.EnvironmentVariables[$Name] = $Value }
+    }
+  }
+  $ProcessInfo.EnvironmentVariables["TEMP"] = $ScratchRoot
+  $ProcessInfo.EnvironmentVariables["TMP"] = $ScratchRoot
+  $ProcessInfo.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1"
+  $ProcessInfo.EnvironmentVariables["PYTHONPATH"] = $SourceRoot
+  if ($CompositionVerify) {
+    if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { throw "Composition project root is unavailable." }
+    $ProcessInfo.EnvironmentVariables["OMS_TASK28_COMPOSITION_VERIFY"] = "1"
+    $ProcessInfo.EnvironmentVariables["OMS_TASK28_PRIVATE_PROJECT"] = $ProjectRoot
+  }
+}
+
 function Convert-PrivateShadowEvidence {
   [CmdletBinding()]
   param(
@@ -32,7 +59,8 @@ function Convert-PrivateShadowEvidence {
     [Parameter(Mandatory = $true)][int]$ProcessExitCode,
     [Parameter(Mandatory = $true)][string]$PythonExecutable,
     [Parameter(Mandatory = $true)][string]$SourceRoot,
-    [Parameter(Mandatory = $true)][string]$EvidenceModule
+    [Parameter(Mandatory = $true)][string]$EvidenceModule,
+    [Parameter(Mandatory = $true)][string]$ScratchRoot
   )
   try {
     $Raw = [IO.File]::ReadAllText($RawStdoutPath, $script:PrivateShadowUtf8).TrimEnd("`r", "`n")
@@ -64,7 +92,8 @@ function Convert-PrivateShadowEvidence {
     $Start.StandardInputEncoding = $script:PrivateShadowUtf8
     $Start.StandardOutputEncoding = $script:PrivateShadowUtf8
     $Start.StandardErrorEncoding = $script:PrivateShadowUtf8
-    Set-CompositionVerifyEnvironment -ProcessInfo $Start
+    Set-PrivateShadowChildEnvironment -ProcessInfo $Start -SourceRoot $SourceRoot `
+      -ScratchRoot $ScratchRoot -Sanitize
     $Process = [Diagnostics.Process]::new()
     $Process.StartInfo = $Start
     if (-not $Process.Start()) { throw "Private-shadow evidence validator did not start." }

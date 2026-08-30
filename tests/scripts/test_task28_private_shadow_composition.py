@@ -142,12 +142,15 @@ def test_launcher_uses_a_sanitized_explicit_composition_verify_child() -> None:
     wrapper = (ROOT / "scripts" / "run-private-shadow-evidence.ps1").read_text(
         encoding="utf-8"
     )
+    evidence = (ROOT / "scripts" / "private-shadow-evidence.ps1").read_text(
+        encoding="utf-8"
+    )
 
     assert "-CompositionVerify" in launcher
     assert "[switch]$CompositionVerify" in wrapper
-    assert ".EnvironmentVariables.Clear()" in wrapper
-    assert '"OMS_TASK28_PRIVATE_PROJECT"' in wrapper
-    assert '"PYTHONPATH"' in wrapper
+    assert ".EnvironmentVariables.Clear()" in evidence
+    assert '"OMS_TASK28_PRIVATE_PROJECT"' in evidence
+    assert '"PYTHONPATH"' in evidence
 
 
 def test_all_task28_executables_use_the_tracked_common_validator() -> None:
@@ -253,7 +256,7 @@ def test_wrapper_preserves_fixture_environment_outside_composition_verify() -> N
     assert "[Parameter(Mandatory = $true)][switch]$CompositionVerify" not in wrapper
     assert "[switch]$CompositionVerify" in wrapper
     assert "if ($CompositionVerify) {" in wrapper
-    assert "Set-CompositionVerifyEnvironment -ProcessInfo $ProcessInfo" in wrapper
+    assert "Set-PrivateShadowChildEnvironment -ProcessInfo $ProcessInfo" in wrapper
     assert "-CompositionVerify:$CompositionVerify" in evidence_harness
     assert '"PRIVATE_SHADOW_FIXTURE_MODE"' in evidence_harness
 

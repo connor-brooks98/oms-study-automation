@@ -28,26 +28,6 @@ $EvidenceUsable = $false
 $OperatorArtifactsDeleted = $false
 $StateContainmentValidated = $false
 
-function Set-CompositionVerifyEnvironment {
-  param([Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$ProcessInfo)
-  $ProcessInfo.EnvironmentVariables.Clear()
-  foreach ($Name in @("SystemRoot", "WINDIR", "ComSpec", "PATH")) {
-    $Value = [Environment]::GetEnvironmentVariable($Name)
-    if ($Value) { $ProcessInfo.EnvironmentVariables[$Name] = $Value }
-  }
-  $ProcessInfo.EnvironmentVariables["OMS_TASK28_COMPOSITION_VERIFY"] = "1"
-  $ProcessInfo.EnvironmentVariables["OMS_TASK28_PRIVATE_PROJECT"] = $ProjectRoot
-  $ProcessInfo.EnvironmentVariables["PYTHONPATH"] = $SourceRoot
-  Set-PrivateShadowScratchEnvironment -ProcessInfo $ProcessInfo
-}
-
-function Set-PrivateShadowScratchEnvironment {
-  param([Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$ProcessInfo)
-  $ProcessInfo.EnvironmentVariables["TEMP"] = $ScratchRoot
-  $ProcessInfo.EnvironmentVariables["TMP"] = $ScratchRoot
-  $ProcessInfo.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1"
-}
-
 function Resolve-PrivateShadowSafePath {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -182,10 +162,11 @@ try {
   $ProcessInfo.StandardOutputEncoding = $Utf8
   $ProcessInfo.StandardErrorEncoding = $Utf8
   if ($CompositionVerify) {
-    Set-CompositionVerifyEnvironment -ProcessInfo $ProcessInfo
+    Set-PrivateShadowChildEnvironment -ProcessInfo $ProcessInfo -SourceRoot $SourceRoot `
+      -ScratchRoot $ScratchRoot -Sanitize -CompositionVerify -ProjectRoot $ProjectRoot
   } else {
-    $ProcessInfo.EnvironmentVariables["PYTHONPATH"] = $SourceRoot
-    Set-PrivateShadowScratchEnvironment -ProcessInfo $ProcessInfo
+    Set-PrivateShadowChildEnvironment -ProcessInfo $ProcessInfo -SourceRoot $SourceRoot `
+      -ScratchRoot $ScratchRoot
   }
   $Process = [System.Diagnostics.Process]::new()
   $Process.StartInfo = $ProcessInfo
@@ -209,7 +190,7 @@ try {
     $Evidence = Convert-PrivateShadowEvidence `
       -RawStdoutPath $RawStdout -SafeResultPath $SafeResultPath `
       -ProcessExitCode $OperatorExit -PythonExecutable $PythonExecutable `
-      -SourceRoot $SourceRoot -EvidenceModule $EvidenceModule
+      -SourceRoot $SourceRoot -EvidenceModule $EvidenceModule -ScratchRoot $ScratchRoot
     $EvidenceUsable = $Evidence.EvidenceUsable
     $WrapperStage = $Evidence.Stage
     $ExitCode = if ($Evidence.ExitCode -ne 0) {$Evidence.ExitCode} else {$OperatorExit}
