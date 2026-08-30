@@ -20,12 +20,13 @@ $DiagnosticRoot = [System.IO.Path]::GetFullPath($DiagnosticRoot)
 $SafeResultPath = [System.IO.Path]::GetFullPath($SafeResultPath)
 $SafeStatusPath = [System.IO.Path]::GetFullPath($SafeStatusPath)
 $EvidenceScript = Join-Path $PSScriptRoot "private-shadow-evidence.ps1"
-$RawStdout = Join-Path $DiagnosticRoot "operator.stdout"
-$RawStderr = Join-Path $DiagnosticRoot "operator.stderr"
+$RawStdout = $null
+$RawStderr = $null
 $ExitCode = 54
 $WrapperStage = "bootstrap"
 $EvidenceUsable = $false
 $OperatorArtifactsDeleted = $false
+$StateContainmentValidated = $false
 
 function Set-CompositionVerifyEnvironment {
   param([Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$ProcessInfo)
@@ -98,13 +99,13 @@ function Assert-PrivateShadowPathParents {
 }
 
 function Write-PrivateShadowStatus {
-  param([Parameter(Mandatory = $true)][object]$Record)
-  $Parent = Split-Path -Parent $SafeStatusPath
+  param([Parameter(Mandatory = $true)][object]$Record, [Parameter(Mandatory = $true)][string]$Path)
+  $Parent = Split-Path -Parent $Path
   $Temporary = Join-Path $Parent (".{0}.tmp" -f [Guid]::NewGuid().ToString("N"))
   try {
     $Payload = $Record | ConvertTo-Json -Compress -Depth 4
     [System.IO.File]::WriteAllText($Temporary, $Payload + "`n", $Utf8)
-    [System.IO.File]::Move($Temporary, $SafeStatusPath)
+    [System.IO.File]::Move($Temporary, $Path)
   } finally {
     Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
   }
@@ -158,6 +159,7 @@ try {
   $RawStdout = Join-Path $DiagnosticRoot "operator.stdout"
   $RawStderr = Join-Path $DiagnosticRoot "operator.stderr"
   Assert-PrivateShadowPathParents
+  $StateContainmentValidated = $true
   . $EvidenceScript
 
   $WrapperStage = "operator"
@@ -206,24 +208,26 @@ try {
 } catch {
   $EvidenceUsable = $false
 } finally {
-  Remove-Item -LiteralPath $RawStdout -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $RawStderr -Force -ErrorAction SilentlyContinue
-  $OperatorArtifactsDeleted = -not (Test-Path -LiteralPath $RawStdout) -and -not (Test-Path -LiteralPath $RawStderr)
-  if (-not $OperatorArtifactsDeleted) {
-    $EvidenceUsable = $false
-    $WrapperStage = "cleanup"
-    $ExitCode = 54
-    Remove-Item -LiteralPath $SafeResultPath -Force -ErrorAction SilentlyContinue
+  if ($StateContainmentValidated) {
+    Remove-Item -LiteralPath $RawStdout -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $RawStderr -Force -ErrorAction SilentlyContinue
+    $OperatorArtifactsDeleted = -not (Test-Path -LiteralPath $RawStdout) -and -not (Test-Path -LiteralPath $RawStderr)
+    if (-not $OperatorArtifactsDeleted) {
+      $EvidenceUsable = $false
+      $WrapperStage = "cleanup"
+      $ExitCode = 54
+      Remove-Item -LiteralPath $SafeResultPath -Force -ErrorAction SilentlyContinue
+    }
+    $Status = [ordered]@{
+      schema_version = 1
+      wrapper_stage = $WrapperStage
+      exit_code = $ExitCode
+      evidence_usable = $EvidenceUsable
+      operator_artifacts_deleted = $OperatorArtifactsDeleted
+      raw_content_retained = (-not $OperatorArtifactsDeleted)
+    }
+    Write-PrivateShadowStatus -Record $Status -Path $SafeStatusPath
   }
-  $Status = [ordered]@{
-    schema_version = 1
-    wrapper_stage = $WrapperStage
-    exit_code = $ExitCode
-    evidence_usable = $EvidenceUsable
-    operator_artifacts_deleted = $OperatorArtifactsDeleted
-    raw_content_retained = (-not $OperatorArtifactsDeleted)
-  }
-  Write-PrivateShadowStatus -Record $Status
 }
 
 exit $ExitCode

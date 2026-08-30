@@ -152,21 +152,22 @@ function Invoke-WrapperReparseCase {
   $State = New-EvidenceState
   $EvidenceRoot = $State.Evidence
   $ExternalRoot = Join-Path $CaseRoot "external"
-  $ReparseRoot = Join-Path $CaseRoot "reparse"
   New-Item -ItemType Directory -Path $ExternalRoot | Out-Null
-  New-Item -ItemType Junction -Path $ReparseRoot -Target $ExternalRoot | Out-Null
+  Remove-Item -LiteralPath $State.Diagnostic -Recurse -Force
+  New-Item -ItemType Junction -Path $State.Diagnostic -Target $ExternalRoot | Out-Null
   $SafeResult = Join-Path $EvidenceRoot "result.json"
   $SafeStatus = Join-Path $EvidenceRoot "status.json"
-  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-    -File $WrapperScript -PythonExecutable $PythonExecutable -StateRoot $State.Root -ProjectRoot $ProjectRoot `
-    -OperatorScript $Emitter -DiagnosticRoot (Join-Path $ReparseRoot "diagnostic") `
-    -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
-  $ExitCode = $LASTEXITCODE
-  $SafeResultExists = Test-Path -LiteralPath $SafeResult
-  Remove-Item -LiteralPath $State.Root -Recurse -Force -ErrorAction SilentlyContinue
-  [pscustomobject]@{
-    ExitCode = $ExitCode
-    SafeResultExists = $SafeResultExists
+  try {
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File $WrapperScript -PythonExecutable $PythonExecutable -StateRoot $State.Root -ProjectRoot $ProjectRoot `
+      -OperatorScript $Emitter -DiagnosticRoot $State.Diagnostic `
+      -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
+    [pscustomobject]@{
+      ExitCode = $LASTEXITCODE
+      SafeResultExists = Test-Path -LiteralPath $SafeResult
+    }
+  } finally {
+    Remove-Item -LiteralPath $State.Root -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
 

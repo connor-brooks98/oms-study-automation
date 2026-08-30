@@ -353,7 +353,7 @@ def test_fix_first_state_and_wrapper_boundaries_are_executable() -> None:
     assert "StateContainmentValidated" in wrapper
     assert "if ($StateContainmentValidated)" in wrapper
     assert '"d|.|$((Get-Item -LiteralPath $Root).LastWriteTimeUtc.Ticks)"' in composition_harness
-    assert "Fixed-state ancestor overlap unexpectedly succeeded." in composition_harness
+    assert "Fixed-state overlap unexpectedly succeeded." in composition_harness
     assert "Preexisting valid state root was accepted." in composition_harness
     assert "Missing state child was accepted." in composition_harness
     assert "Extra state child was accepted." in composition_harness

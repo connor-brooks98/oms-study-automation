@@ -264,8 +264,25 @@ function New-Task28ProtectedState {
 function Assert-Task28ProtectedState {
   param([Parameter(Mandatory = $true)][object]$State)
   $Sid = Get-Task28CurrentSid
+  Assert-Task28StateInventory -State $State
   foreach ($Path in @($State.Root, $State.Evidence, $State.Scratch, $State.Diagnostic)) {
     Assert-Task28ProtectedDirectory -Path $Path -Sid $Sid
+  }
+}
+
+function Assert-Task28StateInventory {
+  param([Parameter(Mandatory = $true)][object]$State)
+  $Root = Resolve-Task28ExistingPath -Path $State.Root -Type Container
+  $ExpectedNames = @("evidence", "scratch", "diagnostic")
+  $Items = @(Get-ChildItem -LiteralPath $Root -Force)
+  $ActualNames = @($Items | ForEach-Object { $_.Name })
+  if ($ActualNames.Count -ne $ExpectedNames.Count -or
+      @($ExpectedNames | Where-Object { $_ -cnotin $ActualNames }).Count -ne 0 -or
+      @($Items | Where-Object { -not $_.PSIsContainer }).Count -ne 0) {
+    throw "Task28 state root has an invalid child inventory."
+  }
+  foreach ($Path in @($State.Evidence, $State.Scratch, $State.Diagnostic)) {
+    Resolve-Task28ExistingPath -Path $Path -Type Container | Out-Null
   }
 }
 

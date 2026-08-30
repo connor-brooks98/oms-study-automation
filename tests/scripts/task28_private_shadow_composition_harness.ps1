@@ -54,10 +54,59 @@ function Get-ImmutableSnapshot {
     }
   )
 }
+
+function Assert-StateRejectionCases {
+  $Preexisting = Get-Task28StatePaths -RunId ([Guid]::NewGuid().ToString("N"))
+  New-Task28ProtectedState -State $Preexisting
+  try {
+    $Rejected = $false
+    try { New-Task28ProtectedState -State $Preexisting } catch { $Rejected = $true }
+    if (-not $Rejected) { throw "Preexisting valid state root was accepted." }
+  } finally {
+    Remove-Item -LiteralPath $Preexisting.Root -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  $Missing = Get-Task28StatePaths -RunId ([Guid]::NewGuid().ToString("N"))
+  New-Task28ProtectedState -State $Missing
+  try {
+    Remove-Item -LiteralPath $Missing.Scratch -Recurse -Force
+    $Rejected = $false
+    try { Assert-Task28ProtectedState -State $Missing } catch { $Rejected = $true }
+    if (-not $Rejected) { throw "Missing state child was accepted." }
+  } finally {
+    Remove-Item -LiteralPath $Missing.Root -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  $Extra = Get-Task28StatePaths -RunId ([Guid]::NewGuid().ToString("N"))
+  New-Task28ProtectedState -State $Extra
+  try {
+    New-Item -ItemType Directory -Path (Join-Path $Extra.Root "extra") | Out-Null
+    $Rejected = $false
+    try { Assert-Task28ProtectedState -State $Extra } catch { $Rejected = $true }
+    if (-not $Rejected) { throw "Extra state child was accepted." }
+  } finally {
+    Remove-Item -LiteralPath $Extra.Root -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  $Junction = Get-Task28StatePaths -RunId ([Guid]::NewGuid().ToString("N"))
+  $External = Join-Path $Sandbox ("state-external-{0}" -f [Guid]::NewGuid().ToString("N"))
+  New-Task28ProtectedState -State $Junction
+  New-Item -ItemType Directory -Path $External | Out-Null
+  try {
+    Remove-Item -LiteralPath $Junction.Diagnostic -Recurse -Force
+    New-Item -ItemType Junction -Path $Junction.Diagnostic -Target $External | Out-Null
+    $Rejected = $false
+    try { Assert-Task28ProtectedState -State $Junction } catch { $Rejected = $true }
+    if (-not $Rejected) { throw "State child junction was accepted." }
+  } finally {
+    Remove-Item -LiteralPath $Junction.Root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $External -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
 New-Item -ItemType Directory -Path $Sandbox | Out-Null
 try {
   Start-Sleep -Milliseconds 200
-  New-Item -ItemType Directory -Path $StateView.Parent -Force | Out-Null
+  Assert-StateRejectionCases
   $ControllerCommit = (& git -C $RepositoryRoot log --format=%H --reverse -- `
     scripts/task28/private-shadow-controller.ps1 | Select-Object -First 1).Trim()
   $PartialCommit = (& git -C $RepositoryRoot rev-parse "$ControllerCommit^").Trim()
@@ -80,12 +129,12 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Harness archive creation failed." }
   try {
     & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
-      -SourceCommit $Commit -LockedRequirements $Lock -Destination $StateView.Parent `
+      -SourceCommit $Commit -LockedRequirements $Lock -Destination $StateView.Root `
       -TaskName "task28-composition-harness" -RunId $RunId `
       -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
-    if ($LASTEXITCODE -eq 0) { throw "Fixed-state ancestor overlap unexpectedly succeeded." }
+    if ($LASTEXITCODE -eq 0) { throw "Fixed-state overlap unexpectedly succeeded." }
   } catch {}
-  if (-not (Test-Path -LiteralPath $StateView.Parent)) { throw "Overlap rejection removed the fixed state parent." }
+  if (Test-Path -LiteralPath $StateView.Root) { throw "Overlap rejection created the fixed state root." }
   & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
     -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
     -TaskName "task28-composition-harness" -RunId $RunId `
@@ -116,6 +165,9 @@ try {
   $Controller = Join-Path $Destination "source/scripts/task28/private-shadow-controller.ps1"
   & $Controller -Manifest $ManifestPath
   if ($LASTEXITCODE -eq 0) { throw "Dirty state root was repaired or reused." }
+  $Launcher = Join-Path $Destination "source/scripts/task28/private-shadow-launcher.ps1"
+  & $Launcher -Manifest $ManifestPath
+  if ($LASTEXITCODE -eq 0) { throw "Missing state child reached the launcher." }
   if (-not [System.Linq.Enumerable]::SequenceEqual($BeforeVerify, (Get-ImmutableSnapshot -Root $Destination))) {
     throw "Dirty-state rejection changed the immutable bundle."
   }
