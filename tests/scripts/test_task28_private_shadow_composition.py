@@ -226,7 +226,9 @@ def test_stage_and_verify_use_the_bound_runtime_contract() -> None:
     assert "Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json" not in controller
     assert "Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json" not in launcher
     assert "Assert-ImmutableBundle -Run $Run" in controller
-    assert "$LauncherExit = $LASTEXITCODE" in controller
+    assert '$LauncherStatus = Join-Path $State.Evidence "status.json"' in controller
+    assert "[IO.File]::ReadAllText($LauncherStatus" in controller
+    assert ").exit_code" in controller
     assert "exit $LauncherExit" in controller
     assert "Assert-ImmutableBundle -Run $Run" in launcher
     assert "[IO.Directory]::Move($StageRoot, $FinalDestination)" in composition
