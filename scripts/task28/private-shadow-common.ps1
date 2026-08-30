@@ -230,8 +230,25 @@ function Assert-Task28ProtectedDirectory {
 
 function Protect-Task28Directory {
   param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Sid)
-  & icacls.exe $Path /inheritance:r /grant:r "*$Sid`:(OI)(CI)F" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "Task28 state DACL initialization failed." }
+  $Directory = Get-Item -LiteralPath $Path -Force
+  $Acl = $Directory.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)
+  $Acl.SetAccessRuleProtection($true, $false)
+  foreach ($ExistingRule in @($Acl.GetAccessRules(
+    $true, $true, [System.Security.Principal.SecurityIdentifier]
+  ))) {
+    $Acl.RemoveAccessRuleSpecific($ExistingRule)
+  }
+  $Inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  $Rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    [System.Security.Principal.SecurityIdentifier]::new($Sid),
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    $Inheritance,
+    [System.Security.AccessControl.PropagationFlags]::None,
+    [System.Security.AccessControl.AccessControlType]::Allow
+  )
+  $Acl.AddAccessRule($Rule) | Out-Null
+  $Directory.SetAccessControl($Acl)
   Assert-Task28ProtectedDirectory -Path $Path -Sid $Sid
 }
 

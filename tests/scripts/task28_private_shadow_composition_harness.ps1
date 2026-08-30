@@ -30,7 +30,9 @@ $HealthJob = Start-Job -ArgumentList $Port -ScriptBlock {
   $Listener.Prefixes.Add("http://127.0.0.1:$Port/")
   $Listener.Start()
   try {
-    $Context = $Listener.GetContext()
+    $ContextTask = $Listener.GetContextAsync()
+    if (-not $ContextTask.Wait(30000)) { return }
+    $Context = $ContextTask.Result
     $Payload = [Text.Encoding]::UTF8.GetBytes('{"status":"ok"}')
     $Context.Response.StatusCode = 200
     $Context.Response.ContentType = "application/json"
