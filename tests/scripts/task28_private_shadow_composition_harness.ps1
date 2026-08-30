@@ -164,7 +164,8 @@ try {
   foreach ($Path in @($StateView.Root, $StateView.Evidence, $StateView.Diagnostic)) {
     Assert-Task28ProtectedDirectory -Path $Path -Sid (Get-Task28CurrentSid)
   }
-  if (-not [System.Linq.Enumerable]::SequenceEqual($BeforeVerify, (Get-ImmutableSnapshot -Root $Destination))) {
+  if (-not [System.Linq.Enumerable]::SequenceEqual([string[]]$BeforeVerify, [string[]](
+      Get-ImmutableSnapshot -Root $Destination))) {
     throw "Controller execution changed the immutable bundle."
   }
   $Launcher = Join-Path $Destination "source/scripts/task28/private-shadow-launcher.ps1"
@@ -187,7 +188,8 @@ try {
   if ($LASTEXITCODE -eq 0) { throw "Dirty state root was repaired or reused." }
   & $Launcher -Manifest $ManifestPath
   if ($LASTEXITCODE -eq 0) { throw "Missing state child reached the launcher." }
-  if (-not [System.Linq.Enumerable]::SequenceEqual($BeforeVerify, (Get-ImmutableSnapshot -Root $Destination))) {
+  if (-not [System.Linq.Enumerable]::SequenceEqual([string[]]$BeforeVerify, [string[]](
+      Get-ImmutableSnapshot -Root $Destination))) {
     throw "Dirty-state rejection changed the immutable bundle."
   }
   if (@(Get-ChildItem -LiteralPath $Destination -File -Filter "bundle-manifest.*.json").Count -ne 1) {
