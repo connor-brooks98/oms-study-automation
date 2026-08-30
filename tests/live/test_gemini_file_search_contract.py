@@ -3067,7 +3067,8 @@ def test_synthetic_diagnostic_sink_is_atomic_private_redacted_and_deletable(
         sink.capture_exception("provider_exception", error)
     sink.close()
 
-    assert stat.S_IMODE(request.output_path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(request.output_path.stat().st_mode) == 0o600
     payload = json.loads(request.output_path.read_text(encoding="utf-8"))
     encoded = json.dumps(payload, sort_keys=True)
     assert "full synthetic provider message" in encoded
@@ -3142,6 +3143,8 @@ def test_synthetic_diagnostic_permissions_fall_back_without_fchmod(
     tmp_path: Path,
 ) -> None:
     smoke = _load_smoke()
+    if not hasattr(smoke.os, "fchmod"):
+        pytest.skip("POSIX fchmod fallback is unavailable")
     request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
     sink = smoke._SyntheticDiagnosticSink.open(request)
     chmod_calls: list[tuple[object, int]] = []
@@ -3164,6 +3167,131 @@ def test_synthetic_diagnostic_permissions_fall_back_without_fchmod(
     sink.delete()
 
 
+def _install_fake_windows_acl(
+    monkeypatch: pytest.MonkeyPatch,
+    smoke: ModuleType,
+    *,
+    extra_ace: bool = False,
+) -> list[str]:
+    full_access = 0x1F01FF
+    sid = "S-1-5-21-1000"
+    calls: list[str] = []
+
+    class Token:
+        def Close(self) -> None:
+            calls.append("token.close")
+
+    class Acl:
+        def __init__(self) -> None:
+            self.aces: list[tuple[tuple[int, int], int, str]] = []
+
+        def AddAccessAllowedAce(self, revision: int, mask: int, trustee: str) -> None:
+            assert revision == 2
+            self.aces.append(((0, 0), mask, trustee))
+
+        def GetAceCount(self) -> int:
+            return len(self.aces) + int(extra_ace)
+
+        def GetAce(self, index: int) -> tuple[tuple[int, int], int, str]:
+            if index < len(self.aces):
+                return self.aces[index]
+            return ((0, 0), full_access, "S-1-1-0")
+
+    class Attributes:
+        def __init__(self) -> None:
+            self.dacl: Acl | None = None
+            self.control = 0
+            self.bInheritHandle = True
+
+        def Initialize(self) -> None:
+            calls.append("attributes.initialize")
+
+        def SetSecurityDescriptorDacl(
+            self, present: bool, dacl: Acl, defaulted: bool
+        ) -> None:
+            assert present and not defaulted
+            self.dacl = dacl
+
+        def SetSecurityDescriptorControl(self, mask: int, value: int) -> None:
+            assert mask == 0x1000
+            self.control = value
+
+    class Handle:
+        def __init__(self, path: str, attributes: Attributes) -> None:
+            assert attributes.dacl is not None
+            self.fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            self.dacl = attributes.dacl
+            self.control = attributes.control
+
+        def Detach(self) -> int:
+            descriptor = self.fd
+            self.fd = -1
+            calls.append("handle.detach")
+            return descriptor
+
+        def Close(self) -> None:
+            if self.fd != -1:
+                os.close(self.fd)
+                self.fd = -1
+            calls.append("handle.close")
+
+    class Descriptor:
+        def __init__(self, handle: Handle) -> None:
+            self.handle = handle
+
+        def GetSecurityDescriptorDacl(self) -> Acl:
+            return self.handle.dacl
+
+        def GetSecurityDescriptorControl(self) -> tuple[int, int]:
+            return self.handle.control, 1
+
+    def create_file(
+        path: str,
+        access: int,
+        share: int,
+        attributes: Attributes,
+        creation: int,
+        flags: int,
+        template: object,
+    ) -> Handle:
+        del access, flags, template
+        assert share == 0 and creation == 1 and not attributes.bInheritHandle
+        calls.append("create_file")
+        return Handle(path, attributes)
+
+    modules = {
+        "msvcrt": SimpleNamespace(open_osfhandle=lambda handle, flags: handle),
+        "ntsecuritycon": SimpleNamespace(FILE_ALL_ACCESS=full_access),
+        "win32api": SimpleNamespace(GetCurrentProcess=lambda: object(), CloseHandle=os.close),
+        "win32con": SimpleNamespace(
+            GENERIC_READ=1,
+            GENERIC_WRITE=2,
+            CREATE_NEW=1,
+            FILE_ATTRIBUTE_NORMAL=0,
+        ),
+        "win32file": SimpleNamespace(CreateFile=create_file),
+        "win32security": SimpleNamespace(
+            TOKEN_QUERY=1,
+            TokenUser=1,
+            ACL_REVISION=2,
+            SE_DACL_PROTECTED=0x1000,
+            SE_FILE_OBJECT=1,
+            DACL_SECURITY_INFORMATION=4,
+            ACCESS_ALLOWED_ACE_TYPE=0,
+            INHERITED_ACE=0x10,
+            OpenProcessToken=lambda process, access: Token(),
+            GetTokenInformation=lambda token, kind: (sid, 0),
+            ACL=Acl,
+            SECURITY_ATTRIBUTES=Attributes,
+            GetSecurityInfo=lambda handle, kind, info: Descriptor(handle),
+            EqualSid=lambda left, right: left == right,
+        ),
+    }
+    monkeypatch.setattr(smoke, "_IS_WINDOWS", True)
+    monkeypatch.setattr(smoke, "import_module", modules.__getitem__)
+    return calls
+
+
 def test_windows_synthetic_diagnostic_requires_verified_current_user_dacl(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3171,49 +3299,12 @@ def test_windows_synthetic_diagnostic_requires_verified_current_user_dacl(
     smoke = _load_smoke()
     request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
     sink = smoke._SyntheticDiagnosticSink.open(request)
-    calls: list[list[str]] = []
-
-    def run(command: list[str], **kwargs: object) -> object:
-        calls.append(command)
-        if command[0] == "whoami":
-            return SimpleNamespace(
-                returncode=0,
-                stdout='"HOST\\synthetic-user","S-1-5-21-1000"\n',
-                stderr="",
-            )
-        if command[0] == "powershell.exe":
-            assert kwargs["env"]["OMS_TASK28_DIAGNOSTIC_PATH"]
-            return SimpleNamespace(
-                returncode=0,
-                stdout=json.dumps(
-                    {
-                        "Protected": True,
-                        "Rules": [
-                            {
-                                "Sid": "S-1-5-21-1000",
-                                "Allow": True,
-                                "FullControl": True,
-                                "Inherited": False,
-                            }
-                        ],
-                    }
-                ),
-                stderr="",
-            )
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(smoke, "_IS_WINDOWS", True)
-    monkeypatch.setattr(smoke.subprocess, "run", run)
+    calls = _install_fake_windows_acl(monkeypatch, smoke)
 
     sink.capture("synthetic", {"status": "ready"})
     sink.close()
 
-    assert calls[0][:2] == ["whoami", "/user"]
-    assert calls[1][0] == "icacls"
-    assert "/inheritance:r" in calls[1]
-    assert "*S-1-5-21-1000:(F)" in calls[1]
-    assert calls[2][-1] == "/verify"
-    assert calls[3][0] == "powershell.exe"
+    assert calls == ["token.close", "attributes.initialize", "create_file", "handle.detach"]
     assert request.output_path.exists()
     sink.delete()
 
@@ -3226,12 +3317,10 @@ def test_windows_synthetic_diagnostic_fails_closed_without_verified_dacl(
     request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
     sink = smoke._SyntheticDiagnosticSink.open(request)
 
-    def fail(command: list[str], **kwargs: object) -> object:
-        del command, kwargs
-        return SimpleNamespace(returncode=1, stdout="", stderr="")
-
     monkeypatch.setattr(smoke, "_IS_WINDOWS", True)
-    monkeypatch.setattr(smoke.subprocess, "run", fail)
+    monkeypatch.setattr(
+        smoke, "import_module", lambda name: (_ for _ in ()).throw(ImportError(name))
+    )
     sink.capture("synthetic", {"status": "ready"})
 
     with pytest.raises(smoke.SmokeContractError) as raised:
@@ -3248,43 +3337,7 @@ def test_windows_synthetic_diagnostic_rejects_any_additional_ace(
     smoke = _load_smoke()
     request = smoke._synthetic_diagnostic_request(tmp_path / "diagnostic.json")
     sink = smoke._SyntheticDiagnosticSink.open(request)
-
-    def run(command: list[str], **kwargs: object) -> object:
-        del kwargs
-        if command[0] == "whoami":
-            return SimpleNamespace(
-                returncode=0,
-                stdout='"HOST\\synthetic-user","S-1-5-21-1000"\n',
-                stderr="",
-            )
-        if command[0] == "powershell.exe":
-            return SimpleNamespace(
-                returncode=0,
-                stdout=json.dumps(
-                    {
-                        "Protected": True,
-                        "Rules": [
-                            {
-                                "Sid": "S-1-5-21-1000",
-                                "Allow": True,
-                                "FullControl": True,
-                                "Inherited": False,
-                            },
-                            {
-                                "Sid": "S-1-1-0",
-                                "Allow": True,
-                                "FullControl": False,
-                                "Inherited": False,
-                            },
-                        ],
-                    }
-                ),
-                stderr="",
-            )
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(smoke, "_IS_WINDOWS", True)
-    monkeypatch.setattr(smoke.subprocess, "run", run)
+    _install_fake_windows_acl(monkeypatch, smoke, extra_ace=True)
     sink.capture("synthetic", {"status": "ready"})
 
     with pytest.raises(smoke.SmokeContractError) as raised:
