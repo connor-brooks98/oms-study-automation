@@ -17,7 +17,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - lane: acl-probe
+          - lane: contracts-providers
+            targets: tests\contracts\test_gate2b_manifest_split.py tests\providers\gemini\test_client.py tests\providers\gemini\test_evidence.py
+          - lane: live-contract-mocks
+            targets: tests\live\test_gemini_file_search_contract.py
+          - lane: composition-harness
+            targets: tests\scripts\test_task28_private_shadow_composition.py::test_c5_runs_the_committed_windows_harness_when_available
+          - lane: private-evidence-harness
+            targets: tests\scripts\test_private_shadow_evidence.py::test_private_shadow_wrapper_runs_committed_synthetic_fault_matrix
+          - lane: reconciliation-harness
+            targets: tests\scripts\test_gemini_reconciliation_evidence.py::test_python_json_to_powershell_evidence_path_runs_in_committed_harness
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,7 +39,7 @@ jobs:
       - name: Verify immutable parent and Windows PowerShell 5.1
         shell: powershell
         run: |
-          $Candidate = "331e695c894601af3de925ae0e5253331fe1d4bc"
+          $Candidate = "bd60c8e8419d953dd395387f2700afada0165385"
           git merge-base --is-ancestor $Candidate HEAD
           if ($LASTEXITCODE -ne 0) {
             throw "Reviewed integration candidate is not an ancestor of the proof commit."
@@ -43,115 +52,17 @@ jobs:
             throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)."
           }
 
-      - name: Probe current-user-only file ACL
+      - name: Install provider-free test dependencies
         shell: powershell
         run: |
-          $Probe = Join-Path $env:RUNNER_TEMP "gate2b-acl-probe"
-          [IO.File]::WriteAllText($Probe, "synthetic")
-          try {
-            $Identity = & whoami.exe /user /fo csv /nh |
-              ConvertFrom-Csv -Header Name,Sid
-            $IdentityExit = $LASTEXITCODE
-            & icacls.exe $Probe /inheritance:r /grant:r "*$($Identity.Sid):(F)" | Out-Null
-            $GrantExit = $LASTEXITCODE
-            & icacls.exe $Probe /verify | Out-Null
-            $VerifyExit = $LASTEXITCODE
-            $Acl = Get-Acl -LiteralPath $Probe
-            $Rules = @($Acl.GetAccessRules(
-                $true, $false, [Security.Principal.SecurityIdentifier]
-            ))
-            $Current = @($Rules | Where-Object {
-                $_.IdentityReference.Value -ceq $Identity.Sid
-              })
-            [pscustomobject]@{
-              identity_exit = $IdentityExit
-              sid_valid = [bool]($Identity.Sid -match '^S-1(?:-\d+)+$')
-              grant_exit = $GrantExit
-              verify_exit = $VerifyExit
-              protected = $Acl.AreAccessRulesProtected
-              rule_count = $Rules.Count
-              current_rule_count = $Current.Count
-              other_rule_count = @($Rules | Where-Object {
-                  $_.IdentityReference.Value -cne $Identity.Sid
-                }).Count
-              current_full_control = [bool]($Current.Count -eq 1 -and
-                (($Current[0].FileSystemRights -band
-                  [Security.AccessControl.FileSystemRights]::FullControl) -eq
-                  [Security.AccessControl.FileSystemRights]::FullControl))
-              current_inherited = [bool]($Current.Count -eq 1 -and $Current[0].IsInherited)
-            } | ConvertTo-Json -Compress
-          } finally {
-            Remove-Item -LiteralPath $Probe -Force -ErrorAction SilentlyContinue
-          }
-          $PythonProbe = Join-Path $env:RUNNER_TEMP "gate2b_acl_probe.py"
-          [IO.File]::WriteAllText($PythonProbe, @'
-          import csv
-          import json
-          import os
-          import re
-          import subprocess
-          from collections.abc import Mapping
-          from pathlib import Path
+          py -3.12 -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 
-          path = Path(os.environ["RUNNER_TEMP"]) / "gate2b-python-acl-probe"
-          path.write_text("synthetic", encoding="ascii")
-          summary = {}
-          try:
-              identity = subprocess.run(
-                  ["whoami", "/user", "/fo", "csv", "/nh"],
-                  capture_output=True, text=True, timeout=10, check=False,
-              )
-              row = next(csv.reader([identity.stdout.strip()]))
-              sid = row[1].strip() if len(row) == 2 else ""
-              summary.update(
-                  identity_exit=identity.returncode,
-                  row_length=len(row),
-                  sid_valid=re.fullmatch(r"S-1(?:-\d+)+", sid) is not None,
-              )
-              secured = subprocess.run(
-                  ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{sid}:(F)"],
-                  capture_output=True, text=True, timeout=10, check=False,
-              )
-              verified = subprocess.run(
-                  ["icacls", str(path), "/verify"],
-                  capture_output=True, text=True, timeout=10, check=False,
-              )
-              inspected = subprocess.run(
-                  ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", (
-                      "$acl=Get-Acl -LiteralPath $env:OMS_TASK28_DIAGNOSTIC_PATH;"
-                      "$rules=@($acl.GetAccessRules($true,$false,"
-                      "[System.Security.Principal.SecurityIdentifier]));"
-                      "$items=@($rules|ForEach-Object{[pscustomobject]@{"
-                      "Sid=$_.IdentityReference.Value;"
-                      "Allow=($_.AccessControlType -eq "
-                      "[System.Security.AccessControl.AccessControlType]::Allow);"
-                      "FullControl=(($_.FileSystemRights -band "
-                      "[System.Security.AccessControl.FileSystemRights]::FullControl) "
-                      "-eq [System.Security.AccessControl.FileSystemRights]::FullControl);"
-                      "Inherited=$_.IsInherited}});"
-                      "[pscustomobject]@{Protected=$acl.AreAccessRulesProtected;"
-                      "Rules=$items}|ConvertTo-Json -Compress -Depth 4"
-                  )], capture_output=True, text=True, timeout=10, check=False,
-                  env={**os.environ, "OMS_TASK28_DIAGNOSTIC_PATH": str(path)},
-              )
-              inspection = json.loads(inspected.stdout)
-              rules = inspection.get("Rules") if isinstance(inspection, Mapping) else None
-              rule_list = [rules] if isinstance(rules, Mapping) else rules if isinstance(rules, list) else []
-              rule = rule_list[0] if len(rule_list) == 1 else None
-              summary.update(
-                  grant_exit=secured.returncode,
-                  verify_exit=verified.returncode,
-                  inspect_exit=inspected.returncode,
-                  inspect_json=isinstance(inspection, Mapping),
-                  protected=inspection.get("Protected") if isinstance(inspection, Mapping) else None,
-                  rule_count=len(rule_list),
-                  sid_match=isinstance(rule, Mapping) and rule.get("Sid") == sid,
-                  allow=isinstance(rule, Mapping) and rule.get("Allow") is True,
-                  full_control=isinstance(rule, Mapping) and rule.get("FullControl") is True,
-                  inherited=isinstance(rule, Mapping) and rule.get("Inherited") is True,
-              )
-          finally:
-              path.unlink(missing_ok=True)
-          print(json.dumps(summary, sort_keys=True))
-          '@, [Text.UTF8Encoding]::new($false, $true))
-          py -3.12 $PythonProbe
+      - name: Run isolated Gate 2B lane
+        shell: powershell
+        env:
+          RUN_LIVE_GEMINI_TESTS: "0"
+          RUN_PRIVATE_GEMINI_SHADOW: "0"
+        run: |
+          $Targets = "${{ matrix.targets }}".Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
+          & .\.venv\Scripts\python.exe -m pytest -vv --tb=short --maxfail=20 @Targets
