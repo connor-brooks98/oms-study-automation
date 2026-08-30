@@ -39,7 +39,7 @@ gates:
     task: '1.8'
     state: blocked
   gate_2b_gemini_provider:
-    task: '2.8'
+    task: '2.8d'
     state: blocked
   gate_3a_ask_backend:
     task: '3.8'
@@ -84,6 +84,8 @@ workstreams:
   - '0.4'
   - '0.5'
   - '0.6'
+  - '2.8b'
+  - '2.8d'
   review_policy:
   - terra_spec
   - terra_quality
@@ -124,7 +126,8 @@ workstreams:
   - '2.5'
   - '2.6'
   - '2.7'
-  - '2.8'
+  - '2.8a'
+  - '2.8c'
   review_policy:
   - terra_spec
   - terra_quality
@@ -580,8 +583,8 @@ tasks:
   reviewers:
   - terra_spec
   - terra_quality
-- id: '2.8'
-  title: Add live Gemini contract smoke tests and deliver Gate 2B
+- id: '2.8a'
+  title: Public multimodal Gemini contract matrix
   phase: Phase 2 — Gemini File Search Provider and Durable Indexing
   workstream: sol2
   branch: sol2/gemini-indexing
@@ -589,7 +592,46 @@ tasks:
   - '2.7'
   wave: 3
   initial_state: blocked
-  handoff: docs/implementation/handoffs/2.8.md
+  handoff: docs/implementation/handoffs/2.8a.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '2.8b'
+  title: Tracked Windows private-shadow composition
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol0
+  branch: sol0/contracts-and-integration
+  depends_on:
+  - '2.8a'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.8b.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '2.8c'
+  title: Bounded private Lecture 13 acceptance
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol2
+  branch: sol2/gemini-indexing
+  depends_on:
+  - '2.8b'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.8c.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '2.8d'
+  title: Gate 2B evidence acceptance and integration
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol0
+  branch: sol0/contracts-and-integration
+  depends_on:
+  - '2.8c'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.8d.md
   reviewers:
   - terra_spec
   - terra_quality
@@ -642,7 +684,7 @@ tasks:
   depends_on:
   - '3.2'
   - '1.8'
-  - '2.8'
+  - '2.8d'
   wave: 3
   initial_state: blocked
   handoff: docs/implementation/handoffs/3.4.md
@@ -863,7 +905,7 @@ tasks:
   branch: sol5/board-questions
   depends_on:
   - '5.4'
-  - '2.8'
+  - '2.8d'
   wave: 3
   initial_state: blocked
   handoff: docs/implementation/handoffs/5.5.md
@@ -1315,7 +1357,7 @@ tasks:
   depends_on:
   - '8.3'
   - '1.8'
-  - '2.8'
+  - '2.8d'
   wave: 3
   initial_state: blocked
   handoff: docs/implementation/handoffs/8.4.md
@@ -1411,7 +1453,7 @@ tasks:
   workstream: sol9
   branch: sol9/evals-observability-release
   depends_on:
-  - '2.8'
+  - '2.8d'
   wave: 3
   initial_state: blocked
   handoff: docs/implementation/handoffs/9.3.md
@@ -1470,7 +1512,7 @@ tasks:
   branch: sol9/evals-observability-release
   depends_on:
   - '1.8'
-  - '2.8'
+  - '2.8d'
   - '3.8'
   - '5.10'
   - '6.9'
