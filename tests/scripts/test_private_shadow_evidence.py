@@ -11,12 +11,14 @@ ROOT = Path(__file__).resolve().parents[2]
 EVIDENCE = ROOT / "scripts" / "private-shadow-evidence.ps1"
 WRAPPER = ROOT / "scripts" / "run-private-shadow-evidence.ps1"
 HARNESS = ROOT / "tests" / "scripts" / "private_shadow_evidence_harness.ps1"
+COMMON = ROOT / "scripts" / "task28" / "private-shadow-common.ps1"
 
 
 def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> None:
     evidence = EVIDENCE.read_text(encoding="utf-8")
     wrapper = WRAPPER.read_text(encoding="utf-8")
     harness = HARNESS.read_text(encoding="utf-8")
+    common = COMMON.read_text(encoding="utf-8")
 
     assert "-m oms_hub.providers.gemini.evidence" in evidence
     assert "ReadAllText" in evidence
@@ -63,6 +65,9 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     assert "StandardInput.BaseStream" in harness
     assert "PRIVATE_SHADOW_COMPOSITION_ENVIRONMENT_VERIFIED" in harness
     assert "DIRECT_CONVERTER_SITECUSTOMIZE_REMOVED" in harness
+    assert "SetAccessRuleProtection($true, $false)" in common
+    assert "RemoveAccessRuleSpecific" in common
+    assert 'icacls.exe $Path /inheritance:r /grant:r' not in common
 
 
 def test_private_shadow_wrapper_runs_committed_synthetic_fault_matrix() -> None:

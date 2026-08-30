@@ -478,7 +478,6 @@ def _open_restricted_diagnostic_temp(output: Path) -> tuple[int, Path]:
             win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, sid
         )
         attributes = win32security.SECURITY_ATTRIBUTES()
-        attributes.Initialize()
         attributes.bInheritHandle = False
         attributes.SetSecurityDescriptorDacl(True, dacl, False)
         attributes.SetSecurityDescriptorControl(

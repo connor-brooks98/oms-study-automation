@@ -35,10 +35,29 @@ function Protect-ReconciliationDirectory {
   if ($LASTEXITCODE -ne 0 -or $Identity.Sid -notmatch '^S-1(?:-\d+)+$') {
     throw "Current Windows SID was unavailable."
   }
-  & icacls.exe $Path /inheritance:r /grant:r "*$($Identity.Sid):(OI)(CI)F" | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Diagnostic DACL initialization failed."
+  $Directory = Get-Item -LiteralPath $Path -Force
+  $Acl = $Directory.GetAccessControl(
+    [System.Security.AccessControl.AccessControlSections]::Access
+  )
+  $Acl.SetAccessRuleProtection($true, $false)
+  foreach ($ExistingRule in @($Acl.GetAccessRules(
+    $true, $true, [System.Security.Principal.SecurityIdentifier]
+  ))) {
+    $Acl.RemoveAccessRuleSpecific($ExistingRule)
   }
+  $RequiredRights = [System.Security.AccessControl.FileSystemRights]::FullControl
+  $RequiredInheritance =
+    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  $Rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    [System.Security.Principal.SecurityIdentifier]::new([string]$Identity.Sid),
+    $RequiredRights,
+    $RequiredInheritance,
+    [System.Security.AccessControl.PropagationFlags]::None,
+    [System.Security.AccessControl.AccessControlType]::Allow
+  )
+  $Acl.AddAccessRule($Rule) | Out-Null
+  $Directory.SetAccessControl($Acl)
   & icacls.exe $Path /verify | Out-Null
   if ($LASTEXITCODE -ne 0) {
     throw "Diagnostic DACL verification failed."
@@ -47,10 +66,6 @@ function Protect-ReconciliationDirectory {
   $Rules = @($Acl.GetAccessRules(
       $true, $false, [System.Security.Principal.SecurityIdentifier]
   ))
-  $RequiredRights = [System.Security.AccessControl.FileSystemRights]::FullControl
-  $RequiredInheritance =
-    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
-    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
   if (-not $Acl.AreAccessRulesProtected -or $Rules.Count -ne 1 -or
       $Rules[0].IdentityReference.Value -cne $Identity.Sid -or
       $Rules[0].AccessControlType -ne
