@@ -120,8 +120,11 @@ function Invoke-DirectEvidence {
   $Process = [Diagnostics.Process]::new()
   $Process.StartInfo = $Start
   if (-not $Process.Start()) { throw "Evidence validator did not start." }
-  $Process.StandardInput.Write($Raw)
-  $Process.StandardInput.Close()
+  $InputBytes = $Utf8.GetBytes($Raw)
+  $InputStream = $Process.StandardInput.BaseStream
+  $InputStream.Write($InputBytes, 0, $InputBytes.Length)
+  $InputStream.Flush()
+  $InputStream.Close()
   $Stdout = $Process.StandardOutput.ReadToEndAsync()
   $Stderr = $Process.StandardError.ReadToEndAsync()
   $Process.WaitForExit()
