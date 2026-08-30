@@ -217,3 +217,37 @@ def test_stage_and_verify_use_the_bound_runtime_contract() -> None:
     assert "Runtime bundle modification was not rejected." in harness
     assert "Source bundle modification was not rejected." in harness
     assert "Unexpected bundle inventory was not rejected." in harness
+
+
+def test_ps51_compatible_task28_paths_and_schema_versions_are_centralized() -> None:
+    common = (ROOT / "scripts" / "task28" / "private-shadow-common.ps1").read_text(
+        encoding="utf-8"
+    )
+    composition = (ROOT / "scripts" / "task28" / "private-shadow-composition.ps1").read_text(
+        encoding="utf-8"
+    )
+    launcher = (ROOT / "scripts" / "task28" / "private-shadow-launcher.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function Test-Task28FullyQualifiedPath" in common
+    assert "[IO.Path]::IsPathFullyQualified" not in "\n".join((common, composition, launcher))
+    assert "Test-Task28FullyQualifiedPath" in common
+    assert "$Manifest.schema_version -isnot [int64] -and" in common
+    assert "$Value.schema_version -isnot [int64] -and" in common
+
+
+def test_wrapper_preserves_fixture_environment_outside_composition_verify() -> None:
+    wrapper = (ROOT / "scripts" / "run-private-shadow-evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+    evidence_harness = (ROOT / "tests" / "scripts" / "private_shadow_evidence_harness.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "[Parameter(Mandatory = $true)][switch]$CompositionVerify" not in wrapper
+    assert "[switch]$CompositionVerify" in wrapper
+    assert "if ($CompositionVerify) {" in wrapper
+    assert "Set-CompositionVerifyEnvironment -ProcessInfo $ProcessInfo" in wrapper
+    assert "-CompositionVerify" not in evidence_harness
+    assert '"PRIVATE_SHADOW_FIXTURE_MODE"' in evidence_harness
