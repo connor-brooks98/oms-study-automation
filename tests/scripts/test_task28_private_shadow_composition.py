@@ -119,3 +119,28 @@ def test_stage_uses_an_atomic_sibling_and_rejects_equal_roots() -> None:
     assert "$FinalDestination -ceq $MutableStatePath" in composition
     assert "$StageRoot" in composition
     assert "Move-Item -LiteralPath $StageRoot -Destination $FinalDestination" in composition
+
+
+def test_composition_uses_case_insensitive_path_equality_and_hashed_manifest() -> None:
+    composition = (ROOT / "scripts" / "task28" / "private-shadow-composition.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "[StringComparison]::OrdinalIgnoreCase" in composition
+    assert "run-manifest.$RunManifestHash.json" in composition
+    assert "[IO.Directory]::Move" in composition
+
+
+def test_launcher_uses_a_sanitized_explicit_composition_verify_child() -> None:
+    launcher = (ROOT / "scripts" / "task28" / "private-shadow-launcher.ps1").read_text(
+        encoding="utf-8"
+    )
+    wrapper = (ROOT / "scripts" / "run-private-shadow-evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "-CompositionVerify" in launcher
+    assert "[Parameter(Mandatory = $true)][switch]$CompositionVerify" in wrapper
+    assert ".EnvironmentVariables.Clear()" in wrapper
+    assert '"OMS_TASK28_PRIVATE_PROJECT"' in wrapper
+    assert '"PYTHONPATH"' in wrapper
