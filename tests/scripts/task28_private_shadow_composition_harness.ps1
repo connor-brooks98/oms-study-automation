@@ -84,10 +84,44 @@ try {
   $FirstManifest = [IO.File]::ReadAllBytes($ManifestPath)
   $FirstSourceManifest = [IO.File]::ReadAllBytes((Join-Path $Destination "source-manifest.json"))
   $FirstRuntimeManifest = [IO.File]::ReadAllBytes((Join-Path $Destination "runtime-manifest.json"))
-  & $Composition -Mode Verify -Manifest $ManifestPath
+  & $Composition -Mode Verify -RepositoryRoot $RepositoryRoot -Manifest $ManifestPath
   if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $State)) {
     throw "Verify did not leave the reserved mutable state absent."
   }
+  $ExpectedInventory = @("source", "runtime", "source.tar", "source-manifest.json", "runtime-manifest.json", (Split-Path -Leaf $ManifestPath))
+  $ActualInventory = @(Get-ChildItem -LiteralPath $Destination -Force | ForEach-Object { $_.Name })
+  if ($ExpectedInventory.Count -ne $ActualInventory.Count -or @($ExpectedInventory | Where-Object { $_ -notin $ActualInventory }).Count -ne 0) {
+    throw "Stage did not create the exact immutable bundle inventory."
+  }
+  $TamperedRuntime = Join-Path $Destination "runtime/requirements.lock"
+  $OriginalRuntime = [IO.File]::ReadAllBytes($TamperedRuntime)
+  [IO.File]::AppendAllText($TamperedRuntime, "tampered")
+  $Rejected = $false
+  try {
+    & $Composition -Mode Verify -RepositoryRoot $RepositoryRoot -Manifest $ManifestPath
+    $Rejected = $LASTEXITCODE -ne 0
+  } catch { $Rejected = $true }
+  if (-not $Rejected) { throw "Runtime bundle modification was not rejected." }
+  [IO.File]::WriteAllBytes($TamperedRuntime, $OriginalRuntime)
+  $TamperedSource = Join-Path $Destination "source/src/oms_hub/providers/gemini/evidence.py"
+  $OriginalSource = [IO.File]::ReadAllBytes($TamperedSource)
+  [IO.File]::AppendAllText($TamperedSource, "tampered")
+  $Rejected = $false
+  try {
+    & $Composition -Mode Verify -RepositoryRoot $RepositoryRoot -Manifest $ManifestPath
+    $Rejected = $LASTEXITCODE -ne 0
+  } catch { $Rejected = $true }
+  if (-not $Rejected) { throw "Source bundle modification was not rejected." }
+  [IO.File]::WriteAllBytes($TamperedSource, $OriginalSource)
+  $Unexpected = Join-Path $Destination "unexpected"
+  [IO.File]::WriteAllText($Unexpected, "unexpected")
+  $Rejected = $false
+  try {
+    & $Composition -Mode Verify -RepositoryRoot $RepositoryRoot -Manifest $ManifestPath
+    $Rejected = $LASTEXITCODE -ne 0
+  } catch { $Rejected = $true }
+  if (-not $Rejected) { throw "Unexpected bundle inventory was not rejected." }
+  Remove-Item -LiteralPath $Unexpected -Force
   Remove-Item -LiteralPath $Destination -Recurse -Force
   & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
     -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `

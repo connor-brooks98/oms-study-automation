@@ -116,7 +116,7 @@ def test_stage_uses_an_atomic_sibling_and_rejects_equal_roots() -> None:
         encoding="utf-8"
     )
 
-    assert "$FinalDestination -ceq $MutableStatePath" in composition
+    assert "[string]::Equals($FinalDestination, $MutableStatePath" in composition
     assert "$StageRoot" in composition
     assert "[IO.Directory]::Move($StageRoot, $FinalDestination)" in composition
 
@@ -149,6 +149,14 @@ def test_launcher_uses_a_sanitized_explicit_composition_verify_child() -> None:
 def test_all_task28_executables_use_the_tracked_common_validator() -> None:
     common = ROOT / "scripts" / "task28" / "private-shadow-common.ps1"
     assert common.is_file()
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", str(common.relative_to(ROOT))],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert tracked.returncode == 0
     for executable in EXECUTABLES:
         text = (ROOT / executable).read_text(encoding="utf-8")
         assert "private-shadow-common.ps1" in text
@@ -170,7 +178,7 @@ def test_common_validator_owns_strict_manifest_and_bundle_contracts() -> None:
     assert "source-manifest.json" in common
     assert "runtime-manifest.json" in common
     assert "source.tar" in common
-    assert "runtime/requirements.lock" in common
+    assert 'Join-Path $Runtime "requirements.lock"' in common
     assert "smoke_sha256" in common
     assert "private-shadow-common.ps1" in common
     assert "run-manifest.$Hash.json" in common
@@ -200,4 +208,12 @@ def test_stage_and_verify_use_the_bound_runtime_contract() -> None:
     assert "Assert-ImmutableBundle -Run $Run" in launcher
     assert "[IO.Directory]::Move($StageRoot, $FinalDestination)" in composition
     promotion = composition.split("[IO.Directory]::Move($StageRoot, $FinalDestination)", 1)[1]
-    assert "Get-Item -LiteralPath $FinalDestination" not in promotion.split("$StageRoot = $null", 1)[0]
+    before_stage_reset = promotion.split("$StageRoot = $null", 1)[0]
+    assert "Get-Item -LiteralPath $FinalDestination" not in before_stage_reset
+    harness_path = ROOT / "tests" / "scripts" / "task28_private_shadow_composition_harness.ps1"
+    harness = harness_path.read_text(
+        encoding="utf-8"
+    )
+    assert "Runtime bundle modification was not rejected." in harness
+    assert "Source bundle modification was not rejected." in harness
+    assert "Unexpected bundle inventory was not rejected." in harness

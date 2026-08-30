@@ -18,73 +18,6 @@ $ErrorActionPreference = "Stop"
 $Utf8 = [System.Text.UTF8Encoding]::new($false, $true)
 . (Join-Path $PSScriptRoot "private-shadow-common.ps1")
 
-function Resolve-ExistingFile {
-  param([Parameter(Mandatory = $true)][string]$Path)
-  if (-not [IO.Path]::IsPathFullyQualified($Path) -or
-      -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-    throw "Expected an absolute existing file."
-  }
-  $Resolved = (Get-Item -LiteralPath $Path -Force).FullName
-  if ((Get-Item -LiteralPath $Resolved -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-    throw "File must not be a reparse point."
-  }
-  return [IO.Path]::GetFullPath($Resolved)
-}
-
-function Resolve-ExistingDirectory {
-  param([Parameter(Mandatory = $true)][string]$Path)
-  if (-not [IO.Path]::IsPathFullyQualified($Path) -or
-      -not (Test-Path -LiteralPath $Path -PathType Container)) {
-    throw "Expected an absolute existing directory."
-  }
-  $Resolved = (Get-Item -LiteralPath $Path -Force).FullName
-  if ((Get-Item -LiteralPath $Resolved -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-    throw "Directory must not be a reparse point."
-  }
-  return [IO.Path]::GetFullPath($Resolved)
-}
-
-function Assert-NoReparsePath {
-  param([Parameter(Mandatory = $true)][string]$Path)
-  $Cursor = [IO.Path]::GetFullPath($Path)
-  while ($true) {
-    if (Test-Path -LiteralPath $Cursor) {
-      if ((Get-Item -LiteralPath $Cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        throw "Path must not cross a reparse point."
-      }
-    }
-    $Parent = Split-Path -Parent $Cursor
-    if ([string]::IsNullOrEmpty($Parent) -or $Parent -ceq $Cursor) { return }
-    $Cursor = $Parent
-  }
-}
-
-function Assert-UnderRoot {
-  param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Root)
-  $Prefix = $Root.TrimEnd("\\", "/") + [IO.Path]::DirectorySeparatorChar
-  if (-not $Path.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Path escaped its expected root."
-  }
-}
-
-function Get-FileRows {
-  param([Parameter(Mandatory = $true)][string]$Root)
-  $Prefix = $Root.TrimEnd("\\", "/") + [IO.Path]::DirectorySeparatorChar
-  $Items = @(Get-ChildItem -LiteralPath $Root -Force -Recurse)
-  if (@($Items | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -ne 0) {
-    throw "Bundle contains a reparse point."
-  }
-  return @(
-    $Items | Where-Object { -not $_.PSIsContainer } | Sort-Object FullName | ForEach-Object {
-      [ordered]@{
-        path = $_.FullName.Substring($Prefix.Length).Replace("\\", "/")
-        sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        size = [int64]$_.Length
-      }
-    }
-  )
-}
-
 function Write-CanonicalJson {
   param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][object]$Value)
   $Temporary = Join-Path (Split-Path -Parent $Path) (".{0}.tmp" -f [Guid]::NewGuid().ToString("N"))
@@ -103,26 +36,6 @@ function Get-StringSha256 {
   finally { $Hasher.Dispose() }
 }
 
-function Read-RunManifest {
-  param([Parameter(Mandatory = $true)][string]$Path)
-  $ManifestPath = Resolve-ExistingFile -Path $Path
-  $Value = [IO.File]::ReadAllText($ManifestPath, $Utf8) | ConvertFrom-Json
-  if ($Value.schema_version -ne 1 -or
-      $Value.authorization_count -ne 0 -or
-      -not [IO.Path]::IsPathFullyQualified([string]$Value.immutable_bundle_path) -or
-      -not [IO.Path]::IsPathFullyQualified([string]$Value.mutable_state_path)) {
-    throw "Run manifest is invalid."
-  }
-  return [pscustomobject]@{Path=$ManifestPath; Value=$Value}
-}
-
-function Assert-ManifestFile {
-  param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][object]$Row)
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or
-      (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Row.sha256) {
-    throw "Immutable bundle file hash differs."
-  }
-}
 
 if ($Mode -eq "Stage") {
   foreach ($Required in @($SourceArchive, $RepositoryRoot, $SourceCommit, $LockedRequirements,
@@ -135,13 +48,13 @@ if ($Mode -eq "Stage") {
   $HealthUri = [Uri]$HubHealthUrl
   if ($HealthUri.Scheme -notin @("http", "https") -or
       $HealthUri.Host -notin @("127.0.0.1", "localhost") -or
-      $HealthUri.AbsolutePath -cne "/health") {
+      $HealthUri.AbsolutePath -cne "/health" -or -not [string]::IsNullOrEmpty($HealthUri.Query)) {
     throw "Hub health URL must be local and exact."
   }
-  $SourceArchive = Resolve-ExistingFile -Path $SourceArchive
-  $RepositoryRoot = Resolve-ExistingDirectory -Path $RepositoryRoot
-  $LockedRequirements = Resolve-ExistingFile -Path $LockedRequirements
-  $PythonExecutable = Resolve-ExistingFile -Path $PythonExecutable
+  $SourceArchive = Resolve-Task28ExistingPath -Path $SourceArchive -Type Leaf
+  $RepositoryRoot = Resolve-Task28ExistingPath -Path $RepositoryRoot -Type Container
+  $LockedRequirements = Resolve-Task28ExistingPath -Path $LockedRequirements -Type Leaf
+  $PythonExecutable = Resolve-Task28ExistingPath -Path $PythonExecutable -Type Leaf
   if (-not [IO.Path]::IsPathFullyQualified($Destination) -or
       -not [IO.Path]::IsPathFullyQualified($MutableStatePath)) {
     throw "Stage output paths must be absolute."
@@ -149,16 +62,14 @@ if ($Mode -eq "Stage") {
   $Destination = [IO.Path]::GetFullPath($Destination)
   $MutableStatePath = [IO.Path]::GetFullPath($MutableStatePath)
   $FinalDestination = $Destination
-  Assert-NoReparsePath -Path (Split-Path -Parent $Destination)
-  Assert-NoReparsePath -Path (Split-Path -Parent $MutableStatePath)
+  Assert-Task28NoReparsePath -Path (Split-Path -Parent $Destination)
+  Assert-Task28NoReparsePath -Path (Split-Path -Parent $MutableStatePath)
   if (Test-Path -LiteralPath $FinalDestination -or Test-Path -LiteralPath $MutableStatePath) {
     throw "Stage destinations must be absent."
   }
-  if ($FinalDestination -ceq $MutableStatePath -or
-      $MutableStatePath.StartsWith($FinalDestination.TrimEnd("\\", "/") + [IO.Path]::DirectorySeparatorChar,
-      [StringComparison]::OrdinalIgnoreCase) -or
-      $FinalDestination.StartsWith($MutableStatePath.TrimEnd("\\", "/") + [IO.Path]::DirectorySeparatorChar,
-      [StringComparison]::OrdinalIgnoreCase)) {
+  if ([string]::Equals($FinalDestination, $MutableStatePath, [StringComparison]::OrdinalIgnoreCase) -or
+      (Test-Task28DescendantPath -Path $MutableStatePath -Root $FinalDestination) -or
+      (Test-Task28DescendantPath -Path $FinalDestination -Root $MutableStatePath)) {
     throw "Immutable and mutable paths must not overlap."
   }
   $StageRoot = Join-Path (Split-Path -Parent $FinalDestination) (
@@ -193,15 +104,14 @@ if ($Mode -eq "Stage") {
       ([IO.File]::ReadAllText($CommitMarker, $Utf8).Trim() -cne $SourceCommit)) {
     throw "Source archive commit marker is invalid."
   }
-  $SourceRows = Get-FileRows -Root $SourceRoot
+  $SourceRows = Get-Task28FileRows -Root $SourceRoot
   $SourceManifestPath = Join-Path $Destination "source-manifest.json"
   $RuntimeManifestPath = Join-Path $Destination "runtime-manifest.json"
   Write-CanonicalJson -Path $SourceManifestPath -Value ([ordered]@{schema_version=1; files=$SourceRows})
-  $RuntimeRows = @([ordered]@{
-    path="requirements.lock"
-    sha256=(Get-FileHash -LiteralPath (Join-Path $Destination "requirements.lock") -Algorithm SHA256).Hash.ToLowerInvariant()
-    size=[int64](Get-Item -LiteralPath (Join-Path $Destination "requirements.lock")).Length
-  })
+  $RuntimeRoot = Join-Path $Destination "runtime"
+  New-Item -ItemType Directory -Path $RuntimeRoot | Out-Null
+  Move-Item -LiteralPath (Join-Path $Destination "requirements.lock") -Destination (Join-Path $RuntimeRoot "requirements.lock")
+  $RuntimeRows = Get-Task28FileRows -Root $RuntimeRoot
   Write-CanonicalJson -Path $RuntimeManifestPath -Value ([ordered]@{schema_version=1; files=$RuntimeRows})
   $Controller = Join-Path $SourceRoot "scripts/task28/private-shadow-controller.ps1"
   $Launcher = Join-Path $SourceRoot "scripts/task28/private-shadow-launcher.ps1"
@@ -209,7 +119,8 @@ if ($Mode -eq "Stage") {
   $EntryPoint = Join-Path $SourceRoot "scripts/private-shadow-operator-entry.py"
   $Wrapper = Join-Path $SourceRoot "scripts/run-private-shadow-evidence.ps1"
   $Evidence = Join-Path $SourceRoot "src/oms_hub/providers/gemini/evidence.py"
-  foreach ($Required in @($Controller, $Launcher, $Common, $EntryPoint, $Wrapper, $Evidence)) {
+  $Smoke = Join-Path $SourceRoot "scripts/run-gemini-contract-smoke.py"
+  foreach ($Required in @($Controller, $Launcher, $Common, $EntryPoint, $Wrapper, $Evidence, $Smoke)) {
     if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) { throw "Required tracked bundle file is absent." }
   }
   $RunManifest = [ordered]@{
@@ -225,6 +136,7 @@ if ($Mode -eq "Stage") {
     entrypoint_sha256=(Get-FileHash -LiteralPath $EntryPoint -Algorithm SHA256).Hash.ToLowerInvariant()
     wrapper_sha256=(Get-FileHash -LiteralPath $Wrapper -Algorithm SHA256).Hash.ToLowerInvariant()
     evidence_sha256=(Get-FileHash -LiteralPath $Evidence -Algorithm SHA256).Hash.ToLowerInvariant()
+    smoke_sha256=(Get-FileHash -LiteralPath $Smoke -Algorithm SHA256).Hash.ToLowerInvariant()
     python_executable=$PythonExecutable
     hub_health_url=$HealthUri.AbsoluteUri.TrimEnd("/")
     authorization_count=0
@@ -234,9 +146,6 @@ if ($Mode -eq "Stage") {
   $RunManifestPath = Join-Path $Destination ("run-manifest.$RunManifestHash.json")
   [IO.File]::WriteAllText($RunManifestPath, $ManifestJson, $Utf8)
   [IO.Directory]::Move($StageRoot, $FinalDestination)
-  if ((Get-Item -LiteralPath $FinalDestination -Force).FullName -cne $FinalDestination) {
-    throw "Final bundle identity changed during promotion."
-  }
   $StageRoot = $null
   } finally {
     if ($StageRoot -and (Test-Path -LiteralPath $StageRoot)) {
@@ -246,38 +155,44 @@ if ($Mode -eq "Stage") {
   exit 0
 }
 
-$Run = Read-RunManifest -Path $Manifest
-Read-BoundRunManifest -Path $Run.Path | Out-Null
-$ManifestHash = (Get-FileHash -LiteralPath $Run.Path -Algorithm SHA256).Hash.ToLowerInvariant()
-if ((Split-Path -Leaf $Run.Path) -cne "run-manifest.$ManifestHash.json") {
-  throw "Run manifest filename is not bound to its contents."
-}
-$Bundle = Resolve-ExistingDirectory -Path ([string]$Run.Value.immutable_bundle_path)
-Assert-UnderRoot -Path $Run.Path -Root $Bundle
+if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) { throw "Verify requires an absolute repository root." }
+$RepositoryRoot = Resolve-Task28ExistingPath -Path $RepositoryRoot -Type Container
+$Run = Read-BoundRunManifest -Path $Manifest
+$Bundle = Assert-ImmutableBundle -Run $Run
 if (Test-Path -LiteralPath ([string]$Run.Value.mutable_state_path)) {
   throw "Correction 1 must not create mutable state."
 }
-$SourceRoot = Join-Path $Bundle "source"
-Assert-ImmutableBundle -Bundle $Bundle
-Assert-ManifestFile -Path (Join-Path $Bundle "source.tar") -Row ([pscustomobject]@{sha256=$Run.Value.source.archive_sha256})
-Assert-ManifestFile -Path (Join-Path $Bundle "source-manifest.json") -Row ([pscustomobject]@{sha256=$Run.Value.source.manifest_sha256})
-Assert-ManifestFile -Path (Join-Path $Bundle "runtime-manifest.json") -Row ([pscustomobject]@{sha256=$Run.Value.runtime.manifest_sha256})
-foreach ($Row in @((Get-Content -LiteralPath (Join-Path $Bundle "source-manifest.json") -Raw | ConvertFrom-Json).files)) {
-  Assert-ManifestFile -Path (Join-Path $SourceRoot ([string]$Row.path)) -Row $Row
+$Tree = (& git -C $RepositoryRoot rev-parse "$($Run.Value.source.commit)^{tree}").Trim()
+if ($LASTEXITCODE -ne 0 -or -not [string]::Equals($Tree, [string]$Run.Value.source.tree, [StringComparison]::OrdinalIgnoreCase)) {
+  throw "Declared source tree does not match the bound run."
 }
-$ExpectedSourceRows = @((Get-Content -LiteralPath (Join-Path $Bundle "source-manifest.json") -Raw | ConvertFrom-Json).files)
-$ActualSourceRows = @(Get-FileRows -Root $SourceRoot)
-if (($ExpectedSourceRows | ConvertTo-Json -Compress -Depth 5) -cne
-    ($ActualSourceRows | ConvertTo-Json -Compress -Depth 5)) {
-  throw "Source manifest does not exactly match immutable source files."
+$VerifySourceRoot = Join-Path ([IO.Path]::GetTempPath()) ("oms-task28-verify-source-{0}" -f [Guid]::NewGuid().ToString("N"))
+$ExpectedArchive = Join-Path ([IO.Path]::GetTempPath()) ("oms-task28-verify-archive-{0}.tar" -f [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $VerifySourceRoot | Out-Null
+try {
+  & git -C $RepositoryRoot archive --format=tar --prefix=source/ `
+    "--add-virtual-file=source/.task28-source-commit:$($Run.Value.source.commit)" `
+    "--output=$ExpectedArchive" $Run.Value.source.commit
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $ExpectedArchive -PathType Leaf) -or
+      -not [System.Linq.Enumerable]::SequenceEqual(
+        [IO.File]::ReadAllBytes($ExpectedArchive), [IO.File]::ReadAllBytes((Join-Path $Bundle "source.tar"))
+      )) {
+    throw "Source archive does not exactly match the bound Git commit."
+  }
+  & tar -xf $ExpectedArchive -C $VerifySourceRoot
+  if ($LASTEXITCODE -ne 0) { throw "Bound source archive extraction failed." }
+  $ExtractedSource = Join-Path $VerifySourceRoot "source"
+  $CommitMarker = Join-Path $ExtractedSource ".task28-source-commit"
+  if (-not (Test-Path -LiteralPath $CommitMarker -PathType Leaf) -or
+      ([IO.File]::ReadAllText($CommitMarker, $Utf8).Trim() -cne [string]$Run.Value.source.commit)) {
+    throw "Bound source archive commit marker is invalid."
+  }
+  Assert-ManifestEquality -Root $ExtractedSource -ManifestPath (Join-Path $Bundle "source-manifest.json") | Out-Null
+} finally {
+  Remove-Item -LiteralPath $ExpectedArchive -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $VerifySourceRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
-foreach ($Row in @((Get-Content -LiteralPath (Join-Path $Bundle "runtime-manifest.json") -Raw | ConvertFrom-Json).files)) {
-  Assert-ManifestFile -Path (Join-Path $Bundle ([string]$Row.path)) -Row $Row
-}
-$Controller = Join-Path $SourceRoot "scripts/task28/private-shadow-controller.ps1"
-$Launcher = Join-Path $SourceRoot "scripts/task28/private-shadow-launcher.ps1"
-Assert-ManifestFile -Path $Controller -Row ([pscustomobject]@{sha256=$Run.Value.controller_sha256})
-Assert-ManifestFile -Path $Launcher -Row ([pscustomobject]@{sha256=$Run.Value.launcher_sha256})
+$Controller = Join-Path $Bundle "source/scripts/task28/private-shadow-controller.ps1"
 $VerifyRoot = Join-Path ([IO.Path]::GetTempPath()) ("oms-task28-verify-{0}" -f [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $VerifyRoot | Out-Null
 try {
