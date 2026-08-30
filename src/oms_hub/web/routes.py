@@ -380,35 +380,27 @@ def update_lecture_pass(
         raise HTTPException(422, "at least one pass field is required")
 
     repository = _repo(request)
-    lecture = repository.get_lecture(lecture_id)
-    if lecture is None:
-        raise HTTPException(404, "lecture was not found")
-    lecture_pass = next(
-        (item for item in lecture.passes if item.position == position),
-        None,
+    update_completed = "completed" in update.model_fields_set
+    completed_on = (
+        datetime.now(
+            ZoneInfo(request.app.state.settings.timezone)
+        ).date().isoformat()
+        if update_completed and update.completed
+        else None
     )
-    if lecture_pass is None:
-        raise HTTPException(404, "lecture pass was not found")
-
-    completed_on = lecture_pass.completed_on
-    if "completed" in update.model_fields_set:
-        completed_on = (
-            completed_on
-            or datetime.now(
-                ZoneInfo(request.app.state.settings.timezone)
-            ).date().isoformat()
-            if update.completed
-            else None
-        )
-    resource = lecture_pass.resource
-    if "resource" in update.model_fields_set:
-        resource = update.resource.strip() if update.resource else None
-        resource = resource or None
+    update_resource = "resource" in update.model_fields_set
+    resource = (
+        update.resource.strip() or None
+        if update_resource and update.resource
+        else None
+    )
     try:
         saved = repository.update_pass(
             lecture_id,
             position,
+            update_completed=update_completed,
             completed_on=completed_on,
+            update_resource=update_resource,
             resource=resource,
         )
     except KeyError as error:

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from oms_hub.db import Database
@@ -119,41 +120,57 @@ class CatalogRepository:
         lecture_id: int,
         position: int,
         *,
+        update_completed: bool,
         completed_on: str | None,
+        update_resource: bool,
         resource: str | None,
     ) -> LecturePassModel:
+        values: dict[str, object] = {}
+        if update_completed:
+            values["completed_on"] = (
+                func.coalesce(LecturePassModel.completed_on, completed_on)
+                if completed_on is not None
+                else None
+            )
+        if update_resource:
+            values["resource"] = resource
         with self.database.session() as session:
             lecture_pass = session.scalar(
-                select(LecturePassModel).where(
+                update(LecturePassModel)
+                .where(
                     LecturePassModel.lecture_id == lecture_id,
                     LecturePassModel.position == position,
                 )
+                .values(**values)
+                .returning(LecturePassModel)
             )
             if lecture_pass is None:
                 raise KeyError((lecture_id, position))
-            lecture_pass.completed_on = completed_on
-            lecture_pass.resource = resource
-            session.flush()
             return lecture_pass
 
     def append_pass(self, lecture_id: int) -> LecturePassModel:
-        with self.database.session() as session:
-            lecture = session.scalar(
-                select(LectureModel)
-                .where(LectureModel.id == lecture_id)
-                .options(selectinload(LectureModel.passes))
-            )
-            if lecture is None:
-                raise KeyError(lecture_id)
-            if not lecture.passes or any(item.completed_on is None for item in lecture.passes):
-                raise ValueError("all current passes must be complete")
-            lecture_pass = LecturePassModel(
-                lecture_id=lecture_id,
-                position=max(item.position for item in lecture.passes) + 1,
-            )
-            session.add(lecture_pass)
-            session.flush()
-            return lecture_pass
+        try:
+            with self.database.session() as session:
+                lecture = session.scalar(
+                    select(LectureModel)
+                    .where(LectureModel.id == lecture_id)
+                    .options(selectinload(LectureModel.passes))
+                )
+                if lecture is None:
+                    raise KeyError(lecture_id)
+                if not lecture.passes or any(
+                    item.completed_on is None for item in lecture.passes
+                ):
+                    raise ValueError("all current passes must be complete")
+                lecture_pass = LecturePassModel(
+                    lecture_id=lecture_id,
+                    position=max(item.position for item in lecture.passes) + 1,
+                )
+                session.add(lecture_pass)
+                session.flush()
+                return lecture_pass
+        except IntegrityError as error:
+            raise ValueError("another pass was added; refresh and try again") from error
 
     def update_lecture(self, lecture_id: int, value: LectureInput) -> None:
         with self.database.session() as session:
