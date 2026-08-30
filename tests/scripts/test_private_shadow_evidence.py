@@ -42,6 +42,7 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
         assert forbidden not in wrapper
         assert forbidden not in harness
     assert "PRIVATE_SHADOW_EVIDENCE_HARNESS_VERIFIED" in harness
+    assert '("a" * 64 -join "")' in harness
     assert "provider_bad_request" in harness
     assert "PRIVATE_SHADOW_ENTRYPOINT_CONVERTER_VERIFIED" in harness
     assert "safe_result_write" in harness
