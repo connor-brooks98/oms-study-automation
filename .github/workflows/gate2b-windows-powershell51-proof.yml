@@ -10,8 +10,23 @@ permissions:
 
 jobs:
   powershell51:
+    name: PowerShell 5.1 / ${{ matrix.lane }}
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: contracts-providers
+            targets: tests\contracts\test_gate2b_manifest_split.py tests\providers\gemini\test_client.py tests\providers\gemini\test_evidence.py
+          - lane: live-contract-mocks
+            targets: tests\live\test_gemini_file_search_contract.py
+          - lane: composition-harness
+            targets: tests\scripts\test_task28_private_shadow_composition.py::test_c5_runs_the_committed_windows_harness_when_available
+          - lane: private-evidence-harness
+            targets: tests\scripts\test_private_shadow_evidence.py::test_private_shadow_wrapper_runs_committed_synthetic_fault_matrix
+          - lane: reconciliation-harness
+            targets: tests\scripts\test_gemini_reconciliation_evidence.py::test_python_json_to_powershell_evidence_path_runs_in_committed_harness
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,15 +58,11 @@ jobs:
           py -3.12 -m venv .venv
           .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 
-      - name: Run Gate 2B integration and PowerShell harnesses
+      - name: Run isolated Gate 2B lane
         shell: powershell
         env:
           RUN_LIVE_GEMINI_TESTS: "0"
           RUN_PRIVATE_GEMINI_SHADOW: "0"
         run: |
-          .\.venv\Scripts\python.exe -m pytest -q `
-            tests\contracts\test_gate2b_manifest_split.py `
-            tests\providers\gemini\test_client.py `
-            tests\providers\gemini\test_evidence.py `
-            tests\live\test_gemini_file_search_contract.py `
-            tests\scripts
+          $Targets = "${{ matrix.targets }}".Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
+          & .\.venv\Scripts\python.exe -m pytest -vv --tb=short --maxfail=20 @Targets
