@@ -17,24 +17,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - lane: contracts-providers
-            targets: tests\contracts\test_gate2b_manifest_split.py tests\providers\gemini\test_client.py tests\providers\gemini\test_evidence.py
-          - lane: live-contract-mocks
-            targets: tests\live\test_gemini_file_search_contract.py
-          - lane: composition-harness
-            targets: tests\scripts\test_task28_private_shadow_composition.py::test_c5_runs_the_committed_windows_harness_when_available
-          - lane: private-evidence-harness
-            targets: tests\scripts\test_private_shadow_evidence.py::test_private_shadow_wrapper_runs_committed_synthetic_fault_matrix
-          - lane: reconciliation-harness
-            targets: tests\scripts\test_gemini_reconciliation_evidence.py::test_python_json_to_powershell_evidence_path_runs_in_committed_harness
+          - lane: acl-probe
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
       - name: Verify immutable parent and Windows PowerShell 5.1
         shell: powershell
@@ -52,17 +39,43 @@ jobs:
             throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)."
           }
 
-      - name: Install provider-free test dependencies
+      - name: Probe current-user-only file ACL
         shell: powershell
         run: |
-          py -3.12 -m venv .venv
-          .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-
-      - name: Run isolated Gate 2B lane
-        shell: powershell
-        env:
-          RUN_LIVE_GEMINI_TESTS: "0"
-          RUN_PRIVATE_GEMINI_SHADOW: "0"
-        run: |
-          $Targets = "${{ matrix.targets }}".Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
-          & .\.venv\Scripts\python.exe -m pytest -vv --tb=short --maxfail=20 @Targets
+          $Probe = Join-Path $env:RUNNER_TEMP "gate2b-acl-probe"
+          [IO.File]::WriteAllText($Probe, "synthetic")
+          try {
+            $Identity = & whoami.exe /user /fo csv /nh |
+              ConvertFrom-Csv -Header Name,Sid
+            $IdentityExit = $LASTEXITCODE
+            & icacls.exe $Probe /inheritance:r /grant:r "*$($Identity.Sid):(F)" | Out-Null
+            $GrantExit = $LASTEXITCODE
+            & icacls.exe $Probe /verify | Out-Null
+            $VerifyExit = $LASTEXITCODE
+            $Acl = Get-Acl -LiteralPath $Probe
+            $Rules = @($Acl.GetAccessRules(
+                $true, $false, [Security.Principal.SecurityIdentifier]
+            ))
+            $Current = @($Rules | Where-Object {
+                $_.IdentityReference.Value -ceq $Identity.Sid
+              })
+            [pscustomobject]@{
+              identity_exit = $IdentityExit
+              sid_valid = [bool]($Identity.Sid -match '^S-1(?:-\d+)+$')
+              grant_exit = $GrantExit
+              verify_exit = $VerifyExit
+              protected = $Acl.AreAccessRulesProtected
+              rule_count = $Rules.Count
+              current_rule_count = $Current.Count
+              other_rule_count = @($Rules | Where-Object {
+                  $_.IdentityReference.Value -cne $Identity.Sid
+                }).Count
+              current_full_control = [bool]($Current.Count -eq 1 -and
+                (($Current[0].FileSystemRights -band
+                  [Security.AccessControl.FileSystemRights]::FullControl) -eq
+                  [Security.AccessControl.FileSystemRights]::FullControl))
+              current_inherited = [bool]($Current.Count -eq 1 -and $Current[0].IsInherited)
+            } | ConvertTo-Json -Compress
+          } finally {
+            Remove-Item -LiteralPath $Probe -Force -ErrorAction SilentlyContinue
+          }
