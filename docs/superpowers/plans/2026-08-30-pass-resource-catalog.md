@@ -137,6 +137,7 @@ git commit -m "feat: persist reusable pass resources"
 - Modify: `src/oms_hub/web/static/app.css`
 - Test: `tests/js/lecture.test.js`
 - Test: `tests/v2/test_lecture_generation_ui.py`
+- Test: `tests/v2/test_pass_tracker.py`
 - Test: `tests/v2/test_ui_design_standard.py`
 
 **Interfaces:**
@@ -146,6 +147,8 @@ git commit -m "feat: persist reusable pass resources"
 - [ ] **Step 1: Write failing DOM and interaction tests**
 
 Extend the server-rendered UI tests to require one hidden, labeled custom-resource editor per pass with `maxlength="100"`, `required`, and an Add & use button. Extend the fake DOM just enough to model `hidden`, `focus()`, `options`, and `document.createElement("option")`.
+
+Add a server-rendered integration assertion that saves `Pathoma`, changes the original pass to `Anki`, opens a different lecture, and finds exactly one reusable `Pathoma` option in that lecture's dropdown. This closes Task 1's intentionally deferred route-context/template boundary.
 
 Add JavaScript tests asserting:
 
@@ -267,4 +270,3 @@ git rev-parse HEAD^{tree}
 - [ ] **Step 5: Obtain independent final review**
 
 Give a fresh reviewer the exact merge-base-to-HEAD diff plus the approved spec and test evidence. Resolve every load-bearing finding before completion.
-
