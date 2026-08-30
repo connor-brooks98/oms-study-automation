@@ -126,6 +126,9 @@ def test_windows_health_fixture_has_a_bounded_accept() -> None:
     assert "$Root.TrimEnd('\\', '/')" in harness
     assert ".Replace('\\', '/')" in harness
     assert "SequenceEqual([string[]]$BeforeVerify, [string[]](" in harness
+    assert "function Invoke-Task28BoundScript" in harness
+    assert "$LauncherExit = Invoke-Task28BoundScript" in harness
+    assert "$ControllerExit = Invoke-Task28BoundScript" in harness
 
 
 def test_stage_uses_an_atomic_sibling_and_rejects_equal_roots() -> None:

@@ -57,6 +57,18 @@ function Get-ImmutableSnapshot {
   )
 }
 
+function Invoke-Task28BoundScript {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Manifest
+  )
+  $Process = Start-Process -FilePath (Join-Path $PSHOME "powershell.exe") -ArgumentList @(
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", ('"{0}"' -f $Path), "-Manifest", ('"{0}"' -f $Manifest)
+  ) -NoNewWindow -Wait -PassThru
+  return $Process.ExitCode
+}
+
 function Assert-StateRejectionCases {
   $Preexisting = Get-Task28StatePaths -RunId ([Guid]::NewGuid().ToString("N"))
   New-Task28ProtectedState -State $Preexisting
@@ -175,8 +187,8 @@ try {
   Protect-Task28Directory -Path $StateView.Scratch -Sid (Get-Task28CurrentSid)
   Assert-Task28ProtectedState -State $StateView
   Remove-Item -LiteralPath "Env:OMS_TASK28_COMPOSITION_VERIFY" -ErrorAction SilentlyContinue
-  & $Launcher -Manifest $ManifestPath
-  if ($LASTEXITCODE -ne 1 -or
+  $LauncherExit = Invoke-Task28BoundScript -Path $Launcher -Manifest $ManifestPath
+  if ($LauncherExit -ne 1 -or
       -not (Test-Path -LiteralPath (Join-Path $StateView.Evidence "result.json")) -or
       -not (Test-Path -LiteralPath (Join-Path $StateView.Evidence "status.json")) -or
       (Test-Path -LiteralPath (Join-Path $StateView.Diagnostic "provider-diagnostic.json"))) {
@@ -184,10 +196,10 @@ try {
   }
   Remove-Item -LiteralPath (Join-Path $State "evidence") -Recurse -Force
   $Controller = Join-Path $Destination "source/scripts/task28/private-shadow-controller.ps1"
-  & $Controller -Manifest $ManifestPath
-  if ($LASTEXITCODE -eq 0) { throw "Dirty state root was repaired or reused." }
-  & $Launcher -Manifest $ManifestPath
-  if ($LASTEXITCODE -eq 0) { throw "Missing state child reached the launcher." }
+  $ControllerExit = Invoke-Task28BoundScript -Path $Controller -Manifest $ManifestPath
+  if ($ControllerExit -eq 0) { throw "Dirty state root was repaired or reused." }
+  $LauncherExit = Invoke-Task28BoundScript -Path $Launcher -Manifest $ManifestPath
+  if ($LauncherExit -eq 0) { throw "Missing state child reached the launcher." }
   if (-not [System.Linq.Enumerable]::SequenceEqual([string[]]$BeforeVerify, [string[]](
       Get-ImmutableSnapshot -Root $Destination))) {
     throw "Dirty-state rejection changed the immutable bundle."
