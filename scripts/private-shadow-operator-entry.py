@@ -9,14 +9,24 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 
-def _load_reviewed_operator() -> ModuleType:
-    path = Path(__file__).with_name("private-shadow-operator-reviewed.py")
-    spec = importlib.util.spec_from_file_location("task_2_8_reviewed_private_operator", path)
+def _load_source_bound_smoke(project: Path) -> ModuleType:
+    try:
+        canonical_project = project.resolve(strict=True)
+        path = (canonical_project / "scripts" / "run-gemini-contract-smoke.py").resolve(
+            strict=True
+        )
+    except (OSError, RuntimeError) as error:
+        raise RuntimeError("private_shadow_smoke_binding_invalid") from error
+    if not path.is_relative_to(canonical_project):
+        raise RuntimeError("private_shadow_smoke_binding_invalid")
+    spec = importlib.util.spec_from_file_location("task_2_8_source_bound_smoke", path)
     if spec is None or spec.loader is None:
-        raise RuntimeError("private_shadow_operator_unavailable")
+        raise RuntimeError("private_shadow_smoke_unavailable")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    if Path(str(module.__file__)).resolve() != path:
+        raise RuntimeError("private_shadow_smoke_binding_invalid")
     return module
 
 
@@ -43,7 +53,6 @@ def _load_hash_bound_evidence(project: Path) -> ModuleType:
 
 
 def main() -> int:
-    reviewed = _load_reviewed_operator()
     scratch = Path(os.environ["OMS_TASK28_PRIVATE_SCRATCH"])
     project = Path(os.environ["OMS_TASK28_PRIVATE_PROJECT"]).resolve()
     database = None
@@ -52,12 +61,13 @@ def main() -> int:
     evidence: ModuleType | None = None
     record: dict[str, object] = {"status": "blocked"}
     try:
+        reviewed = _load_source_bound_smoke(project)
+        evidence = _load_hash_bound_evidence(project)
         if os.getenv("RUN_PRIVATE_GEMINI_SHADOW") != "1":
             raise reviewed.OperatorFailure("private_shadow_opt_in_required")
         reviewed._validate_scratch(scratch)
         scratch_valid = True
         source_sha256, pdf_sha256 = reviewed._approved_hashes(project)
-        evidence = _load_hash_bound_evidence(project)
         database_url, study_root = reviewed._runtime_configuration()
         source_database = reviewed.make_url(database_url).database
         if not isinstance(source_database, str):

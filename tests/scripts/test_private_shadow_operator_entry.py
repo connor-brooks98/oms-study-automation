@@ -29,10 +29,15 @@ def test_entrypoint_loads_only_the_hash_bound_evidence_module() -> None:
     module = _load_entrypoint()
     source = ROOT / "src" / "oms_hub" / "providers" / "gemini" / "evidence.py"
     loaded = module._load_hash_bound_evidence(ROOT)
+    smoke = module._load_source_bound_smoke(ROOT)
 
     assert Path(str(loaded.__file__)).resolve() == source.resolve()
+    assert Path(str(smoke.__file__)).resolve() == (
+        ROOT / "scripts" / "run-gemini-contract-smoke.py"
+    ).resolve()
     assert "_FAILURE_KEYS" not in ENTRYPOINT.read_text(encoding="utf-8")
     assert "sys.path.insert" not in ENTRYPOINT.read_text(encoding="utf-8")
+    assert "private-shadow-operator-reviewed.py" not in ENTRYPOINT.read_text(encoding="utf-8")
 
 
 def test_entrypoint_rejects_an_evidence_package_symlink_escape(tmp_path: Path) -> None:

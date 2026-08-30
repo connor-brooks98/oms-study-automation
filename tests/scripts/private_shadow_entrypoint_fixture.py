@@ -172,7 +172,7 @@ def main() -> int:
         database = root / "fixture.db"
         database.write_bytes(b"fixture")
         entrypoint = cast(Any, module)
-        entrypoint._load_reviewed_operator = lambda: _reviewed(args.mode, database)
+        entrypoint._load_source_bound_smoke = lambda _project: _reviewed(args.mode, database)
         os.environ["OMS_TASK28_PRIVATE_SCRATCH"] = str(scratch)
         os.environ["OMS_TASK28_PRIVATE_PROJECT"] = str(project)
         os.environ["RUN_PRIVATE_GEMINI_SHADOW"] = "1"

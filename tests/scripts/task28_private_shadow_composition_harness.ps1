@@ -1,0 +1,78 @@
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+  [Parameter(Mandatory = $true)][string]$PythonExecutable
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+$RepositoryRoot = (Get-Item -LiteralPath $RepositoryRoot -Force).FullName
+$PythonExecutable = (Get-Item -LiteralPath $PythonExecutable -Force).FullName
+$Composition = Join-Path $RepositoryRoot "scripts/task28/private-shadow-composition.ps1"
+$Commit = (& git -C $RepositoryRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $Commit -notmatch "^[0-9a-f]{40}$") { throw "Harness commit is invalid." }
+$Sandbox = Join-Path ([IO.Path]::GetTempPath()) ("oms-task28-composition-{0}" -f [Guid]::NewGuid().ToString("N"))
+$Archive = Join-Path $Sandbox "source.tar"
+$Destination = Join-Path $Sandbox "bundle"
+$State = Join-Path $Sandbox "reserved-state"
+$Lock = Join-Path $RepositoryRoot "uv.lock"
+$Socket = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+$Socket.Start()
+$Port = ([Net.IPEndPoint]$Socket.LocalEndpoint).Port
+$Socket.Stop()
+$HealthJob = Start-Job -ArgumentList $Port -ScriptBlock {
+  param([int]$Port)
+  $Listener = [Net.HttpListener]::new()
+  $Listener.Prefixes.Add("http://127.0.0.1:$Port/")
+  $Listener.Start()
+  try {
+    $Context = $Listener.GetContext()
+    $Payload = [Text.Encoding]::UTF8.GetBytes('{"status":"ok"}')
+    $Context.Response.StatusCode = 200
+    $Context.Response.ContentType = "application/json"
+    $Context.Response.ContentLength64 = $Payload.Length
+    $Context.Response.OutputStream.Write($Payload, 0, $Payload.Length)
+    $Context.Response.Close()
+  } finally {
+    $Listener.Stop()
+  }
+}
+New-Item -ItemType Directory -Path $Sandbox | Out-Null
+try {
+  Start-Sleep -Milliseconds 200
+  & git -C $RepositoryRoot archive --format=tar --prefix=source/ `
+    "--add-virtual-file=.task28-source-commit:$Commit" "--output=$Archive" $Commit
+  if ($LASTEXITCODE -ne 0) { throw "Harness archive creation failed." }
+  & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
+    -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
+    -TaskName "task28-composition-harness" -MutableStatePath $State `
+    -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
+  if ($LASTEXITCODE -ne 0) { throw "First Stage failed." }
+  $ManifestPath = Join-Path $Destination "run-manifest.json"
+  $FirstManifest = [IO.File]::ReadAllBytes($ManifestPath)
+  $FirstSourceManifest = [IO.File]::ReadAllBytes((Join-Path $Destination "source-manifest.json"))
+  $FirstRuntimeManifest = [IO.File]::ReadAllBytes((Join-Path $Destination "runtime-manifest.json"))
+  & $Composition -Mode Verify -Manifest $ManifestPath
+  if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $State)) {
+    throw "Verify did not leave the reserved mutable state absent."
+  }
+  Remove-Item -LiteralPath $Destination -Recurse -Force
+  & $Composition -Mode Stage -SourceArchive $Archive -RepositoryRoot $RepositoryRoot `
+    -SourceCommit $Commit -LockedRequirements $Lock -Destination $Destination `
+    -TaskName "task28-composition-harness" -MutableStatePath $State `
+    -PythonExecutable $PythonExecutable -HubHealthUrl "http://127.0.0.1:$Port/health"
+  if ($LASTEXITCODE -ne 0) { throw "Second Stage failed." }
+  if (-not [System.Linq.Enumerable]::SequenceEqual(
+      $FirstManifest, [IO.File]::ReadAllBytes($ManifestPath)
+    ) -or -not [System.Linq.Enumerable]::SequenceEqual(
+      $FirstSourceManifest, [IO.File]::ReadAllBytes((Join-Path $Destination "source-manifest.json"))
+    ) -or -not [System.Linq.Enumerable]::SequenceEqual(
+      $FirstRuntimeManifest, [IO.File]::ReadAllBytes((Join-Path $Destination "runtime-manifest.json"))
+    )) {
+    throw "Stage output was not deterministic."
+  }
+  Write-Output "TASK28_PRIVATE_SHADOW_COMPOSITION_HARNESS_VERIFIED"
+} finally {
+  if ($HealthJob) { Remove-Job -Job $HealthJob -Force -ErrorAction SilentlyContinue }
+  if (Test-Path -LiteralPath $Sandbox) { Remove-Item -LiteralPath $Sandbox -Recurse -Force }
+}

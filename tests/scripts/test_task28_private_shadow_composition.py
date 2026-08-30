@@ -3,7 +3,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 EXECUTABLES = (
     "scripts/task28/private-shadow-controller.ps1",
@@ -40,3 +39,26 @@ def test_task28_composition_never_references_transient_executables() -> None:
 
     assert "/private/tmp/task28-" not in text
     assert "task28-*-composition" not in text
+
+
+def test_composition_stages_and_verifies_a_source_bound_fake_path() -> None:
+    composition = (
+        ROOT / "scripts" / "task28" / "private-shadow-composition.ps1"
+    ).read_text(encoding="utf-8")
+    controller = (
+        ROOT / "scripts" / "task28" / "private-shadow-controller.ps1"
+    ).read_text(encoding="utf-8")
+    launcher = (
+        ROOT / "scripts" / "task28" / "private-shadow-launcher.ps1"
+    ).read_text(encoding="utf-8")
+    text = "\n".join((composition, controller, launcher))
+
+    assert 'ValidateSet("Stage", "Verify")' in composition
+    assert "git -C $RepositoryRoot archive" in composition
+    assert ".task28-source-commit" in composition
+    assert "mutable_state_path" in composition
+    assert "hub_health_url" in composition
+    assert "Register-ScheduledTask" not in text
+    assert "private-shadow-launcher.ps1" in controller
+    assert "private-shadow-operator-entry.py" in launcher
+    assert "run-private-shadow-evidence.ps1" in launcher
