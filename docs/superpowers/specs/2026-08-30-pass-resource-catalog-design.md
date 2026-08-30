@@ -34,4 +34,3 @@ Let a learner choose **Other** for a lecture pass, type the resource name, use i
 - Preserve existing pass completion dates, extra-pass behavior, exam overview behavior, and concurrent pass-update safety.
 - Continue escaping server-rendered names and construct browser options with DOM properties rather than HTML strings.
 - Do not push, deploy, or mutate an external Study Hub runtime.
-

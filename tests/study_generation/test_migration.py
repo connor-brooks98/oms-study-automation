@@ -181,6 +181,49 @@ def test_v31_creates_and_backfills_pass_resources_idempotently(tmp_path) -> None
     assert version == 31
 
 
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("missing table", "schema v31 is missing lecture pass resources"),
+        ("missing column", "schema v31 lecture pass resource columns are incomplete"),
+        ("invalid nullability", "schema v31 lecture pass resource nullability is invalid"),
+        ("invalid primary key", "schema v31 lecture pass resource primary key is invalid"),
+        ("missing unique", "schema v31 lecture pass resource name is not unique"),
+    ],
+)
+def test_claimed_v31_invalid_pass_resource_catalog_fails_closed(
+    tmp_path: Path, case: str, message: str
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        if case == "missing table":
+            connection.execute(text("DROP TABLE lecture_pass_resources"))
+        elif case == "missing column":
+            connection.execute(text("ALTER TABLE lecture_pass_resources DROP COLUMN created_at"))
+        else:
+            connection.execute(text("DROP TABLE lecture_pass_resources"))
+            definitions = {
+                "invalid nullability": (
+                    "id INTEGER NOT NULL PRIMARY KEY, "
+                    "name VARCHAR(100) COLLATE NOCASE NOT NULL UNIQUE, "
+                    "created_at VARCHAR(40)"
+                ),
+                "invalid primary key": (
+                    "id INTEGER NOT NULL, name VARCHAR(100) COLLATE NOCASE NOT NULL UNIQUE, "
+                    "created_at VARCHAR(40) NOT NULL, PRIMARY KEY (name)"
+                ),
+                "missing unique": (
+                    "id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(100) COLLATE NOCASE NOT NULL, "
+                    "created_at VARCHAR(40) NOT NULL"
+                ),
+            }
+            connection.execute(text(f"CREATE TABLE lecture_pass_resources ({definitions[case]})"))
+
+    with pytest.raises(RuntimeError, match=message):
+        database.migrate()
+
+
 def test_claimed_v30_missing_lecture_passes_fails_closed(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()

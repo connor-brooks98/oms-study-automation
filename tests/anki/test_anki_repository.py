@@ -78,7 +78,7 @@ from oms_hub.anki.repository import (
 from oms_hub.anki.tag_policy import TagPolicy
 from oms_hub.db import Database
 from oms_hub.llm.domain import ProviderName
-from oms_hub.migrations import migrate_database
+from oms_hub.migrations import LATEST_SCHEMA_VERSION, migrate_database
 from oms_hub.models import LectureModel
 
 
@@ -1788,7 +1788,7 @@ def test_v24_card_ledger_evidence_survives_reopen_upgrade_without_rewriting(
         for candidate_model, outcome in fixtures
         if candidate_model == model
     ]
-    assert version == 30
+    assert version == LATEST_SCHEMA_VERSION
 
 
 def test_card_ledger_transport_failure_persists_only_safe_diagnostics(
