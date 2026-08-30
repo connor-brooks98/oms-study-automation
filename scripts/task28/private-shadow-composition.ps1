@@ -108,7 +108,7 @@ if ($Mode -eq "Stage") {
   $RuntimeRoot = Join-Path $Destination "runtime"
   New-Item -ItemType Directory -Path $RuntimeRoot | Out-Null
   Move-Item -LiteralPath (Join-Path $Destination "requirements.lock") -Destination (Join-Path $RuntimeRoot "requirements.lock")
-  $RuntimeRows = Get-Task28FileRows -Root $RuntimeRoot
+  $RuntimeRows = @(Get-Task28FileRows -Root $RuntimeRoot)
   Write-CanonicalJson -Path $RuntimeManifestPath -Value ([ordered]@{schema_version=1; files=$RuntimeRows})
   $Controller = Join-Path $SourceRoot "scripts/task28/private-shadow-controller.ps1"
   $Launcher = Join-Path $SourceRoot "scripts/task28/private-shadow-launcher.ps1"

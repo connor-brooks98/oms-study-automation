@@ -508,14 +508,18 @@ def _open_restricted_diagnostic_temp(output: Path) -> tuple[int, Path]:
             or ace[0][0] != win32security.ACCESS_ALLOWED_ACE_TYPE
             or ace[0][1] & win32security.INHERITED_ACE != 0
             or ace[1] & ntsecuritycon.FILE_ALL_ACCESS != ntsecuritycon.FILE_ALL_ACCESS
-            or not win32security.EqualSid(ace[2], sid)
+            or win32security.ConvertSidToStringSid(ace[2])
+            != win32security.ConvertSidToStringSid(sid)
         ):
             raise ValueError
         raw_handle = int(handle.Detach())
         handle = None
         try:
             file_descriptor = msvcrt.open_osfhandle(
-                raw_handle, os.O_RDWR | getattr(os, "O_BINARY", 0)
+                raw_handle,
+                os.O_RDWR
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOINHERIT", 0),
             )
         except BaseException:
             win32api.CloseHandle(raw_handle)

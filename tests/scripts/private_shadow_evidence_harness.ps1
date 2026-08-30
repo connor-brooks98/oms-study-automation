@@ -238,8 +238,9 @@ try {
   $env:OMS_TASK28_PRIVATE_PROJECT = "stale-private-project"
   $env:OMS_TASK28_PRIVATE_DIAGNOSTIC_PATH = "stale-private-diagnostic"
   $WrappedValid = Invoke-WrapperEvidence -Mode "valid"
+  $DirectCanonical = $DirectValid.Stdout.TrimEnd("`r", "`n") + "`n"
   if ($DirectValid.ExitCode -ne 0 -or -not [string]::IsNullOrEmpty($DirectValid.Stderr) -or
-      $WrappedValid.ExitCode -ne 1 -or $WrappedValid.SafeResult -cne $DirectValid.Stdout) {
+      $WrappedValid.ExitCode -ne 1 -or $WrappedValid.SafeResult -cne $DirectCanonical) {
     throw "Valid private-shadow evidence did not match the shared Python contract."
   }
   $WrappedComposition = Invoke-WrapperEvidence -Mode "valid" -CompositionVerify
