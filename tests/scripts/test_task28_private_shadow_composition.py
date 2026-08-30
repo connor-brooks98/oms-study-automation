@@ -123,6 +123,8 @@ def test_windows_health_fixture_has_a_bounded_accept() -> None:
     assert "GetContextAsync()" in harness
     assert "$ContextTask.Wait(30000)" in harness
     assert "$Listener.GetContext()" not in harness
+    assert "$Root.TrimEnd('\\', '/')" in harness
+    assert ".Replace('\\', '/')" in harness
 
 
 def test_stage_uses_an_atomic_sibling_and_rejects_equal_roots() -> None:
