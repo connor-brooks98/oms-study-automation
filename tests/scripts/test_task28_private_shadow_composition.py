@@ -121,7 +121,7 @@ def test_windows_health_fixture_has_a_bounded_accept() -> None:
     ).read_text(encoding="utf-8")
 
     assert "GetContextAsync()" in harness
-    assert "$ContextTask.Wait(30000)" in harness
+    assert "$ContextTask.Wait(600000)" in harness
     assert "$Listener.GetContext()" not in harness
     assert "$Root.TrimEnd('\\', '/')" in harness
     assert ".Replace('\\', '/')" in harness

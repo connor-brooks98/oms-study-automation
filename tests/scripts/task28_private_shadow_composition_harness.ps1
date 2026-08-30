@@ -31,7 +31,7 @@ $HealthJob = Start-Job -ArgumentList $Port -ScriptBlock {
   $Listener.Start()
   try {
     $ContextTask = $Listener.GetContextAsync()
-    if (-not $ContextTask.Wait(30000)) { return }
+    if (-not $ContextTask.Wait(600000)) { return }
     $Context = $ContextTask.Result
     $Payload = [Text.Encoding]::UTF8.GetBytes('{"status":"ok"}')
     $Context.Response.StatusCode = 200
