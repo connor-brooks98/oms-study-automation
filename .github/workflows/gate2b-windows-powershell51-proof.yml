@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -24,8 +24,14 @@ jobs:
       - name: Verify immutable parent and Windows PowerShell 5.1
         shell: powershell
         run: |
-          if ((git rev-parse HEAD^) -ne "331e695c894601af3de925ae0e5253331fe1d4bc") {
-            throw "Proof commit is not based on the reviewed integration candidate."
+          $Candidate = "331e695c894601af3de925ae0e5253331fe1d4bc"
+          git merge-base --is-ancestor $Candidate HEAD
+          if ($LASTEXITCODE -ne 0) {
+            throw "Reviewed integration candidate is not an ancestor of the proof commit."
+          }
+          $Changed = @(git diff --name-only $Candidate HEAD)
+          if ($Changed.Count -ne 1 -or $Changed[0] -ne ".github/workflows/gate2b-windows-powershell51-proof.yml") {
+            throw "Proof branch changes content outside the disposable workflow."
           }
           if ($PSVersionTable.PSVersion.Major -ne 5) {
             throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)."
