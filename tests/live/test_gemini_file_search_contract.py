@@ -3281,7 +3281,7 @@ def _install_fake_windows_acl(
             ACL=Acl,
             SECURITY_ATTRIBUTES=Attributes,
             GetSecurityInfo=lambda handle, kind, info: Descriptor(handle),
-            EqualSid=lambda left, right: left == right,
+            ConvertSidToStringSid=str,
         ),
     }
     monkeypatch.setattr(smoke, "_IS_WINDOWS", True)
