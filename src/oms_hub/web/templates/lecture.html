@@ -117,19 +117,17 @@
   </div>
   </div>
 
-  <section class="checklist-card sh-card">
-    <div class="section-heading">
-      <div>
-        <p class="mono-label">First release</p>
-        <h2>Processing checklist</h2>
-      </div>
-    </div>
+  <details class="checklist-card sh-card t-accordion" data-processing-checklist>
     {% set all_complete = release_steps and (release_steps|selectattr('status', 'equalto', 'complete')|list|length == release_steps|length) %}
-    {% if all_complete and release_steps|length > 6 %}
-    <details class="checklist-disclosure">
-      <summary><span class="sh-disclose" aria-hidden="true">▸</span> <span class="sh-pill sh-pill--ok sh-pill--bare">{{ release_steps|length }}/{{ release_steps|length }} complete</span></summary>
-    {% endif %}
-    <ol class="compact-checklist">
+    {% set release_completed = release_steps|selectattr('status', 'equalto', 'complete')|list|length %}
+    <summary class="lecture-panel-summary">
+      <span class="lecture-panel-summary__copy">
+        <span class="mono-label">First release</span>
+        <strong>Processing checklist</strong>
+      </span>
+      <span class="sh-pill {% if all_complete %}sh-pill--ok{% else %}sh-pill--bare{% endif %}">{% if all_complete %}{{ release_steps|length }}/{{ release_steps|length }} complete{% else %}{{ release_completed }}/{{ release_steps|length }} complete{% endif %}</span>
+    </summary>
+    <ol class="compact-checklist lecture-panel-body">
       {% for step in release_steps %}
       {% set step_tone = "sh-pill--ok" if step.status in ("complete", "completed", "ready", "configured", "connected", "skipped") else "sh-pill--info" if step.status in ("processing", "queued", "running", "pending", "in_progress") else "sh-pill--warn" if step.status in ("needs_review", "review") else "sh-pill--err" if step.status in ("failed", "quarantined") else "" %}
       <li class="sh-step {% if step.status == 'complete' %}sh-step--ok{% endif %}">
@@ -139,10 +137,50 @@
       </li>
       {% endfor %}
     </ol>
-    {% if all_complete and release_steps|length > 6 %}
-    </details>
-    {% endif %}
-  </section>
+  </details>
+
+  {% set completed_passes = lecture.passes|selectattr('completed_on')|list|length %}
+  {% set pass_total = lecture.passes|length %}
+  {% set pass_resources = ("Lecture", "Anki", "Lecture outline", "Practice questions", "Other") %}
+  <details class="pass-tracker sh-card t-accordion" data-pass-tracker open>
+    <summary class="lecture-panel-summary pass-tracker-summary">
+      <span class="lecture-panel-summary__copy">
+        <span class="mono-label">Study progress</span>
+        <strong>Pass tracker</strong>
+      </span>
+      <span class="sh-pill {% if completed_passes == pass_total %}sh-pill--ok{% else %}sh-pill--info{% endif %}" data-pass-count>{{ completed_passes }}/{{ pass_total }}</span>
+    </summary>
+    <div class="pass-tracker-body lecture-panel-body">
+      <div class="pass-ledger-head" aria-hidden="true">
+        <span></span><span>Pass</span><span>Completed</span><span>Resource used</span>
+      </div>
+      <div class="pass-ledger">
+        {% for pass_item in lecture.passes %}
+        <div class="pass-ledger-row{% if pass_item.completed_on %} is-complete{% endif %}" data-pass-row data-pass-position="{{ pass_item.position }}">
+          <label class="pass-check sh-check">
+            <input type="checkbox" data-pass-complete data-pass-position="{{ pass_item.position }}" aria-label="Mark pass {{ pass_item.position }} complete" {% if pass_item.completed_on %}checked{% endif %}>
+            <span class="sr-only">Mark pass {{ pass_item.position }} complete</span>
+          </label>
+          <strong class="pass-name">Pass {{ pass_item.position }}</strong>
+          <time class="pass-date" data-pass-date datetime="{{ pass_item.completed_on or '' }}">{{ pass_item.completed_on or 'Not completed' }}</time>
+          <label class="pass-resource-label">
+            <span class="sr-only">Resource used for pass {{ pass_item.position }}</span>
+            <select class="pass-resource sh-select" data-pass-resource data-pass-position="{{ pass_item.position }}" aria-label="Resource used for pass {{ pass_item.position }}">
+              <option value="">Choose resource</option>
+              {% if pass_item.resource and pass_item.resource not in pass_resources %}<option value="{{ pass_item.resource }}" selected>{{ pass_item.resource }}</option>{% endif %}
+              {% for resource in pass_resources %}<option value="{{ resource }}" {% if pass_item.resource == resource %}selected{% endif %}>{{ resource }}</option>{% endfor %}
+            </select>
+          </label>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="pass-tracker-actions">
+        <p class="pass-tracker-hint">Finish the current passes to unlock another.</p>
+        <button class="sh-btn sh-btn--secondary" type="button" data-add-pass {% if not lecture.passes or completed_passes != pass_total %}disabled{% endif %}>+ Add pass</button>
+      </div>
+      <p class="sr-only" role="status" aria-live="polite" data-pass-feedback data-toast-source></p>
+    </div>
+  </details>
 
   <details class="metadata-panel sh-card">
     <summary><span class="sh-disclose" aria-hidden="true">▸</span> Edit lecture details</summary>
@@ -159,5 +197,5 @@
 </article>
 {% endblock %}
 {% block scripts %}
-<script src="/static/lecture.js?v=20260827.1" defer></script>
+<script src="/static/lecture.js?v=20260830.1" defer></script>
 {% endblock %}

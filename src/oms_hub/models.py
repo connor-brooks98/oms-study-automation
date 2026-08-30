@@ -80,6 +80,11 @@ class LectureModel(Base):
         cascade="all, delete-orphan",
         order_by="LectureStepModel.id",
     )
+    passes: Mapped[list["LecturePassModel"]] = relationship(
+        back_populates="lecture",
+        cascade="all, delete-orphan",
+        order_by="LecturePassModel.position",
+    )
 
 
 class LectureStepModel(Base):
@@ -97,6 +102,24 @@ class LectureStepModel(Base):
         onupdate=utc_now,
     )
     lecture: Mapped[LectureModel] = relationship(back_populates="steps")
+
+
+class LecturePassModel(Base):
+    __tablename__ = "lecture_passes"
+    __table_args__ = (UniqueConstraint("lecture_id", "position"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
+    position: Mapped[int]
+    completed_on: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    resource: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+    lecture: Mapped[LectureModel] = relationship(back_populates="passes")
 
 
 class ImportIssueModel(Base):

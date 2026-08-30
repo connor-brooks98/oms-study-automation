@@ -77,10 +77,144 @@
     callback();
   };
 
+  const formatCompletedOn = (value) => {
+    if (!value) return "Not completed";
+    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return String(value);
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  };
+
+  const initializePassTracker = (documentRef, fetchImpl, lectureId) => {
+    const rows = [...documentRef.querySelectorAll("[data-pass-row]")];
+    const passCount = documentRef.querySelector("[data-pass-count]");
+    const addPass = documentRef.querySelector("[data-add-pass]");
+    const feedback = documentRef.querySelector("[data-pass-feedback]");
+    if (!rows.length) return;
+
+    const announce = (message) => {
+      if (feedback) feedback.textContent = message;
+    };
+    const updateSummary = () => {
+      const completed = rows.filter(
+        (row) => row.querySelector("[data-pass-complete]").checked,
+      ).length;
+      if (passCount) {
+        passCount.textContent = `${completed}/${rows.length}`;
+        passCount.classList.remove("sh-pill--ok", "sh-pill--info", "t-number");
+        passCount.classList.add(completed === rows.length ? "sh-pill--ok" : "sh-pill--info");
+        void passCount.offsetWidth;
+        passCount.classList.add("t-number");
+      }
+      const saving = rows.some((row) => (
+        row.querySelector("[data-pass-complete]").disabled
+        || row.querySelector("[data-pass-resource]").disabled
+      ));
+      if (addPass) addPass.disabled = completed !== rows.length || saving;
+    };
+    const renderPass = (row, payload) => {
+      const checkbox = row.querySelector("[data-pass-complete]");
+      const date = row.querySelector("[data-pass-date]");
+      const resource = row.querySelector("[data-pass-resource]");
+      checkbox.checked = Boolean(payload.completed_on);
+      date.textContent = formatCompletedOn(payload.completed_on);
+      date.setAttribute("datetime", payload.completed_on || "");
+      if (payload.resource !== undefined) resource.value = payload.resource || "";
+      row.classList[checkbox.checked ? "add" : "remove"]("is-complete");
+      updateSummary();
+    };
+    const patchPass = async (position, body) => {
+      const response = await fetchImpl(
+        `/api/lectures/${lectureId}/passes/${position}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": csrfToken(documentRef),
+          },
+          body: JSON.stringify(body),
+          cache: "no-store",
+        },
+      );
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "Pass update failed.");
+      return payload;
+    };
+
+    rows.forEach((row) => {
+      const position = row.dataset.passPosition;
+      const checkbox = row.querySelector("[data-pass-complete]");
+      const date = row.querySelector("[data-pass-date]");
+      const resource = row.querySelector("[data-pass-resource]");
+      const initialDate = date.getAttribute?.("datetime");
+      if (initialDate) date.textContent = formatCompletedOn(initialDate);
+      let savedResource = resource.value;
+
+      checkbox.addEventListener("change", async () => {
+        const previousCompleted = !checkbox.checked;
+        checkbox.disabled = true;
+        updateSummary();
+        try {
+          const payload = await patchPass(position, { completed: checkbox.checked });
+          renderPass(row, payload);
+          savedResource = resource.value;
+          announce(`Pass ${position} saved.`);
+        } catch (error) {
+          checkbox.checked = previousCompleted;
+          updateSummary();
+          announce(`Pass ${position} update failed: ${error.message}`);
+        } finally {
+          checkbox.disabled = false;
+          updateSummary();
+        }
+      });
+
+      resource.addEventListener("change", async () => {
+        resource.disabled = true;
+        updateSummary();
+        try {
+          const payload = await patchPass(position, { resource: resource.value });
+          renderPass(row, payload);
+          savedResource = resource.value;
+          announce(`Pass ${position} resource saved.`);
+        } catch (error) {
+          resource.value = savedResource;
+          announce(`Pass ${position} resource update failed: ${error.message}`);
+        } finally {
+          resource.disabled = false;
+          updateSummary();
+        }
+      });
+    });
+
+    updateSummary();
+    addPass?.addEventListener("click", async () => {
+      if (addPass.disabled) return;
+      addPass.disabled = true;
+      try {
+        const response = await fetchImpl(`/api/lectures/${lectureId}/passes`, {
+          method: "POST",
+          headers: { "X-CSRF-Token": csrfToken(documentRef) },
+          cache: "no-store",
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || "Pass could not be added.");
+        root.location.reload();
+      } catch (error) {
+        updateSummary();
+        announce(`Add pass failed: ${error.message}`);
+      }
+    });
+  };
+
   const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
     const match = root.location.pathname.match(/^\/lectures\/(\d+)/);
     if (!match) return;
     const lectureId = match[1];
+    initializePassTracker(documentRef, fetchImpl, lectureId);
     let pollTimer;
     const basePollDelayMs = 2500;
     const maxPollDelayMs = 30000;
@@ -152,7 +286,7 @@
     void refresh().catch(handlePollError);
   };
 
-  const api = { csrfToken, initialize, render, runWhenReady };
+  const api = { csrfToken, formatCompletedOn, initialize, render, runWhenReady };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     runWhenReady(

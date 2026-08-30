@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
+from oms_hub.models import LectureModel
 from oms_hub.repositories import LectureInput
 
 
@@ -72,6 +73,45 @@ def test_new_lecture_seeds_exactly_five_passes(tmp_path) -> None:
     assert rows == [(position, None, None) for position in range(1, 6)]
 
 
+def test_tracker_import_seeds_new_and_existing_lectures(tmp_path) -> None:
+    app = _app(tmp_path)
+    with app.state.database.session() as session:
+        session.add(
+            LectureModel(
+                subject="Neuro",
+                exam_number=1,
+                lecture_number=1,
+                topic="Old topic",
+                lecturer="",
+            )
+        )
+
+    result = app.state.catalog_repository.commit_tracker_import(
+        [
+            LectureInput("Neuro", 1, 1, "Updated topic", "", None),
+            LectureInput("Neuro", 1, 2, "New topic", "", None),
+        ],
+        [],
+        "a" * 64,
+        "tracker.xlsx",
+    )
+
+    with app.state.database.engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT lectures.lecture_number, lecture_passes.position "
+                "FROM lectures JOIN lecture_passes ON lecture_passes.lecture_id = lectures.id "
+                "ORDER BY lectures.lecture_number, lecture_passes.position"
+            )
+        ).all()
+    assert result == (1, 1)
+    assert rows == [
+        (lecture_number, position)
+        for lecture_number in (1, 2)
+        for position in range(1, 6)
+    ]
+
+
 def test_pass_patch_records_local_date_preserves_it_for_resource_and_clears_on_uncheck(
     tmp_path,
 ) -> None:
@@ -129,10 +169,12 @@ def test_pass_patch_requires_csrf_and_rejects_oversized_resource(tmp_path) -> No
         json={"resource": "x" * 101},
         headers=_csrf_headers(client),
     )
+    empty = client.patch(url, json={}, headers=_csrf_headers(client))
 
     assert missing_csrf.status_code == 403
     assert missing_post_csrf.status_code == 403
     assert oversized.status_code == 422
+    assert empty.status_code == 422
 
 
 def test_extra_pass_requires_all_current_passes_then_appends_position_six(tmp_path) -> None:
@@ -223,7 +265,12 @@ def test_missing_lecture_and_pass_return_404(tmp_path) -> None:
         "/api/lectures/999999/passes",
         headers=headers,
     )
+    missing_exam = client.get(
+        "/lectures/exams/99/passes",
+        params={"subject": "Neuro"},
+    )
 
     assert missing_lecture.status_code == 404
     assert missing_pass.status_code == 404
     assert missing_lecture_post.status_code == 404
+    assert missing_exam.status_code == 404

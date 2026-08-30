@@ -1,8 +1,10 @@
 from collections import OrderedDict
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from oms_hub.domain import (
@@ -12,14 +14,16 @@ from oms_hub.domain import (
 )
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.models import LecturePassModel
 from oms_hub.naming import display_title
 from oms_hub.progress import overall_status
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import revision_readiness_problem
+from oms_hub.web.csrf import require_form_csrf
 from oms_hub.web.lecture_labels import lecture_label
-from oms_hub.web.schemas import LectureApi, StepApi
+from oms_hub.web.schemas import LectureApi, LecturePassUpdate, StepApi
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 router = APIRouter()
@@ -140,6 +144,23 @@ def lecture_library(request: Request) -> HTMLResponse:
         request=request,
         name="dashboard.html",
         context=_dashboard_context(request),
+    )
+
+
+@router.get("/lectures/exams/{exam_number}/passes", response_class=HTMLResponse)
+def exam_passes(request: Request, exam_number: int, subject: str) -> HTMLResponse:
+    lectures = _repo(request).list_exam_lectures(subject, exam_number)
+    if not lectures:
+        raise HTTPException(404, "exam was not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="exam_passes.html",
+        context={
+            "subject": subject,
+            "exam_number": exam_number,
+            "lectures": lectures,
+            "course_hue": _course_hue(subject),
+        },
     )
 
 
@@ -337,6 +358,81 @@ def lecture_api(request: Request) -> list[LectureApi]:
         )
         for lecture in _repo(request).list_lectures()
     ]
+
+
+def _pass_payload(lecture_pass: LecturePassModel) -> dict[str, int | str | None]:
+    return {
+        "position": lecture_pass.position,
+        "completed_on": lecture_pass.completed_on,
+        "resource": lecture_pass.resource,
+    }
+
+
+@router.patch("/api/lectures/{lecture_id}/passes/{position}")
+def update_lecture_pass(
+    request: Request,
+    lecture_id: int,
+    position: int,
+    update: LecturePassUpdate,
+) -> JSONResponse:
+    require_form_csrf(request, None)
+    if not update.model_fields_set:
+        raise HTTPException(422, "at least one pass field is required")
+
+    repository = _repo(request)
+    lecture = repository.get_lecture(lecture_id)
+    if lecture is None:
+        raise HTTPException(404, "lecture was not found")
+    lecture_pass = next(
+        (item for item in lecture.passes if item.position == position),
+        None,
+    )
+    if lecture_pass is None:
+        raise HTTPException(404, "lecture pass was not found")
+
+    completed_on = lecture_pass.completed_on
+    if "completed" in update.model_fields_set:
+        completed_on = (
+            completed_on
+            or datetime.now(
+                ZoneInfo(request.app.state.settings.timezone)
+            ).date().isoformat()
+            if update.completed
+            else None
+        )
+    resource = lecture_pass.resource
+    if "resource" in update.model_fields_set:
+        resource = update.resource.strip() if update.resource else None
+        resource = resource or None
+    try:
+        saved = repository.update_pass(
+            lecture_id,
+            position,
+            completed_on=completed_on,
+            resource=resource,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "lecture pass was not found") from error
+    return JSONResponse(
+        _pass_payload(saved),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/api/lectures/{lecture_id}/passes")
+def add_lecture_pass(request: Request, lecture_id: int) -> JSONResponse:
+    require_form_csrf(request, None)
+    try:
+        lecture_pass = _repo(request).append_pass(lecture_id)
+    except KeyError as error:
+        raise HTTPException(404, "lecture was not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return JSONResponse(
+        _pass_payload(lecture_pass),
+        status_code=201,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _course_hue(subject: str) -> int:

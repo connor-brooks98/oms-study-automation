@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ subject }} · Exam {{ exam_number }} passes · Study Hub{% endblock %}
+{% block content %}
+<article class="page-shell sh-container exam-pass-page" style="--course-hue: {{ course_hue }}; --sh-hue: {{ course_hue }}">
+  <nav class="breadcrumbs" aria-label="Breadcrumb">
+    <a href="/lectures">Lectures</a><span aria-hidden="true">/</span>
+    <span>{{ subject }}</span><span aria-hidden="true">/</span>
+    <span>Exam {{ exam_number }}</span>
+  </nav>
+
+  <header class="lecture-heading sh-header exam-pass-heading">
+    <span class="course-rail sh-subject-spine" aria-hidden="true"></span>
+    <div>
+      <h1 class="sh-title">Exam {{ exam_number }} passes</h1>
+      <p class="sh-subtitle">{{ subject }} · {{ lectures|length }} lecture{{ '' if lectures|length == 1 else 's' }}</p>
+    </div>
+    <span class="sh-pill sh-pill--info">Goal · 7 passes</span>
+  </header>
+
+  <section class="exam-pass-overview sh-card" data-exam-pass-overview aria-labelledby="exam-progress-heading">
+    <div class="exam-pass-overview__heading">
+      <div>
+        <p class="mono-label">Exam overview</p>
+        <h2 id="exam-progress-heading">Lecture progress</h2>
+      </div>
+      <p>One row per lecture, ordered by lecture number.</p>
+    </div>
+    <div class="exam-pass-table-wrap">
+      <table class="exam-pass-table">
+        <caption class="sr-only">Completed study passes for each lecture in {{ subject }} Exam {{ exam_number }}</caption>
+        <thead><tr><th>Lecture</th><th>Passes</th><th>Progress</th><th>Last pass</th></tr></thead>
+        <tbody>
+          {% for lecture in lectures %}
+          {% set completed = lecture.passes|selectattr('completed_on')|list %}
+          {% set pass_total = lecture.passes|length %}
+          <tr data-exam-lecture>
+            <td><a class="exam-pass-lecture" href="/lectures/{{ lecture.id }}">Lecture {{ "%02d"|format(lecture.lecture_number) }} · {{ lecture.topic }}</a></td>
+            <td><span class="sr-only" data-pass-count>{{ completed|length }} / {{ pass_total }}</span><span class="exam-pass-count" aria-hidden="true"><strong>{{ completed|length }}</strong> / {{ pass_total }}</span></td>
+            <td>
+              <div class="exam-pass-progress" data-pass-progress role="progressbar" aria-label="{{ completed|length }} of {{ pass_total }} passes complete for {{ lecture.topic }}" aria-valuemin="0" aria-valuemax="{{ pass_total }}" aria-valuenow="{{ completed|length }}" style="--pass-total: {{ pass_total }}">
+                {% for pass_item in lecture.passes %}<span class="exam-pass-segment{% if pass_item.completed_on %} is-complete{% endif %}" aria-hidden="true"></span>{% endfor %}
+              </div>
+            </td>
+            <td class="exam-pass-last">
+              {% if completed %}
+              {% set latest = completed|sort(attribute='completed_on')|last %}
+              <time datetime="{{ latest.completed_on }}">{{ latest.completed_on }}</time>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</article>
+{% endblock %}

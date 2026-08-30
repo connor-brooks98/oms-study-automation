@@ -2349,6 +2349,133 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 .file-actions .sh-btn { min-height: var(--control-h); padding-inline: var(--sp-4); }
 .metadata-panel > form { padding-block-start: var(--sp-3); }
 
+.exam-heading {
+  display: grid;
+  grid-template-columns: var(--control-h) minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: var(--control-h);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.exam-heading .exam-toggle {
+  width: var(--control-h);
+  min-height: var(--control-h);
+  padding: 0;
+  justify-content: center;
+  background: transparent;
+}
+.exam-heading .exam-toggle:hover { background: var(--brand-tint); }
+.exam-heading .chevron { width: auto; }
+.exam-overview-link {
+  display: flex;
+  min-width: 0;
+  min-height: var(--control-h);
+  align-items: center;
+  color: var(--text-1);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+  text-decoration: none;
+}
+.exam-overview-link:hover { color: var(--link-hover); }
+.exam-heading .exam-count { margin: 0; padding-inline-end: var(--sp-3); }
+
+.lecture-page > .checklist-card,
+.lecture-page > .pass-tracker {
+  padding: 0;
+  margin-block-end: var(--sp-4);
+  overflow: clip;
+}
+.lecture-panel-summary {
+  min-height: 76px;
+  padding: var(--sp-4) var(--sp-5);
+}
+.lecture-panel-summary__copy { display: grid; gap: var(--sp-1); min-width: 0; }
+.lecture-panel-summary__copy .mono-label { margin: 0; }
+.lecture-panel-summary__copy strong { font-size: var(--fs-h3); }
+.lecture-panel-summary > .sh-pill { margin-inline-start: auto; }
+.checklist-card > .lecture-panel-body,
+.pass-tracker > .lecture-panel-body {
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+  border-top: 1px solid var(--border);
+}
+
+.pass-ledger-head,
+.pass-ledger-row {
+  display: grid;
+  grid-template-columns: 44px minmax(6rem, .5fr) minmax(10rem, .75fr) minmax(13rem, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+}
+.pass-ledger-head {
+  padding: 0 var(--sp-3) var(--sp-2);
+  color: var(--text-3-strong);
+  font: 600 var(--fs-xs) var(--font-mono);
+  letter-spacing: .035em;
+  text-transform: uppercase;
+}
+.pass-ledger { display: grid; gap: var(--sp-2); }
+.pass-ledger-row {
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  transition: border-color var(--dur-short) var(--ease-out), background var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out);
+}
+.pass-ledger-row:focus-within { border-color: var(--focus-ring); }
+.pass-ledger-row.is-complete { border-color: var(--st-ok-dot); background: var(--st-ok-bg); }
+.pass-check { justify-content: center; }
+.pass-check input[type="checkbox"] { width: 20px; height: 20px; }
+.pass-name { font-size: var(--fs-sm); }
+.pass-date,
+.exam-pass-last,
+.exam-pass-count { color: var(--text-3-strong); font: var(--fs-xs) var(--font-mono); font-variant-numeric: tabular-nums; }
+.pass-ledger-row.is-complete .pass-date { color: var(--st-ok-tx); }
+.pass-resource-label { min-width: 0; margin: 0; }
+.pass-resource.sh-select { width: 100%; max-width: none; }
+.pass-tracker-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-block-start: var(--sp-4);
+}
+.pass-tracker-hint { margin: 0; color: var(--text-2); font-size: var(--fs-sm); }
+
+.exam-pass-heading { align-items: center; }
+.exam-pass-heading .sh-subtitle { margin: var(--sp-1) 0 0; }
+.exam-pass-heading > .sh-pill { margin-inline-start: auto; }
+.exam-pass-overview { padding: 0; overflow: hidden; }
+.exam-pass-overview__heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-5) var(--sp-6);
+  border-bottom: 1px solid var(--border);
+}
+.exam-pass-overview__heading .mono-label { margin-block-end: var(--sp-1); }
+.exam-pass-overview__heading p:not(.mono-label) { margin: 0; color: var(--text-2); font-size: var(--fs-sm); }
+.exam-pass-table-wrap { max-width: 100%; overflow-x: auto; }
+.exam-pass-table { width: 100%; min-width: 44rem; border-collapse: collapse; }
+.exam-pass-table th,
+.exam-pass-table td { padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--border); text-align: left; }
+.exam-pass-table th { color: var(--text-3-strong); font: 600 var(--fs-xs) var(--font-mono); letter-spacing: .035em; text-transform: uppercase; }
+.exam-pass-table tbody tr { transition: background var(--dur-short) var(--ease-out); }
+.exam-pass-table tbody tr:hover { background: var(--surface); }
+.exam-pass-table tbody tr:last-child td { border-bottom: 0; }
+.exam-pass-lecture { color: var(--text-1); font-size: var(--fs-sm); font-weight: 650; text-decoration: none; }
+.exam-pass-lecture:hover { color: var(--link-hover); }
+.exam-pass-count strong { color: var(--text-1); font-size: var(--fs-sm); }
+.exam-pass-progress {
+  display: grid;
+  grid-template-columns: repeat(var(--pass-total), minmax(1rem, 1fr));
+  gap: var(--sp-1);
+  width: min(18rem, 100%);
+}
+.exam-pass-segment { height: 8px; border-radius: var(--r-pill); background: var(--border); transition: background var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out); }
+.exam-pass-segment.is-complete { background: var(--st-ok-dot); transform: scaleY(1.15); }
+
 .upload-workbench {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(18rem, .75fr);
@@ -2387,6 +2514,7 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
   .lecture-workbench,
   .upload-workbench { grid-template-columns: minmax(0, 1fr); }
   .lecture-workbench { grid-template-areas: "status" "outputs"; }
+  .exam-pass-overview__heading { align-items: flex-start; flex-direction: column; }
 }
 
 @media (max-width: 42rem) {
@@ -2409,6 +2537,18 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
   .review-actions .sh-btn { width: 100%; }
   .duplicate-actions { flex-direction: column; }
   .duplicate-actions .sh-btn { width: 100%; }
+  .lecture-panel-summary { align-items: flex-start; min-height: 68px; padding: var(--sp-4); }
+  .lecture-panel-summary > .sh-pill { margin-inline-start: 0; }
+  .checklist-card > .lecture-panel-body,
+  .pass-tracker > .lecture-panel-body { padding: var(--sp-3) var(--sp-4) var(--sp-4); }
+  .pass-ledger-head { display: none; }
+  .pass-ledger-row { grid-template-columns: 44px minmax(0, 1fr); gap: var(--sp-1) var(--sp-2); }
+  .pass-check { grid-row: 1 / span 2; }
+  .pass-resource-label { grid-column: 1 / -1; margin-block-start: var(--sp-2); }
+  .pass-tracker-actions { align-items: stretch; flex-direction: column; }
+  .pass-tracker-actions .sh-btn { width: 100%; }
+  .exam-pass-heading { align-items: flex-start; }
+  .exam-pass-heading > .sh-pill { margin-inline-start: 0; }
 }
 
 /* Blue Workbench · settings and Quiz Builder */

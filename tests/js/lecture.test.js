@@ -56,11 +56,14 @@ class FakeLectureElement {
 }
 
 class FakeLectureDocument {
-  constructor(cards, { passRows = [], passCount = null, addPass = null } = {}) {
+  constructor(cards, {
+    passRows = [], passCount = null, addPass = null, feedback = null,
+  } = {}) {
     this.cards = cards;
     this.passRows = passRows;
     this.passCount = passCount;
     this.addPass = addPass;
+    this.feedback = feedback;
     this.cookie = "";
   }
 
@@ -81,6 +84,7 @@ class FakeLectureDocument {
   querySelector(selector) {
     if (selector === "[data-pass-count]") return this.passCount;
     if (selector === "[data-add-pass]") return this.addPass;
+    if (selector === "[data-pass-feedback]") return this.feedback;
     return null;
   }
 }
@@ -172,6 +176,12 @@ test("completed outline adds white open, blue download, and regenerate controls"
   assert.equal(actions.appended.href, "/artifacts/outlines/7/download");
   assert.equal(actions.classList.removed, "lecture-card-actions--single");
   assert.equal(card.appended.attributes["aria-label"], "Regenerate lecture outline");
+});
+
+test("pass dates format local ISO values and leave unknown values readable", () => {
+  assert.equal(lecture.formatCompletedOn(null), "Not completed");
+  assert.equal(lecture.formatCompletedOn("not-a-date"), "not-a-date");
+  assert.equal(lecture.formatCompletedOn("2026-08-30"), "Aug 30, 2026");
 });
 
 // The real setTimeout, saved before any monkeypatching below, used only to
@@ -429,6 +439,41 @@ test("add pass stays inert until every current pass is complete, then POSTs with
     assert.equal(posts.length, 1);
     assert.equal(posts[0].url, "/api/lectures/42/passes");
     assert.equal(posts[0].options.headers["X-CSRF-Token"], "csrf-token");
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
+test("failed add pass restores the control and announces the server detail", async () => {
+  const passes = Array.from({ length: 5 }, (_, index) => buildPassRow({
+    position: index + 1,
+    completed: true,
+  }));
+  const addPass = new FakeLectureElement();
+  const feedback = new FakeLectureElement();
+  const documentRef = new FakeLectureDocument([], {
+    passRows: passes.map(({ row }) => row),
+    passCount: new FakeLectureElement(),
+    addPass,
+    feedback,
+  });
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  const fetchImpl = async (_url, options = {}) => (
+    options.method === "POST"
+      ? { ok: false, async json() { return { detail: "Finish current passes." }; } }
+      : { ok: true, async json() { return {}; } }
+  );
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42", reload() {} };
+
+  try {
+    lecture.initialize(documentRef, fetchImpl);
+    assert.equal(addPass.disabled, false);
+    await addPass.dispatch("click");
+    await flushMicrotasks();
+    assert.equal(addPass.disabled, false);
+    assert.equal(feedback.textContent, "Add pass failed: Finish current passes.");
   } finally {
     if (originalLocation === undefined) delete global.location;
     else global.location = originalLocation;

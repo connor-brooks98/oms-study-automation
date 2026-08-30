@@ -1,10 +1,15 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StepApi(BaseModel):
     name: str
     status: str
     detail: str | None
+
+
+class LecturePassUpdate(BaseModel):
+    completed: bool = False
+    resource: str | None = Field(default=None, max_length=100)
 
 
 class LectureApi(BaseModel):

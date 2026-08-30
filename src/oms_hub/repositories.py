@@ -9,6 +9,7 @@ from oms_hub.models import (
     ImportIssueModel,
     ImportRunModel,
     LectureModel,
+    LecturePassModel,
     LectureStepModel,
 )
 
@@ -21,6 +22,15 @@ class LectureInput:
     topic: str
     lecturer: str
     exam_date: str | None
+
+
+def _seed_initial_passes(lecture: LectureModel) -> None:
+    existing_positions = {item.position for item in lecture.passes}
+    lecture.passes.extend(
+        LecturePassModel(position=position)
+        for position in range(1, 6)
+        if position not in existing_positions
+    )
 
 
 class CatalogRepository:
@@ -53,18 +63,22 @@ class CatalogRepository:
                     for name in V2StepName
                 ]
                 session.add(lecture)
-                session.flush()
             else:
                 lecture.topic = value.topic
                 lecture.lecturer = value.lecturer
                 lecture.exam_date = value.exam_date
+            _seed_initial_passes(lecture)
+            session.flush()
             return lecture.id
 
     def list_lectures(self) -> list[LectureModel]:
         with self.database.session() as session:
             statement = (
                 select(LectureModel)
-                .options(selectinload(LectureModel.steps))
+                .options(
+                    selectinload(LectureModel.steps),
+                    selectinload(LectureModel.passes),
+                )
                 .order_by(
                     LectureModel.exam_date,
                     LectureModel.subject,
@@ -78,8 +92,68 @@ class CatalogRepository:
             return session.scalar(
                 select(LectureModel)
                 .where(LectureModel.id == lecture_id)
-                .options(selectinload(LectureModel.steps))
+                .options(
+                    selectinload(LectureModel.steps),
+                    selectinload(LectureModel.passes),
+                )
             )
+
+    def list_exam_lectures(self, subject: str, exam_number: int) -> list[LectureModel]:
+        with self.database.session() as session:
+            statement = (
+                select(LectureModel)
+                .where(
+                    LectureModel.subject == subject,
+                    LectureModel.exam_number == exam_number,
+                )
+                .options(
+                    selectinload(LectureModel.steps),
+                    selectinload(LectureModel.passes),
+                )
+                .order_by(LectureModel.lecture_number, LectureModel.id)
+            )
+            return list(session.scalars(statement).all())
+
+    def update_pass(
+        self,
+        lecture_id: int,
+        position: int,
+        *,
+        completed_on: str | None,
+        resource: str | None,
+    ) -> LecturePassModel:
+        with self.database.session() as session:
+            lecture_pass = session.scalar(
+                select(LecturePassModel).where(
+                    LecturePassModel.lecture_id == lecture_id,
+                    LecturePassModel.position == position,
+                )
+            )
+            if lecture_pass is None:
+                raise KeyError((lecture_id, position))
+            lecture_pass.completed_on = completed_on
+            lecture_pass.resource = resource
+            session.flush()
+            return lecture_pass
+
+    def append_pass(self, lecture_id: int) -> LecturePassModel:
+        with self.database.session() as session:
+            lecture = session.scalar(
+                select(LectureModel)
+                .where(LectureModel.id == lecture_id)
+                .options(selectinload(LectureModel.passes))
+            )
+            if lecture is None:
+                raise KeyError(lecture_id)
+            if not lecture.passes or any(item.completed_on is None for item in lecture.passes):
+                raise ValueError("all current passes must be complete")
+            lecture_pass = LecturePassModel(
+                lecture_id=lecture_id,
+                position=max(item.position for item in lecture.passes) + 1,
+            )
+            session.add(lecture_pass)
+            session.flush()
+            return lecture_pass
 
     def update_lecture(self, lecture_id: int, value: LectureInput) -> None:
         with self.database.session() as session:
@@ -210,6 +284,7 @@ class CatalogRepository:
                     lecture.lecturer = value.lecturer
                     lecture.exam_date = value.exam_date
                     updated += int(changed)
+                _seed_initial_passes(lecture)
 
             session.execute(delete(ImportIssueModel))
             session.add_all(

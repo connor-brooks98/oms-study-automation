@@ -26,6 +26,7 @@ from oms_hub.llm.domain import DiagnosticSource, LLMTask, ProviderName
 from oms_hub.llm.repository import DEFAULT_MODELS
 from oms_hub.models import (
     LectureModel,
+    LecturePassModel,
     LectureStepModel,
     LLMProviderSettingModel,
     LLMTaskAssignmentModel,
@@ -38,7 +39,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 29
+LATEST_SCHEMA_VERSION = 30
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -347,6 +348,73 @@ def _validate_v3_durable_reservations_v29(database: "Database") -> None:
             canonical = json.dumps(table.document(), sort_keys=True, separators=(",", ":"))
             if payload != canonical or digest != table.rate_table_sha256:
                 raise RuntimeError("schema v29 v3 job rate-table pin changed")
+
+
+def _upgrade_lecture_passes_v30(database: "Database") -> None:
+    cast(Table, LecturePassModel.__table__).create(database.engine, checkfirst=True)
+    with database.session() as session:
+        existing = set(
+            session.execute(
+                select(LecturePassModel.lecture_id, LecturePassModel.position).where(
+                    LecturePassModel.position <= 5
+                )
+            ).all()
+        )
+        for lecture_id in session.scalars(select(LectureModel.id)).all():
+            session.add_all(
+                LecturePassModel(lecture_id=lecture_id, position=position)
+                for position in range(1, 6)
+                if (lecture_id, position) not in existing
+            )
+
+
+def _validate_lecture_passes_v30(database: "Database") -> None:
+    inspector = inspect(database.engine)
+    table = LecturePassModel.__tablename__
+    if not inspector.has_table(table):
+        raise RuntimeError("schema v30 is missing lecture passes")
+    columns = {column["name"]: column for column in inspector.get_columns(table)}
+    required = {
+        "id",
+        "lecture_id",
+        "position",
+        "completed_on",
+        "resource",
+        "created_at",
+        "updated_at",
+    }
+    if missing := sorted(required - set(columns)):
+        raise RuntimeError("schema v30 lecture pass columns are incomplete: " + ", ".join(missing))
+    expected_nullable = {
+        "id": False,
+        "lecture_id": False,
+        "position": False,
+        "completed_on": True,
+        "resource": True,
+        "created_at": False,
+        "updated_at": False,
+    }
+    if any(
+        bool(columns[name]["nullable"]) != nullable
+        for name, nullable in expected_nullable.items()
+    ):
+        raise RuntimeError("schema v30 lecture pass nullability is invalid")
+    primary_key = tuple(inspector.get_pk_constraint(table).get("constrained_columns") or ())
+    if primary_key != ("id",):
+        raise RuntimeError("schema v30 lecture pass primary key is invalid")
+    foreign_keys = inspector.get_foreign_keys(table)
+    if not any(
+        tuple(item.get("constrained_columns") or ()) == ("lecture_id",)
+        and item.get("referred_table") == LectureModel.__tablename__
+        and tuple(item.get("referred_columns") or ()) == ("id",)
+        for item in foreign_keys
+    ):
+        raise RuntimeError("schema v30 lecture pass lecture reference is invalid")
+    unique_sets = {
+        tuple(item["column_names"]) for item in inspector.get_unique_constraints(table)
+    }
+    if ("lecture_id", "position") not in unique_sets:
+        raise RuntimeError("schema v30 lecture pass identity is not unique")
 
 
 def _validate_course_curation_policy_v28(database: "Database") -> None:
@@ -2448,20 +2516,23 @@ def _preflight_current_artifact_uniqueness(database: "Database") -> None:
         )
 
 
-def _has_reconciled_v29_schema(database: "Database") -> bool:
-    """Detect the two historical schema-29 variants before taking the read-only path."""
+def _validate_reconciled_v29_schema(database: "Database") -> None:
     inspector = inspect(database.engine)
     required_tables = {
         "notebook_scope_leases",
         "published_quiz_flags",
         "studio_source_operations",
     }
-    if not required_tables <= set(inspector.get_table_names()):
-        return False
+    if missing := sorted(required_tables - set(inspector.get_table_names())):
+        raise RuntimeError("schema v30 v29 reconciliation is incomplete: " + missing[0])
     studio_source_columns = {
         column["name"] for column in inspector.get_columns("studio_sources")
     }
-    return {"import_attach_to_notebook", "import_role"} <= studio_source_columns
+    required_columns = {"import_attach_to_notebook", "import_role"}
+    if missing := sorted(required_columns - studio_source_columns):
+        raise RuntimeError(
+            "schema v30 v29 reconciliation is incomplete: studio_sources." + missing[0]
+        )
 
 
 def _is_deployed_study_hub_v23_schema(database: "Database", version: int | None) -> bool:
@@ -2498,11 +2569,8 @@ def migrate_database(database: "Database") -> None:
         )
         if version is not None and version >= 20 and not deployed_study_hub_v23:
             _validate_required_import_tables(database, version=version)
-        if (
-            version is not None
-            and version >= LATEST_SCHEMA_VERSION
-            and _has_reconciled_v29_schema(database)
-        ):
+        if version is not None and version >= LATEST_SCHEMA_VERSION:
+            _validate_reconciled_v29_schema(database)
             _validate_import_schema_structure(database, version=version)
             _validate_complete_existing_artifact_graph(database)
             _validate_current_artifact_indexes(database)
@@ -2512,6 +2580,7 @@ def migrate_database(database: "Database") -> None:
             _validate_provider_attempt_events_v26(database)
             _validate_course_curation_policy_v28(database)
             _validate_v3_durable_reservations_v29(database)
+            _validate_lecture_passes_v30(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -2558,6 +2627,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_provider_attempt_subcall_ordinal_v27(database)
     _upgrade_course_curation_policy_v28(database)
     _upgrade_v3_durable_reservations_v29(database)
+    _upgrade_lecture_passes_v30(database)
     _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
     _validate_complete_existing_artifact_graph(database)
     _validate_current_artifact_indexes(database)
@@ -2567,6 +2637,8 @@ def migrate_database(database: "Database") -> None:
     _validate_provider_attempt_events_v26(database)
     _validate_course_curation_policy_v28(database)
     _validate_v3_durable_reservations_v29(database)
+    _validate_reconciled_v29_schema(database)
+    _validate_lecture_passes_v30(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

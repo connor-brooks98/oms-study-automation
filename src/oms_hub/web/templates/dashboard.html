@@ -36,11 +36,13 @@
         {% for exam in course.exams %}
         {% set exam_id = course_id ~ "-exam-" ~ exam.number %}
         <section class="exam-group" data-exam="{{ exam.number }}">
-          <button class="exam-toggle" type="button" data-disclosure data-storage-key="exam:{{ course.name }}:{{ exam.number }}" aria-expanded="{{ 'true' if course_is_first and loop.first else 'false' }}" aria-controls="{{ exam_id }}">
-            <span class="chevron sh-disclose" aria-hidden="true">▸</span>
-            <span>Exam {{ exam.number }}</span>
+          <div class="exam-heading">
+            <button class="exam-toggle" type="button" data-disclosure data-storage-key="exam:{{ course.name }}:{{ exam.number }}" aria-expanded="{{ 'true' if course_is_first and loop.first else 'false' }}" aria-controls="{{ exam_id }}" aria-label="Toggle Exam {{ exam.number }} lectures">
+              <span class="chevron sh-disclose" aria-hidden="true">▸</span>
+            </button>
+            <a class="exam-overview-link" href="/lectures/exams/{{ exam.number }}/passes?subject={{ course.name|urlencode }}">Exam {{ exam.number }}</a>
             <span class="exam-count">{{ exam.lectures|length }} lectures</span>
-          </button>
+          </div>
           <div class="lecture-list" id="{{ exam_id }}" {% if not (course_is_first and loop.first) %}hidden{% endif %}>
             {% for row in exam.lectures %}
             <a class="lecture-row sh-row" href="/lectures/{{ row.lecture.id }}">

@@ -72,6 +72,7 @@ def test_reconciles_the_historical_schema_29_without_losing_its_version(tmp_path
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
     with database.engine.begin() as connection:
+        connection.execute(text("UPDATE schema_version SET version=29 WHERE id=1"))
         connection.execute(text("DROP TABLE notebook_scope_leases"))
         connection.execute(text("DROP TABLE published_quiz_flags"))
         connection.execute(text("DROP TABLE studio_source_operations"))
@@ -136,6 +137,30 @@ def test_v30_creates_and_backfills_lecture_passes_idempotently(tmp_path) -> None
         for position in range(1, 6)
     ]
     assert version == 30
+
+
+def test_claimed_v30_missing_lecture_passes_fails_closed(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE lecture_passes"))
+
+    with pytest.raises(RuntimeError, match="schema v30 is missing lecture passes"):
+        database.migrate()
+
+    assert not inspect(database.engine).has_table("lecture_passes")
+
+
+def test_claimed_v30_missing_v29_reconciliation_fails_closed(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE notebook_scope_leases"))
+
+    with pytest.raises(RuntimeError, match="schema v30 v29 reconciliation is incomplete"):
+        database.migrate()
+
+    assert not inspect(database.engine).has_table("notebook_scope_leases")
 
 
 def test_reconciles_the_deployed_non_anki_schema_23_without_losing_data(tmp_path):
