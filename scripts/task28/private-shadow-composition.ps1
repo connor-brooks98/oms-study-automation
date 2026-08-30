@@ -16,6 +16,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $Utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+. (Join-Path $PSScriptRoot "private-shadow-common.ps1")
 
 function Resolve-ExistingFile {
   param([Parameter(Mandatory = $true)][string]$Path)
@@ -204,10 +205,11 @@ if ($Mode -eq "Stage") {
   Write-CanonicalJson -Path $RuntimeManifestPath -Value ([ordered]@{schema_version=1; files=$RuntimeRows})
   $Controller = Join-Path $SourceRoot "scripts/task28/private-shadow-controller.ps1"
   $Launcher = Join-Path $SourceRoot "scripts/task28/private-shadow-launcher.ps1"
+  $Common = Join-Path $SourceRoot "scripts/task28/private-shadow-common.ps1"
   $EntryPoint = Join-Path $SourceRoot "scripts/private-shadow-operator-entry.py"
   $Wrapper = Join-Path $SourceRoot "scripts/run-private-shadow-evidence.ps1"
   $Evidence = Join-Path $SourceRoot "src/oms_hub/providers/gemini/evidence.py"
-  foreach ($Required in @($Controller, $Launcher, $EntryPoint, $Wrapper, $Evidence)) {
+  foreach ($Required in @($Controller, $Launcher, $Common, $EntryPoint, $Wrapper, $Evidence)) {
     if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) { throw "Required tracked bundle file is absent." }
   }
   $RunManifest = [ordered]@{
@@ -219,6 +221,7 @@ if ($Mode -eq "Stage") {
     mutable_state_path=$MutableStatePath
     controller_sha256=(Get-FileHash -LiteralPath $Controller -Algorithm SHA256).Hash.ToLowerInvariant()
     launcher_sha256=(Get-FileHash -LiteralPath $Launcher -Algorithm SHA256).Hash.ToLowerInvariant()
+    common_sha256=(Get-FileHash -LiteralPath $Common -Algorithm SHA256).Hash.ToLowerInvariant()
     entrypoint_sha256=(Get-FileHash -LiteralPath $EntryPoint -Algorithm SHA256).Hash.ToLowerInvariant()
     wrapper_sha256=(Get-FileHash -LiteralPath $Wrapper -Algorithm SHA256).Hash.ToLowerInvariant()
     evidence_sha256=(Get-FileHash -LiteralPath $Evidence -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -244,6 +247,7 @@ if ($Mode -eq "Stage") {
 }
 
 $Run = Read-RunManifest -Path $Manifest
+Read-BoundRunManifest -Path $Run.Path | Out-Null
 $ManifestHash = (Get-FileHash -LiteralPath $Run.Path -Algorithm SHA256).Hash.ToLowerInvariant()
 if ((Split-Path -Leaf $Run.Path) -cne "run-manifest.$ManifestHash.json") {
   throw "Run manifest filename is not bound to its contents."
@@ -254,6 +258,7 @@ if (Test-Path -LiteralPath ([string]$Run.Value.mutable_state_path)) {
   throw "Correction 1 must not create mutable state."
 }
 $SourceRoot = Join-Path $Bundle "source"
+Assert-ImmutableBundle -Bundle $Bundle
 Assert-ManifestFile -Path (Join-Path $Bundle "source.tar") -Row ([pscustomobject]@{sha256=$Run.Value.source.archive_sha256})
 Assert-ManifestFile -Path (Join-Path $Bundle "source-manifest.json") -Row ([pscustomobject]@{sha256=$Run.Value.source.manifest_sha256})
 Assert-ManifestFile -Path (Join-Path $Bundle "runtime-manifest.json") -Row ([pscustomobject]@{sha256=$Run.Value.runtime.manifest_sha256})

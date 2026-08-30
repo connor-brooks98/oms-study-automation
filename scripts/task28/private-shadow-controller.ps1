@@ -3,6 +3,7 @@ param([Parameter(Mandatory = $true)][string]$Manifest)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "private-shadow-common.ps1")
 
 function Resolve-SafeExistingFile {
   param([Parameter(Mandatory = $true)][string]$Path)
@@ -23,12 +24,14 @@ function Resolve-SafeExistingFile {
 }
 
 $Manifest = Resolve-SafeExistingFile -Path $Manifest
+Read-BoundRunManifest -Path $Manifest | Out-Null
 $Run = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
 if ($Run.schema_version -ne 1 -or $Run.authorization_count -ne 0 -or
     -not [IO.Path]::IsPathFullyQualified([string]$Run.immutable_bundle_path)) {
   throw "Private-shadow manifest is invalid."
 }
 $Bundle = [IO.Path]::GetFullPath([string]$Run.immutable_bundle_path)
+Assert-ImmutableBundle -Bundle $Bundle
 $BundlePrefix = $Bundle.TrimEnd("\\", "/") + [IO.Path]::DirectorySeparatorChar
 if (-not $Manifest.StartsWith($BundlePrefix, [StringComparison]::OrdinalIgnoreCase)) {
   throw "Private-shadow manifest escaped its immutable bundle."
