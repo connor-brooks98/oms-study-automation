@@ -136,6 +136,8 @@ def test_stage_uses_an_atomic_sibling_and_rejects_equal_roots() -> None:
     assert "$StageRoot" in composition
     assert "[IO.Directory]::Move($StageRoot, $FinalDestination)" in composition
     assert "controller_exit=$ControllerExit; wrapper_stage=$WrapperStage" in composition
+    assert "if ($ControllerExit -ne 0)" in composition
+    assert ').status -cne "passed"' in composition
     assert "$RuntimeRows = @(Get-Task28FileRows -Root $RuntimeRoot)" in composition
 
 
