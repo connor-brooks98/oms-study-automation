@@ -35,8 +35,26 @@ function New-EvidenceState {
   @'
 import json
 import os
+import tempfile
+from pathlib import Path
 
-if os.environ["PRIVATE_SHADOW_FIXTURE_MODE"] == "valid":
+scratch = Path(os.environ["TEMP"]).resolve()
+if Path(os.environ["TMP"]).resolve() != scratch:
+    raise RuntimeError("temp_mismatch")
+if os.environ.get("PYTHONDONTWRITEBYTECODE") != "1":
+    raise RuntimeError("bytecode_not_disabled")
+with tempfile.NamedTemporaryFile(dir=scratch, delete=True) as handle:
+    if Path(handle.name).resolve().parent != scratch:
+        raise RuntimeError("tempfile_escaped")
+(scratch / "environment-probe.json").write_text(
+    json.dumps({"temp": str(scratch), "tmp": os.environ["TMP"], "bytecode": os.environ.get("PYTHONDONTWRITEBYTECODE")}),
+    encoding="utf-8",
+)
+project = Path(__file__).resolve().parents[1]
+if any(project.rglob("__pycache__")):
+    raise RuntimeError("immutable_bytecode_written")
+
+if os.getenv("PRIVATE_SHADOW_FIXTURE_MODE", "valid") == "valid":
     record = {
         "status": "blocked",
         "source_revision_hash": "a" * 64,
@@ -95,7 +113,7 @@ function Invoke-DirectEvidence {
 }
 
 function Invoke-WrapperEvidence {
-  param([Parameter(Mandatory = $true)][string]$Mode)
+  param([Parameter(Mandatory = $true)][string]$Mode, [switch]$CompositionVerify)
   $CaseRoot = Join-Path $CasesRoot ([Guid]::NewGuid().ToString("N"))
   $State = New-EvidenceState
   $EvidenceRoot = $State.Evidence
@@ -103,15 +121,20 @@ function Invoke-WrapperEvidence {
   $SafeResult = Join-Path $EvidenceRoot "result.json"
   $SafeStatus = Join-Path $EvidenceRoot "status.json"
   $SafeResultContent = ""
+  $EnvironmentProbe = ""
   $env:PRIVATE_SHADOW_FIXTURE_MODE = $Mode
   try {
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
       -File $WrapperScript -PythonExecutable $PythonExecutable -StateRoot $State.Root -ProjectRoot $ProjectRoot `
       -OperatorScript $Emitter -DiagnosticRoot $DiagnosticRoot `
-      -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus
+      -SafeResultPath $SafeResult -SafeStatusPath $SafeStatus -CompositionVerify:$CompositionVerify
     $ExitCode = $LASTEXITCODE
     if (Test-Path -LiteralPath $SafeResult) {
       $SafeResultContent = [IO.File]::ReadAllText($SafeResult, $Utf8)
+    }
+    $ProbePath = Join-Path $State.Scratch "environment-probe.json"
+    if (Test-Path -LiteralPath $ProbePath) {
+      $EnvironmentProbe = [IO.File]::ReadAllText($ProbePath, $Utf8)
     }
   } finally {
     Remove-Item Env:PRIVATE_SHADOW_FIXTURE_MODE -ErrorAction SilentlyContinue
@@ -120,6 +143,8 @@ function Invoke-WrapperEvidence {
   [pscustomobject]@{
     ExitCode = $ExitCode
     SafeResult = $SafeResultContent
+    EnvironmentProbe = $EnvironmentProbe
+    ScratchRoot = $State.Scratch
   }
 }
 
@@ -183,6 +208,18 @@ try {
       $WrappedValid.ExitCode -ne 1 -or $WrappedValid.SafeResult -cne $DirectValid.Stdout) {
     throw "Valid private-shadow evidence did not match the shared Python contract."
   }
+  $WrappedComposition = Invoke-WrapperEvidence -Mode "valid" -CompositionVerify
+  foreach ($ProbeResult in @($WrappedValid, $WrappedComposition)) {
+    $Probe = $ProbeResult.EnvironmentProbe | ConvertFrom-Json
+    if ($Probe.temp -cne $ProbeResult.ScratchRoot -or $Probe.tmp -cne $ProbeResult.ScratchRoot -or
+        $Probe.bytecode -cne "1") {
+      throw "Child environment did not bind TEMP/TMP and bytecode policy to protected scratch."
+    }
+  }
+  if (@(Get-ChildItem -LiteralPath $ProjectRoot -Force -Recurse -Directory -Filter "__pycache__").Count -ne 0) {
+    throw "Child execution wrote Python bytecode into immutable project content."
+  }
+  Write-Output "PRIVATE_SHADOW_ENVIRONMENT_VERIFIED"
 
   $Entrypoint = Invoke-EntrypointEvidence
   $EntrypointRaw = $Entrypoint.Stdout.TrimEnd("`r", "`n")

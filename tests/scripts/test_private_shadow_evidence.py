@@ -45,6 +45,10 @@ def test_private_shadow_evidence_contract_is_durable_and_provider_agnostic() -> 
     assert "safe_result_write" in harness
     assert "operator_artifacts_deleted" in wrapper
     assert "raw_content_retained" in wrapper
+    assert '"PYTHONDONTWRITEBYTECODE"] = "1"' in wrapper
+    assert '"TEMP"] = $ScratchRoot' in wrapper
+    assert '"TMP"] = $ScratchRoot' in wrapper
+    assert "PRIVATE_SHADOW_ENVIRONMENT_VERIFIED" in harness
 
 
 def test_private_shadow_wrapper_runs_committed_synthetic_fault_matrix() -> None:
