@@ -149,16 +149,21 @@ def test_lecture_page_renders_migrated_resource_once_selected_with_other_last(tm
         connection.execute(text("UPDATE schema_version SET version=30 WHERE id=1"))
         connection.execute(
             text(
-                "UPDATE lecture_passes SET resource = 'boards & beyond' "
-                "WHERE lecture_id = :lecture_id AND position = 1"
+                "UPDATE lecture_passes SET resource = CASE position "
+                "WHEN 1 THEN 'Boards & Beyond' ELSE 'boards & beyond' END "
+                "WHERE lecture_id = :lecture_id AND position IN (1, 2)"
             ),
             {"lecture_id": lecture_id},
         )
     app.state.database.migrate()
 
     document = HTMLParser(TestClient(app).get(f"/lectures/{lecture_id}").text)
-    options = document.css_first("[data-pass-resource]").css("option")
-    canonical = [option for option in options if option.attributes.get("value") == "Boards & Beyond"]
+    options = document.css("[data-pass-resource]")[1].css("option")
+    canonical = [
+        option
+        for option in options
+        if option.attributes.get("value") == "Boards & Beyond"
+    ]
 
     assert len(canonical) == 1
     assert "selected" in canonical[0].attributes

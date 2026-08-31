@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import Table, func, inspect, select, text
+from sqlalchemy import Table, func, inspect, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 
 import oms_hub.anki.models  # noqa: F401
@@ -444,6 +444,31 @@ def _upgrade_lecture_pass_resources_v31(database: "Database") -> None:
                 insert(LecturePassResourceModel)
                 .values(name=name)
                 .on_conflict_do_nothing(index_elements=["name"])
+            )
+        passes = session.execute(
+            select(LecturePassModel.id, LecturePassModel.resource)
+            .where(
+                LecturePassModel.resource.is_not(None),
+                func.trim(LecturePassModel.resource) != "",
+                func.length(func.trim(LecturePassModel.resource)) <= 100,
+            )
+            .order_by(LecturePassModel.id)
+        )
+        for pass_id, resource in passes:
+            name = resource.strip()
+            canonical = (
+                "Other"
+                if name.casefold() == "other"
+                else session.scalar(
+                    select(LecturePassResourceModel.name).where(
+                        LecturePassResourceModel.name.collate("NOCASE") == name
+                    )
+                )
+            )
+            session.execute(
+                update(LecturePassModel)
+                .where(LecturePassModel.id == pass_id)
+                .values(resource=canonical)
             )
 
 

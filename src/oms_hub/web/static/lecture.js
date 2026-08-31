@@ -115,16 +115,19 @@
       ));
       if (addPass) addPass.disabled = completed !== rows.length || saving;
     };
-    const renderPass = (row, payload) => {
+    const renderCompletion = (row, payload) => {
       const checkbox = row.querySelector("[data-pass-complete]");
       const date = row.querySelector("[data-pass-date]");
-      const resource = row.querySelector("[data-pass-resource]");
       checkbox.checked = Boolean(payload.completed_on);
       date.textContent = formatCompletedOn(payload.completed_on);
       date.setAttribute("datetime", payload.completed_on || "");
-      if (payload.resource !== undefined) resource.value = payload.resource || "";
       row.classList[checkbox.checked ? "add" : "remove"]("is-complete");
       updateSummary();
+    };
+    const renderResource = (row, payload) => {
+      if (payload.resource !== undefined) {
+        row.querySelector("[data-pass-resource]").value = payload.resource || "";
+      }
     };
     const patchPass = async (position, body) => {
       const response = await fetchImpl(
@@ -187,8 +190,7 @@
         updateSummary();
         try {
           const payload = await patchPass(position, { completed: checkbox.checked });
-          renderPass(row, payload);
-          savedResource = resource.value;
+          renderCompletion(row, payload);
           announce(`Pass ${position} saved.`);
         } catch (error) {
           checkbox.checked = previousCompleted;
@@ -210,7 +212,7 @@
         updateSummary();
         try {
           const payload = await patchPass(position, { resource: resource.value });
-          renderPass(row, payload);
+          renderResource(row, payload);
           savedResource = resource.value;
           announce(`Pass ${position} resource saved.`);
         } catch (error) {
@@ -237,7 +239,7 @@
         try {
           const payload = await patchPass(position, { resource: name });
           ensureResourceOption(payload.resource);
-          renderPass(row, payload);
+          renderResource(row, payload);
           savedResource = resource.value;
           hideCustomResource();
           announce(`Pass ${position} resource saved.`);

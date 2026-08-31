@@ -396,6 +396,8 @@ def update_lecture_pass(
         if update_resource and update.resource
         else None
     )
+    if resource and resource.casefold() == "other":
+        raise HTTPException(422, "resource cannot be Other")
     try:
         saved = repository.update_pass(
             lecture_id,
