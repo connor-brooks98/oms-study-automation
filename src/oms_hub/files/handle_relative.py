@@ -241,6 +241,7 @@ def _copy_posix(
 # contract without pretending that macOS implements Windows path semantics.
 _GENERIC_READ = 0x80000000
 _GENERIC_WRITE = 0x40000000
+_FILE_LIST_DIRECTORY = 0x00000001
 _FILE_READ_ATTRIBUTES = 0x00000080
 _FILE_SHARE_READ = 0x00000001
 _FILE_SHARE_WRITE = 0x00000002
@@ -465,7 +466,7 @@ def _windows_path_parts(path: Path) -> tuple[Path, tuple[str, ...]]:
 def _windows_open_checked_directory(api: _WindowsAPI, path: Path) -> int:
     handle = api.open_file(
         str(path),
-        _FILE_READ_ATTRIBUTES,
+        _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES,
         _FILE_SHARE_READ | _FILE_SHARE_WRITE,
         _OPEN_EXISTING,
         _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
@@ -841,9 +842,14 @@ def hardened_sha256(path: Path, root: Path) -> str:
 def _windows_sha256(path: Path, root: Path, *, api: _WindowsAPI) -> str:
     try:
         with _windows_parent(root, path, create=False, api=api) as (parent, name):
-            handle = _windows_open_checked_file(
-                api, parent.path / name, access=_GENERIC_READ, creation=_OPEN_EXISTING
-            )
+            try:
+                handle = _windows_open_checked_file(
+                    api, parent.path / name, access=_GENERIC_READ, creation=_OPEN_EXISTING
+                )
+            except OSError as error:
+                if _is_missing_windows_error(error):
+                    raise FileNotFoundError(path) from error
+                raise
             try:
                 return _windows_hash_handle(api, handle)
             finally:
