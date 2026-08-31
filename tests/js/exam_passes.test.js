@@ -38,6 +38,7 @@ const pageFixture = () => {
   const days = new FakeElement();
   const hours = new FakeElement();
   const feedback = new FakeElement();
+  const submit = new FakeElement();
   const dialogTitle = new FakeElement();
   dialogTitle.textContent = "Set exam date";
   const documentRef = {
@@ -53,11 +54,12 @@ const pageFixture = () => {
         "[data-countdown-days]": days,
         "[data-countdown-hours]": hours,
         "[data-exam-date-feedback]": feedback,
+        "[data-save-exam-date]": submit,
         "[data-exam-date-dialog-title]": dialogTitle,
       })[selector] || null;
     },
   };
-  return { date, days, dialogTitle, documentRef, feedback, form, hours, input, open, page, state };
+  return { date, days, dialogTitle, documentRef, feedback, form, hours, input, open, page, state, submit };
 };
 
 test("countdown uses local 8:00 AM without UTC date parsing", () => {
@@ -98,8 +100,10 @@ test("initializer seeds a missing date and saves it with the CSRF token", async 
     fixture.documentRef, fetchImpl, () => new Date(2026, 7, 31, 9, 0),
   );
   t.after(cleanup);
+  fixture.feedback.textContent = "Previous feedback";
   assert.equal(fixture.date.textContent, "No date selected");
   await fixture.open.dispatch("click");
+  assert.equal(fixture.feedback.textContent, "");
   assert.equal(fixture.input.value, "2026-08-31");
   assert.equal(fixture.input.showPickerCalls, 1);
 
@@ -118,6 +122,8 @@ test("initializer seeds a missing date and saves it with the CSRF token", async 
   assert.equal(fixture.page.dataset.examDate, "2026-09-02");
   assert.equal(fixture.date.textContent, "Sep 2, 2026");
   assert.equal(fixture.feedback.textContent, "Exam date saved.");
+  assert.equal(fixture.input.disabled, false);
+  assert.equal(fixture.submit.disabled, false);
 });
 
 test("opening restores the saved date and discards an unsaved edit", async (t) => {
@@ -136,4 +142,46 @@ test("opening restores the saved date and discards an unsaved edit", async (t) =
   await fixture.open.dispatch("click");
   assert.equal(fixture.input.value, "2026-09-02");
   assert.equal(fixture.input.showPickerCalls, 2);
+});
+
+test("invalid date feedback leaves the saved exam date unchanged", async (t) => {
+  const fixture = pageFixture();
+  fixture.page.dataset.examDate = "2026-09-02";
+  const cleanup = examPasses.initialize(fixture.documentRef, undefined, () => new Date(2026, 7, 31));
+  t.after(cleanup);
+
+  fixture.input.value = "not-a-date";
+  await fixture.form.dispatch("submit");
+
+  assert.equal(fixture.feedback.textContent, "Choose a valid exam date.");
+  assert.equal(fixture.page.dataset.examDate, "2026-09-02");
+});
+
+test("overlapping date saves make one request and restore controls after an API error", async (t) => {
+  const fixture = pageFixture();
+  fixture.page.dataset.examDate = "2026-09-02";
+  let requests = 0;
+  let resolveFirst;
+  const fetchImpl = () => {
+    requests += 1;
+    return new Promise((resolve) => { resolveFirst = resolve; });
+  };
+  const cleanup = examPasses.initialize(fixture.documentRef, fetchImpl, () => new Date(2026, 7, 31));
+  t.after(cleanup);
+  fixture.input.value = "2026-09-03";
+
+  const first = fixture.form.listeners.submit[0]({ preventDefault() {} });
+  assert.equal(fixture.input.disabled, true);
+  assert.equal(fixture.submit.disabled, true);
+  const second = fixture.form.listeners.submit[0]({ preventDefault() {} });
+  assert.equal(requests, 1);
+
+  resolveFirst({ ok: false, async json() { return { detail: "Date save failed." }; } });
+  await first;
+  await second;
+
+  assert.equal(fixture.feedback.textContent, "Date save failed.");
+  assert.equal(fixture.page.dataset.examDate, "2026-09-02");
+  assert.equal(fixture.input.disabled, false);
+  assert.equal(fixture.submit.disabled, false);
 });

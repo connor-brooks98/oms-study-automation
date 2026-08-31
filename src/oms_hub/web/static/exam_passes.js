@@ -59,6 +59,8 @@
     const input = documentRef.querySelector("[data-exam-date-input]");
     const feedback = documentRef.querySelector("[data-exam-date-feedback]");
     const dialogTitle = documentRef.querySelector("[data-exam-date-dialog-title]");
+    const submit = documentRef.querySelector("[data-save-exam-date]");
+    let saving = false;
 
     const render = () => {
       const parts = countdownParts(page.dataset.examDate, now());
@@ -80,16 +82,22 @@
     open?.addEventListener("click", () => {
       if (input) input.value = page.dataset.examDate || localDateValue(now());
       if (dialogTitle) dialogTitle.textContent = page.dataset.examDate ? "Change exam date" : "Set exam date";
+      if (feedback) feedback.textContent = "";
       try { input?.showPicker?.(); } catch (_) { /* Native date picker is optional. */ }
     });
 
     form?.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (saving) return;
+      if (feedback) feedback.textContent = "";
       const value = input?.value || "";
       if (Number.isNaN(localDateAtEight(value).getTime())) {
         if (feedback) feedback.textContent = "Choose a valid exam date.";
         return;
       }
+      saving = true;
+      if (input) input.disabled = true;
+      if (submit) submit.disabled = true;
       try {
         const response = await fetchImpl(
           `/api/lectures/exams/${encodeURIComponent(page.dataset.examNumber)}/date?subject=${encodeURIComponent(page.dataset.subject)}`,
@@ -109,6 +117,10 @@
         documentRef.getElementById?.("exam-date-dialog")?.querySelector("[data-close-dialog]")?.click();
       } catch (error) {
         if (feedback) feedback.textContent = error.message || "Exam date could not be saved.";
+      } finally {
+        saving = false;
+        if (input) input.disabled = false;
+        if (submit) submit.disabled = false;
       }
     });
 

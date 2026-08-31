@@ -36,7 +36,6 @@
       <span class="exam-countdown__time"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7.5v5h4"></path></svg>Target · 8:00 AM</span>
       <div class="exam-countdown__date"><span>Exam date</span><strong data-exam-date-label>{% if exam_date %}{{ exam_date }}{% elif exam_date_conflict %}Dates differ{% else %}No date selected{% endif %}</strong></div>
       <button class="sh-btn sh-btn--secondary" type="button" data-open-dialog="exam-date-dialog" data-open-date>{% if exam_date %}Change Exam Date{% else %}Set Exam Date{% endif %}</button>
-      <p class="sr-only" role="status" aria-live="polite" data-exam-date-feedback></p>
     </div>
   </section>
 
@@ -84,9 +83,10 @@
     </div>
     <form class="date-dialog__body" data-exam-date-form>
       <label class="sh-field-label" for="exam-date">Exam date</label>
-      <input class="sh-input" id="exam-date" type="date" data-exam-date-input data-dialog-initial-focus required>
+      <input class="sh-input" id="exam-date" type="date" data-exam-date-input data-dialog-initial-focus aria-describedby="exam-date-feedback" required>
+      <p class="field-message" id="exam-date-feedback" role="status" aria-live="polite" data-exam-date-feedback></p>
       <p class="date-dialog__hint">The countdown target is 8:00 AM in your browser's local time.</p>
-      <div class="date-dialog__actions"><button class="sh-btn sh-btn--secondary" type="button" data-close-dialog>Cancel</button><button class="sh-btn sh-btn--primary" type="submit">Save exam date</button></div>
+      <div class="date-dialog__actions"><button class="sh-btn sh-btn--secondary" type="button" data-close-dialog>Cancel</button><button class="sh-btn sh-btn--primary" type="submit" data-save-exam-date>Save exam date</button></div>
     </form>
   </dialog>
 </article>

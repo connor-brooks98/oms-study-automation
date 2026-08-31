@@ -77,17 +77,6 @@
     callback();
   };
 
-  const formatCompletedOn = (value) => {
-    if (!value) return "Not completed";
-    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!match) return String(value);
-    return new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    }).format(new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
-  };
-
   const localDateValue = (value = new Date()) => {
     const pad = (part) => String(part).padStart(2, "0");
     return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
@@ -395,7 +384,7 @@
     void refresh().catch(handlePollError);
   };
 
-  const api = { csrfToken, formatCompletedOn, initialize, localDateValue, render, runWhenReady };
+  const api = { csrfToken, initialize, localDateValue, render, runWhenReady };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     runWhenReady(

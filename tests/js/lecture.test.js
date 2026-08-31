@@ -210,12 +210,6 @@ test("completed outline adds white open, blue download, and regenerate controls"
   assert.equal(card.appended.attributes["aria-label"], "Regenerate lecture outline");
 });
 
-test("pass dates format local ISO values and leave unknown values readable", () => {
-  assert.equal(lecture.formatCompletedOn(null), "Not completed");
-  assert.equal(lecture.formatCompletedOn("not-a-date"), "not-a-date");
-  assert.equal(lecture.formatCompletedOn("2026-08-30"), "Aug 30, 2026");
-});
-
 test("local date values preserve the browser calendar day", () => {
   assert.equal(lecture.localDateValue(new Date(2026, 7, 31, 23, 30)), "2026-08-31");
 });
