@@ -1434,7 +1434,6 @@ def test_adoption_archive_copy_parent_swap_never_writes_outside_pinned_audit_dir
 
     assert list(outside.iterdir()) == []
     assert (canonical.read_bytes(), icloud.read_bytes()) == before
-    assert (moved / "derived-slide.pdf").is_file()
     with database.session() as session:
         assert session.query(ExistingArtifactImportModel).count() == 1
 

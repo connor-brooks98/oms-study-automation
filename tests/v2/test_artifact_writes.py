@@ -1,6 +1,4 @@
 import hashlib
-import os
-import signal
 import sys
 from contextlib import contextmanager
 from io import BytesIO
@@ -180,7 +178,7 @@ def test_contended_adapter_never_creates_durable_claim(tmp_path):
         assert session.get(LectureArtifactWriteClaimModel, lecture_id) is None
 
 
-def test_posix_process_contention_and_killed_holder_recovery(tmp_path):
+def test_process_contention_and_killed_holder_recovery(tmp_path):
     settings = Settings(
         _env_file=None, data_dir=tmp_path / "data", database_url=f"sqlite:///{tmp_path / 'hub.db'}"
     )
@@ -200,7 +198,7 @@ def test_posix_process_contention_and_killed_holder_recovery(tmp_path):
     with pytest.raises(ArtifactWriteContended):
         with ArtifactWriteCoordinator(database, settings).claim(lecture_id, "contender"):
             pass
-    os.kill(holder.pid, signal.SIGKILL)
+    holder.kill()
     holder.join(timeout=10)
     with ArtifactWriteCoordinator(database, settings).claim(lecture_id, "successor") as claim:
         claim.assert_owned()

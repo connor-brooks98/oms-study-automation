@@ -301,7 +301,11 @@ def test_windows_copy_pins_both_chains_and_uses_native_handles() -> None:
     assert {share for _path, _access, share, _creation, _flags in api.open_calls} == {
         hardened._FILE_SHARE_READ | hardened._FILE_SHARE_WRITE
     }
-    directory_calls = [call for call in api.open_calls if call[1] == hardened._FILE_READ_ATTRIBUTES]
+    directory_calls = [
+        call
+        for call in api.open_calls
+        if call[1] == hardened._FILE_LIST_DIRECTORY | hardened._FILE_READ_ATTRIBUTES
+    ]
     assert [call[0] for call in directory_calls] == [
         "/",
         "/trusted",
@@ -535,6 +539,25 @@ def test_windows_prepare_unlink_and_digest_stay_below_pinned_parent() -> None:
     assert str(target) not in api.files
     assert any(name == "DeleteFileW" and value == str(target) for name, value in api.calls)
     assert not api.handles
+
+
+def test_windows_missing_digest_leaf_has_portable_missing_file_cause() -> None:
+    root, _source, destination, api = _fixture_paths()
+    api.directories.add(str(destination.parent))
+
+    with pytest.raises(hardened.HardenedWriteError) as error:
+        hardened._windows_sha256(destination, root, api=api)
+
+    assert isinstance(error.value.__cause__, FileNotFoundError)
+
+
+def test_windows_missing_digest_parent_remains_fail_closed() -> None:
+    root, _source, destination, api = _fixture_paths()
+
+    with pytest.raises(hardened.HardenedWriteError) as error:
+        hardened._windows_sha256(destination, root, api=api)
+
+    assert not isinstance(error.value.__cause__, FileNotFoundError)
 
 
 @pytest.mark.parametrize(
