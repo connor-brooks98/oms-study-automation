@@ -117,6 +117,10 @@
       const saving = rows.some((row) => (
         row.querySelector("[data-pass-complete]").disabled
         || row.querySelector("[data-pass-resource]").disabled
+        || (
+          row.querySelector("[data-pass-complete]").checked
+          && row.querySelector("[data-pass-date]").disabled
+        )
       ));
       if (addPass) addPass.disabled = completed !== rows.length || saving;
     };
@@ -194,8 +198,8 @@
         const completedOn = checkbox.checked ? localDateValue() : null;
         if (checkbox.checked) {
           date.value = completedOn;
-          date.disabled = false;
         }
+        date.disabled = true;
         checkbox.disabled = true;
         updateSummary();
         try {
@@ -219,7 +223,7 @@
       });
 
       date.addEventListener("change", async () => {
-        if (!checkbox.checked) return;
+        if (!checkbox.checked || date.disabled) return;
         const previousCompletedOn = savedCompletedOn;
         date.disabled = true;
         updateSummary();
