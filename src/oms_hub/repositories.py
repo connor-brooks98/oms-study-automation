@@ -1,7 +1,9 @@
 from dataclasses import dataclass
+from typing import Any, cast
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -124,15 +126,16 @@ class CatalogRepository:
         *,
         update_completed: bool,
         completed_on: str | None,
+        replace_completed: bool,
         update_resource: bool,
         resource: str | None,
     ) -> LecturePassModel:
         values: dict[str, object] = {}
         if update_completed:
             values["completed_on"] = (
-                func.coalesce(LecturePassModel.completed_on, completed_on)
-                if completed_on is not None
-                else None
+                completed_on
+                if replace_completed or completed_on is None
+                else func.coalesce(LecturePassModel.completed_on, completed_on)
             )
         with self.database.session() as session:
             if update_resource:
@@ -161,6 +164,25 @@ class CatalogRepository:
             if lecture_pass is None:
                 raise KeyError((lecture_id, position))
             return lecture_pass
+
+    def update_exam_date(
+        self,
+        subject: str,
+        exam_number: int,
+        exam_date: str,
+    ) -> str:
+        with self.database.session() as session:
+            result = session.execute(
+                update(LectureModel)
+                .where(
+                    LectureModel.subject == subject,
+                    LectureModel.exam_number == exam_number,
+                )
+                .values(exam_date=exam_date)
+            )
+            if not cast(CursorResult[Any], result).rowcount:
+                raise KeyError((subject, exam_number))
+        return exam_date
 
     def list_pass_resources(self) -> list[str]:
         with self.database.session() as session:
