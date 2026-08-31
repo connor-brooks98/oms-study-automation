@@ -2,6 +2,7 @@ import hashlib
 
 from fastapi.testclient import TestClient
 from selectolax.parser import HTMLParser
+from sqlalchemy import text
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
@@ -130,6 +131,38 @@ def test_lecture_page_renders_reusable_custom_resources_for_other_lectures(tmp_p
     assert saved.status_code == 200
     assert changed.status_code == 200
     assert [option.attributes.get("value") for option in options].count("Pathoma") == 1
+
+
+def test_lecture_page_renders_migrated_resource_once_selected_with_other_last(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+    lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 1, "Seizures", "Faculty", None)
+    )
+    with app.state.database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE lecture_pass_resources"))
+        connection.execute(text("UPDATE schema_version SET version=30 WHERE id=1"))
+        connection.execute(
+            text(
+                "UPDATE lecture_passes SET resource = 'boards & beyond' "
+                "WHERE lecture_id = :lecture_id AND position = 1"
+            ),
+            {"lecture_id": lecture_id},
+        )
+    app.state.database.migrate()
+
+    document = HTMLParser(TestClient(app).get(f"/lectures/{lecture_id}").text)
+    options = document.css_first("[data-pass-resource]").css("option")
+    canonical = [option for option in options if option.attributes.get("value") == "Boards & Beyond"]
+
+    assert len(canonical) == 1
+    assert "selected" in canonical[0].attributes
+    assert options[-1].attributes.get("value") == "Other"
 
 
 def test_lecture_page_links_previous_and_next_within_subject_exam_order(tmp_path):

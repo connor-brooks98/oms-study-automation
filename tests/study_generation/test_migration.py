@@ -156,7 +156,8 @@ def test_v31_creates_and_backfills_pass_resources_idempotently(tmp_path) -> None
             [
                 {"resource": "Boards & Beyond", "lecture_id": lecture_id, "position": 1},
                 {"resource": "boards & beyond", "lecture_id": lecture_id, "position": 2},
-                {"resource": "Other", "lecture_id": lecture_id, "position": 3},
+                {"resource": " OTHER ", "lecture_id": lecture_id, "position": 3},
+                {"resource": "x" * 101, "lecture_id": lecture_id, "position": 4},
             ],
         )
 
@@ -170,6 +171,13 @@ def test_v31_creates_and_backfills_pass_resources_idempotently(tmp_path) -> None
         version = connection.execute(
             text("SELECT version FROM schema_version WHERE id=1")
         ).scalar_one()
+        passes = connection.execute(
+            text(
+                "SELECT position, resource FROM lecture_passes "
+                "WHERE lecture_id = :lecture_id ORDER BY position"
+            ),
+            {"lecture_id": lecture_id},
+        ).all()
 
     assert resources == [
         "Lecture",
@@ -177,6 +185,13 @@ def test_v31_creates_and_backfills_pass_resources_idempotently(tmp_path) -> None
         "Lecture outline",
         "Practice questions",
         "Boards & Beyond",
+    ]
+    assert passes == [
+        (1, "Boards & Beyond"),
+        (2, "Boards & Beyond"),
+        (3, "Other"),
+        (4, "x" * 101),
+        (5, None),
     ]
     assert version == 31
 

@@ -232,6 +232,19 @@ def test_pass_patch_requires_csrf_and_rejects_oversized_resource(tmp_path) -> No
     assert empty.status_code == 422
 
 
+def test_pass_patch_rejects_other_without_replacing_the_saved_resource(tmp_path) -> None:
+    client, lecture_id = _client_with_lecture(tmp_path)
+    url = f"/api/lectures/{lecture_id}/passes/1"
+    headers = _csrf_headers(client)
+
+    saved = client.patch(url, json={"resource": "Pathoma"}, headers=headers)
+    rejected = client.patch(url, json={"resource": " other "}, headers=headers)
+
+    assert saved.status_code == 200
+    assert rejected.status_code == 422
+    assert _stored_pass(client, lecture_id, 1) == (1, None, "Pathoma")
+
+
 def test_overlapping_completion_and_resource_updates_preserve_both(
     tmp_path,
     monkeypatch,

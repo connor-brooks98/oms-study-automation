@@ -416,6 +416,52 @@ test("failed pass updates restore the prior completion, date, count, and resourc
   }
 });
 
+test("overlapping pass responses update only their owned fields", async () => {
+  const pass = buildPassRow({ position: 1, resource: "Lecture" });
+  const passCount = new FakeLectureElement();
+  const documentRef = new FakeLectureDocument([], {
+    passRows: [pass.row],
+    passCount,
+    addPass: new FakeLectureElement(),
+  });
+  const pending = [];
+  const fetchImpl = async (_url, options = {}) => {
+    if (!options.method) return { ok: true, async json() { return {}; } };
+    return new Promise((resolve) => pending.push({ options, resolve }));
+  };
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42" };
+
+  try {
+    lecture.initialize(documentRef, fetchImpl);
+    pass.checkbox.checked = true;
+    const completion = pass.checkbox.dispatch("change");
+    await flushMicrotasks();
+    pass.select.value = "Pathoma";
+    const resource = pass.select.dispatch("change");
+    await flushMicrotasks();
+
+    pending.find(({ options }) => JSON.parse(options.body).resource).resolve({
+      ok: true,
+      async json() { return { position: 1, completed_on: null, resource: "Pathoma" }; },
+    });
+    await resource;
+    pending.find(({ options }) => JSON.parse(options.body).completed).resolve({
+      ok: true,
+      async json() { return { position: 1, completed_on: "2026-08-30", resource: "Lecture" }; },
+    });
+    await completion;
+
+    assert.equal(pass.checkbox.checked, true);
+    assert.equal(pass.date.textContent, "Aug 30, 2026");
+    assert.equal(passCount.textContent, "1/1");
+    assert.equal(pass.select.value, "Pathoma");
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
 test("selecting Other reveals the inline editor without saving a sentinel", async () => {
   const pass = buildPassRow({ position: 1, resource: "Lecture" });
   const requests = [];
