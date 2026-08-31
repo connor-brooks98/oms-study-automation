@@ -587,6 +587,22 @@ def test_exam_pass_overview_uses_shared_components_and_progress_semantics() -> N
         assert component in overview
 
 
+def test_exam_countdown_reuses_shared_dialog_and_number_components() -> None:
+    overview = source("exam_passes.html")
+    app_css = static_source("app.css")
+
+    assert 'data-exam-countdown' in overview
+    assert 'data-open-dialog="exam-date-dialog"' in overview
+    assert 'class="sh-dialog t-modal date-dialog"' in overview
+    assert 'data-exam-date-form' in overview
+    assert 'data-countdown-days class="t-number"' in overview
+    assert 'data-countdown-hours class="t-number"' in overview
+    assert '<dd data-countdown-days class="t-number">' in overview
+    assert '<dd data-countdown-hours class="t-number">' in overview
+    assert ".exam-countdown {" in app_css
+    assert ".date-dialog {" in app_css
+
+
 def test_import_checks_and_image_rows_escape_late_legacy_cascade() -> None:
     app_css = (STATIC / "app.css").read_text(encoding="utf-8")
 

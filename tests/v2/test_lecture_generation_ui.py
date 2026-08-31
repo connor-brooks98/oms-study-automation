@@ -351,6 +351,14 @@ def test_exam_pass_overview_lists_each_lecture_count_and_progress(tmp_path):
 
     assert page.status_code == 200
     assert document.css_first("h1").text(strip=True) == "Exam 2 passes"
+    countdown = document.css_first("[data-exam-countdown]")
+    assert countdown is not None
+    assert page.text.index("data-exam-countdown") < page.text.index(
+        "data-exam-pass-overview"
+    )
+    assert countdown.css_first("[data-exam-date]").text(strip=True) == "No date selected"
+    assert countdown.css_first("[data-open-date]").text(strip=True) == "Set Exam Date"
+    assert document.css_first("[data-exam-date-dialog]") is not None
     overview = document.css_first("[data-exam-pass-overview]")
     assert overview is not None
     assert [heading.text(strip=True) for heading in overview.css("th")] == [
