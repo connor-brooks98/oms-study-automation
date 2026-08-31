@@ -543,13 +543,20 @@ def _windows_parent(
 
 
 def _windows_open_checked_file(api: _WindowsAPI, path: Path, *, access: int, creation: int) -> int:
-    handle = api.open_file(
-        str(path),
-        access,
-        _FILE_SHARE_READ | _FILE_SHARE_WRITE,
-        creation,
-        _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_ATTRIBUTE_NORMAL,
-    )
+    try:
+        handle = api.open_file(
+            str(path),
+            access,
+            _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+            creation,
+            _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_ATTRIBUTE_NORMAL,
+        )
+    except OSError as error:
+        if _is_missing_windows_error(error):
+            raise FileNotFoundError(
+                _windows_error_code(error), "Windows file not found", str(path)
+            ) from error
+        raise
     try:
         attributes = api.attribute_tag(handle)
         if attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
@@ -842,14 +849,9 @@ def hardened_sha256(path: Path, root: Path) -> str:
 def _windows_sha256(path: Path, root: Path, *, api: _WindowsAPI) -> str:
     try:
         with _windows_parent(root, path, create=False, api=api) as (parent, name):
-            try:
-                handle = _windows_open_checked_file(
-                    api, parent.path / name, access=_GENERIC_READ, creation=_OPEN_EXISTING
-                )
-            except OSError as error:
-                if _is_missing_windows_error(error):
-                    raise FileNotFoundError(path) from error
-                raise
+            handle = _windows_open_checked_file(
+                api, parent.path / name, access=_GENERIC_READ, creation=_OPEN_EXISTING
+            )
             try:
                 return _windows_hash_handle(api, handle)
             finally:
