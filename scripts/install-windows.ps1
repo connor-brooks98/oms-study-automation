@@ -259,6 +259,9 @@ function Assert-TaskActionTargetsProjectRoot {
     [string]$ExpectedPowerShell
   )
   $Task = Get-ScheduledTask -TaskName $Name -ErrorAction Stop
+  if ([string]$Task.Settings.ExecutionTimeLimit -cne "PT0S") {
+    throw "Scheduled task $Name must have an unlimited PT0S execution time limit."
+  }
   $Actions = @($Task.Actions)
   if ($Actions.Count -ne 4) {
     throw "Scheduled task $Name must have exactly four ordered F28 actions; found $($Actions.Count)."
@@ -907,7 +910,7 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
   $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $TaskIdentity
   # Scheduler treats HRESULT_FROM_WIN32(75) as ActionSuccess/TaskSuccess.
   # Do not use RestartOnFailure; only the guarded F28 actions can recover.
-  $TaskSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable
+  $TaskSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
   $Principal = New-ScheduledTaskPrincipal `
     -UserId $TaskIdentity `
     -LogonType Interactive
