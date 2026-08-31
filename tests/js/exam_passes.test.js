@@ -91,7 +91,9 @@ test("initializer seeds a missing date and saves it with the CSRF token", async 
     return { ok: true, async json() { return { exam_date: "2026-09-02" }; } };
   };
 
-  examPasses.initialize(fixture.documentRef, fetchImpl, () => new Date(2026, 7, 31, 9, 0));
+  const cleanup = examPasses.initialize(
+    fixture.documentRef, fetchImpl, () => new Date(2026, 7, 31, 9, 0),
+  );
   await fixture.open.dispatch("click");
   assert.equal(fixture.input.value, "2026-08-31");
   assert.equal(fixture.input.showPickerCalls, 1);
@@ -110,4 +112,5 @@ test("initializer seeds a missing date and saves it with the CSRF token", async 
   }]);
   assert.equal(fixture.page.dataset.examDate, "2026-09-02");
   assert.equal(fixture.feedback.textContent, "Exam date saved.");
+  cleanup();
 });

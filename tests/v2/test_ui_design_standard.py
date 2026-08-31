@@ -58,7 +58,7 @@ def test_stylesheet_order_and_system_font_contract() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260830.1" %}' in base
+    assert '{% set shell_asset_version = "20260831.1" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'

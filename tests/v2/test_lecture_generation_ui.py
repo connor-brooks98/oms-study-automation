@@ -381,6 +381,18 @@ def test_exam_pass_overview_lists_each_lecture_count_and_progress(tmp_path):
         assert progress.attributes["aria-valuemax"] == "5"
         assert progress.attributes["aria-valuenow"] == "0"
 
+    app.state.catalog_repository.update_exam_date("Heme/Lymph", 2, "2026-09-02")
+    scheduled = TestClient(app).get(
+        "/lectures/exams/2/passes", params={"subject": "Heme/Lymph"}
+    )
+    scheduled_document = HTMLParser(scheduled.text)
+    scheduled_page = scheduled_document.css_first("[data-exam-page]")
+    scheduled_countdown = scheduled_document.css_first("[data-exam-countdown]")
+
+    assert scheduled_page.attributes["data-exam-date"] == "2026-09-02"
+    assert scheduled_countdown.css_first("[data-exam-date]").text(strip=True) == "2026-09-02"
+    assert scheduled_countdown.css_first("[data-open-date]").text(strip=True) == "Change Exam Date"
+
 
 def test_review_uses_course_relative_human_label_for_proposed_revisions(tmp_path):
     app = create_app(
