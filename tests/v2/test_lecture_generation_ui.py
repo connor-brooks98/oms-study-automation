@@ -353,10 +353,13 @@ def test_exam_pass_overview_lists_each_lecture_count_and_progress(tmp_path):
     assert document.css_first("h1").text(strip=True) == "Exam 2 passes"
     countdown = document.css_first("[data-exam-countdown]")
     assert countdown is not None
+    assert len(document.css("[data-exam-page][data-exam-date]")) == 1
+    assert len(document.css("[data-exam-date]")) == 1
+    assert len(countdown.css("[data-exam-date-label]")) == 1
     assert page.text.index("data-exam-countdown") < page.text.index(
         "data-exam-pass-overview"
     )
-    assert countdown.css_first("[data-exam-date]").text(strip=True) == "No date selected"
+    assert countdown.css_first("[data-exam-date-label]").text(strip=True) == "No date selected"
     assert countdown.css_first("[data-open-date]").text(strip=True) == "Set Exam Date"
     assert document.css_first("[data-exam-date-dialog]") is not None
     overview = document.css_first("[data-exam-pass-overview]")
@@ -390,7 +393,7 @@ def test_exam_pass_overview_lists_each_lecture_count_and_progress(tmp_path):
     scheduled_countdown = scheduled_document.css_first("[data-exam-countdown]")
 
     assert scheduled_page.attributes["data-exam-date"] == "2026-09-02"
-    assert scheduled_countdown.css_first("[data-exam-date]").text(strip=True) == "2026-09-02"
+    assert scheduled_countdown.css_first("[data-exam-date-label]").text(strip=True) == "2026-09-02"
     assert scheduled_countdown.css_first("[data-open-date]").text(strip=True) == "Change Exam Date"
 
 

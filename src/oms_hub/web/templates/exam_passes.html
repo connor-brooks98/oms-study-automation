@@ -34,7 +34,7 @@
     </div>
     <div class="exam-countdown__action">
       <span class="exam-countdown__time"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7.5v5h4"></path></svg>Target · 8:00 AM</span>
-      <div class="exam-countdown__date"><span>Exam date</span><strong data-exam-date>{% if exam_date %}{{ exam_date }}{% elif exam_date_conflict %}Dates differ{% else %}No date selected{% endif %}</strong></div>
+      <div class="exam-countdown__date"><span>Exam date</span><strong data-exam-date-label>{% if exam_date %}{{ exam_date }}{% elif exam_date_conflict %}Dates differ{% else %}No date selected{% endif %}</strong></div>
       <button class="sh-btn sh-btn--secondary" type="button" data-open-dialog="exam-date-dialog" data-open-date>{% if exam_date %}Change Exam Date{% else %}Set Exam Date{% endif %}</button>
       <p class="sr-only" role="status" aria-live="polite" data-exam-date-feedback></p>
     </div>

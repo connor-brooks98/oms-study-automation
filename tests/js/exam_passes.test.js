@@ -48,7 +48,7 @@ const pageFixture = () => {
         "[data-open-date]": open,
         "[data-exam-date-form]": form,
         "[data-exam-date-input]": input,
-        "[data-exam-date]": date,
+        "[data-exam-date-label]": date,
         "[data-countdown-state]": state,
         "[data-countdown-days]": days,
         "[data-countdown-hours]": hours,
@@ -86,7 +86,7 @@ test("countdown distinguishes missing, invalid, past, and reached exam dates", (
   );
 });
 
-test("initializer seeds a missing date and saves it with the CSRF token", async () => {
+test("initializer seeds a missing date and saves it with the CSRF token", async (t) => {
   const fixture = pageFixture();
   const requests = [];
   const fetchImpl = async (url, options) => {
@@ -97,6 +97,8 @@ test("initializer seeds a missing date and saves it with the CSRF token", async 
   const cleanup = examPasses.initialize(
     fixture.documentRef, fetchImpl, () => new Date(2026, 7, 31, 9, 0),
   );
+  t.after(cleanup);
+  assert.equal(fixture.date.textContent, "No date selected");
   await fixture.open.dispatch("click");
   assert.equal(fixture.input.value, "2026-08-31");
   assert.equal(fixture.input.showPickerCalls, 1);
@@ -114,8 +116,8 @@ test("initializer seeds a missing date and saves it with the CSRF token", async 
     },
   }]);
   assert.equal(fixture.page.dataset.examDate, "2026-09-02");
+  assert.equal(fixture.date.textContent, "Sep 2, 2026");
   assert.equal(fixture.feedback.textContent, "Exam date saved.");
-  cleanup();
 });
 
 test("opening restores the saved date and discards an unsaved edit", async (t) => {

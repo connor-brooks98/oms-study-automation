@@ -50,7 +50,7 @@
   const initialize = (documentRef, fetchImpl = root.fetch?.bind(root), now = () => new Date()) => {
     const page = documentRef?.querySelector?.("[data-exam-page]");
     if (!page) return () => {};
-    const date = documentRef.querySelector("[data-exam-date]");
+    const date = documentRef.querySelector("[data-exam-date-label]");
     const state = documentRef.querySelector("[data-countdown-state]");
     const days = documentRef.querySelector("[data-countdown-days]");
     const hours = documentRef.querySelector("[data-countdown-hours]");

@@ -17,6 +17,21 @@
 - `node --test tests/js/exam_passes.test.js`: 3 passed.
 - `node --check src/oms_hub/web/static/exam_passes.js`: passed.
 - `.venv/bin/pytest -q tests/v2/test_lecture_generation_ui.py tests/v2/test_ui_design_standard.py`: 44 passed.
+
+## Fix Round 2
+
+### RED
+
+- Added a rendered-template uniqueness regression and changed the JS fixture to expose only the visible date-label hook.
+- `node --test tests/js/exam_passes.test.js` produced 3 passing tests and 1 expected failure: the label remained empty because the initializer still queried the storage hook.
+- `.venv/bin/pytest -q tests/v2/test_lecture_generation_ui.py tests/v2/test_ui_design_standard.py` produced the expected failure: two elements matched `[data-exam-date]`.
+
+### GREEN
+
+- Kept `data-exam-date` exclusively on the page storage article, renamed the visible element to `data-exam-date-label`, and updated the initializer selector.
+- `node --test tests/js/exam_passes.test.js`: 4 passed.
+- `.venv/bin/pytest -q tests/v2/test_lecture_generation_ui.py tests/v2/test_ui_design_standard.py`: 44 passed.
+- `git diff --check`: passed.
 - `git diff --check`: passed.
 
 ## Files changed
