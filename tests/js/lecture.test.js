@@ -579,6 +579,7 @@ test("a pending date save gates adding a pass until it settles", async () => {
     const saved = passes[0].date.dispatch("change");
     await flushMicrotasks();
     assert.equal(passes[0].date.disabled, true);
+    assert.equal(passes[0].checkbox.disabled, true);
     assert.equal(addPass.disabled, true);
 
     pending.shift().resolve({
@@ -586,11 +587,13 @@ test("a pending date save gates adding a pass until it settles", async () => {
       async json() { return { position: 1, completed_on: "2026-08-29", resource: null }; },
     });
     await saved;
+    assert.equal(passes[0].checkbox.disabled, false);
     assert.equal(addPass.disabled, false);
 
     passes[0].date.value = "2026-08-28";
     const failed = passes[0].date.dispatch("change");
     await flushMicrotasks();
+    assert.equal(passes[0].checkbox.disabled, true);
     assert.equal(addPass.disabled, true);
     pending.shift().resolve({
       ok: false,
@@ -598,7 +601,46 @@ test("a pending date save gates adding a pass until it settles", async () => {
     });
     await failed;
     assert.equal(passes[0].date.value, "2026-08-29");
+    assert.equal(passes[0].checkbox.disabled, false);
     assert.equal(addPass.disabled, false);
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
+test("a pending date save ignores a competing checkbox change", async () => {
+  const pass = buildPassRow({ position: 1, completed: true, completedOn: "2026-08-30" });
+  const pending = [];
+  const documentRef = new FakeLectureDocument([], {
+    passRows: [pass.row],
+    passCount: new FakeLectureElement(),
+    addPass: new FakeLectureElement(),
+  });
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42" };
+
+  try {
+    lecture.initialize(documentRef, async (_url, options = {}) => {
+      if (!options.method) return { ok: true, async json() { return {}; } };
+      return new Promise((resolve) => pending.push({ options, resolve }));
+    });
+    pass.date.value = "2026-08-29";
+    const dateSave = pass.date.dispatch("change");
+    await flushMicrotasks();
+
+    assert.equal(pass.checkbox.disabled, true);
+    pass.checkbox.checked = false;
+    await pass.checkbox.dispatch("change");
+    assert.equal(pending.length, 1);
+
+    pending[0].resolve({
+      ok: true,
+      async json() { return { position: 1, completed_on: "2026-08-29", resource: null }; },
+    });
+    await dateSave;
+    assert.equal(pass.checkbox.checked, true);
+    assert.equal(pass.checkbox.disabled, false);
   } finally {
     if (originalLocation === undefined) delete global.location;
     else global.location = originalLocation;
