@@ -185,6 +185,47 @@ def test_pass_patch_records_local_date_preserves_it_for_resource_and_clears_on_u
     assert _stored_pass(client, lecture_id, 1) == (1, None, "Lecture recording")
 
 
+def test_pass_patch_explicit_completed_on_replaces_the_saved_date(tmp_path) -> None:
+    client, lecture_id = _client_with_lecture(tmp_path)
+    url = f"/api/lectures/{lecture_id}/passes/1"
+    headers = _csrf_headers(client)
+
+    client.patch(url, json={"completed": True}, headers=headers)
+    changed = client.patch(
+        url,
+        json={"completed_on": "2026-08-29"},
+        headers=headers,
+    )
+
+    assert changed.status_code == 200
+    assert changed.json()["completed_on"] == "2026-08-29"
+    assert _stored_pass(client, lecture_id, 1) == (1, "2026-08-29", None)
+
+
+def test_pass_patch_rejects_invalid_or_ambiguous_explicit_dates_without_mutation(
+    tmp_path,
+) -> None:
+    client, lecture_id = _client_with_lecture(tmp_path)
+    url = f"/api/lectures/{lecture_id}/passes/1"
+    headers = _csrf_headers(client)
+    client.patch(url, json={"completed_on": "2026-08-29"}, headers=headers)
+
+    invalid = client.patch(
+        url,
+        json={"completed_on": "not-a-date"},
+        headers=headers,
+    )
+    ambiguous = client.patch(
+        url,
+        json={"completed": True, "completed_on": "2026-08-30"},
+        headers=headers,
+    )
+
+    assert invalid.status_code == 422
+    assert ambiguous.status_code == 422
+    assert _stored_pass(client, lecture_id, 1) == (1, "2026-08-29", None)
+
+
 def test_custom_resource_catalog_reuses_first_spelling_across_lectures(tmp_path) -> None:
     client, lecture_id = _client_with_lecture(tmp_path)
     _lecture(client.app, number=2, topic="Spine")
@@ -412,6 +453,83 @@ def test_exam_overview_isolates_exact_subject_and_exam_and_shows_counts(tmp_path
     assert "<strong>2</strong> / 5" in page.text
     assert "<strong>1</strong> / 5" in page.text
     assert page.text.index("Target one") < page.text.index("Target two")
+
+
+def test_exam_date_patch_updates_only_the_exact_exam_and_requires_csrf(tmp_path) -> None:
+    app = _app(tmp_path)
+    first_id = _lecture(app, "Neuro", 1, 1, "Target one")
+    second_id = _lecture(app, "Neuro", 1, 2, "Target two")
+    wrong_exam_id = _lecture(app, "Neuro", 2, 1, "Wrong exam")
+    wrong_subject_id = _lecture(app, "Neuroscience", 1, 1, "Wrong subject")
+    client = TestClient(app)
+    client.get(f"/lectures/{first_id}")
+    url = "/api/lectures/exams/1/date"
+
+    missing_csrf = client.patch(
+        url,
+        params={"subject": "Neuro"},
+        json={"exam_date": "2026-09-18"},
+    )
+    scheduled = client.patch(
+        url,
+        params={"subject": "Neuro"},
+        json={"exam_date": "2026-09-18"},
+        headers=_csrf_headers(client),
+    )
+    invalid = client.patch(
+        url,
+        params={"subject": "Neuro"},
+        json={"exam_date": "not-a-date"},
+        headers=_csrf_headers(client),
+    )
+
+    assert missing_csrf.status_code == 403
+    assert scheduled.json() == {"exam_date": "2026-09-18"}
+    assert invalid.status_code == 422
+    assert [
+        app.state.catalog_repository.get_lecture(item).exam_date
+        for item in (first_id, second_id)
+    ] == ["2026-09-18", "2026-09-18"]
+    assert app.state.catalog_repository.get_lecture(wrong_exam_id).exam_date is None
+    assert app.state.catalog_repository.get_lecture(wrong_subject_id).exam_date is None
+
+
+def test_exam_overview_omits_authoritative_date_for_conflicting_lecture_dates(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = _app(tmp_path)
+    first_id = _lecture(app, "Neuro", 1, 1, "Target one")
+    second_id = _lecture(app, "Neuro", 1, 2, "Target two")
+    app.state.catalog_repository.update_lecture(
+        first_id,
+        LectureInput("Neuro", 1, 1, "Target one", "", "2026-09-18"),
+    )
+    app.state.catalog_repository.update_lecture(
+        second_id,
+        LectureInput("Neuro", 1, 2, "Target two", "", "2026-09-19"),
+    )
+    captured = {}
+
+    def capture_template_response(**kwargs):
+        captured.update(kwargs["context"])
+        from fastapi.responses import HTMLResponse
+
+        return HTMLResponse("")
+
+    monkeypatch.setattr(
+        "oms_hub.web.routes.templates.TemplateResponse",
+        capture_template_response,
+    )
+
+    page = TestClient(app).get(
+        "/lectures/exams/1/passes",
+        params={"subject": "Neuro"},
+    )
+
+    assert page.status_code == 200
+    assert captured["exam_date"] is None
+    assert captured["exam_date_conflict"] is True
 
 
 def test_missing_lecture_and_pass_return_404(tmp_path) -> None:

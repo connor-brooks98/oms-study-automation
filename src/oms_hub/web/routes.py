@@ -23,7 +23,7 @@ from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import revision_readiness_problem
 from oms_hub.web.csrf import require_form_csrf
 from oms_hub.web.lecture_labels import lecture_label
-from oms_hub.web.schemas import LectureApi, LecturePassUpdate, StepApi
+from oms_hub.web.schemas import ExamDateUpdate, LectureApi, LecturePassUpdate, StepApi
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 router = APIRouter()
@@ -152,6 +152,9 @@ def exam_passes(request: Request, exam_number: int, subject: str) -> HTMLRespons
     lectures = _repo(request).list_exam_lectures(subject, exam_number)
     if not lectures:
         raise HTTPException(404, "exam was not found")
+    dates = {lecture.exam_date for lecture in lectures}
+    exam_date_conflict = len(dates) > 1
+    exam_date = dates.pop() if not exam_date_conflict else None
     return templates.TemplateResponse(
         request=request,
         name="exam_passes.html",
@@ -159,6 +162,8 @@ def exam_passes(request: Request, exam_number: int, subject: str) -> HTMLRespons
             "subject": subject,
             "exam_number": exam_number,
             "lectures": lectures,
+            "exam_date": exam_date,
+            "exam_date_conflict": exam_date_conflict,
             "course_hue": _course_hue(subject),
         },
     )
@@ -383,11 +388,17 @@ def update_lecture_pass(
 
     repository = _repo(request)
     update_completed = "completed" in update.model_fields_set
+    replace_completed = "completed_on" in update.model_fields_set
+    if update_completed and replace_completed:
+        raise HTTPException(422, "completed and completed_on cannot be combined")
+    update_completed = update_completed or replace_completed
     completed_on = (
-        datetime.now(
+        update.completed_on.isoformat()
+        if replace_completed and update.completed_on is not None
+        else datetime.now(
             ZoneInfo(request.app.state.settings.timezone)
         ).date().isoformat()
-        if update_completed and update.completed
+        if update.completed
         else None
     )
     update_resource = "resource" in update.model_fields_set
@@ -404,6 +415,7 @@ def update_lecture_pass(
             position,
             update_completed=update_completed,
             completed_on=completed_on,
+            replace_completed=replace_completed,
             update_resource=update_resource,
             resource=resource,
         )
@@ -413,6 +425,25 @@ def update_lecture_pass(
         _pass_payload(saved),
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.patch("/api/lectures/exams/{exam_number}/date")
+def update_exam_date(
+    request: Request,
+    exam_number: int,
+    subject: str,
+    update: ExamDateUpdate,
+) -> JSONResponse:
+    require_form_csrf(request, None)
+    try:
+        exam_date = _repo(request).update_exam_date(
+            subject,
+            exam_number,
+            update.exam_date.isoformat(),
+        )
+    except KeyError as error:
+        raise HTTPException(404, "exam was not found") from error
+    return JSONResponse({"exam_date": exam_date}, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/api/lectures/{lecture_id}/passes")

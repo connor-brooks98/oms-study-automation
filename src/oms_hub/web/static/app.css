@@ -2430,6 +2430,8 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 .pass-date,
 .exam-pass-last,
 .exam-pass-count { color: var(--text-3-strong); font: var(--fs-xs) var(--font-mono); font-variant-numeric: tabular-nums; }
+.pass-date-label { display: grid; min-width: 0; margin: 0; }
+.pass-date.sh-input { width: 100%; min-width: 0; }
 .pass-ledger-row.is-complete .pass-date { color: var(--st-ok-tx); }
 .pass-resource-label { display: grid; min-width: 0; margin: 0; }
 .pass-resource.sh-select { width: 100%; max-width: none; }
@@ -2477,6 +2479,37 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 .exam-pass-segment { height: 8px; border-radius: var(--r-pill); background: var(--border); transition: background var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out); }
 .exam-pass-segment.is-complete { background: var(--st-ok-dot); transform: scaleY(1.15); }
 
+.exam-countdown {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(15rem, .85fr);
+  gap: var(--sp-6);
+  align-items: center;
+  margin-block-end: var(--sp-4);
+  padding: var(--sp-5) var(--sp-6);
+  border-inline-start: 4px solid var(--processing);
+}
+.exam-countdown__intro { display: grid; gap: var(--sp-4); }
+.exam-countdown__title-row { display: flex; align-items: center; gap: var(--sp-3); }
+.exam-countdown__icon { display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 44px; border-radius: var(--r-sm); color: var(--info-tx); background: var(--info-bg); }
+.exam-countdown__icon svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.exam-countdown h2 { margin: 0; }
+.exam-countdown__target { margin: var(--sp-1) 0 0; color: var(--text-2); font-size: var(--fs-sm); }
+.exam-countdown__metrics { display: grid; grid-template-columns: repeat(2, minmax(7rem, 1fr)); gap: var(--sp-3); margin: 0; }
+.exam-countdown__metric { padding: var(--sp-4); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); }
+.exam-countdown__metric dt { color: var(--text-3-strong); font: 600 var(--fs-xs) var(--font-mono); letter-spacing: .035em; text-transform: uppercase; }
+.exam-countdown__metric dd { margin: var(--sp-1) 0 0; color: var(--text-1); font: 650 clamp(2rem, 4vw, 3rem)/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.exam-countdown__action { display: grid; justify-items: start; gap: var(--sp-3); padding-inline-start: var(--sp-5); border-inline-start: 1px solid var(--border); }
+.exam-countdown__date { display: grid; gap: var(--sp-1); }
+.exam-countdown__date strong { font-size: var(--fs-lg); }
+.exam-countdown__date span, .date-dialog__hint { color: var(--text-2); font-size: var(--fs-sm); }
+.exam-countdown__time { display: inline-flex; align-items: center; gap: var(--sp-2); min-height: 28px; padding-inline: var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-pill); color: var(--text-2); font: 600 var(--fs-xs) var(--font-mono); }
+.exam-countdown__time svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; }
+.date-dialog { width: min(30rem, calc(100vw - 2rem)); }
+.date-dialog__body { display: grid; gap: var(--sp-4); }
+.date-dialog__body .sh-input { width: 100%; }
+.date-dialog__hint { margin: 0; }
+.date-dialog__actions { display: flex; justify-content: flex-end; gap: var(--sp-2); }
+
 .upload-workbench {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(18rem, .75fr);
@@ -2516,6 +2549,8 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
   .upload-workbench { grid-template-columns: minmax(0, 1fr); }
   .lecture-workbench { grid-template-areas: "status" "outputs"; }
   .exam-pass-overview__heading { align-items: flex-start; flex-direction: column; }
+  .exam-countdown { grid-template-columns: minmax(0, 1fr); }
+  .exam-countdown__action { padding: var(--sp-4) 0 0; border-inline-start: 0; border-top: 1px solid var(--border); }
 }
 
 @media (max-width: 42rem) {
@@ -2545,6 +2580,7 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
   .pass-ledger-head { display: none; }
   .pass-ledger-row { grid-template-columns: 44px minmax(0, 1fr); gap: var(--sp-1) var(--sp-2); }
   .pass-check { grid-row: 1 / span 2; }
+  .pass-date-label { grid-column: 2; }
   .pass-resource-label { grid-column: 1 / -1; margin-block-start: var(--sp-2); }
   .pass-resource-custom { grid-template-columns: minmax(0, 1fr); }
   .pass-resource-custom .sh-btn { width: 100%; }
@@ -2552,6 +2588,10 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
   .pass-tracker-actions .sh-btn { width: 100%; }
   .exam-pass-heading { align-items: flex-start; }
   .exam-pass-heading > .sh-pill { margin-inline-start: 0; }
+  .exam-countdown { gap: var(--sp-4); padding: var(--sp-4); }
+  .exam-countdown__metric { padding: var(--sp-3); }
+  .exam-countdown__action, .exam-countdown__action .sh-btn, .date-dialog__actions .sh-btn { width: 100%; }
+  .date-dialog__actions { align-items: stretch; flex-direction: column-reverse; }
 }
 
 /* Blue Workbench · settings and Quiz Builder */

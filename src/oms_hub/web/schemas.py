@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import BaseModel, Field
 
 
@@ -9,7 +11,12 @@ class StepApi(BaseModel):
 
 class LecturePassUpdate(BaseModel):
     completed: bool = False
+    completed_on: date | None = None
     resource: str | None = Field(default=None, max_length=100)
+
+
+class ExamDateUpdate(BaseModel):
+    exam_date: date
 
 
 class LectureApi(BaseModel):

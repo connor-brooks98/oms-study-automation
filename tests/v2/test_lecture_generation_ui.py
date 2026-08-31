@@ -75,7 +75,14 @@ def test_lecture_page_shows_five_pass_ledger_rows_between_expandable_panels(tmp_
         assert row.attributes["data-pass-position"] == str(position)
         completion = row.css_first("[data-pass-complete]")
         assert completion is not None and completion.attributes["type"] == "checkbox"
-        assert row.css_first("[data-pass-date]") is not None
+        date = row.css_first("input[data-pass-date]")
+        assert date is not None
+        assert date.attributes["type"] == "date"
+        assert "disabled" in date.attributes
+        assert "required" in date.attributes
+        assert date.attributes["id"] == f"pass-date-{position}"
+        date_label = row.css_first(f'label[for="{date.attributes["id"]}"]')
+        assert date_label is not None
         assert row.css_first("select[data-pass-resource]") is not None
         custom = row.css_first("[data-pass-resource-custom]")
         assert custom is not None and "hidden" in custom.attributes
@@ -344,6 +351,17 @@ def test_exam_pass_overview_lists_each_lecture_count_and_progress(tmp_path):
 
     assert page.status_code == 200
     assert document.css_first("h1").text(strip=True) == "Exam 2 passes"
+    countdown = document.css_first("[data-exam-countdown]")
+    assert countdown is not None
+    assert len(document.css("[data-exam-page][data-exam-date]")) == 1
+    assert len(document.css("[data-exam-date]")) == 1
+    assert len(countdown.css("[data-exam-date-label]")) == 1
+    assert page.text.index("data-exam-countdown") < page.text.index(
+        "data-exam-pass-overview"
+    )
+    assert countdown.css_first("[data-exam-date-label]").text(strip=True) == "No date selected"
+    assert countdown.css_first("[data-open-date]").text(strip=True) == "Set Exam Date"
+    assert document.css_first("[data-exam-date-dialog]") is not None
     overview = document.css_first("[data-exam-pass-overview]")
     assert overview is not None
     assert [heading.text(strip=True) for heading in overview.css("th")] == [
@@ -365,6 +383,18 @@ def test_exam_pass_overview_lists_each_lecture_count_and_progress(tmp_path):
         assert progress.attributes["aria-valuemin"] == "0"
         assert progress.attributes["aria-valuemax"] == "5"
         assert progress.attributes["aria-valuenow"] == "0"
+
+    app.state.catalog_repository.update_exam_date("Heme/Lymph", 2, "2026-09-02")
+    scheduled = TestClient(app).get(
+        "/lectures/exams/2/passes", params={"subject": "Heme/Lymph"}
+    )
+    scheduled_document = HTMLParser(scheduled.text)
+    scheduled_page = scheduled_document.css_first("[data-exam-page]")
+    scheduled_countdown = scheduled_document.css_first("[data-exam-countdown]")
+
+    assert scheduled_page.attributes["data-exam-date"] == "2026-09-02"
+    assert scheduled_countdown.css_first("[data-exam-date-label]").text(strip=True) == "2026-09-02"
+    assert scheduled_countdown.css_first("[data-open-date]").text(strip=True) == "Change Exam Date"
 
 
 def test_review_uses_course_relative_human_label_for_proposed_revisions(tmp_path):

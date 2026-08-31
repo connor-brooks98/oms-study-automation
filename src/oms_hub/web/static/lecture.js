@@ -77,15 +77,9 @@
     callback();
   };
 
-  const formatCompletedOn = (value) => {
-    if (!value) return "Not completed";
-    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!match) return String(value);
-    return new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    }).format(new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  const localDateValue = (value = new Date()) => {
+    const pad = (part) => String(part).padStart(2, "0");
+    return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
   };
 
   const initializePassTracker = (documentRef, fetchImpl, lectureId) => {
@@ -112,6 +106,10 @@
       const saving = rows.some((row) => (
         row.querySelector("[data-pass-complete]").disabled
         || row.querySelector("[data-pass-resource]").disabled
+        || (
+          row.querySelector("[data-pass-complete]").checked
+          && row.querySelector("[data-pass-date]").disabled
+        )
       ));
       if (addPass) addPass.disabled = completed !== rows.length || saving;
     };
@@ -119,8 +117,8 @@
       const checkbox = row.querySelector("[data-pass-complete]");
       const date = row.querySelector("[data-pass-date]");
       checkbox.checked = Boolean(payload.completed_on);
-      date.textContent = formatCompletedOn(payload.completed_on);
-      date.setAttribute("datetime", payload.completed_on || "");
+      date.value = payload.completed_on || "";
+      date.disabled = !checkbox.checked;
       row.classList[checkbox.checked ? "add" : "remove"]("is-complete");
       updateSummary();
     };
@@ -170,8 +168,7 @@
       const custom = row.querySelector("[data-pass-resource-custom]");
       const customInput = row.querySelector("[data-pass-resource-name]");
       const addResource = row.querySelector("[data-add-pass-resource]");
-      const initialDate = date.getAttribute?.("datetime");
-      if (initialDate) date.textContent = formatCompletedOn(initialDate);
+      let savedCompletedOn = date.value;
       let savedResource = resource.value;
       const hideCustomResource = () => {
         if (!custom) return;
@@ -185,19 +182,54 @@
       if (resource.value === "Other") showCustomResource();
 
       checkbox.addEventListener("change", async () => {
+        if (checkbox.disabled) return;
         const previousCompleted = !checkbox.checked;
+        const previousCompletedOn = savedCompletedOn;
+        const completedOn = checkbox.checked ? localDateValue() : null;
+        if (checkbox.checked) {
+          date.value = completedOn;
+        }
+        date.disabled = true;
         checkbox.disabled = true;
         updateSummary();
         try {
-          const payload = await patchPass(position, { completed: checkbox.checked });
+          const payload = await patchPass(
+            position,
+            checkbox.checked ? { completed_on: completedOn } : { completed: false },
+          );
           renderCompletion(row, payload);
+          savedCompletedOn = date.value;
           announce(`Pass ${position} saved.`);
         } catch (error) {
           checkbox.checked = previousCompleted;
+          date.value = previousCompletedOn;
+          date.disabled = !previousCompleted;
           updateSummary();
           announce(`Pass ${position} update failed: ${error.message}`);
         } finally {
           checkbox.disabled = false;
+          updateSummary();
+        }
+      });
+
+      date.addEventListener("change", async () => {
+        if (!checkbox.checked || date.disabled) return;
+        const previousCompletedOn = savedCompletedOn;
+        checkbox.disabled = true;
+        date.disabled = true;
+        updateSummary();
+        try {
+          const payload = await patchPass(position, { completed_on: date.value });
+          renderCompletion(row, payload);
+          savedCompletedOn = date.value;
+          announce(`Pass ${position} date saved.`);
+        } catch (error) {
+          date.value = previousCompletedOn;
+          date.disabled = false;
+          announce(`Pass ${position} date update failed: ${error.message}`);
+        } finally {
+          checkbox.disabled = false;
+          date.disabled = !checkbox.checked;
           updateSummary();
         }
       });
@@ -352,7 +384,7 @@
     void refresh().catch(handlePollError);
   };
 
-  const api = { csrfToken, formatCompletedOn, initialize, render, runWhenReady };
+  const api = { csrfToken, initialize, localDateValue, render, runWhenReady };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     runWhenReady(

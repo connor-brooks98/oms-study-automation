@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ subject }} · Exam {{ exam_number }} passes · Study Hub{% endblock %}
 {% block content %}
-<article class="page-shell sh-container exam-pass-page" style="--course-hue: {{ course_hue }}; --sh-hue: {{ course_hue }}">
+<article class="page-shell sh-container exam-pass-page" data-exam-page data-subject="{{ subject }}" data-exam-number="{{ exam_number }}" data-exam-date="{{ exam_date or '' }}" data-exam-date-conflict="{{ 'true' if exam_date_conflict else 'false' }}" style="--course-hue: {{ course_hue }}; --sh-hue: {{ course_hue }}">
   <nav class="breadcrumbs" aria-label="Breadcrumb">
     <a href="/lectures">Lectures</a><span aria-hidden="true">/</span>
     <span>{{ subject }}</span><span aria-hidden="true">/</span>
@@ -16,6 +16,28 @@
     </div>
     <span class="sh-pill sh-pill--info">Goal · 7 passes</span>
   </header>
+
+  <section class="exam-countdown sh-card" data-exam-countdown aria-labelledby="countdown-heading">
+    <div class="exam-countdown__intro">
+      <div class="exam-countdown__title-row">
+        <span class="exam-countdown__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7.5v5l3.5 2"></path></svg></span>
+        <div>
+          <p class="mono-label">Exam countdown</p>
+          <h2 id="countdown-heading">Time remaining</h2>
+          <p class="exam-countdown__target" data-countdown-state>{% if exam_date_conflict %}Exam dates differ. Set one date for this exam.{% elif exam_date %}Time remaining until your 8:00 AM target.{% else %}No exam date set.{% endif %}</p>
+        </div>
+      </div>
+      <dl class="exam-countdown__metrics">
+        <div class="exam-countdown__metric"><dt>Days</dt><dd data-countdown-days class="t-number">—</dd></div>
+        <div class="exam-countdown__metric"><dt>Hours</dt><dd data-countdown-hours class="t-number">—</dd></div>
+      </dl>
+    </div>
+    <div class="exam-countdown__action">
+      <span class="exam-countdown__time"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7.5v5h4"></path></svg>Target · 8:00 AM</span>
+      <div class="exam-countdown__date"><span>Exam date</span><strong data-exam-date-label>{% if exam_date %}{{ exam_date }}{% elif exam_date_conflict %}Dates differ{% else %}No date selected{% endif %}</strong></div>
+      <button class="sh-btn sh-btn--secondary" type="button" data-open-dialog="exam-date-dialog" data-open-date>{% if exam_date %}Change Exam Date{% else %}Set Exam Date{% endif %}</button>
+    </div>
+  </section>
 
   <section class="exam-pass-overview sh-card" data-exam-pass-overview aria-labelledby="exam-progress-heading">
     <div class="exam-pass-overview__heading">
@@ -53,5 +75,20 @@
       </table>
     </div>
   </section>
+
+  <dialog class="sh-dialog t-modal date-dialog" id="exam-date-dialog" data-exam-date-dialog aria-labelledby="exam-date-dialog-title">
+    <div class="sh-dialog__header">
+      <div><p class="sh-dialog__kicker">Exam schedule</p><h2 id="exam-date-dialog-title" data-exam-date-dialog-title>Set exam date</h2></div>
+      <button class="sh-iconbtn" type="button" data-close-dialog aria-label="Close exam date">×</button>
+    </div>
+    <form class="date-dialog__body" data-exam-date-form>
+      <label class="sh-field-label" for="exam-date">Exam date</label>
+      <input class="sh-input" id="exam-date" type="date" data-exam-date-input data-dialog-initial-focus aria-describedby="exam-date-feedback" required>
+      <p class="field-message" id="exam-date-feedback" role="status" aria-live="polite" data-exam-date-feedback></p>
+      <p class="date-dialog__hint">The countdown target is 8:00 AM in your browser's local time.</p>
+      <div class="date-dialog__actions"><button class="sh-btn sh-btn--secondary" type="button" data-close-dialog>Cancel</button><button class="sh-btn sh-btn--primary" type="submit" data-save-exam-date>Save exam date</button></div>
+    </form>
+  </dialog>
 </article>
 {% endblock %}
+{% block scripts %}<script src="/static/exam_passes.js?v={{ shell_asset_version }}" defer></script>{% endblock %}

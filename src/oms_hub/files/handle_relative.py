@@ -241,6 +241,7 @@ def _copy_posix(
 # contract without pretending that macOS implements Windows path semantics.
 _GENERIC_READ = 0x80000000
 _GENERIC_WRITE = 0x40000000
+_FILE_LIST_DIRECTORY = 0x00000001
 _FILE_READ_ATTRIBUTES = 0x00000080
 _FILE_SHARE_READ = 0x00000001
 _FILE_SHARE_WRITE = 0x00000002
@@ -465,7 +466,7 @@ def _windows_path_parts(path: Path) -> tuple[Path, tuple[str, ...]]:
 def _windows_open_checked_directory(api: _WindowsAPI, path: Path) -> int:
     handle = api.open_file(
         str(path),
-        _FILE_READ_ATTRIBUTES,
+        _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES,
         _FILE_SHARE_READ | _FILE_SHARE_WRITE,
         _OPEN_EXISTING,
         _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
@@ -542,13 +543,20 @@ def _windows_parent(
 
 
 def _windows_open_checked_file(api: _WindowsAPI, path: Path, *, access: int, creation: int) -> int:
-    handle = api.open_file(
-        str(path),
-        access,
-        _FILE_SHARE_READ | _FILE_SHARE_WRITE,
-        creation,
-        _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_ATTRIBUTE_NORMAL,
-    )
+    try:
+        handle = api.open_file(
+            str(path),
+            access,
+            _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+            creation,
+            _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_ATTRIBUTE_NORMAL,
+        )
+    except OSError as error:
+        if _is_missing_windows_error(error):
+            raise FileNotFoundError(
+                _windows_error_code(error), "Windows file not found", str(path)
+            ) from error
+        raise
     try:
         attributes = api.attribute_tag(handle)
         if attributes & _FILE_ATTRIBUTE_REPARSE_POINT:

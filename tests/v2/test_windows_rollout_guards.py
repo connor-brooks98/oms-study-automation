@@ -500,6 +500,34 @@ def test_windows_installer_replaces_old_root_task_action_and_verifies_it() -> No
     assert "RestartCount" not in script
 
 
+def test_windows_installer_sets_and_verifies_unlimited_task_execution_time() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+    action_guard = script[
+        script.index("function Assert-TaskActionTargetsProjectRoot") : script.index(
+            "function Restore-PreviousScheduledTask"
+        )
+    ]
+    install_guard = script[
+        script.index(
+            'if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {'
+        ) : script.index("Start-ScheduledTask -TaskName $TaskName")
+    ]
+
+    settings = (
+        "New-ScheduledTaskSettingsSet -StartWhenAvailable "
+        "-ExecutionTimeLimit ([TimeSpan]::Zero)"
+    )
+    readback = '[string]$Task.Settings.ExecutionTimeLimit -cne "PT0S"'
+    assert settings in install_guard
+    assert readback in action_guard
+    assert install_guard.index(settings) < install_guard.index(
+        "Register-ScheduledTask"
+    )
+    assert script.index("Register-ScheduledTask", script.index(install_guard)) < script.index(
+        "Assert-TaskActionTargetsProjectRoot", script.index(install_guard)
+    ) < script.index("Start-ScheduledTask -TaskName $TaskName")
+
+
 def test_windows_installer_stops_and_verifies_only_same_root_hub_processes() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 

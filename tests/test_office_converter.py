@@ -319,6 +319,7 @@ def test_timeout_kills_owned_office_tree_cleans_partial_and_releases_lock(
         "_terminate_office_process_tree",
         terminated.append,
     )
+    monkeypatch.setattr(office_module, "_reported_office_pid", lambda _messages: 4242)
 
     with pytest.raises(OfficeTimeoutError):
         converter.convert(source, destination)
