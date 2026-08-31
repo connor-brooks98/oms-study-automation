@@ -1977,6 +1977,7 @@ def test_child_cwd_is_overlay_bound_and_dotenv_values_are_cleared(
         captured.update(kwargs)
         raise CapturedLaunch("captured controlled child launch")
 
+    monkeypatch.setattr(process_module, "_is_windows", lambda: False)
     harness = ProcessRehearsal(_request(tmp_path), popen=capture_popen)  # type: ignore[arg-type]
     harness._source_tree_sha256 = "c" * 64
     overlay = SimpleNamespace(
