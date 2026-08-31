@@ -515,6 +515,96 @@ test("overlapping pass responses update only their owned fields", async () => {
   }
 });
 
+test("a pending completion keeps its date input from starting a competing save", async () => {
+  const pass = buildPassRow({ position: 1 });
+  const pending = [];
+  const documentRef = new FakeLectureDocument([], {
+    passRows: [pass.row],
+    passCount: new FakeLectureElement(),
+    addPass: new FakeLectureElement(),
+  });
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42" };
+
+  try {
+    lecture.initialize(documentRef, async (_url, options = {}) => {
+      if (!options.method) return { ok: true, async json() { return {}; } };
+      return new Promise((resolve) => pending.push({ options, resolve }));
+    });
+    pass.checkbox.checked = true;
+    const completion = pass.checkbox.dispatch("change");
+    await flushMicrotasks();
+
+    assert.equal(pass.date.disabled, true);
+    pass.date.value = "2026-08-29";
+    await pass.date.dispatch("change");
+    assert.equal(pending.length, 1);
+
+    pending[0].resolve({
+      ok: true,
+      async json() { return { position: 1, completed_on: "2026-08-31", resource: null }; },
+    });
+    await completion;
+    assert.equal(pass.date.disabled, false);
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
+test("a pending date save gates adding a pass until it settles", async () => {
+  const passes = Array.from({ length: 5 }, (_, index) => buildPassRow({
+    position: index + 1,
+    completed: true,
+    completedOn: "2026-08-30",
+  }));
+  const addPass = new FakeLectureElement();
+  const pending = [];
+  const documentRef = new FakeLectureDocument([], {
+    passRows: passes.map(({ row }) => row),
+    passCount: new FakeLectureElement(),
+    addPass,
+  });
+  const originalLocation = global.location;
+  global.location = { pathname: "/lectures/42" };
+
+  try {
+    lecture.initialize(documentRef, async (_url, options = {}) => {
+      if (!options.method) return { ok: true, async json() { return {}; } };
+      return new Promise((resolve) => pending.push({ options, resolve }));
+    });
+    assert.equal(addPass.disabled, false);
+
+    passes[0].date.value = "2026-08-29";
+    const saved = passes[0].date.dispatch("change");
+    await flushMicrotasks();
+    assert.equal(passes[0].date.disabled, true);
+    assert.equal(addPass.disabled, true);
+
+    pending.shift().resolve({
+      ok: true,
+      async json() { return { position: 1, completed_on: "2026-08-29", resource: null }; },
+    });
+    await saved;
+    assert.equal(addPass.disabled, false);
+
+    passes[0].date.value = "2026-08-28";
+    const failed = passes[0].date.dispatch("change");
+    await flushMicrotasks();
+    assert.equal(addPass.disabled, true);
+    pending.shift().resolve({
+      ok: false,
+      async json() { return { detail: "Date rejected." }; },
+    });
+    await failed;
+    assert.equal(passes[0].date.value, "2026-08-29");
+    assert.equal(addPass.disabled, false);
+  } finally {
+    if (originalLocation === undefined) delete global.location;
+    else global.location = originalLocation;
+  }
+});
+
 test("selecting Other reveals the inline editor without saving a sentinel", async () => {
   const pass = buildPassRow({ position: 1, resource: "Lecture" });
   const requests = [];
