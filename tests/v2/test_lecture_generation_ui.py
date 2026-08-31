@@ -75,7 +75,14 @@ def test_lecture_page_shows_five_pass_ledger_rows_between_expandable_panels(tmp_
         assert row.attributes["data-pass-position"] == str(position)
         completion = row.css_first("[data-pass-complete]")
         assert completion is not None and completion.attributes["type"] == "checkbox"
-        assert row.css_first("[data-pass-date]") is not None
+        date = row.css_first("input[data-pass-date]")
+        assert date is not None
+        assert date.attributes["type"] == "date"
+        assert "disabled" in date.attributes
+        assert "required" in date.attributes
+        assert date.attributes["id"] == f"pass-date-{position}"
+        date_label = row.css_first(f'label[for="{date.attributes["id"]}"]')
+        assert date_label is not None
         assert row.css_first("select[data-pass-resource]") is not None
         custom = row.css_first("[data-pass-resource-custom]")
         assert custom is not None and "hidden" in custom.attributes

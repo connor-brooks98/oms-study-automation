@@ -95,6 +95,9 @@ class FakeLectureDocument {
     if (selector === "[data-pass-complete]") {
       return this.passRows.map((row) => row.querySelector("[data-pass-complete]"));
     }
+    if (selector === "[data-pass-date]") {
+      return this.passRows.map((row) => row.querySelector("[data-pass-date]"));
+    }
     if (selector === "[data-pass-resource]") {
       return this.passRows.map((row) => row.querySelector("[data-pass-resource]"));
     }
@@ -119,14 +122,15 @@ const buildCard = (kind) => {
   return { card, message, generateButton };
 };
 
-const buildPassRow = ({ position, completed = false, resource = "", options = [] }) => {
+const buildPassRow = ({ position, completed = false, completedOn = "", resource = "", options = [] }) => {
   const row = new FakeLectureElement();
   row.dataset.passPosition = String(position);
   const checkbox = new FakeLectureElement();
   checkbox.dataset.passPosition = String(position);
   checkbox.checked = completed;
   const date = new FakeLectureElement();
-  date.textContent = completed ? "Aug 29, 2026" : "Not completed";
+  date.value = completedOn;
+  date.disabled = !completed;
   const select = new FakeLectureElement();
   select.dataset.passPosition = String(position);
   select.value = resource;
@@ -210,6 +214,10 @@ test("pass dates format local ISO values and leave unknown values readable", () 
   assert.equal(lecture.formatCompletedOn(null), "Not completed");
   assert.equal(lecture.formatCompletedOn("not-a-date"), "not-a-date");
   assert.equal(lecture.formatCompletedOn("2026-08-30"), "Aug 30, 2026");
+});
+
+test("local date values preserve the browser calendar day", () => {
+  assert.equal(lecture.localDateValue(new Date(2026, 7, 31, 23, 30)), "2026-08-31");
 });
 
 // The real setTimeout, saved before any monkeypatching below, used only to
@@ -308,7 +316,7 @@ test("generation-status polling surfaces failures, doubles the retry delay up to
   }
 });
 
-test("pass completion and resource changes PATCH independently with CSRF and refresh the ledger", async () => {
+test("pass completion, date edits, and resource changes PATCH independently with CSRF", async () => {
   const passes = Array.from({ length: 5 }, (_, index) => buildPassRow({ position: index + 1 }));
   const passCount = new FakeLectureElement();
   passCount.textContent = "0/5";
@@ -328,14 +336,20 @@ test("pass completion and resource changes PATCH independently with CSRF and ref
     return {
       ok: true,
       async json() {
-        return body.completed === true
-          ? { position: 1, completed_on: "2026-08-30", resource: "" }
-          : { position: 1, completed_on: "2026-08-30", resource: body.resource };
+        return body.completed_on
+          ? { position: 1, completed_on: body.completed_on, resource: "" }
+          : { position: 1, completed_on: "2026-08-29", resource: body.resource };
       },
     };
   };
   const originalLocation = global.location;
+  const OriginalDate = global.Date;
   global.location = { pathname: "/lectures/42" };
+  global.Date = class extends OriginalDate {
+    constructor(...args) {
+      return args.length ? new OriginalDate(...args) : new OriginalDate(2026, 7, 31, 23, 30);
+    }
+  };
 
   try {
     lecture.initialize(documentRef, fetchImpl);
@@ -343,12 +357,16 @@ test("pass completion and resource changes PATCH independently with CSRF and ref
     await passes[0].checkbox.dispatch("change");
     await flushMicrotasks();
 
+    passes[0].date.value = "2026-08-29";
+    await passes[0].date.dispatch("change");
+    await flushMicrotasks();
+
     passes[0].select.value = "Anki";
     await passes[0].select.dispatch("change");
     await flushMicrotasks();
 
     const mutations = requests.filter(({ options }) => options.method === "PATCH");
-    assert.equal(mutations.length, 2);
+    assert.equal(mutations.length, 3);
     assert.deepEqual(
       mutations.map(({ url, options }) => ({
         url,
@@ -358,7 +376,12 @@ test("pass completion and resource changes PATCH independently with CSRF and ref
       [
         {
           url: "/api/lectures/42/passes/1",
-          body: { completed: true },
+          body: { completed_on: "2026-08-31" },
+          csrf: "csrf-token",
+        },
+        {
+          url: "/api/lectures/42/passes/1",
+          body: { completed_on: "2026-08-29" },
           csrf: "csrf-token",
         },
         {
@@ -368,15 +391,17 @@ test("pass completion and resource changes PATCH independently with CSRF and ref
         },
       ],
     );
-    assert.equal(passes[0].date.textContent, "Aug 30, 2026");
+    assert.equal(passes[0].date.value, "2026-08-29");
+    assert.equal(passes[0].date.disabled, false);
     assert.equal(passCount.textContent, "1/5");
   } finally {
+    global.Date = OriginalDate;
     if (originalLocation === undefined) delete global.location;
     else global.location = originalLocation;
   }
 });
 
-test("failed pass updates restore the prior completion, date, count, and resource", async () => {
+test("failed pass updates restore the prior completion, editable date, count, and resource", async () => {
   const passes = Array.from({ length: 5 }, (_, index) => buildPassRow({
     position: index + 1,
     resource: index === 0 ? "Lecture" : "",
@@ -403,13 +428,28 @@ test("failed pass updates restore the prior completion, date, count, and resourc
     await passes[0].checkbox.dispatch("change");
     await flushMicrotasks();
     assert.equal(passes[0].checkbox.checked, false);
-    assert.equal(passes[0].date.textContent, "Not completed");
+    assert.equal(passes[0].date.value, "");
+    assert.equal(passes[0].date.disabled, true);
     assert.equal(passCount.textContent, "0/5");
 
     passes[0].select.value = "Anki";
     await passes[0].select.dispatch("change");
     await flushMicrotasks();
     assert.equal(passes[0].select.value, "Lecture");
+
+    const completed = buildPassRow({ position: 6, completed: true, completedOn: "2026-08-30" });
+    const completedDocument = new FakeLectureDocument([], {
+      passRows: [completed.row],
+      passCount: new FakeLectureElement(),
+      addPass: new FakeLectureElement(),
+    });
+    completedDocument.cookie = "study_hub_csrf=csrf-token";
+    lecture.initialize(completedDocument, fetchImpl);
+    completed.date.value = "2026-08-29";
+    await completed.date.dispatch("change");
+    await flushMicrotasks();
+    assert.equal(completed.date.value, "2026-08-30");
+    assert.equal(completed.date.disabled, false);
   } finally {
     if (originalLocation === undefined) delete global.location;
     else global.location = originalLocation;
