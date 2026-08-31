@@ -263,7 +263,7 @@ button.exam-toggle {
   width: 100%;
 }
 [hidden] { display: none !important; }
-.exam-toggle {
+button.exam-toggle {
   gap: .6rem;
   min-height: var(--control-h);
   padding: .55rem .8rem;
