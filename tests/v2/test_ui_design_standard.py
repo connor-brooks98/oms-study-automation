@@ -687,3 +687,16 @@ def test_targeted_visual_acceptance_layouts_are_scoped_and_responsive() -> None:
         "[data-workflow-panel] .studio-runner form {\n  display: grid;\n  gap: var(--sp-4);"
         in app_css
     )
+
+
+def test_exam_disclosure_is_unboxed_without_shrinking_its_hit_target() -> None:
+    app_css = static_source("app.css")
+
+    exam_toggle_rule = app_css.rsplit("button.exam-toggle {", 1)[1].split("}", 1)[0]
+    exam_heading_toggle_rule = app_css.split(
+        ".exam-heading .exam-toggle {", 1
+    )[1].split("}", 1)[0]
+
+    assert "border: 0;" in exam_toggle_rule
+    assert "width: var(--control-h);" in exam_heading_toggle_rule
+    assert "min-height: var(--control-h);" in exam_heading_toggle_rule
