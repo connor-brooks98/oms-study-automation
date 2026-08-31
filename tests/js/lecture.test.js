@@ -336,9 +336,13 @@ test("pass completion, date edits, and resource changes PATCH independently with
     return {
       ok: true,
       async json() {
-        return body.completed_on
-          ? { position: 1, completed_on: body.completed_on, resource: "" }
-          : { position: 1, completed_on: "2026-08-29", resource: body.resource };
+        if (body.completed_on) {
+          return { position: 1, completed_on: body.completed_on, resource: "" };
+        }
+        if (body.completed === false) {
+          return { position: 1, completed_on: null, resource: "Anki" };
+        }
+        return { position: 1, completed_on: "2026-08-29", resource: body.resource };
       },
     };
   };
@@ -365,8 +369,12 @@ test("pass completion, date edits, and resource changes PATCH independently with
     await passes[0].select.dispatch("change");
     await flushMicrotasks();
 
+    passes[0].checkbox.checked = false;
+    await passes[0].checkbox.dispatch("change");
+    await flushMicrotasks();
+
     const mutations = requests.filter(({ options }) => options.method === "PATCH");
-    assert.equal(mutations.length, 3);
+    assert.equal(mutations.length, 4);
     assert.deepEqual(
       mutations.map(({ url, options }) => ({
         url,
@@ -389,11 +397,16 @@ test("pass completion, date edits, and resource changes PATCH independently with
           body: { resource: "Anki" },
           csrf: "csrf-token",
         },
+        {
+          url: "/api/lectures/42/passes/1",
+          body: { completed: false },
+          csrf: "csrf-token",
+        },
       ],
     );
-    assert.equal(passes[0].date.value, "2026-08-29");
-    assert.equal(passes[0].date.disabled, false);
-    assert.equal(passCount.textContent, "1/5");
+    assert.equal(passes[0].date.value, "");
+    assert.equal(passes[0].date.disabled, true);
+    assert.equal(passCount.textContent, "0/5");
   } finally {
     global.Date = OriginalDate;
     if (originalLocation === undefined) delete global.location;
@@ -486,14 +499,14 @@ test("overlapping pass responses update only their owned fields", async () => {
       async json() { return { position: 1, completed_on: null, resource: "Pathoma" }; },
     });
     await resource;
-    pending.find(({ options }) => JSON.parse(options.body).completed).resolve({
+    pending.find(({ options }) => JSON.parse(options.body).completed_on).resolve({
       ok: true,
       async json() { return { position: 1, completed_on: "2026-08-30", resource: "Lecture" }; },
     });
     await completion;
 
     assert.equal(pass.checkbox.checked, true);
-    assert.equal(pass.date.textContent, "Aug 30, 2026");
+    assert.equal(pass.date.value, "2026-08-30");
     assert.equal(passCount.textContent, "1/1");
     assert.equal(pass.select.value, "Pathoma");
   } finally {

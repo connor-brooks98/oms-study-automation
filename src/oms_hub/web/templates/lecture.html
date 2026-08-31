@@ -161,7 +161,10 @@
             <span class="sr-only">Mark pass {{ pass_item.position }} complete</span>
           </label>
           <strong class="pass-name">Pass {{ pass_item.position }}</strong>
-          <time class="pass-date" data-pass-date datetime="{{ pass_item.completed_on or '' }}">{{ pass_item.completed_on or 'Not completed' }}</time>
+          <label class="pass-date-label" for="pass-date-{{ pass_item.position }}">
+            <span class="sr-only">Completion date for pass {{ pass_item.position }}</span>
+            <input class="pass-date sh-input" id="pass-date-{{ pass_item.position }}" type="date" value="{{ pass_item.completed_on or '' }}" data-pass-date required {% if not pass_item.completed_on %}disabled{% endif %}>
+          </label>
           <div class="pass-resource-label">
             <span class="sr-only">Resource used for pass {{ pass_item.position }}</span>
             <select class="pass-resource sh-select" data-pass-resource data-pass-position="{{ pass_item.position }}" aria-label="Resource used for pass {{ pass_item.position }}">
@@ -202,5 +205,5 @@
 </article>
 {% endblock %}
 {% block scripts %}
-<script src="/static/lecture.js?v=20260830.1" defer></script>
+<script src="/static/lecture.js?v=20260831.1" defer></script>
 {% endblock %}
