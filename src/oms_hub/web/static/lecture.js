@@ -193,6 +193,7 @@
       if (resource.value === "Other") showCustomResource();
 
       checkbox.addEventListener("change", async () => {
+        if (checkbox.disabled) return;
         const previousCompleted = !checkbox.checked;
         const previousCompletedOn = savedCompletedOn;
         const completedOn = checkbox.checked ? localDateValue() : null;
@@ -225,6 +226,7 @@
       date.addEventListener("change", async () => {
         if (!checkbox.checked || date.disabled) return;
         const previousCompletedOn = savedCompletedOn;
+        checkbox.disabled = true;
         date.disabled = true;
         updateSummary();
         try {
@@ -237,6 +239,7 @@
           date.disabled = false;
           announce(`Pass ${position} date update failed: ${error.message}`);
         } finally {
+          checkbox.disabled = false;
           date.disabled = !checkbox.checked;
           updateSummary();
         }
