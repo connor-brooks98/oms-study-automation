@@ -560,6 +560,28 @@ def test_windows_missing_digest_parent_remains_fail_closed() -> None:
     assert not isinstance(error.value.__cause__, FileNotFoundError)
 
 
+def test_windows_missing_coded_digest_metadata_failure_remains_fail_closed() -> None:
+    root, _source, destination, api = _fixture_paths()
+    api.directories.add(str(destination.parent))
+    api.files[str(destination)] = b"existing"
+    original_attribute_tag = api.attribute_tag
+
+    def fail_leaf_metadata(handle: int) -> int:
+        path, _offset = api.handles[handle]
+        if path == str(destination):
+            raise hardened._Win32CallError(
+                "GetFileInformationByHandleEx", hardened._ERROR_FILE_NOT_FOUND
+            )
+        return original_attribute_tag(handle)
+
+    api.attribute_tag = fail_leaf_metadata  # type: ignore[method-assign]
+
+    with pytest.raises(hardened.HardenedWriteError) as error:
+        hardened._windows_sha256(destination, root, api=api)
+
+    assert not isinstance(error.value.__cause__, FileNotFoundError)
+
+
 @pytest.mark.parametrize(
     "failure",
     ["source-read", "temp-write", "flush", "final-read", "move", "delete"],
