@@ -594,6 +594,7 @@ def test_exam_countdown_reuses_shared_dialog_and_number_components() -> None:
     assert 'data-exam-countdown' in overview
     assert 'data-open-dialog="exam-date-dialog"' in overview
     assert 'class="sh-dialog t-modal date-dialog"' in overview
+    assert 'data-exam-date-dialog-title' in overview
     assert 'data-exam-date-form' in overview
     assert 'data-countdown-days class="t-number"' in overview
     assert 'data-countdown-hours class="t-number"' in overview

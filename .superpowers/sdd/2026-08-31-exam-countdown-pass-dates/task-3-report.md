@@ -33,3 +33,17 @@
 
 - Reviewed the final diff for local-date parsing, endpoint scope, CSRF, card placement, modal-shell reuse, motion reuse, and live-region scope. The test fixture now calls the initializer cleanup so its minute interval cannot keep Node alive.
 - No known implementation concerns. Browser-level visual and native-date-picker acceptance remain outside these focused automated tests.
+
+## Fix Round 1
+
+### RED
+
+- Added the preloaded-date regression case to `tests/js/exam_passes.test.js`.
+- `node --test tests/js/exam_passes.test.js` produced 3 passing tests and 1 expected failure: opening a saved exam left the date input blank instead of `2026-09-02` (and did not synchronize the dialog title).
+
+### GREEN
+
+- Every modal open now assigns `input.value = page.dataset.examDate || localDateValue(now())`, so cancelled edits cannot survive the next open.
+- Added `data-exam-date-dialog-title` and synchronizes it to `Set exam date` or `Change exam date` on open. Native `showPicker()` behavior and the missing-date default are unchanged.
+- `node --test tests/js/exam_passes.test.js`: 4 passed.
+- `.venv/bin/pytest -q tests/v2/test_lecture_generation_ui.py tests/v2/test_ui_design_standard.py`: 44 passed.

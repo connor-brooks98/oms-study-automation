@@ -38,6 +38,8 @@ const pageFixture = () => {
   const days = new FakeElement();
   const hours = new FakeElement();
   const feedback = new FakeElement();
+  const dialogTitle = new FakeElement();
+  dialogTitle.textContent = "Set exam date";
   const documentRef = {
     cookie: "study_hub_csrf=csrf-token",
     querySelector(selector) {
@@ -51,10 +53,11 @@ const pageFixture = () => {
         "[data-countdown-days]": days,
         "[data-countdown-hours]": hours,
         "[data-exam-date-feedback]": feedback,
+        "[data-exam-date-dialog-title]": dialogTitle,
       })[selector] || null;
     },
   };
-  return { date, days, documentRef, feedback, form, hours, input, open, page, state };
+  return { date, days, dialogTitle, documentRef, feedback, form, hours, input, open, page, state };
 };
 
 test("countdown uses local 8:00 AM without UTC date parsing", () => {
@@ -113,4 +116,22 @@ test("initializer seeds a missing date and saves it with the CSRF token", async 
   assert.equal(fixture.page.dataset.examDate, "2026-09-02");
   assert.equal(fixture.feedback.textContent, "Exam date saved.");
   cleanup();
+});
+
+test("opening restores the saved date and discards an unsaved edit", async (t) => {
+  const fixture = pageFixture();
+  fixture.page.dataset.examDate = "2026-09-02";
+  const cleanup = examPasses.initialize(
+    fixture.documentRef, undefined, () => new Date(2026, 7, 31, 9, 0),
+  );
+  t.after(cleanup);
+
+  await fixture.open.dispatch("click");
+  assert.equal(fixture.input.value, "2026-09-02");
+  assert.equal(fixture.dialogTitle.textContent, "Change exam date");
+
+  fixture.input.value = "2026-10-01";
+  await fixture.open.dispatch("click");
+  assert.equal(fixture.input.value, "2026-09-02");
+  assert.equal(fixture.input.showPickerCalls, 2);
 });

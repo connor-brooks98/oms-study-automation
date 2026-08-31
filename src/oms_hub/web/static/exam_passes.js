@@ -58,6 +58,7 @@
     const form = documentRef.querySelector("[data-exam-date-form]");
     const input = documentRef.querySelector("[data-exam-date-input]");
     const feedback = documentRef.querySelector("[data-exam-date-feedback]");
+    const dialogTitle = documentRef.querySelector("[data-exam-date-dialog-title]");
 
     const render = () => {
       const parts = countdownParts(page.dataset.examDate, now());
@@ -77,7 +78,8 @@
     };
 
     open?.addEventListener("click", () => {
-      if (!page.dataset.examDate && input && !input.value) input.value = localDateValue(now());
+      if (input) input.value = page.dataset.examDate || localDateValue(now());
+      if (dialogTitle) dialogTitle.textContent = page.dataset.examDate ? "Change exam date" : "Set exam date";
       try { input?.showPicker?.(); } catch (_) { /* Native date picker is optional. */ }
     });
 
