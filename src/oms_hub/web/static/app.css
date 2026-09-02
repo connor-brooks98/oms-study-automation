@@ -2012,7 +2012,8 @@ code { overflow-wrap: anywhere; }
 }
 [data-workflow-panel] .studio-runner form > label { margin-bottom: 0; }
 .studio-import-intake [data-import-source-form]:not(.sh-card) { padding: 1.1rem 1.25rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); }
-.studio-import-intake [data-import-source-list] { display: grid; gap: var(--sp-4); margin: var(--sp-6) 0 0; padding: 0; list-style: none; }
+.studio-import-source-actions { display: flex; justify-content: flex-end; margin-top: var(--sp-6); }
+.studio-import-intake [data-import-source-list] { display: grid; gap: var(--sp-4); margin: var(--sp-3) 0 0; padding: 0; list-style: none; }
 .studio-import-intake [data-import-source-row] {
   display: grid;
   grid-template-columns: minmax(16rem, 1.15fr) minmax(14rem, 1fr) minmax(18rem, 1.1fr) auto;

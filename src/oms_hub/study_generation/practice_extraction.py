@@ -202,6 +202,8 @@ class PracticeQuestionExtractor:
                 if answer not in answers:
                     answers.append(answer)
 
+        if not merged_questions:
+            raise ValueError("extraction returned no questions")
         expected_identifiers = _sequential_question_identifiers(sources)
         extracted_identifiers = {
             identifier

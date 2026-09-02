@@ -353,6 +353,17 @@
     row.querySelector("[data-import-row-included]")?.checked !== false
   );
 
+  const updateImportSourceSelection = (list, button, toggle = false) => {
+    const inputs = Array.from(list.querySelectorAll("[data-import-row-included]"));
+    let allSelected = inputs.length > 0 && inputs.every((input) => input.checked);
+    if (toggle && inputs.length) {
+      allSelected = !allSelected;
+      inputs.forEach((input) => { input.checked = allSelected; });
+    }
+    button.disabled = inputs.length === 0;
+    button.textContent = allSelected ? "Deselect all" : "Select all";
+  };
+
   const buildImportRunPayload = (
     form,
     course,
@@ -389,7 +400,7 @@
     included.type = "checkbox";
     included.id = `import-source-included-${source.id}`;
     included.dataset.importRowIncluded = "true";
-    included.checked = true;
+    included.checked = false;
     included.setAttribute("aria-label", `Use ${sourceTitle} for this run`);
     const title = documentRef.createElement("strong");
     title.className = "studio-import-source-title";
@@ -560,6 +571,7 @@
     const importDestinationCourse = page.querySelector("[data-import-destination-course]");
     const importDestinationExam = page.querySelector("[data-import-destination-exam]");
     const importSourceList = page.querySelector("[data-import-source-list]");
+    const importSelectionToggle = page.querySelector("[data-import-selection-toggle]");
     const pollStatus = page.querySelector("[data-poll-status]");
     let pollHandle = null;
     const basePollDelayMs = 2000;
@@ -631,6 +643,7 @@
         renderSourcePicker(documentRef, picker, sourcePayload.sources || []);
         filterSourcePicker(picker, sourceFilter.value);
         hydrateImportSources(documentRef, importSourceList, sourcePayload.sources || []);
+        updateImportSourceSelection(importSourceList, importSelectionToggle);
         const activeRuns = renderRuns(documentRef, runList, runPayload.runs || []);
         if (activeSources || activeRuns) scheduleRefresh(pollDelayMs);
       } catch (error) {
@@ -681,6 +694,12 @@
     });
     selectAllButton?.addEventListener("click", () => {
       selectAllAttachedSources(picker);
+    });
+    importSelectionToggle?.addEventListener("click", () => {
+      updateImportSourceSelection(importSourceList, importSelectionToggle, true);
+    });
+    importSourceList.addEventListener("change", () => {
+      updateImportSourceSelection(importSourceList, importSelectionToggle);
     });
 
     const uploadDroppedImage = async (file) => {
@@ -793,6 +812,7 @@
           empty.textContent = "Add at least one local source.";
           importSourceList.append(empty);
         }
+        updateImportSourceSelection(importSourceList, importSelectionToggle);
         return;
       }
       const target = deleteButton || rerunButton || removeRunButton || unpublishButton;
@@ -910,6 +930,7 @@
             id: payload.id,
             title: form.elements.title.value,
           }, roleState.role, roleState.attach_to_notebook);
+          updateImportSourceSelection(importSourceList, importSelectionToggle);
           message.textContent = "Local import source added.";
           form.reset();
           applyImportRoleState(form);
@@ -1023,6 +1044,7 @@
     restoreScopeFromUrl,
     selectAllAttachedSources,
     setWorkflowState,
+    updateImportSourceSelection,
     updateScopeUrl,
     workflowPanelState,
   };

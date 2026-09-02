@@ -559,6 +559,17 @@
     return card?.querySelector?.("[data-question-message]") || null;
   };
 
+  const withQuestionSavePending = async (card, operation) => {
+    const save = Array.from(card?.querySelectorAll?.("[data-focus-key]") || [])
+      .find((item) => item.dataset.focusKey?.endsWith(":save"));
+    if (save) save.disabled = true;
+    try {
+      return await operation();
+    } finally {
+      if (save) save.disabled = false;
+    }
+  };
+
   const safeJson = async (response) => { try { return await response.json(); } catch (_error) { return {}; } };
 
   const reviewErrorMessage = (payload, fallback) => {
@@ -612,15 +623,17 @@
         if (submitButton) submitButton.disabled = true;
         localMessage.textContent = "Uploading image…";
         try {
-          const body = new root.FormData();
-          body.append("file", file);
-          const response = await fetchImpl(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(questionId)}/image`, {
-            method: "POST", headers: { "X-CSRF-Token": csrf(documentRef) }, body,
+          await withQuestionSavePending(imageUpload.closest?.("[data-question-id]"), async () => {
+            const body = new root.FormData();
+            body.append("file", file);
+            const response = await fetchImpl(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(questionId)}/image`, {
+              method: "POST", headers: { "X-CSRF-Token": csrf(documentRef) }, body,
+            });
+            const updated = await safeJson(response);
+            if (!response.ok) throw new Error(reviewErrorMessage(updated, "Image upload was rejected."));
+            render(documentRef, page, updated);
+            (questionMessage(page, questionId) || message).textContent = "Image uploaded.";
           });
-          const updated = await safeJson(response);
-          if (!response.ok) throw new Error(reviewErrorMessage(updated, "Image upload was rejected."));
-          render(documentRef, page, updated);
-          (questionMessage(page, questionId) || message).textContent = "Image uploaded.";
         } catch (error) {
           localMessage.textContent = error instanceof Error ? error.message : "Image could not be uploaded.";
           if (submitButton) {
@@ -726,9 +739,11 @@
           message.textContent = "Run diagnostic acknowledged.";
         } else if (candidate) {
           const card = candidate.closest("[data-question-id]");
-          await send(candidateSelectionUrl(page.dataset.runId, card.dataset.questionId), "POST", candidateSelectionPayload(candidate.dataset.selectCandidate));
-          await refresh();
-          message.textContent = "Image selected.";
+          await withQuestionSavePending(card, async () => {
+            const updated = await send(candidateSelectionUrl(page.dataset.runId, card.dataset.questionId), "POST", candidateSelectionPayload(candidate.dataset.selectCandidate));
+            render(documentRef, page, updated);
+            (questionMessage(page, card.dataset.questionId) || message).textContent = "Image selected.";
+          });
         } else if (verify) {
           await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(verify.dataset.verifyQuestion)}/verify-answer`, "POST");
           await refresh();
@@ -746,7 +761,7 @@
     shouldRenderNoCandidateEmpty, normalizedEditPayload,
     candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
     restoreRenderState, reindexChoiceRows, removeChoiceRow, choiceRow,
-    initialize, render, renderRunDiagnostics, setReviewTab, moveReviewTab, applyQuestionSave, questionMessage, reviewErrorMessage,
+    initialize, render, renderRunDiagnostics, setReviewTab, moveReviewTab, applyQuestionSave, questionMessage, withQuestionSavePending, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

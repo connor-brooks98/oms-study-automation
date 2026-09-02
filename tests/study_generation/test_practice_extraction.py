@@ -124,6 +124,24 @@ def valid_extraction_json(source_id: str = "source-1") -> str:
     )
 
 
+def valid_answer_only_json(source_id: str = "answers") -> str:
+    return json.dumps(
+        {
+            "questions": [],
+            "answers": [
+                {
+                    "original_identifier": "1",
+                    "correct_index": 0,
+                    "rationale": None,
+                    "source_segments": [
+                        {"source_id": source_id, "segment_key": "questions-1"}
+                    ],
+                }
+            ],
+        }
+    )
+
+
 def test_extractor_retries_schema_failure_once(tmp_path: Path) -> None:
     structured_generator = StructuredGenerator(["not-json", valid_extraction_json()])
     result = PracticeQuestionExtractor(structured_generator).extract((_document(tmp_path),))
@@ -136,6 +154,35 @@ def test_extractor_retries_schema_failure_once(tmp_path: Path) -> None:
         in structured_generator.requests[1].instruction
     )
     assert result.provider_metadata[-1].request_id == "request-2"
+
+
+def test_extractor_accepts_an_answer_only_chunk(tmp_path: Path) -> None:
+    questions = _document(tmp_path, source_id="questions")
+    answers = _document(tmp_path, source_id="answers")
+    generator = StructuredGenerator(
+        [
+            valid_extraction_json("questions"),
+            valid_answer_only_json(),
+            valid_answer_only_json(),
+        ]
+    )
+
+    result = PracticeQuestionExtractor(generator, max_input_characters=230).extract(
+        (questions, answers)
+    )
+
+    assert len(generator.requests) == 2
+    assert len(result.questions) == 2
+    assert len(result.answers) == 1
+
+
+def test_extractor_rejects_an_import_with_no_questions(tmp_path: Path) -> None:
+    generator = StructuredGenerator([valid_answer_only_json(), valid_answer_only_json()])
+
+    with pytest.raises(ValueError, match="no questions"):
+        PracticeQuestionExtractor(generator).extract(
+            (SourceDocument(_document(tmp_path, source_id="answers"), "Answers", "answer_key"),)
+        )
 
 
 @pytest.mark.parametrize("reference_field", ["source_segments", "candidate_assets"])

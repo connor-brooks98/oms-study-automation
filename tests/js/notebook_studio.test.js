@@ -67,6 +67,7 @@ class Element {
     const matches = (element) => {
       if (!element?.dataset) return false;
       if (selector === "[data-import-source-row]") return element.dataset.importSourceRow === "true";
+      if (selector === "[data-import-row-included]") return element.dataset.importRowIncluded === "true";
       if (selector === "details[data-state-key]") return element.tagName === "details" && Boolean(element.dataset.stateKey);
       if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
       if (selector === "[data-focus-key]") return Boolean(element.dataset.focusKey);
@@ -121,7 +122,7 @@ test("dynamic imported-source role select has a visible associated label", () =>
   const sourceChoice = row.children[0];
   const roleLabel = row.children[1];
   const roleSelect = roleLabel.children[0];
-  assert.equal(sourceChoice.children[0].checked, true);
+  assert.equal(sourceChoice.children[0].checked, false);
   assert.equal(sourceChoice.children[0].dataset.importRowIncluded, "true");
   assert.equal(sourceChoice.children[1].children[0].textContent, "Exam PDF");
   assert.equal(sourceChoice.children[1].children[1].textContent, "Use for this run");
@@ -132,6 +133,24 @@ test("dynamic imported-source role select has a visible associated label", () =>
   assert.match(roleSelect.className, /sh-select/);
   assert.match(row.children[2].className, /sh-check/);
   assert.match(row.children[3].className, /sh-btn--danger/);
+});
+
+test("import source toggle selects and deselects every source", () => {
+  const inputs = [{ checked: false }, { checked: false }];
+  const list = { querySelectorAll: () => inputs };
+  const button = { disabled: true, textContent: "" };
+
+  studio.updateImportSourceSelection(list, button);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, "Select all");
+
+  studio.updateImportSourceSelection(list, button, true);
+  assert.deepEqual(inputs.map((input) => input.checked), [true, true]);
+  assert.equal(button.textContent, "Deselect all");
+
+  studio.updateImportSourceSelection(list, button, true);
+  assert.deepEqual(inputs.map((input) => input.checked), [false, false]);
+  assert.equal(button.textContent, "Select all");
 });
 
 test("import payload includes only sources checked for the current run", () => {
@@ -351,7 +370,7 @@ test("ready local-import rows hydrate on refresh and deduplicate by source id", 
   assert.equal(list.querySelectorAll("[data-import-source-row]").length, 1);
   const row = list.children[0];
   assert.equal(row.dataset.sourceId, "source-42");
-  assert.equal(row.children[0].children[0].checked, true);
+  assert.equal(row.children[0].children[0].checked, false);
   assert.equal(row.children[1].children[0].children.find((option) => option.selected).value, "supporting_reference");
   assert.equal(row.children[2].children[0].checked, true);
 });
@@ -383,6 +402,7 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
     panel.dataset.workflowPanel = workflow;
     return panel;
   });
+  const importSelectionToggle = new Element("button");
   const elements = {
     "[data-studio-course]": course,
     "[data-studio-exam]": exam,
@@ -401,6 +421,7 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
     "[data-import-destination-course]": select([[""]]),
     "[data-import-destination-exam]": select([[""]]),
     "[data-import-source-list]": new Element("ul"),
+    "[data-import-selection-toggle]": importSelectionToggle,
     "[data-poll-status]": new Element("p"),
   };
   const page = new Element("section");
@@ -461,7 +482,11 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
   ]);
   const row = elements["[data-import-source-list]"].children[0];
   assert.equal(row.dataset.sourceId, "source-1");
+  assert.equal(row.children[0].children[0].checked, false);
+  assert.equal(importSelectionToggle.textContent, "Select all");
+  await importSelectionToggle.dispatch("click");
   assert.equal(row.children[0].children[0].checked, true);
+  assert.equal(importSelectionToggle.textContent, "Deselect all");
   assert.equal(row.children[1].children[0].value, "questions");
   assert.equal(row.children[2].children[0].checked, false);
   assert.equal(row.children[2].children[0].disabled, true);

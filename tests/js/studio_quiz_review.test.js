@@ -244,6 +244,22 @@ test("edit and candidate payload helpers normalize only supported values", () =>
   );
 });
 
+test("image saves block question saves until the image mutation settles", async () => {
+  const card = new Element("article");
+  const save = new Element("button");
+  save.dataset.focusKey = "question:q1:save";
+  card.append(save);
+  let finish;
+  const pending = new Promise((resolve) => { finish = resolve; });
+
+  const guarded = review.withQuestionSavePending(card, () => pending);
+
+  assert.equal(save.disabled, true);
+  finish("saved");
+  assert.equal(await guarded, "saved");
+  assert.equal(save.disabled, false);
+});
+
 test("review UI uses DOM text nodes rather than untrusted HTML injection", () => {
   const source = fs.readFileSync(
     "src/oms_hub/web/static/studio_quiz_review.js",

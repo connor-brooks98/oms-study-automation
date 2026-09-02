@@ -79,7 +79,7 @@ class ExtractionPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    questions: tuple[ExtractedQuestion, ...] = Field(min_length=1, max_length=500)
+    questions: tuple[ExtractedQuestion, ...] = Field(max_length=500)
     answers: tuple[ExtractedAnswer, ...] = Field(default=(), max_length=500)
 
     @field_validator("questions", "answers", mode="before")
