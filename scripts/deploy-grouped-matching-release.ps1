@@ -13,6 +13,7 @@ param(
 # This is deliberately a one-release transaction, not a general deployment framework.
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+Set-StrictMode -Version Latest
 $ProjectRoot = "C:\Services\oms-study-automation-v2"
 $TaskName = "OMS Study Hub V2"
 $EnvFile = Join-Path $ProjectRoot ".env"
@@ -282,9 +283,10 @@ function Assert-VerifiedRollbackBackup {
 function Assert-RestoredRuntimeData {
   param([object]$Backup, [object]$Configuration)
   $manifest = Get-Content -LiteralPath (Join-Path $Backup.path "backup-manifest.json") -Raw | ConvertFrom-Json
+  $databaseRelativePath = ([string]$manifest.database.backup_path).Replace("/", "\")
   foreach ($member in @($manifest.files)) {
     $relative = ([string]$member.path).Replace("/", "\")
-    if ($relative -ieq "hub.db") { $restoredPath = $Configuration.database_path }
+    if ($relative -ieq $databaseRelativePath) { $restoredPath = $Configuration.database_path }
     elseif ($relative -like "artifacts\*") { $restoredPath = Join-Path $Configuration.data_root $relative }
     else { continue }
     Assert-Leaf $restoredPath
@@ -308,7 +310,7 @@ function Assert-OldRuntimeIntact {
 function Test-PathUnderProjectRoot {
   param([string]$ExecutablePath)
   if ([string]::IsNullOrWhiteSpace($ExecutablePath)) { return $false }
-  return $ExecutablePath.StartsWith($ProjectRoot.TrimEnd("\\") + "\\", [StringComparison]::OrdinalIgnoreCase)
+  return $ExecutablePath.StartsWith($ProjectRoot.TrimEnd("\") + "\", [StringComparison]::OrdinalIgnoreCase)
 }
 
 function Get-SameRootHubProcesses {
@@ -374,30 +376,63 @@ function Stop-SameRootRuntime {
   throw "Same-root runtime did not remain clear for two snapshots."
 }
 
+function Stop-InstallerProcessTree {
+  param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$InstallerProcess)
+  $deadline = (Get-Date).AddSeconds(30)
+  while ((Get-Date) -lt $deadline) {
+    $all = @(Get-CimInstance Win32_Process)
+    $children = @{}
+    foreach ($row in $all) { $parentKey = [string]$row.ParentProcessId; if (-not $children.ContainsKey($parentKey)) { $children[$parentKey] = [Collections.Generic.List[object]]::new() }; $children[$parentKey].Add($row) }
+    $byId = @{}; foreach ($row in $all) { $byId[[string]$row.ProcessId] = $row }
+    $selected = [Collections.Generic.List[object]]::new(); $pending = [Collections.Generic.Queue[int]]::new(); $seen = [Collections.Generic.HashSet[int]]::new()
+    $pending.Enqueue([int]$InstallerProcess.Id)
+    while ($pending.Count -gt 0) { $currentId = $pending.Dequeue(); if (-not $seen.Add($currentId)) { continue }; if ($byId.ContainsKey([string]$currentId)) { $selected.Add($byId[[string]$currentId]) }; if ($children.ContainsKey([string]$currentId)) { foreach ($child in $children[[string]$currentId]) { $pending.Enqueue([int]$child.ProcessId) } } }
+    if ($selected.Count -eq 0) { try { $InstallerProcess.Refresh() } catch { }; if ($InstallerProcess.HasExited) { return }; Start-Sleep -Milliseconds 250; continue }
+    $deepest = $null; $deepestDepth = -1
+    foreach ($candidate in $selected) { $depth = 0; $cursor = $candidate; while ($byId.ContainsKey([string]$cursor.ParentProcessId) -and $seen.Contains([int]$cursor.ParentProcessId)) { $depth++; $cursor = $byId[[string]$cursor.ParentProcessId] }; if ($depth -gt $deepestDepth) { $deepest = $candidate; $deepestDepth = $depth } }
+    $targetId = [int]$deepest.ProcessId; $live = Get-CimInstance Win32_Process -Filter "ProcessId=$targetId" -ErrorAction SilentlyContinue
+    if (-not $live) { continue }
+    $sameIdentity = ([string]$live.Name -ieq [string]$deepest.Name) -and ([string]$live.ExecutablePath -ieq [string]$deepest.ExecutablePath) -and ([int]$live.ParentProcessId -eq [int]$deepest.ParentProcessId) -and ([string]$live.CommandLine -eq [string]$deepest.CommandLine) -and (([datetime]$live.CreationDate).ToUniversalTime().ToString("o") -eq ([datetime]$deepest.CreationDate).ToUniversalTime().ToString("o"))
+    if (-not $sameIdentity) { throw "Installer process changed identity before termination." }
+    $handle = Get-Process -Id $targetId -ErrorAction SilentlyContinue
+    if (-not $handle) { continue }
+    try { $null = $handle.Handle; $handleKey = $handle.StartTime.ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff", [System.Globalization.CultureInfo]::InvariantCulture); $cimKey = ([datetime]$live.CreationDate).ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff", [System.Globalization.CultureInfo]::InvariantCulture) } catch { if ($handle.HasExited) { continue }; throw }
+    if ($handleKey -cne $cimKey) { throw "Installer process changed while acquiring its stable handle." }
+    try { Stop-Process -InputObject $handle -Force -ErrorAction Stop } catch { if ($handle.HasExited) { continue }; throw }
+    Start-Sleep -Milliseconds 250
+  }
+  try { $InstallerProcess.Refresh() } catch { }
+  if (-not $InstallerProcess.HasExited) { throw "Installer process tree did not terminate within the bounded shutdown deadline." }
+}
+
 function Invoke-Installer {
   param([object]$Configuration, [switch]$WhatIf)
-  $logRoot = Join-Path $Configuration.data_root "release-logs"; if (-not (Test-Path -LiteralPath $logRoot)) { New-Item -ItemType Directory -Path $logRoot -Force | Out-Null }
+  $logRoot = Join-Path $Configuration.data_root "release-logs"
+  if (-not (Test-Path -LiteralPath $logRoot)) { New-Item -ItemType Directory -Path $logRoot -Force | Out-Null }
   Assert-Directory $logRoot
   $logStem = Join-Path $logRoot ("grouped-matching-" + [guid]::NewGuid().ToString("N"))
-  $stdoutLog = "$logStem.stdout.log"
-  $stderrLog = "$logStem.stderr.log"
+  $stdoutLog = "$logStem.stdout.log"; $stderrLog = "$logStem.stderr.log"
   $arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $Installer, "-ProjectRoot", $ProjectRoot, "-DataRoot", $Configuration.data_root)
   if ($WhatIf) { $arguments += "-WhatIf" }
-  $process = Start-Process -FilePath (Get-SystemPowerShellPath) -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
-  $listenerLeft = $false
-  while (-not $process.HasExited) {
-    $listenerCount = @(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -LocalPort $Configuration.port -ErrorAction SilentlyContinue).Count
-    if ($listenerCount -eq 0) { $listenerLeft = $true }
-    if ($listenerCount -gt 1) {
-      try { $process.Kill(); $process.WaitForExit() } catch { }
-      if (-not $process.HasExited) { throw "Installer created more than one loopback listener and did not terminate; diagnostics retained at $stdoutLog and $stderrLog." }
-      throw "Installer created more than one loopback listener; diagnostics retained at $stdoutLog and $stderrLog."
+  $installerProcess = $null; $failure = $null; $deadline = (Get-Date).AddMinutes(10)
+  try {
+    $installerProcess = Start-Process -FilePath (Get-SystemPowerShellPath) -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+    $listenerLeft = $false
+    while (-not $installerProcess.HasExited -and (Get-Date) -lt $deadline) {
+      $listenerCount = @(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -LocalPort $Configuration.port -ErrorAction SilentlyContinue).Count
+      if ($listenerCount -eq 0) { $listenerLeft = $true }
+      if ($listenerCount -gt 1) { $failure = "Installer created more than one loopback listener." ; break }
+      Start-Sleep -Milliseconds 250
+      $installerProcess.Refresh()
     }
-    Start-Sleep -Milliseconds 250
-    $process.Refresh()
+    if (-not $installerProcess.HasExited -and $null -eq $failure) { $failure = "Installer exceeded the bounded 10-minute supervision deadline." }
+    if ($null -eq $failure -and $installerProcess.ExitCode -ne 0) { $failure = "Installer exited $($installerProcess.ExitCode)." }
+    if ($null -eq $failure -and -not $WhatIf -and -not $listenerLeft) { $failure = "Installer never cleared the old listener." }
+  } finally {
+    if ($null -ne $installerProcess -and ($null -ne $failure -or -not $installerProcess.HasExited)) { Stop-InstallerProcessTree $installerProcess }
+    if ($null -ne $installerProcess) { $installerProcess.Refresh(); if (-not $installerProcess.HasExited) { throw "Installer process is still running; refusing rollback." } }
   }
-  if ($process.ExitCode -ne 0) { throw "Installer failed; diagnostics retained at $stdoutLog and $stderrLog." }
-  if (-not $WhatIf -and -not $listenerLeft) { throw "Installer never cleared the old listener; diagnostics retained at $stdoutLog and $stderrLog." }
+  if ($null -ne $failure) { throw "$failure Diagnostics retained at $stdoutLog and $stderrLog." }
   Remove-Item -LiteralPath $stdoutLog, $stderrLog -Force -ErrorAction Stop
 }
 
@@ -448,14 +483,14 @@ function Invoke-Rollback {
     Stop-SameRootRuntime -StopTask
     Invoke-Git @("checkout", "--detach", $Binding.old_commit) | Out-Null
     $source = Get-SourceIdentity; if ($source.commit -cne $Binding.old_commit -or $source.tree -cne $Binding.old_tree) { throw "Old checkout did not restore." }
-    $quarantine = Join-Path $Configuration.data_root ("failed-release-quarantine\" + [guid]::NewGuid().ToString("N")); New-Item -ItemType Directory -Path $quarantine -ErrorAction Stop | Out-Null
+    $quarantine = Join-Path $Configuration.data_root ("failed-release-quarantine\" + [guid]::NewGuid().ToString("N")); New-Item -ItemType Directory -Path $quarantine -ErrorAction Stop | Out-Null; Assert-Directory $quarantine
     foreach ($runtimePath in @($Configuration.database_path, ($Configuration.database_path + "-wal"), ($Configuration.database_path + "-shm"), (Join-Path $Configuration.data_root "artifacts"))) { if (Test-Path -LiteralPath $runtimePath) { Assert-NonReparsePath $runtimePath; Move-Item -LiteralPath $runtimePath -Destination $quarantine -ErrorAction Stop } }
     Copy-Item -LiteralPath $backup.database -Destination $Configuration.database_path -ErrorAction Stop
     if (Test-Path -LiteralPath $backup.artifacts -PathType Container) { Copy-Item -LiteralPath $backup.artifacts -Destination (Join-Path $Configuration.data_root "artifacts") -Recurse -ErrorAction Stop }
+    Assert-RestoredRuntimeData $backup $Configuration
     $python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"; Assert-Leaf $python; & $python -c "import sqlite3,sys; assert sqlite3.connect(sys.argv[1]).execute('PRAGMA integrity_check').fetchone() == ('ok',)" $Configuration.database_path; Assert-NativeSuccess "SQLite integrity check"
     Invoke-Installer $Configuration
     Stop-SameRootRuntime -StopTask
-    Assert-RestoredRuntimeData $backup $Configuration
     $resolved = Get-ReleaseConfiguration
     if ([string]$resolved.data_root -cne [string]$Binding.data_root -or [string]$resolved.database_path -cne [string]$Binding.database_path -or $resolved.port -ne [int]$Binding.port -or $resolved.env_sha256 -cne [string]$Binding.env_sha256) { throw "Restored effective configuration differs." }
     Register-ScheduledTask -TaskName $TaskName -Xml (Get-Content -LiteralPath $backup.task_xml -Raw) -Force | Out-Null
@@ -482,7 +517,8 @@ function Get-Binding {
   return $binding
 }
 
-foreach ($hash in @($ExpectedScriptSha256, $ExpectedMergedCommit, $ExpectedMergedTree)) { if ($hash -notmatch "^[0-9a-f]{40,64}$") { throw "Expected hash format is invalid." } }
+if ($ExpectedScriptSha256 -notmatch "^[0-9a-f]{64}$") { throw "Expected script SHA256 format is invalid." }
+foreach ($identity in @($ExpectedMergedCommit, $ExpectedMergedTree)) { if ($identity -notmatch "^[0-9a-f]{40}$") { throw "Expected commit/tree format is invalid." } }
 Assert-Leaf $PSCommandPath
 if ((Get-FileSha256 $PSCommandPath) -cne $ExpectedScriptSha256) { throw "Release script self hash differs." }
 $configuration = Get-ReleaseConfiguration

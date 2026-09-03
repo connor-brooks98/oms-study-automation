@@ -1003,6 +1003,12 @@ def test_grouped_matching_release_is_tracked_three_mode_json_transaction() -> No
     assert "Test-ExactJsonInteger" in release
     assert "-RequireXmlDigest" in release
     assert "if ($RequireXmlDigest -and" in release
+    assert "Set-StrictMode -Version Latest" in release
+    assert '$ProjectRoot.TrimEnd("\\") + "\\"' in release
+    assert '$ProjectRoot.TrimEnd("\\\\") + "\\\\"' not in release
+    assert 'ExpectedScriptSha256 -notmatch "^[0-9a-f]{64}$"' in release
+    assert 'ExpectedMergedCommit, $ExpectedMergedTree' in release
+    assert '"^[0-9a-f]{40}$"' in release
 
 
 def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_limits() -> None:
@@ -1035,7 +1041,17 @@ def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_lim
     assert "Assert-RestoredRuntimeData $backup $Configuration" in release
     assert "Assert-OldRuntimeIntact $configuration $binding -RequireOriginalListener" in release
     assert "old runtime recovery attempted without certifying data or task" in release
-    assert "$process.Kill(); $process.WaitForExit()" in release
+    assert "Stop-InstallerProcessTree" in release
+    assert "$deadline = (Get-Date).AddMinutes(10)" in release
+    assert "Installer process is still running; refusing rollback" in release
+    assert "$null -ne $failure -or -not $installerProcess.HasExited" in release
+    copy = release.index("Copy-Item -LiteralPath $backup.database")
+    restored_hash = release.index("Assert-RestoredRuntimeData $backup $Configuration")
+    sqlite = release.index("PRAGMA integrity_check")
+    installer = release.index("Invoke-Installer $Configuration", sqlite)
+    assert copy < restored_hash < sqlite < installer
+    quarantine = release.index("New-Item -ItemType Directory -Path $quarantine")
+    assert quarantine < release.index("Assert-Directory $quarantine", quarantine)
 
 
 def test_grouped_matching_release_validates_complete_backup_members() -> None:
@@ -1066,8 +1082,11 @@ def test_grouped_matching_nuc_driver_is_one_shot_and_cleans_exact_remote_leaf() 
     assert "Get-FileHash -LiteralPath" in driver
     assert "[Management.Automation.Language.Parser]::ParseFile" in driver
     assert "trap cleanup_remote EXIT" in driver
-    assert "remote_created=false" in driver
-    assert 'if [[ "$remote_created" != true ]]; then return; fi' in driver
+    assert "upload_attempted=false" in driver
+    assert 'if [[ "$upload_attempted" != true ]]; then return; fi' in driver
+    assert "upload_attempted=true\nscp -q" in driver
+    assert "remote_created" not in driver
+    assert "remote release ownership hash differs" not in driver
     assert "remote release leaf remains" in driver
     assert "assert len(rows)==1" in driver
     assert driver.count("invoke_mode Deploy") == 1

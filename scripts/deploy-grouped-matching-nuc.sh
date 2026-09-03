@@ -22,7 +22,7 @@ test "$script_sha256" = "$expected_blob_sha256"
 nonce=$(uuidgen | tr '[:upper:]' '[:lower:]')
 remote_transport_path="C:/Users/conbr/AppData/Local/Temp/oms-grouped-matching-${nonce}.ps1"
 remote_native_path="C:\\Users\\conbr\\AppData\\Local\\Temp\\oms-grouped-matching-${nonce}.ps1"
-remote_created=false
+upload_attempted=false
 
 to_b64() { LC_ALL=C python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())'; }
 remote_ps() {
@@ -40,17 +40,17 @@ assert_remote_parent_and_absent() {
   printf '%s' "$command" | remote_ps >/dev/null
 }
 cleanup_remote() {
-  if [[ "$remote_created" != true ]]; then return; fi
+  if [[ "$upload_attempted" != true ]]; then return; fi
   local command
-  command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$i=Get-Item -LiteralPath \$p -Force -ErrorAction Stop;if(\$i.PSIsContainer -or ((\$i.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0)){throw 'remote release leaf invalid'};if((Get-FileHash -LiteralPath \$p -Algorithm SHA256).Hash.ToLowerInvariant() -cne '$script_sha256'){throw 'remote release ownership hash differs'};Remove-Item -LiteralPath \$p -Force -ErrorAction Stop;if(Test-Path -LiteralPath \$p){throw 'remote release leaf remains'}"
+  command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$parent=Split-Path -LiteralPath \$p -Parent;while(\$parent){\$parentItem=Get-Item -LiteralPath \$parent -Force -ErrorAction Stop;if((\$parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'remote release parent invalid'};\$next=Split-Path -LiteralPath \$parent -Parent;if(-not \$next -or \$next -eq \$parent){break};\$parent=\$next};\$i=Get-Item -LiteralPath \$p -Force -ErrorAction Stop;if(\$i.PSIsContainer -or ((\$i.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0)){throw 'remote release leaf invalid'};Remove-Item -LiteralPath \$p -Force -ErrorAction Stop;if(Test-Path -LiteralPath \$p){throw 'remote release leaf remains'}"
   printf '%s' "$command" | remote_ps >/dev/null
-  remote_created=false
+  upload_attempted=false
 }
 trap cleanup_remote EXIT
 
 assert_remote_parent_and_absent
+upload_attempted=true
 scp -q "$release_script" "nuc:$remote_transport_path"
-remote_created=true
 
 verify_command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$i=Get-Item -LiteralPath \$p -Force -ErrorAction Stop;if(\$i.PSIsContainer -or ((\$i.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0)){throw 'remote release leaf invalid'};\$parent=Split-Path -LiteralPath \$p -Parent;while(\$parent){\$parentItem=Get-Item -LiteralPath \$parent -Force -ErrorAction Stop;if((\$parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'remote release parent invalid'};\$next=Split-Path -LiteralPath \$parent -Parent;if(-not \$next -or \$next -eq \$parent){break};\$parent=\$next};if((Get-FileHash -LiteralPath \$p -Algorithm SHA256).Hash.ToLowerInvariant() -cne '$script_sha256'){throw 'remote release hash differs'};\$tokens=\$null;\$errors=\$null;[Management.Automation.Language.Parser]::ParseFile(\$p,[ref]\$tokens,[ref]\$errors)|Out-Null;if(\$errors.Count -ne 0){throw ((\$errors|ForEach-Object { \$_.Message }) -join ';')}"
 printf '%s' "$verify_command" | remote_ps >/dev/null
