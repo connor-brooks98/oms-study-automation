@@ -292,6 +292,18 @@ def test_notebook_parser_rejects_matching_but_native_parser_accepts_it() -> None
         parse_notebook_quiz(raw)
 
 
+def test_multiple_choice_grading_rejects_matching_question() -> None:
+    with pytest.raises(
+        ValueError,
+        match="multiple-choice answer was submitted for a matching question",
+    ):
+        grade_answer(
+            parse_native_quiz(json.dumps(_matching_payload())),
+            "q1",
+            "c2",
+        )
+
+
 def test_grading_returns_feedback_only_for_the_requested_question():
     quiz = parse_native_quiz(json.dumps(_payload()))
 
