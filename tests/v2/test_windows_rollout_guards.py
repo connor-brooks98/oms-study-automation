@@ -1351,7 +1351,10 @@ def test_grouped_matching_nuc_driver_preserves_remote_failure_status() -> None:
         "script_sha256=x\n"
         "merge_commit=x\n"
         "merged_tree=x\n"
-        "remote_ps() { printf '%s\\n' REMOTE_PREFLIGHT_FAILURE >&2; return 23; }\n"
+        "remote_ps() { "
+        "printf '%s\\n' REMOTE_STDOUT_DIAGNOSTIC; "
+        "printf '%s\\n' REMOTE_STDERR_DIAGNOSTIC >&2; "
+        "return 23; }\n"
         "json_one() { printf '%s\\n' PARSER_RAN >&2; return 42; }\n"
         f"{invoke_mode}\n"
         "invoke_mode Preflight\n"
@@ -1364,7 +1367,10 @@ def test_grouped_matching_nuc_driver_preserves_remote_failure_status() -> None:
     )
 
     assert result.returncode == 23
-    assert "REMOTE_PREFLIGHT_FAILURE" in result.stderr
+    assert result.stdout == ""
+    assert "REMOTE_STDOUT_DIAGNOSTIC" in result.stderr
+    assert "REMOTE_STDERR_DIAGNOSTIC" in result.stderr
+    assert "Remote Preflight failed with exit 23 before valid JSON." in result.stderr
     assert "PARSER_RAN" not in result.stderr
 
 
