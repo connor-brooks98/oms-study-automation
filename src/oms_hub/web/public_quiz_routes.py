@@ -361,7 +361,9 @@ def practice_question_library(request: Request) -> HTMLResponse:
 @router.get("/quizzes/{token}", response_class=HTMLResponse)
 def quiz_page(request: Request, token: str) -> HTMLResponse:
     published = _published(request, token)
-    is_practice_questions = published.content_kind == QuizContentKind.PRACTICE_QUESTIONS
+    is_practice_questions = (
+        published.content_kind == QuizContentKind.PRACTICE_QUESTIONS
+    )
     lecture = (
         request.app.state.catalog_repository.get_lecture(published.lecture_id)
         if published.lecture_id is not None
@@ -374,19 +376,25 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
             "quiz": published,
             "quiz_context": {
                 "subject": (
-                    lecture.subject if lecture is not None else published.destination_subject
+                    lecture.subject
+                    if lecture is not None
+                    else published.destination_subject
                 ),
                 "exam_number": (
                     lecture.exam_number
                     if lecture is not None
                     else published.destination_exam_number
                 ),
-                "lecture_number": (lecture.lecture_number if lecture is not None else None),
+                "lecture_number": (
+                    lecture.lecture_number if lecture is not None else None
+                ),
             },
             "content_url": f"/public/quizzes/{token}/content",
             "answer_url": f"/public/quizzes/{token}/answer",
             "library_url": (
-                "/public/practice-questions" if is_practice_questions else "/public/quizzes"
+                "/public/practice-questions"
+                if is_practice_questions
+                else "/public/quizzes"
             ),
             "library_label": (
                 "Back to practice questions" if is_practice_questions else "Back to quizzes"
@@ -501,7 +509,9 @@ def answer_question(
 
 
 @router.post("/quizzes/{token}/flags")
-def flag_question(request: Request, token: str, submission: QuestionFlagSubmission) -> JSONResponse:
+def flag_question(
+    request: Request, token: str, submission: QuestionFlagSubmission
+) -> JSONResponse:
     require_form_csrf(request, None)
     try:
         _repository(request).record_published_quiz_flag(

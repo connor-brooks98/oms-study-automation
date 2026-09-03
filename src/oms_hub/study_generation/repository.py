@@ -1388,12 +1388,10 @@ class GenerationRepository:
         """
         with self.database.session() as session:
             publications = session.scalars(
-                select(PublishedQuizModel)
-                .where(
+                select(PublishedQuizModel).where(
                     PublishedQuizModel.studio_run_id.is_not(None),
                     PublishedQuizModel.active.is_(True),
-                )
-                .order_by(
+                ).order_by(
                     PublishedQuizModel.destination_subject_key,
                     PublishedQuizModel.destination_exam_number,
                     PublishedQuizModel.label_key,
@@ -1479,8 +1477,10 @@ class GenerationRepository:
             publications = session.scalars(
                 select(PublishedQuizModel).where(
                     PublishedQuizModel.studio_run_id.is_not(None),
-                    PublishedQuizModel.destination_subject_key == run.destination_subject_key,
-                    PublishedQuizModel.destination_exam_number == run.destination_exam_number,
+                    PublishedQuizModel.destination_subject_key
+                    == run.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number
+                    == run.destination_exam_number,
                     PublishedQuizModel.label_key == run.label_key,
                     PublishedQuizModel.active.is_(True),
                 )
