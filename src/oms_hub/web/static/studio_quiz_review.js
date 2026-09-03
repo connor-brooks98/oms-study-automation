@@ -50,6 +50,31 @@
     return payload;
   };
 
+  const normalizedMatchingEditPayload = (values) => {
+    const payload = {
+      kind: "matching",
+      stem: String(values.stem || "").trim(),
+      prompts: (values.prompts || []).map((prompt) => {
+        const index = prompt.correct_index === "" || prompt.correct_index === null
+          ? null : Number(prompt.correct_index);
+        return {
+          id: String(prompt.id),
+          label: String(prompt.label || "").trim(),
+          text: String(prompt.text || "").trim(),
+          correct_index: Number.isInteger(index) ? index : null,
+        };
+      }),
+      choices: (values.choices || []).map((choice) => String(choice).trim()).filter(Boolean),
+      rationale: String(values.rationale || "").trim() || null,
+    };
+    ["topic", "area", "learning_objective"].forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(values, key)) {
+        payload[key] = String(values[key] || "").trim() || null;
+      }
+    });
+    return payload;
+  };
+
   const candidateSelectionPayload = (candidateId) => ({ image_candidate_id: candidateId });
   const candidateSelectionUrl = (runId, questionId) => `/studio/runs/${encodeURIComponent(runId)}/questions/${encodeURIComponent(questionId)}/image-selection`;
 
@@ -73,6 +98,29 @@
     });
   };
 
+  const reindexMatchingChoiceRows = (
+    documentRef, group, promptContainer, removedIndex = null, questionId = "",
+  ) => {
+    reindexChoiceRows(group, questionId);
+    const choices = Array.from(group.querySelectorAll('input[name="choice"]'), (field) => field.value);
+    Array.from(promptContainer.querySelectorAll("select")).forEach((select) => {
+      const current = select.value === "" ? null : Number(select.value);
+      const nextIndex = removedIndex === null ? current : current === removedIndex
+        ? null : current > removedIndex ? current - 1 : current;
+      const unresolved = documentRef.createElement("option");
+      unresolved.value = "";
+      unresolved.textContent = "Unresolved";
+      const options = choices.map((choice, index) => {
+        const option = documentRef.createElement("option");
+        option.value = String(index);
+        option.textContent = `${index + 1}. ${choice}`;
+        return option;
+      });
+      select.replaceChildren(unresolved, ...options);
+      select.value = nextIndex === null ? "" : String(nextIndex);
+    });
+  };
+
   const removeChoiceRow = (remove) => {
     const row = remove.closest?.(".studio-review-choice");
     const group = remove.closest?.("[data-choices]");
@@ -89,6 +137,22 @@
       || group.querySelector?.("[data-add-choice]")
       || card;
     fallback?.focus?.({ preventScroll: true });
+    return true;
+  };
+
+  const removeMatchingChoiceRow = (documentRef, remove) => {
+    const row = remove.closest?.(".studio-review-choice");
+    const group = remove.closest?.(".studio-review-matching-bank");
+    const card = remove.closest?.("[data-question-id]");
+    const promptContainer = card?.querySelector?.("[data-matching-prompts]");
+    const rows = Array.from(group?.querySelectorAll?.(".studio-review-choice") || []);
+    if (!row || !group || !card || !promptContainer || rows.length <= 2) return false;
+    const removedIndex = rows.indexOf(row);
+    row.remove();
+    card.dataset.dirty = "true";
+    reindexMatchingChoiceRows(
+      documentRef, group, promptContainer, removedIndex, card.dataset.questionId || "",
+    );
     return true;
   };
 
@@ -190,6 +254,68 @@
     menu.append(remove);
     overflow.append(summary, menu);
     row.append(choiceInput, correctLabel, overflow);
+    return row;
+  };
+
+  const matchingChoiceRow = (documentRef, choice, index, questionId = "") => {
+    const row = documentRef.createElement("div");
+    row.className = "studio-review-choice";
+    const choiceInput = documentRef.createElement("input");
+    choiceInput.type = "text";
+    choiceInput.name = "choice";
+    choiceInput.value = choice;
+    choiceInput.className = "sh-input";
+    choiceInput.setAttribute("aria-label", `Choice ${index + 1}`);
+    if (questionId) choiceInput.dataset.focusKey = `question:${questionId}:choice:${index}`;
+    const overflow = documentRef.createElement("details");
+    overflow.className = "studio-review-choice-overflow t-context-menu";
+    const summary = text(documentRef, "summary", "⋯", "sh-iconbtn");
+    summary.setAttribute("aria-label", `More actions for choice ${index + 1}`);
+    const remove = documentRef.createElement("button");
+    remove.type = "button";
+    remove.dataset.removeChoice = "true";
+    remove.className = "sh-btn sh-btn--danger";
+    remove.textContent = "Remove choice";
+    if (questionId) {
+      overflow.dataset.stateKey = `question:${questionId}:choice:${index}:overflow`;
+      summary.dataset.focusKey = `${overflow.dataset.stateKey}:summary`;
+      remove.dataset.focusKey = `question:${questionId}:choice:${index}:remove`;
+    }
+    const menu = documentRef.createElement("div");
+    menu.className = "studio-review-choice-menu t-context-menu__panel";
+    menu.append(remove);
+    overflow.append(summary, menu);
+    row.append(choiceInput, overflow);
+    return row;
+  };
+
+  const matchingPromptRow = (documentRef, prompt, choices, questionId) => {
+    const row = documentRef.createElement("div");
+    row.className = "studio-review-matching-prompt";
+    row.dataset.matchingPrompt = "true";
+    row.dataset.promptId = prompt.id;
+    const labelField = input(documentRef, "Label", "prompt_label", prompt.label, "text", `question:${questionId}:prompt:${prompt.id}:label`);
+    const textField = input(documentRef, "Prompt", "prompt_text", prompt.text, "text", `question:${questionId}:prompt:${prompt.id}:text`);
+    const mapping = documentRef.createElement("label");
+    mapping.append(text(documentRef, "span", "Correct choice", "sh-field-label"));
+    const select = documentRef.createElement("select");
+    select.name = "correct_index";
+    select.className = "sh-select";
+    select.dataset.focusKey = `question:${questionId}:prompt:${prompt.id}:correct`;
+    select.setAttribute("aria-label", `Correct choice for prompt ${prompt.label}`);
+    const unresolved = documentRef.createElement("option");
+    unresolved.value = "";
+    unresolved.textContent = "Unresolved";
+    const options = choices.map((choice, index) => {
+      const option = documentRef.createElement("option");
+      option.value = String(index);
+      option.textContent = `${index + 1}. ${choice}`;
+      return option;
+    });
+    select.append(unresolved, ...options);
+    select.value = Number.isInteger(prompt.correct_index) ? String(prompt.correct_index) : "";
+    mapping.append(select);
+    row.append(labelField, textField, mapping);
     return row;
   };
 
@@ -304,14 +430,20 @@
     card.append(sourceDetails);
     const form = documentRef.createElement("form");
     form.dataset.questionEdit = question.id;
+    form.dataset.questionKind = question.kind || "multiple_choice";
     form.className = "studio-review-form";
     form.id = `${card.id}-edit`;
     form.append(textarea(documentRef, "Question stem", "stem", question.stem, `question:${question.id}:stem`));
     const choices = documentRef.createElement("section");
-    choices.className = "sh-card studio-review-choice-group";
+    const matching = question.kind === "matching";
+    choices.className = `sh-card studio-review-choice-group${matching ? " studio-review-matching-bank" : ""}`;
     choices.dataset.choices = "true";
-    choices.append(text(documentRef, "p", "Choices (select the correct answer)", "sh-section-label"));
-    question.choices.forEach((choice, index) => choices.append(choiceRow(documentRef, choice, index, question.correct_index, question.id)));
+    choices.append(text(documentRef, "p", matching ? "Choice bank" : "Choices (select the correct answer)", "sh-section-label"));
+    question.choices.forEach((choice, index) => choices.append(
+      matching
+        ? matchingChoiceRow(documentRef, choice, index, question.id)
+        : choiceRow(documentRef, choice, index, question.correct_index, question.id),
+    ));
     const add = documentRef.createElement("button");
     add.type = "button";
     add.dataset.addChoice = "true";
@@ -319,7 +451,18 @@
     add.className = "sh-btn sh-btn--secondary";
     add.textContent = "Add choice";
     choices.append(add);
-    form.append(choices, textarea(documentRef, "Rationale", "rationale", question.rationale, `question:${question.id}:rationale`));
+    form.append(choices);
+    if (matching) {
+      const prompts = documentRef.createElement("section");
+      prompts.className = "studio-review-matching-prompts";
+      prompts.dataset.matchingPrompts = "true";
+      prompts.append(text(documentRef, "p", "Prompts", "sh-section-label"));
+      question.prompts.forEach((prompt) => prompts.append(
+        matchingPromptRow(documentRef, prompt, question.choices, question.id),
+      ));
+      form.append(prompts);
+    }
+    form.append(textarea(documentRef, "Rationale", "rationale", question.rationale, `question:${question.id}:rationale`));
     const classification = documentRef.createElement("details");
     classification.className = "studio-review-disclosure t-accordion";
     classification.dataset.stateKey = `question:${question.id}:classification`;
@@ -647,15 +790,39 @@
       if (!form) return;
       event.preventDefault();
       const choices = [...form.querySelectorAll('input[name="choice"]')].map((field) => field.value);
-      const correct = form.querySelector('input[name="correct_index"]:checked');
-      const payload = normalizedEditPayload({
-        stem: form.querySelector('[name="stem"]').value, choices, correct_index: correct ? correct.value : -1,
-        rationale: form.querySelector('[name="rationale"]').value, topic: form.querySelector('[name="topic"]').value,
-        area: form.querySelector('[name="area"]').value, learning_objective: form.querySelector('[name="learning_objective"]').value,
-      });
       const localMessage = form.closest?.("[data-question-id]")?.querySelector?.("[data-question-message]") || message;
-      if (payload.choices.length < 2 || payload.choices.length > 8 || payload.correct_index < 0 || payload.correct_index >= payload.choices.length) {
-        localMessage.textContent = "Provide two to eight choices and select the correct answer.";
+      const shared = {
+        stem: form.querySelector('[name="stem"]').value,
+        choices,
+        rationale: form.querySelector('[name="rationale"]').value,
+        topic: form.querySelector('[name="topic"]').value,
+        area: form.querySelector('[name="area"]').value,
+        learning_objective: form.querySelector('[name="learning_objective"]').value,
+      };
+      const payload = form.dataset.questionKind === "matching"
+        ? normalizedMatchingEditPayload({
+          ...shared,
+          prompts: Array.from(form.querySelectorAll("[data-matching-prompt]"), (row) => ({
+            id: row.dataset.promptId,
+            label: row.querySelector('[name="prompt_label"]').value,
+            text: row.querySelector('[name="prompt_text"]').value,
+            correct_index: row.querySelector('select[name="correct_index"]').value,
+          })),
+        })
+        : normalizedEditPayload({
+          ...shared,
+          correct_index: form.querySelector('input[name="correct_index"]:checked')?.value ?? -1,
+        });
+      const matchingValid = payload.kind === "matching"
+        && payload.prompts.length >= 2 && payload.prompts.length <= 8
+        && payload.prompts.every((prompt) => prompt.label && prompt.text);
+      if (
+        payload.choices.length < 2 || payload.choices.length > 8
+        || (payload.kind === "matching" ? !matchingValid : payload.correct_index < 0 || payload.correct_index >= payload.choices.length)
+      ) {
+        localMessage.textContent = payload.kind === "matching"
+          ? "Provide two to eight non-empty prompts and choices."
+          : "Provide two to eight choices and select the correct answer.";
         return;
       }
       if (!payload.rationale) {
@@ -710,15 +877,27 @@
         const rows = group.querySelectorAll(".studio-review-choice");
         const questionId = add.closest("[data-question-id]")?.dataset.questionId || "";
         if (rows.length < 8) {
-          group.insertBefore(choiceRow(documentRef, "", rows.length, -1, questionId), add);
-          reindexChoiceRows(group, questionId);
+          const matching = group.closest?.(".studio-review-matching-bank");
+          group.insertBefore(
+            matching
+              ? matchingChoiceRow(documentRef, "", rows.length, questionId)
+              : choiceRow(documentRef, "", rows.length, -1, questionId),
+            add,
+          );
+          if (matching) {
+            reindexMatchingChoiceRows(
+              documentRef, group, card.querySelector("[data-matching-prompts]"), null, questionId,
+            );
+          } else reindexChoiceRows(group, questionId);
           if (card) card.dataset.dirty = "true";
         }
         return;
       }
       const remove = event.target.closest?.("[data-remove-choice]");
       if (remove) {
-        removeChoiceRow(remove);
+        if (remove.closest?.(".studio-review-matching-bank")) {
+          removeMatchingChoiceRow(documentRef, remove);
+        } else removeChoiceRow(remove);
         return;
       }
       const candidate = event.target.closest?.("[data-select-candidate]");
@@ -758,9 +937,10 @@
 
   const api = {
     blockersText, canPublish, questionAnchor, issueSummary, groupIssues, hasImageReviewIssues,
-    shouldRenderNoCandidateEmpty, normalizedEditPayload,
+    shouldRenderNoCandidateEmpty, normalizedEditPayload, normalizedMatchingEditPayload,
     candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
-    restoreRenderState, reindexChoiceRows, removeChoiceRow, choiceRow,
+    restoreRenderState, reindexChoiceRows, reindexMatchingChoiceRows, removeChoiceRow,
+    removeMatchingChoiceRow, choiceRow, matchingChoiceRow, matchingPromptRow,
     initialize, render, renderRunDiagnostics, setReviewTab, moveReviewTab, applyQuestionSave, questionMessage, withQuestionSavePending, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

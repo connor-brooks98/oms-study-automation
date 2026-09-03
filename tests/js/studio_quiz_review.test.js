@@ -51,12 +51,15 @@ class Element {
   static matches(element, selector) {
     if (!element?.dataset) return false;
     if (selector === ".studio-review-choice") return element.className.split(" ").includes("studio-review-choice");
+    if (selector === ".studio-review-matching-bank") return element.className.split(" ").includes("studio-review-matching-bank");
     if (selector === "details") return element.tagName === "details";
     if (selector === "summary") return element.tagName === "summary";
     if (selector === "li") return element.tagName === "li";
     if (selector === 'input[name="choice"]') return element.tagName === "input" && element.name === "choice";
     if (selector === 'input[name="correct_index"]') return element.tagName === "input" && element.name === "correct_index";
     if (selector === "[data-choices]") return element.dataset.choices === "true";
+    if (selector === "[data-matching-prompt]") return element.dataset.matchingPrompt === "true";
+    if (selector === "[data-matching-prompts]") return element.dataset.matchingPrompts === "true";
     if (selector === "[data-add-choice]") return element.dataset.addChoice === "true";
     if (selector === "[data-remove-choice]") return element.dataset.removeChoice === "true";
     if (selector === "[data-acknowledge-run-diagnostic]") return Boolean(element.dataset.acknowledgeRunDiagnostic);
@@ -69,6 +72,8 @@ class Element {
     if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
     if (selector === "[data-focus-key]") return Boolean(element.dataset.focusKey);
     if (selector === "[data-question-id]") return Boolean(element.dataset.questionId);
+    if (selector === "select") return element.tagName === "select";
+    if (selector === "option") return element.tagName === "option";
     return false;
   }
   querySelectorAll(selector) {
@@ -96,6 +101,21 @@ const question = (id, stem) => ({
   verification_required: false, verified_at: null, candidates: [], selected_candidate_id: null,
   image_required: false, image_not_needed: false, image_attached: false,
 });
+
+const matchingQuestion = (id) => {
+  const item = {
+    ...question(id, "Match each description with its term."),
+    kind: "matching",
+    prompts: [
+      { id: "p1", label: "A", text: "Alpha", correct_index: 1 },
+      { id: "p2", label: "B", text: "Beta", correct_index: 0 },
+    ],
+    choices: ["Term one", "Term two"],
+    rationale: "Source-marked matches: A -> Term two; B -> Term one.",
+  };
+  delete item.correct_index;
+  return item;
+};
 
 const reviewPage = () => {
   const page = new Element("main");
@@ -242,6 +262,56 @@ test("edit and candidate payload helpers normalize only supported values", () =>
     review.candidateSelectionUrl("run / 1", "question/1"),
     "/studio/runs/run%20%2F%201/questions/question%2F1/image-selection",
   );
+});
+
+test("matching review renders one card and normalizes the entire group", () => {
+  const { page, questions } = reviewPage();
+  review.render(documentRef, page, {
+    blockers: ["matching-1: answer is missing"], issues: [], preview_url: null,
+    questions: [matchingQuestion("matching-1")],
+  });
+  const cards = questions.querySelectorAll("[data-question-id]");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].querySelectorAll("[data-matching-prompt]").length, 2);
+  assert.deepEqual(review.normalizedMatchingEditPayload({
+    stem: " Match them ",
+    prompts: [
+      { id: "p1", label: " A ", text: " Alpha ", correct_index: "1" },
+      { id: "p2", label: " B ", text: " Beta ", correct_index: "" },
+    ],
+    choices: [" One ", " Two "], rationale: " ",
+  }), {
+    kind: "matching", stem: "Match them",
+    prompts: [
+      { id: "p1", label: "A", text: "Alpha", correct_index: 1 },
+      { id: "p2", label: "B", text: "Beta", correct_index: null },
+    ],
+    choices: ["One", "Two"], rationale: null,
+  });
+  const firstPrompt = cards[0].querySelectorAll("[data-matching-prompt]")[0];
+  assert.equal(firstPrompt.dataset.promptId, "p1");
+  assert.equal(firstPrompt.querySelector("select")["aria-label"], "Correct choice for prompt A");
+});
+
+test("matching choice removal reindexes mappings and regeneration preserves valid selections", () => {
+  const { page, questions } = reviewPage();
+  const item = matchingQuestion("m1");
+  item.choices.push("Term three");
+  review.render(documentRef, page, {
+    blockers: [], issues: [], preview_url: null, questions: [item],
+  });
+  const card = questions.querySelector("[data-question-id]");
+  const bank = card.querySelector(".studio-review-matching-bank");
+  const prompts = card.querySelector("[data-matching-prompts]");
+  const remove = bank.querySelector("[data-remove-choice]");
+  assert.equal(review.removeMatchingChoiceRow(documentRef, remove), true);
+  const selects = prompts.querySelectorAll("select");
+  assert.equal(selects[0].value, "0");
+  assert.equal(selects[1].value, "");
+  review.reindexMatchingChoiceRows(documentRef, bank, prompts, null, "m1");
+  assert.equal(selects[0].querySelectorAll("option").length, 3);
+  const keys = card.querySelectorAll("[data-focus-key]").map((node) => node.dataset.focusKey);
+  assert.equal(new Set(keys).size, keys.length);
 });
 
 test("image saves block question saves until the image mutation settles", async () => {

@@ -15,15 +15,23 @@
     other: "Other",
   });
 
-  const questionState = (question) => ({
-    choiceIds: question.choices.map((choice) => choice.id),
-    selectedChoiceId: null,
-    eliminatedChoiceIds: [],
-    highlights: [],
-    submitted: false,
-    feedback: null,
-    flagReason: null,
-  });
+  const questionState = (question) => {
+    if (question.kind === "matching") {
+      return {
+        kind: "matching",
+        promptIds: question.prompts.map((prompt) => prompt.id),
+        choiceIds: question.choices.map((choice) => choice.id),
+        selectedChoiceIds: Object.fromEntries(question.prompts.map((prompt) => [prompt.id, null])),
+        highlights: [], submitted: false, feedback: null, flagReason: null,
+      };
+    }
+    return {
+      choiceIds: question.choices.map((choice) => choice.id),
+      selectedChoiceId: null,
+      eliminatedChoiceIds: [],
+      highlights: [], submitted: false, feedback: null, flagReason: null,
+    };
+  };
 
   const createQuizState = (content) => ({
     token: content.token,
@@ -64,6 +72,20 @@
         return question;
       }
       return { ...question, selectedChoiceId: choiceId };
+    })
+  );
+
+  const selectMatch = (state, questionId, promptId, choiceId) => (
+    updateQuestion(state, questionId, (question) => {
+      if (question.kind !== "matching" || !question.promptIds.includes(promptId)) {
+        throw new Error(`Unknown prompt: ${promptId}`);
+      }
+      if (!question.choiceIds.includes(choiceId)) throw new Error(`Unknown choice: ${choiceId}`);
+      if (question.submitted) return question;
+      return {
+        ...question,
+        selectedChoiceIds: { ...question.selectedChoiceIds, [promptId]: choiceId },
+      };
     })
   );
 
@@ -220,9 +242,11 @@
     const current = state.questions[questionId];
     if (!current) throw new Error(`Unknown question: ${questionId}`);
     if (current.submitted) return state;
-    if (!current.selectedChoiceId) {
-      throw new Error("Choose an answer before submitting.");
-    }
+    if (current.kind === "matching") {
+      if (!current.promptIds.every((id) => current.selectedChoiceIds[id])) {
+        throw new Error("Choose an answer for every prompt before submitting.");
+      }
+    } else if (!current.selectedChoiceId) throw new Error("Choose an answer before submitting.");
     const next = updateQuestion(state, questionId, (question) => ({
       ...question,
       submitted: true,
@@ -243,7 +267,7 @@
       const saved = JSON.parse(serialized);
       if (
         saved.token !== content.token
-        || saved.version !== content.version
+        || String(saved.version) !== String(content.version)
         || !Number.isInteger(saved.currentIndex)
         || saved.currentIndex < 0
         || saved.currentIndex > content.questions.length
@@ -256,6 +280,37 @@
         const candidate = saved.questions?.[question.id];
         if (!candidate) return fresh;
         const validChoices = new Set(baseline.choiceIds);
+        if (baseline.kind === "matching") {
+          const exactKeys = (value, expected) => (
+            value && typeof value === "object" && !Array.isArray(value)
+            && Object.keys(value).sort().join("\0") === [...expected].sort().join("\0")
+          );
+          const selected = candidate.selectedChoiceIds;
+          const submitted = candidate.submitted === true;
+          const feedback = candidate.feedback;
+          const feedbackValid = feedback?.kind === "matching"
+            && typeof feedback.correct === "boolean"
+            && exactKeys(feedback.correct_matches, baseline.promptIds)
+            && exactKeys(feedback.row_results, baseline.promptIds)
+            && Object.values(feedback.correct_matches).every((id) => validChoices.has(id))
+            && Object.values(feedback.row_results).every((value) => typeof value === "boolean")
+            && typeof feedback.rationale === "string" && feedback.rationale.length > 0;
+          if (
+            candidate.kind !== "matching" || !exactKeys(selected, baseline.promptIds)
+            || Object.values(selected).some((id) => id !== null && !validChoices.has(id))
+            || (submitted && (!feedbackValid || Object.values(selected).some((id) => !validChoices.has(id))))
+          ) return fresh;
+          restoredQuestions[question.id] = {
+            ...baseline,
+            selectedChoiceIds: { ...selected },
+            highlights: mergedRanges(Array.isArray(candidate.highlights) ? candidate.highlights : [])
+              .filter((range) => range.end <= question.stem.length),
+            submitted,
+            feedback: submitted ? feedback : null,
+            flagReason: FLAG_REASONS.includes(candidate.flagReason) ? candidate.flagReason : null,
+          };
+          continue;
+        }
         if (
           candidate.selectedChoiceId !== null
           && !validChoices.has(candidate.selectedChoiceId)
@@ -321,7 +376,7 @@
     fetchImpl,
     url,
     questionId,
-    choiceId,
+    answer,
     csrf,
   ) => {
     const response = await fetchImpl(url, {
@@ -330,10 +385,9 @@
         "Content-Type": "application/json",
         "X-CSRF-Token": csrf,
       },
-      body: JSON.stringify({
-        question_id: questionId,
-        choice_id: choiceId,
-      }),
+      body: JSON.stringify(typeof answer === "string"
+        ? { question_id: questionId, choice_id: answer }
+        : { kind: "matching", question_id: questionId, matches: answer }),
       cache: "no-store",
     });
     const payload = await response.json();
@@ -765,7 +819,52 @@
         body.append(flag);
 
         const answers = element(documentRef, "div", "quiz-answers");
-        for (const [index, choice] of question.choices.entries()) {
+        if (question.kind === "matching") {
+          const bank = element(documentRef, "ol", "quiz-matching-bank");
+          question.choices.forEach((choice) => bank.append(
+            element(documentRef, "li", "quiz-choice-text", choice.text),
+          ));
+          answers.append(bank);
+          const prompts = element(documentRef, "div", "quiz-matching-prompts");
+          question.prompts.forEach((prompt) => {
+            const selected = questionProgress.selectedChoiceIds[prompt.id] || "";
+            const row = element(documentRef, "div", "quiz-matching-row sh-option");
+            const result = questionProgress.feedback?.row_results?.[prompt.id];
+            if (questionProgress.submitted && result === true) row.classList.add("is-correct");
+            if (questionProgress.submitted && result === false) row.classList.add("is-incorrect");
+            const label = element(documentRef, "label", "quiz-matching-label", `${prompt.label}. ${prompt.text}`);
+            const select = documentRef.createElement("select");
+            select.className = "sh-select";
+            select.dataset.focusKey = `match-${prompt.id}`;
+            select.setAttribute("aria-label", `Choice for prompt ${prompt.label}`);
+            select.disabled = questionProgress.submitted;
+            const placeholder = element(documentRef, "option", "", "Choose a term");
+            placeholder.value = "";
+            select.append(placeholder);
+            question.choices.forEach((choice, index) => {
+              const option = element(documentRef, "option", "", `${index + 1}. ${choice.text}`);
+              option.value = choice.id;
+              select.append(option);
+            });
+            select.value = selected;
+            select.addEventListener("change", () => {
+              state = selectMatch(state, question.id, prompt.id, select.value);
+              persist();
+              render();
+            });
+            row.append(label, select);
+            const correctChoiceId = questionProgress.feedback?.correct_matches?.[prompt.id];
+            const correctChoice = question.choices.find((choice) => choice.id === correctChoiceId);
+            if (questionProgress.submitted && result === false && correctChoice) {
+              row.append(element(
+                documentRef, "p", "quiz-matching-correct-answer",
+                `Correct answer: ${question.choices.indexOf(correctChoice) + 1}. ${correctChoice.text}`,
+              ));
+            }
+            prompts.append(row);
+          });
+          answers.append(prompts);
+        } else for (const [index, choice] of question.choices.entries()) {
           const selected = questionProgress.selectedChoiceId === choice.id;
           const eliminated = questionProgress.eliminatedChoiceIds.includes(
             choice.id,
@@ -887,7 +986,13 @@
           );
           submit.type = "button";
           submit.dataset.state = "idle";
-          submit.disabled = !questionProgress.selectedChoiceId;
+          const selectedAnswer = question.kind === "matching"
+            ? questionProgress.selectedChoiceIds
+            : questionProgress.selectedChoiceId;
+          const answerComplete = question.kind === "matching"
+            ? questionProgress.promptIds.every((id) => selectedAnswer[id])
+            : Boolean(selectedAnswer);
+          submit.disabled = !answerComplete;
           submit.addEventListener("click", async () => {
             pendingFocusKey = "forward";
             submit.disabled = true;
@@ -899,7 +1004,7 @@
                 fetchImpl,
                 app.dataset.answerUrl,
                 question.id,
-                questionProgress.selectedChoiceId,
+                selectedAnswer,
                 csrfToken(documentRef),
               );
               state = recordFeedback(state, question.id, feedbackResult);
@@ -1019,6 +1124,7 @@
     restoreProgress,
     safeStorage,
     selectChoice,
+    selectMatch,
     setFlagReason,
     serializeProgress,
     toggleEliminated,

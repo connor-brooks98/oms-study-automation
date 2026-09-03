@@ -2138,6 +2138,12 @@ code { overflow-wrap: anywhere; }
 .studio-review-choice-overflow > summary::-webkit-details-marker { display: none; }
 .studio-review-choice-menu { position: absolute; z-index: 2; right: 0; top: calc(100% + var(--sp-1)); padding: var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--card); box-shadow: var(--shadow-dialog); }
 .studio-review-choice-menu > .sh-btn { white-space: nowrap; }
+.studio-review-matching-prompts { display: grid; gap: var(--sp-3); }
+.studio-review-matching-prompt { display: grid; min-width: 0; grid-template-columns: 6rem minmax(0, 1fr) minmax(12rem, .7fr); gap: var(--sp-3); align-items: end; }
+.studio-review-matching-bank { counter-reset: matching-choice; }
+@media (max-width: 720px) {
+  .studio-review-matching-prompt { grid-template-columns: 1fr; }
+}
 .studio-review-disclosure { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
 .studio-review-disclosure > summary { min-height: 48px; padding: var(--sp-3) var(--sp-4); margin: 0; color: var(--text-2); }
 .studio-review-disclosure > :not(summary) { margin-inline: var(--sp-4); }

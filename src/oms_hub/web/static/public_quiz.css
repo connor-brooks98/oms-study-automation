@@ -260,6 +260,17 @@
 
 .quiz-answers { display: grid; gap: .62rem; }
 
+.quiz-matching-bank { display: grid; gap: .5rem; padding-left: 2rem; }
+.quiz-matching-prompts { display: grid; gap: .75rem; }
+.quiz-matching-row { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) minmax(12rem, .65fr); gap: 1rem; align-items: center; padding: var(--sp-3); border: 1px solid var(--quiz-border); border-radius: .55rem; }
+.quiz-matching-label { min-width: 0; overflow-wrap: anywhere; }
+.quiz-matching-row.is-correct { border-color: var(--st-ok-dot); }
+.quiz-matching-row.is-incorrect { border-color: var(--st-err-dot); }
+.quiz-matching-correct-answer { grid-column: 1 / -1; margin: .5rem 0 0; color: var(--st-err-tx); }
+@media (max-width: 720px) {
+  .quiz-matching-row { grid-template-columns: 1fr; }
+}
+
 .quiz-answer-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 44px;
