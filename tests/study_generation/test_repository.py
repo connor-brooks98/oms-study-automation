@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -67,6 +66,81 @@ def test_matching_cannot_publish_through_lecture_quiz_path(tmp_path) -> None:
     ):
         repository.publish_quiz(lecture_id, job.id, _matching_quiz())
     assert repository.published_quizzes(frozenset({QuizContentKind.LECTURE_QUIZ})) == ()
+
+
+def test_matching_run_rejects_before_accuracy_or_owned_publication(tmp_path) -> None:
+    repository, _ = prepared_repository(tmp_path)
+
+    class RecordingGate:
+        calls = 0
+
+        def validate(self, quiz: NativeQuiz) -> None:
+            self.calls += 1
+
+    gate = RecordingGate()
+    repository.accuracy_gate = gate
+    with repository.database.session() as session:
+        session.add(
+            StudioRunModel(
+                id="exam-matching-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Exam matching",
+                label_key="exam matching",
+                prompt="",
+                content_kind=QuizContentKind.EXAM_REVIEW.value,
+                state="awaiting_images",
+                stage="image_review",
+            )
+        )
+
+    with pytest.raises(ValueError, match="matching questions are limited"):
+        repository.publish_and_complete_studio_run(
+            "exam-matching-run", _matching_quiz(), "notebook", "raw"
+        )
+
+    assert gate.calls == 0
+    assert repository.published_quizzes(frozenset({QuizContentKind.EXAM_REVIEW})) == ()
+
+
+def test_matching_studio_and_replacement_paths_reject_nonpractice_without_mutation(
+    tmp_path,
+) -> None:
+    repository, lecture_id = prepared_repository(tmp_path)
+    with repository.database.session() as session:
+        session.add(
+            StudioRunModel(
+                id="exam-direct-matching",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Exam direct",
+                label_key="exam direct",
+                prompt="",
+                workflow_kind="direct_import",
+                content_kind=QuizContentKind.EXAM_REVIEW.value,
+                state="awaiting_review",
+                stage="review",
+            )
+        )
+    with pytest.raises(ValueError, match="matching questions are limited"):
+        repository.publish_studio_quiz("exam-direct-matching", _matching_quiz())
+    published = repository.publish_quiz(
+        lecture_id, repository.queue(lecture_id, GenerationKind.QUIZ).id, _quiz()
+    )
+    before = repository.published_quiz(published.token)
+    with pytest.raises(ValueError, match="matching questions are limited"):
+        repository.replace_published_quiz_payload(
+            published.token, serialize_native_quiz(_matching_quiz())
+        )
+    assert repository.published_quiz(published.token) == before
 
 
 def _create_study_revision(

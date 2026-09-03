@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal, cast
@@ -470,12 +469,21 @@ def answer_question(
                 ),
                 headers={"Cache-Control": "no-store"},
             )
-        feedback = grade_answer(published.quiz, submission.question_id, submission.choice_id)
+        feedback = grade_answer(
+            published.quiz, submission.question_id, submission.choice_id
+        )
     except KeyError as error:
         raise HTTPException(404, "quiz question was not found") from error
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
-    return JSONResponse({"correct": feedback.correct, "correct_choice_id": feedback.correct_choice_id, "rationale": feedback.rationale}, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {
+            "correct": feedback.correct,
+            "correct_choice_id": feedback.correct_choice_id,
+            "rationale": feedback.rationale,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/quizzes/{token}/flags")

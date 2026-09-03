@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 import json
 from typing import Annotated, cast
 
@@ -200,6 +199,8 @@ def move_quiz_to_library(
         published = _repository(request).move_published_quiz(token, payload.section)
     except KeyError as error:
         raise HTTPException(404, "published quiz was not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     return JSONResponse(
         {
             "token": published.token,

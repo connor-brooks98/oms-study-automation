@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 import json
 from io import BytesIO
 
@@ -172,6 +171,11 @@ def test_matching_review_patch_and_preview_use_group_contract_and_fingerprint(tm
         {"id": "p1", "label": "A", "text": "Alpha", "correct_index": 1},
         {"id": "p2", "label": "B", "text": "Beta", "correct_index": 0},
     ]
+    verification = client.post(
+        f"/studio/runs/{run_id}/questions/matching-1/verify-answer",
+        headers=_csrf_headers(client),
+    )
+    assert verification.status_code == 409
     invalid = client.patch(
         f"/studio/runs/{run_id}/questions/matching-1",
         json={
@@ -217,6 +221,22 @@ def test_matching_review_patch_and_preview_use_group_contract_and_fingerprint(tm
         "row_results": {"p1": True, "p2": True},
         "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
     }
+    changed = client.patch(
+        f"/studio/runs/{run_id}/questions/matching-1",
+        json={
+            "kind": "matching",
+            "stem": "Changed again",
+            "prompts": [
+                {"id": "p1", "label": "A", "text": "Alpha", "correct_index": 1},
+                {"id": "p2", "label": "B", "text": "Beta", "correct_index": 0},
+            ],
+            "choices": ["Term one", "Term two"],
+            "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
+        },
+        headers=_csrf_headers(client),
+    )
+    assert changed.status_code == 200
+    assert client.get(f"/studio/runs/{run_id}/preview/content").json()["version"] != version
 
 
 def test_missing_review_artifacts_use_one_recovery_envelope(tmp_path) -> None:

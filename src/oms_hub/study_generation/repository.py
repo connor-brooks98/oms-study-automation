@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 import re
 import secrets
 from dataclasses import dataclass, replace
@@ -1318,11 +1317,12 @@ class GenerationRepository:
         The same-run branch also repairs the historical split-commit state: an
         active publication already owned by the run is adopted, not duplicated.
         """
-        self._validate_accuracy(quiz)
         with self.database.session() as session:
             run = session.get(StudioRunModel, run_id)
             if run is None:
                 raise ValueError("Studio run was removed")
+            _validate_question_kinds(quiz, run.content_kind)
+            self._validate_accuracy(quiz)
             owned = session.scalar(
                 select(PublishedQuizModel).where(
                     PublishedQuizModel.studio_run_id == run_id,

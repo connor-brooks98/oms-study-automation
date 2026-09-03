@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 from __future__ import annotations
 
 import json
@@ -450,11 +449,16 @@ def _question_text(question: QuizQuestionValue) -> str:
     if isinstance(question, QuizMatchingQuestion):
         choice_by_id = {choice.id: choice.text for choice in question.choices}
         matches = "\n".join(
-            f"{prompt.id} ({prompt.label}): {prompt.text} -> {prompt.correct_choice_id}: {choice_by_id[prompt.correct_choice_id]}"
+            f"{prompt.id} ({prompt.label}): {prompt.text} -> "
+            f"{prompt.correct_choice_id}: {choice_by_id[prompt.correct_choice_id]}"
             for prompt in question.prompts
         )
         choices = "\n".join(f"{choice.id}. {choice.text}" for choice in question.choices)
-        return f"Question:\n{question.stem}\n\nChoices:\n{choices}\n\nMatching prompts and proposed matches:\n{matches}\nRationale: {question.rationale}"
+        return (
+            f"Question:\n{question.stem}\n\nChoices:\n{choices}\n\n"
+            f"Matching prompts and proposed matches:\n{matches}\n"
+            f"Rationale: {question.rationale}"
+        )
     choices = "\n".join(f"{choice.id}. {choice.text}" for choice in question.choices)
     return (
         f"Question:\n{question.stem}\n\nChoices:\n{choices}\n\n"

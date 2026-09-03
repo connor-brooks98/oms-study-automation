@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 """Authoritative, restart-safe review state for imported practice questions."""
 
 from __future__ import annotations

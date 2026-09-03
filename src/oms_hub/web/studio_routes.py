@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 import hashlib
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -1016,24 +1015,52 @@ def preview_quiz_answer(
             return _review_artifact_unavailable_response(error)
         try:
             if isinstance(submission, MatchingPreviewAnswerSubmission):
-                return JSONResponse(asdict(grade_matching_answer(quiz, submission.question_id, submission.matches)), headers={"Cache-Control": "no-store"})
+                return JSONResponse(
+                    asdict(
+                        grade_matching_answer(
+                            quiz, submission.question_id, submission.matches
+                        )
+                    ),
+                    headers={"Cache-Control": "no-store"},
+                )
             feedback = grade_answer(quiz, submission.question_id, submission.choice_id)
         except KeyError as error:
             raise HTTPException(404, "quiz question was not found") from error
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
-        return JSONResponse({"correct": feedback.correct, "correct_choice_id": feedback.correct_choice_id, "rationale": feedback.rationale}, headers={"Cache-Control": "no-store"})
+        return JSONResponse(
+            {
+                "correct": feedback.correct,
+                "correct_choice_id": feedback.correct_choice_id,
+                "rationale": feedback.rationale,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
     review = _resolved_review(request, run_id)
     quiz = _replace_overridden_image_refs(review)
     try:
         if isinstance(submission, MatchingPreviewAnswerSubmission):
-            return JSONResponse(asdict(grade_matching_answer(quiz, submission.question_id, submission.matches)), headers={"Cache-Control": "no-store"})
+            return JSONResponse(
+                asdict(
+                    grade_matching_answer(
+                        quiz, submission.question_id, submission.matches
+                    )
+                ),
+                headers={"Cache-Control": "no-store"},
+            )
         feedback = grade_answer(quiz, submission.question_id, submission.choice_id)
     except KeyError as error:
         raise HTTPException(404, "quiz question was not found") from error
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
-    return JSONResponse({"correct": feedback.correct, "correct_choice_id": feedback.correct_choice_id, "rationale": feedback.rationale}, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {
+            "correct": feedback.correct,
+            "correct_choice_id": feedback.correct_choice_id,
+            "rationale": feedback.rationale,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/runs/{run_id}/publication")

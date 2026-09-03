@@ -1,4 +1,3 @@
-# ruff: noqa: E501, E701
 import json
 from dataclasses import asdict, replace
 from io import BytesIO
@@ -249,6 +248,36 @@ def test_matching_verification_is_rejected_without_server_error(tmp_path: Path) 
         ValueError, match="matching answers do not require generated-answer verification"
     ):
         service.verify_generated_answer("run-1", "matching-1")
+
+
+def test_matching_diagnostic_acknowledgement_waits_for_complete_mapping(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (replace(_matching_draft(), prompts=(
+        MatchingPromptDraft("p1", "A", "Alpha", None),
+        MatchingPromptDraft("p2", "B", "Beta", 0),
+    )),))
+    service.repository.save_run_artifact(
+        "run-1",
+        "review:run-diagnostics",
+        "a" * 64,
+        json.dumps(
+            [{"code": "unknown-matching-prompt-answer", "message": "unknown",
+              "severity": "blocker", "overridable": True, "acknowledged": False}]
+        ),
+    )
+    with pytest.raises(ValueError, match="matching answers are incomplete"):
+        service.acknowledge_run_diagnostic("run-1", "unknown-matching-prompt-answer")
+    service.update_question("run-1", "matching-1", {
+        "kind": "matching", "stem": "Match each description with its term.",
+        "prompts": [
+            {"id": "p1", "label": "A", "text": "Alpha", "correct_index": 1},
+            {"id": "p2", "label": "B", "text": "Beta", "correct_index": 0},
+        ],
+        "choices": ["Term one", "Term two"],
+        "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
+    })
+    service.acknowledge_run_diagnostic("run-1", "unknown-matching-prompt-answer")
+    assert service.run_diagnostics("run-1")[0]["acknowledged"] is True
 
 
 def _legacy_extraction_result() -> ExtractionResult:
