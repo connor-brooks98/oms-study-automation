@@ -346,6 +346,68 @@ test("matching save rejects a blank bank row without sending a shifted PATCH", a
   );
 });
 
+test("matching save sends one complete atomic PATCH payload", async () => {
+  const { page, questions } = reviewPage();
+  const message = new Element("p");
+  const controls = page.querySelector;
+  page.querySelector = (selector) => (
+    selector === "[data-review-message]" ? message : controls(selector)
+  );
+  page.dataset.practiceReview = "true";
+  page.dataset.reviewUrl = "/review";
+  page.dataset.runId = "run-1";
+  const documentWithPage = {
+    ...documentRef,
+    cookie: "study_hub_csrf=csrf-token",
+    querySelector: (selector) => selector === "[data-practice-review]" ? page : null,
+  };
+  const item = matchingQuestion("m1");
+  const payload = { blockers: [], issues: [], preview_url: null, questions: [item] };
+  let sent;
+  review.initialize(documentWithPage, async (_url, options = {}) => {
+    if (options.method === "PATCH") sent = JSON.parse(options.body);
+    return { ok: true, async json() { return payload; } };
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const form = questions.querySelector("[data-question-edit]");
+  form.querySelector('[name="stem"]').value = " Updated stem ";
+  form.querySelectorAll('input[name="choice"]')[0].value = " First term ";
+  form.querySelectorAll('input[name="choice"]')[1].value = " Second term ";
+  const prompts = form.querySelectorAll("[data-matching-prompt]");
+  prompts[0].querySelector('[name="prompt_label"]').value = " A ";
+  prompts[0].querySelector('[name="prompt_text"]').value = " Alpha revised ";
+  prompts[0].querySelector('select[name="correct_index"]').value = "0";
+  prompts[1].querySelector('[name="prompt_label"]').value = " B ";
+  prompts[1].querySelector('[name="prompt_text"]').value = " Beta revised ";
+  prompts[1].querySelector('select[name="correct_index"]').value = "1";
+  form.querySelector('[name="rationale"]').value = " Source rationale ";
+  form.querySelector('[name="topic"]').value = " Neuro ";
+  form.querySelector('[name="area"]').value = " CNS ";
+  form.querySelector('[name="learning_objective"]').value = " Match terms ";
+  await page._listeners.submit[0]({
+    target: form, submitter: new Element("button"), preventDefault() {},
+  });
+  assert.deepEqual(sent, {
+    kind: "matching",
+    stem: "Updated stem",
+    prompts: [
+      { id: "p1", label: "A", text: "Alpha revised", correct_index: 0 },
+      { id: "p2", label: "B", text: "Beta revised", correct_index: 1 },
+    ],
+    choices: ["First term", "Second term"],
+    rationale: "Source rationale",
+    topic: "Neuro",
+    area: "CNS",
+    learning_objective: "Match terms",
+  });
+});
+
+test("matching choice bank has desktop and incumbent mobile grid contracts", () => {
+  const css = fs.readFileSync("src/oms_hub/web/static/app.css", "utf8");
+  assert.match(css, /\.studio-review-matching-bank \.studio-review-choice \{ grid-template-columns: auto minmax\(0, 1fr\) 44px; \}/);
+  assert.match(css, /@media \(max-width: 42rem\) \{[\s\S]*\.studio-review-matching-bank \.studio-review-choice-overflow \{ grid-column: 3; grid-row: 1; \}/);
+});
+
 test("matching choice removal reindexes mappings and regeneration preserves valid selections", () => {
   const { page, questions } = reviewPage();
   const item = matchingQuestion("m1");
