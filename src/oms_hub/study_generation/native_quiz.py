@@ -24,7 +24,6 @@ from oms_hub.study_generation.domain import (
     QuizChoice,
     QuizFeedback,
     QuizImageRef,
-    QuizMatchingFeedback,
     QuizMatchingPrompt,
     QuizMatchingQuestion,
     QuizQuestion,
@@ -386,15 +385,6 @@ def parse_native_quiz(raw: str) -> NativeQuiz:
     )
 
 
-def parse_notebook_quiz(raw: str) -> NativeQuiz:
-    quiz = parse_native_quiz(raw)
-    if any(isinstance(question, QuizMatchingQuestion) for question in quiz.questions):
-        raise QuizContractError(
-            "NotebookLM quiz JSON must contain only multiple-choice questions"
-        )
-    return quiz
-
-
 def image_requirements(quiz: NativeQuiz) -> tuple[QuizImageRef, ...]:
     by_key: dict[str, QuizImageRef] = {}
     for question in quiz.questions:
@@ -409,29 +399,14 @@ def public_quiz_content(
 ) -> dict[str, object]:
     questions: list[dict[str, object]] = []
     for question in quiz.questions:
-        if isinstance(question, QuizMatchingQuestion):
-            item: dict[str, object] = {
-                "kind": "matching",
-                "id": question.id,
-                "stem": question.stem,
-                "prompts": [
-                    {"id": prompt.id, "label": prompt.label, "text": prompt.text}
-                    for prompt in question.prompts
-                ],
-                "choices": [
-                    {"id": choice.id, "text": choice.text}
-                    for choice in question.choices
-                ],
-            }
-        else:
-            item = {
-                "id": question.id,
-                "stem": question.stem,
-                "choices": [
-                    {"id": choice.id, "text": choice.text}
-                    for choice in question.choices
-                ],
-            }
+        item: dict[str, object] = {
+            "id": question.id,
+            "stem": question.stem,
+            "choices": [
+                {"id": choice.id, "text": choice.text}
+                for choice in question.choices
+            ],
+        }
         if question.image_ref is not None and image_urls is not None:
             media = image_urls.get(question.image_ref.key)
             if media is not None:
@@ -461,47 +436,13 @@ def grade_answer(
     if question is None:
         raise KeyError(question_id)
     if isinstance(question, QuizMatchingQuestion):
-        raise ValueError("multiple-choice answer was submitted for a matching question")
+        raise QuizContractError("matching questions require matching grading")
     if choice_id not in {choice.id for choice in question.choices}:
         raise KeyError(choice_id)
     return QuizFeedback(
         correct=choice_id == question.correct_choice_id,
         correct_choice_id=question.correct_choice_id,
         rationale=question.rationale,
-    )
-
-
-def grade_matching_answer(
-    quiz: NativeQuiz,
-    question_id: str,
-    matches: Mapping[str, str],
-) -> QuizMatchingFeedback:
-    question = next((item for item in quiz.questions if item.id == question_id), None)
-    if question is None:
-        raise KeyError(question_id)
-    if not isinstance(question, QuizMatchingQuestion):
-        raise ValueError("matching answer was submitted for a multiple-choice question")
-    prompt_ids = {prompt.id for prompt in question.prompts}
-    choice_ids = {choice.id for choice in question.choices}
-    if set(matches) != prompt_ids or any(
-        choice_id not in choice_ids for choice_id in matches.values()
-    ):
-        raise ValueError(
-            "matching answer must identify one available choice for every prompt"
-        )
-    correct_matches = {
-        prompt.id: prompt.correct_choice_id for prompt in question.prompts
-    }
-    row_results = {
-        prompt_id: matches[prompt_id] == correct_choice_id
-        for prompt_id, correct_choice_id in correct_matches.items()
-    }
-    return QuizMatchingFeedback(
-        "matching",
-        all(row_results.values()),
-        correct_matches,
-        row_results,
-        question.rationale,
     )
 
 
