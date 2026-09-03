@@ -280,6 +280,68 @@ def test_matching_diagnostic_acknowledgement_waits_for_complete_mapping(tmp_path
     assert service.run_diagnostics("run-1")[0]["acknowledged"] is True
 
 
+def test_conflicting_matching_identifier_survives_complete_edit_and_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    service.store(
+        "run-1",
+        (
+            replace(
+                _matching_draft(),
+                prompts=(
+                    MatchingPromptDraft("p1", "A", "Alpha", None),
+                    MatchingPromptDraft("p2", "B", "Beta", 0),
+                ),
+                diagnostics=(
+                    DraftDiagnostic(
+                        "conflicting-matching-question-identifier",
+                        "conflicting group identifier",
+                        DiagnosticSeverity.WARNING,
+                    ),
+                ),
+            ),
+        ),
+    )
+    service.repository.save_run_artifact(
+        "run-1",
+        "review:run-diagnostics",
+        "b" * 64,
+        json.dumps(
+            [
+                {
+                    "code": "unknown-matching-prompt-answer",
+                    "message": "unknown",
+                    "severity": "blocker",
+                    "overridable": True,
+                    "acknowledged": False,
+                }
+            ]
+        ),
+    )
+    service.update_question(
+        "run-1",
+        "matching-1",
+        {
+            "kind": "matching",
+            "stem": "Match each description with its term.",
+            "prompts": [
+                {"id": "p1", "label": "A", "text": "Alpha", "correct_index": 1},
+                {"id": "p2", "label": "B", "text": "Beta", "correct_index": 0},
+            ],
+            "choices": ["Term one", "Term two"],
+            "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
+        },
+    )
+    service.acknowledge_run_diagnostic("run-1", "unknown-matching-prompt-answer")
+
+    question = service.question("run-1", "matching-1")
+    assert tuple(item.code for item in question.draft.diagnostics) == (
+        "conflicting-matching-question-identifier",
+    )
+    assert service.run_diagnostics("run-1")[0]["acknowledged"] is True
+
+
 def _legacy_extraction_result() -> ExtractionResult:
     question_ref = QuestionSourceRef("source-1", "question-1", "page 1")
     answer_ref = QuestionSourceRef("source-1", "answer-1", "page 4")

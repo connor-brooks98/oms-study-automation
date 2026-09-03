@@ -734,7 +734,10 @@ class GenerationRepository:
                 OutlineOutputModel.current.is_(True),
             )
         )
-        if current is not None and current.provenance_kind == "imported_notebooklm":
+        if (
+            current is not None
+            and current.provenance_kind == "imported_notebooklm"
+        ):
             review = session.get(OutlineReplacementReviewModel, job_id)
             if (
                 replacement_review is None

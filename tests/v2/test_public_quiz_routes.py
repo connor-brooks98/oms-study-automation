@@ -159,6 +159,7 @@ def test_public_matching_content_hides_answers_and_grades_only_complete_mapping(
         {"question_id": "q1", "choice_id": "c1"},
         {"kind": "matching", "question_id": "q1", "matches": {"p1": "c2"}},
         {"kind": "matching", "question_id": "q1", "matches": {"p1": "c2", "p2": "c1", "p3": "c1"}},
+        {"kind": "matching", "question_id": "q1", "matches": {"p9": "c2", "p2": "c1"}},
         {"kind": "matching", "question_id": "q1", "matches": {"p1": "c2", "p2": "c9"}},
     ):
         response = client.post(f"/public/quizzes/{published.token}/answer", json=payload)
@@ -203,6 +204,16 @@ def test_matching_practice_quiz_cannot_move_to_quiz_library(tmp_path) -> None:
         json={"section": "quizzes"},
         headers={"X-CSRF-Token": client.cookies["study_hub_csrf"]},
     )
+    assert response.status_code == 422
+
+
+def test_matching_answer_is_rejected_for_a_multiple_choice_question(tmp_path) -> None:
+    app, published = _published_app(tmp_path)
+    response = TestClient(app).post(
+        f"/public/quizzes/{published.token}/answer",
+        json={"kind": "matching", "question_id": "q1", "matches": {"p1": "c1", "p2": "c2"}},
+    )
+
     assert response.status_code == 422
 
 
