@@ -262,6 +262,62 @@ def test_matching_pairing_excludes_invalid_rows_from_provenance() -> None:
     assert "answer-z" not in {ref.segment_key for ref in draft.source_refs}
 
 
+def test_matching_pairing_preserves_repeated_choice_mappings() -> None:
+    question, answers, question_refs, answer_refs = _seven_by_seven_matching_fixture()
+    rows = list(answers[0].matches)
+    rows[1] = rows[1].model_copy(update={"correct_index": 5})
+    answers = (answers[0].model_copy(update={"matches": tuple(rows)}), answers[1])
+
+    draft = pair_supplied_answers(
+        (question,),
+        answers,
+        question_source_refs=(question_refs,),
+        answer_source_refs=answer_refs,
+    ).drafts[0]
+
+    assert tuple(prompt.correct_index for prompt in draft.prompts) == (5, 5, 1, 0, 2, 6, 3)
+    assert draft.answer_provenance is AnswerProvenance.PROVIDED_BY_SOURCE
+
+
+def test_matching_unknown_prompt_diagnostics_preserve_source_order() -> None:
+    question, answers, question_refs, answer_refs = _seven_by_seven_matching_fixture()
+    unknown_rows = tuple(
+        ExtractedMatchingAnswerRow(
+            prompt_identifier=label,
+            correct_index=0,
+            rationale=None,
+            source_segments=(
+                SegmentCitation(source_id="answers", segment_key=f"answer-{label.lower()}"),
+            ),
+        )
+        for label in ("Z", "Y")
+    )
+    answers = (
+        answers[0],
+        answers[1].model_copy(update={"matches": (*answers[1].matches, *unknown_rows)}),
+    )
+    answer_refs = (
+        answer_refs[0],
+        (
+            *answer_refs[1],
+            QuestionSourceRef("answers", "answer-z", "page 5"),
+            QuestionSourceRef("answers", "answer-y", "page 5"),
+        ),
+    )
+
+    result = pair_supplied_answers(
+        (question,),
+        answers,
+        question_source_refs=(question_refs,),
+        answer_source_refs=answer_refs,
+    )
+
+    assert [item.message for item in result.diagnostics] == [
+        "matching answer references unknown prompt: z",
+        "matching answer references unknown prompt: y",
+    ]
+
+
 def test_exact_question_numbers_pair_before_semantic_matching() -> None:
     result = pair_supplied_answers(
         questions=(question("1", "First?"), question("2", "Second?")),

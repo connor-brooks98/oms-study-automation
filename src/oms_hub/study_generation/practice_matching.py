@@ -278,9 +278,18 @@ def _pair_matching_answers(
                     "duplicate-matching-prompt-identifier",
                     "duplicate matching prompt identifier",
                 )
-            )
+        )
         known_labels = set(prompt_label_counts)
-        for row_label in set(prompt_counts) - known_labels:
+        unknown_labels = tuple(
+            dict.fromkeys(
+                row_label
+                for row_label in (
+                    normalize_identifier(row.prompt_identifier) for row in rows
+                )
+                if row_label not in known_labels
+            )
+        )
+        for row_label in unknown_labels:
             run_diagnostics.append(
                 _blocker(
                     "unknown-matching-prompt-answer",

@@ -22,8 +22,6 @@ from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.notebook_errors import NotebookGatewayError
 from oms_hub.study_generation.practice_contracts import (
     ExtractedAnswer,
-    ExtractedMatchingAnswer,
-    ExtractedMatchingAnswerRow,
     ExtractedMatchingPrompt,
     ExtractedMatchingQuestion,
     ExtractedQuestion,
@@ -1250,8 +1248,8 @@ def test_extraction_artifact_rejects_present_invalid_answer_source_refs(
         _extraction_from_json(json.dumps(payload))
 
 
-def test_pair_dispatches_matching_values_to_grouped_pairing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_pair_rejects_matching_values_until_matching_pairing_is_implemented(
+    tmp_path: Path,
 ) -> None:
     repository = _repository(tmp_path)
     run = _queued_import(repository, tmp_path)
@@ -1276,50 +1274,7 @@ def test_pair_dispatches_matching_values_to_grouped_pairing(
         candidate_assets=(),
         confidence=0.8,
     )
-    matching_answer = ExtractedMatchingAnswer(
-        kind="matching",
-        original_identifier="1",
-        matches=(
-            ExtractedMatchingAnswerRow(
-                prompt_identifier="A",
-                correct_index=1,
-                rationale=None,
-                source_segments=(
-                    SegmentCitation(source_id="source-1", segment_key="answer-a"),
-                ),
-            ),
-            ExtractedMatchingAnswerRow(
-                prompt_identifier="B",
-                correct_index=0,
-                rationale=None,
-                source_segments=(
-                    SegmentCitation(source_id="source-1", segment_key="answer-b"),
-                ),
-            ),
-        ),
-    )
-    extracted = ExtractionResult(
-        (matching,),
-        (matching_answer,),
-        ((QuestionSourceRef("source-1", "question-1", "p1"),),),
-        (
-            (
-                QuestionSourceRef("source-1", "answer-a", "p4"),
-                QuestionSourceRef("source-1", "answer-b", "p4"),
-            ),
-        ),
-        (),
-        (),
-    )
-    monkeypatch.setattr(repository, "save_run_artifact", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        "oms_hub.study_generation.quiz_import_worker._artifact_hash", lambda *_args: "a" * 64
-    )
-    monkeypatch.setattr(
-        "oms_hub.study_generation.quiz_import_worker._drafts_json", lambda *_args: "[]"
-    )
+    extracted = ExtractionResult((matching,), (), ((),), (), (), ())
 
-    drafts = worker._pair(run, extracted, (), ())
-
-    assert len(drafts) == 1
-    assert tuple(prompt.correct_index for prompt in drafts[0].prompts) == (1, 0)
+    with pytest.raises(ValueError, match="matching extraction is not supported"):
+        worker._pair(run, extracted, (), ())

@@ -359,6 +359,13 @@ class QuizImportWorker:
         sources: tuple[StudioSource, ...],
         roles: tuple[ImportSourceRole, ...],
     ) -> tuple[QuestionDraft, ...]:
+        if any(
+            isinstance(value, (ExtractedMatchingQuestion, ExtractedMatchingAnswer))
+            for value in (*extracted.questions, *extracted.answers)
+        ):
+            raise ValueError(
+                "matching extraction is not supported until matching pairing is implemented"
+            )
         self.repository.set_run_stage(run.id, StudioRunStage.PAIR)
         signature = stage_signature(
             "pair",
@@ -376,12 +383,18 @@ class QuizImportWorker:
             self.repository.invalidate_import_artifacts_after(
                 run.id, _DOWNSTREAM_PREFIXES[StudioRunStage.PAIR]
             )
-        drafts = pair_supplied_answers(
-            extracted.questions,
-            extracted.answers,
+        pairing = pair_supplied_answers(
+            cast(tuple[ExtractedQuestion, ...], extracted.questions),
+            cast(tuple[ExtractedAnswer, ...], extracted.answers),
             question_source_refs=extracted.question_source_refs,
-            answer_source_refs=extracted.answer_source_refs,
-        ).drafts
+        )
+        if any(not isinstance(draft, QuestionDraft) for draft in pairing.drafts):
+            raise ValueError(
+                "matching extraction is not supported until matching pairing is implemented"
+            )
+        drafts = tuple(
+            draft for draft in pairing.drafts if isinstance(draft, QuestionDraft)
+        )
         # Extraction-level ambiguity belongs to the run, not every question.  Copying
         # it made one missing count look like N separate question failures.
         self.repository.save_run_artifact(
@@ -409,10 +422,8 @@ class QuizImportWorker:
                 separators=(",", ":"),
             ),
         )
-        self.repository.save_run_artifact(
-            run.id, "pair", signature, _drafts_json(cast(tuple[QuestionDraft, ...], drafts))
-        )
-        return cast(tuple[QuestionDraft, ...], drafts)
+        self.repository.save_run_artifact(run.id, "pair", signature, _drafts_json(drafts))
+        return drafts
 
     def _resolve_answers(
         self,
