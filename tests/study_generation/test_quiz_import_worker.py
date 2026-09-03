@@ -20,7 +20,13 @@ from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, ProviderName
 from oms_hub.models import StudioImportRunSourceModel, StudioSourceOperationModel
 from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.notebook_errors import NotebookGatewayError
-from oms_hub.study_generation.practice_contracts import ExtractedQuestion, SegmentCitation
+from oms_hub.study_generation.practice_contracts import (
+    ExtractedAnswer,
+    ExtractedMatchingPrompt,
+    ExtractedMatchingQuestion,
+    ExtractedQuestion,
+    SegmentCitation,
+)
 from oms_hub.study_generation.practice_domain import (
     AnswerProvenance,
     DiagnosticSeverity,
@@ -1198,3 +1204,77 @@ def test_artifact_serializers_round_trip_full_provenance(tmp_path: Path) -> None
     assert _document_from_json(_document_json(document)) == document
     assert _extraction_from_json(_extraction_json(extracted)) == extracted
     assert _drafts_from_json(_drafts_json((draft,))) == (draft,)
+
+
+@pytest.mark.parametrize(
+    ("answer_source_refs", "message"),
+    [
+        ({}, "answer_source_refs must be a list when present"),
+        ([], "answer_source_refs must align with answers"),
+    ],
+)
+def test_extraction_artifact_rejects_present_invalid_answer_source_refs(
+    answer_source_refs: object, message: str
+) -> None:
+    result = ExtractionResult(
+        (
+            ExtractedQuestion(
+                original_identifier="1",
+                stem="Question?",
+                choices=("A", "B"),
+                source_segments=(SegmentCitation(source_id="source-1", segment_key="question-1"),),
+                confidence=0.8,
+            ),
+        ),
+        (
+            ExtractedAnswer(
+                original_identifier="1",
+                correct_index=0,
+                rationale=None,
+                source_segments=(
+                    SegmentCitation(source_id="source-1", segment_key="answer-1"),
+                ),
+            ),
+        ),
+        ((QuestionSourceRef("source-1", "question-1", "p1"),),),
+        ((QuestionSourceRef("source-1", "answer-1", "p4"),),),
+        (),
+        (),
+    )
+    payload = json.loads(_extraction_json(result))
+    payload["answer_source_refs"] = answer_source_refs
+
+    with pytest.raises(ValueError, match=message):
+        _extraction_from_json(json.dumps(payload))
+
+
+def test_pair_rejects_matching_values_until_matching_pairing_is_implemented(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    run = _queued_import(repository, tmp_path)
+    worker = QuizImportWorker(
+        repository, _Parser(), _QuestionExtractor(), _UnusedAnswers(), object(), tmp_path / "assets"
+    )
+    matching = ExtractedMatchingQuestion(
+        kind="matching",
+        original_identifier="1",
+        stem="Match neutral labels.",
+        prompts=(
+            ExtractedMatchingPrompt(
+                original_identifier="A", text="Description A", supplied_correct_index=None
+            ),
+            ExtractedMatchingPrompt(
+                original_identifier="B", text="Description B", supplied_correct_index=None
+            ),
+        ),
+        choices=("Term one", "Term two"),
+        rationale=None,
+        source_segments=(SegmentCitation(source_id="source-1", segment_key="question-1"),),
+        candidate_assets=(),
+        confidence=0.8,
+    )
+    extracted = ExtractionResult((matching,), (), ((),), (), (), ())
+
+    with pytest.raises(ValueError, match="matching extraction is not supported"):
+        worker._pair(run, extracted, (), ())

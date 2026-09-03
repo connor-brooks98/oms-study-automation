@@ -12,8 +12,10 @@ from oms_hub.document_processing.domain import (
     SegmentKind,
 )
 from oms_hub.llm.domain import GeneratedText, LLMTask, ProviderName
+from oms_hub.study_generation.practice_contracts import ExtractedAnswer, SegmentCitation
 from oms_hub.study_generation.practice_extraction import (
     ExtractionError,
+    ExtractionResult,
     PracticeQuestionExtractor,
     SourceDocument,
 )
@@ -230,6 +232,18 @@ def test_extractor_keeps_a_seven_row_matching_set_grouped_and_resolves_answer_re
     )
     assert "one grouped matching question" in generator.requests[0].instruction
     assert "zero-based" in generator.requests[0].instruction
+
+
+def test_extraction_result_rejects_misaligned_answer_source_refs() -> None:
+    answer = ExtractedAnswer(
+        original_identifier="1",
+        correct_index=0,
+        rationale=None,
+        source_segments=(SegmentCitation(source_id="source-1", segment_key="answer-1"),),
+    )
+
+    with pytest.raises(ValueError, match="answer_source_refs must align with answers"):
+        ExtractionResult((), (answer,), (), (), (), ())
 
 
 def test_extractor_merges_disjoint_matching_answer_rows_with_aligned_refs(

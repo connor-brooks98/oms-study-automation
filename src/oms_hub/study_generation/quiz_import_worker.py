@@ -359,6 +359,13 @@ class QuizImportWorker:
         sources: tuple[StudioSource, ...],
         roles: tuple[ImportSourceRole, ...],
     ) -> tuple[QuestionDraft, ...]:
+        if any(
+            isinstance(value, (ExtractedMatchingQuestion, ExtractedMatchingAnswer))
+            for value in (*extracted.questions, *extracted.answers)
+        ):
+            raise ValueError(
+                "matching extraction is not supported until matching pairing is implemented"
+            )
         self.repository.set_run_stage(run.id, StudioRunStage.PAIR)
         signature = stage_signature(
             "pair",
@@ -925,15 +932,21 @@ def _extraction_from_json(payload_json: str) -> ExtractionResult:
     payload = json.loads(payload_json)
     questions = tuple(_extracted_question_from_json(item) for item in payload["questions"])
     answers = tuple(_extracted_answer_from_json(item) for item in payload["answers"])
-    stored_answer_refs = payload.get("answer_source_refs")
-    answer_source_refs = (
-        tuple(
+    answer_source_refs: tuple[tuple[QuestionSourceRef, ...], ...]
+    if "answer_source_refs" not in payload:
+        answer_source_refs = tuple(() for _ in answers)
+    else:
+        stored_answer_refs = payload["answer_source_refs"]
+        if not isinstance(stored_answer_refs, list):
+            raise ValueError("answer_source_refs must be a list when present")
+        if not all(isinstance(refs, list) for refs in stored_answer_refs):
+            raise ValueError("answer_source_refs entries must be lists")
+        if not all(isinstance(item, dict) for refs in stored_answer_refs for item in refs):
+            raise ValueError("answer_source_refs entries must be objects")
+        answer_source_refs = tuple(
             tuple(QuestionSourceRef(**item) for item in refs)
             for refs in stored_answer_refs
         )
-        if isinstance(stored_answer_refs, list)
-        else tuple(() for _ in answers)
-    )
     return ExtractionResult(
         questions,
         answers,

@@ -111,6 +111,10 @@ class ExtractionResult:
     provider_metadata: tuple[ExtractionProviderMetadata, ...]
     diagnostics: tuple[DraftDiagnostic, ...]
 
+    def __post_init__(self) -> None:
+        if len(self.answer_source_refs) != len(self.answers):
+            raise ValueError("answer_source_refs must align with answers")
+
     @property
     def raw_provider_metadata(self) -> tuple[ExtractionProviderMetadata, ...]:
         """Persistence-oriented alias for metadata emitted by each provider request."""
