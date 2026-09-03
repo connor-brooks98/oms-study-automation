@@ -22,6 +22,7 @@ $PlayerAsset = Join-Path $ProjectRoot "src\oms_hub\web\static\public_quiz.js"
 $script:CheckoutMutated = $false
 $script:InstallerStarted = $false
 $script:RollbackAttempted = $false
+$script:InstallerTerminationProven = $false
 
 function Get-FileSha256 {
   param([string]$Path)
@@ -376,37 +377,92 @@ function Stop-SameRootRuntime {
   throw "Same-root runtime did not remain clear for two snapshots."
 }
 
-function Stop-InstallerProcessTree {
+function Get-CimCreationKey {
+  param([object]$Process)
+  return ([datetime]$Process.CreationDate).ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff", [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function New-ProcessInstanceRecord {
+  param([object]$Process)
+  return [ordered]@{ process_id=[int]$Process.ProcessId; creation_key=(Get-CimCreationKey $Process); name=[string]$Process.Name; executable_path=[string]$Process.ExecutablePath; command_line=[string]$Process.CommandLine; parent_process_id=[int]$Process.ParentProcessId }
+}
+
+function Test-ProcessInstanceMatch {
+  param([object]$Record, [object]$Process)
+  return ([int]$Record.process_id -eq [int]$Process.ProcessId) -and ([string]$Record.creation_key -eq (Get-CimCreationKey $Process)) -and ([string]$Record.name -ieq [string]$Process.Name) -and ([string]$Record.executable_path -ieq [string]$Process.ExecutablePath) -and ([string]$Record.command_line -eq [string]$Process.CommandLine) -and ([int]$Record.parent_process_id -eq [int]$Process.ParentProcessId)
+}
+
+function Get-InstallerRootRecord {
   param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$InstallerProcess)
+  $root = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$InstallerProcess.Id)" -ErrorAction Stop
+  $handleKey = $InstallerProcess.StartTime.ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff", [System.Globalization.CultureInfo]::InvariantCulture)
+  if ($handleKey -cne (Get-CimCreationKey $root)) { throw "Installer root changed identity before supervision." }
+  return New-ProcessInstanceRecord $root
+}
+
+function Update-InstallerOwnedInstances {
+  param([object]$RootRecord, [hashtable]$OwnedInstances)
+  $all = @(Get-CimInstance Win32_Process)
+  $byId = @{}; $children = @{}
+  foreach ($row in $all) { $byId[[string]$row.ProcessId] = $row; $parentKey = [string]$row.ParentProcessId; if (-not $children.ContainsKey($parentKey)) { $children[$parentKey] = [Collections.Generic.List[object]]::new() }; $children[$parentKey].Add($row) }
+  $pending = [Collections.Generic.Queue[object]]::new(); $seen = [Collections.Generic.HashSet[string]]::new()
+  $pending.Enqueue($RootRecord)
+  foreach ($record in $OwnedInstances.Values) { $pending.Enqueue($record) }
+  while ($pending.Count -gt 0) {
+    $record = $pending.Dequeue(); $instanceKey = "{0}|{1}" -f $record.process_id, $record.creation_key
+    if (-not $seen.Add($instanceKey) -or -not $byId.ContainsKey([string]$record.process_id)) { continue }
+    $live = $byId[[string]$record.process_id]
+    if (-not (Test-ProcessInstanceMatch $record $live)) { continue }
+    $OwnedInstances[$instanceKey] = $record
+    $childKey = [string]$record.process_id
+    if ($children.ContainsKey($childKey)) {
+      foreach ($child in $children[$childKey]) {
+        $childRecord = New-ProcessInstanceRecord $child
+        $childInstanceKey = "{0}|{1}" -f $childRecord.process_id, $childRecord.creation_key
+        if (-not $OwnedInstances.ContainsKey($childInstanceKey)) { $OwnedInstances[$childInstanceKey] = $childRecord }
+        $pending.Enqueue($childRecord)
+      }
+    }
+  }
+  $present = [Collections.Generic.List[object]]::new()
+  foreach ($record in $OwnedInstances.Values) {
+    if ($byId.ContainsKey([string]$record.process_id) -and (Test-ProcessInstanceMatch $record $byId[[string]$record.process_id])) { $present.Add($record) }
+  }
+  return @($present)
+}
+
+function Stop-InstallerProcessTree {
+  param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$InstallerProcess, [Parameter(Mandatory = $true)][object]$RootRecord, [Parameter(Mandatory = $true)][hashtable]$OwnedInstances)
   $deadline = (Get-Date).AddSeconds(30)
   while ((Get-Date) -lt $deadline) {
-    $all = @(Get-CimInstance Win32_Process)
-    $children = @{}
-    foreach ($row in $all) { $parentKey = [string]$row.ParentProcessId; if (-not $children.ContainsKey($parentKey)) { $children[$parentKey] = [Collections.Generic.List[object]]::new() }; $children[$parentKey].Add($row) }
-    $byId = @{}; foreach ($row in $all) { $byId[[string]$row.ProcessId] = $row }
-    $selected = [Collections.Generic.List[object]]::new(); $pending = [Collections.Generic.Queue[int]]::new(); $seen = [Collections.Generic.HashSet[int]]::new()
-    $pending.Enqueue([int]$InstallerProcess.Id)
-    while ($pending.Count -gt 0) { $currentId = $pending.Dequeue(); if (-not $seen.Add($currentId)) { continue }; if ($byId.ContainsKey([string]$currentId)) { $selected.Add($byId[[string]$currentId]) }; if ($children.ContainsKey([string]$currentId)) { foreach ($child in $children[[string]$currentId]) { $pending.Enqueue([int]$child.ProcessId) } } }
-    if ($selected.Count -eq 0) { try { $InstallerProcess.Refresh() } catch { }; if ($InstallerProcess.HasExited) { return }; Start-Sleep -Milliseconds 250; continue }
+    $present = @(Update-InstallerOwnedInstances $RootRecord $OwnedInstances)
+    $rootPresent = @($present | Where-Object { [int]$_.process_id -eq [int]$RootRecord.process_id -and [string]$_.creation_key -eq [string]$RootRecord.creation_key }).Count -eq 1
+    if (-not $rootPresent -and $present.Count -eq 0) { $script:InstallerTerminationProven = $true; return }
+    $byId = @{}; foreach ($record in $present) { $byId[[string]$record.process_id] = $record }
     $deepest = $null; $deepestDepth = -1
-    foreach ($candidate in $selected) { $depth = 0; $cursor = $candidate; while ($byId.ContainsKey([string]$cursor.ParentProcessId) -and $seen.Contains([int]$cursor.ParentProcessId)) { $depth++; $cursor = $byId[[string]$cursor.ParentProcessId] }; if ($depth -gt $deepestDepth) { $deepest = $candidate; $deepestDepth = $depth } }
-    $targetId = [int]$deepest.ProcessId; $live = Get-CimInstance Win32_Process -Filter "ProcessId=$targetId" -ErrorAction SilentlyContinue
+    foreach ($record in $present) {
+      $depth = 0; $cursor = $record; $seen = [Collections.Generic.HashSet[string]]::new()
+      while ($byId.ContainsKey([string]$cursor.parent_process_id)) { $cursor = $byId[[string]$cursor.parent_process_id]; $key = "{0}|{1}" -f $cursor.process_id, $cursor.creation_key; if (-not $seen.Add($key)) { throw "Installer owned process ancestry cycle." }; $depth++ }
+      if ($depth -gt $deepestDepth) { $deepest = $record; $deepestDepth = $depth }
+    }
+    if ($null -eq $deepest) { throw "Installer termination has no selectable owned process." }
+    $live = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$deepest.process_id)" -ErrorAction SilentlyContinue
     if (-not $live) { continue }
-    $sameIdentity = ([string]$live.Name -ieq [string]$deepest.Name) -and ([string]$live.ExecutablePath -ieq [string]$deepest.ExecutablePath) -and ([int]$live.ParentProcessId -eq [int]$deepest.ParentProcessId) -and ([string]$live.CommandLine -eq [string]$deepest.CommandLine) -and (([datetime]$live.CreationDate).ToUniversalTime().ToString("o") -eq ([datetime]$deepest.CreationDate).ToUniversalTime().ToString("o"))
-    if (-not $sameIdentity) { throw "Installer process changed identity before termination." }
-    $handle = Get-Process -Id $targetId -ErrorAction SilentlyContinue
+    if (-not (Test-ProcessInstanceMatch $deepest $live)) { continue }
+    $handle = Get-Process -Id ([int]$deepest.process_id) -ErrorAction SilentlyContinue
     if (-not $handle) { continue }
-    try { $null = $handle.Handle; $handleKey = $handle.StartTime.ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff", [System.Globalization.CultureInfo]::InvariantCulture); $cimKey = ([datetime]$live.CreationDate).ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff", [System.Globalization.CultureInfo]::InvariantCulture) } catch { if ($handle.HasExited) { continue }; throw }
-    if ($handleKey -cne $cimKey) { throw "Installer process changed while acquiring its stable handle." }
+    try { $null = $handle.Handle; $handleKey = $handle.StartTime.ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff", [System.Globalization.CultureInfo]::InvariantCulture) } catch { if ($handle.HasExited) { continue }; throw }
+    if ($handleKey -cne [string]$deepest.creation_key) { throw "Installer process changed while acquiring its stable handle." }
     try { Stop-Process -InputObject $handle -Force -ErrorAction Stop } catch { if ($handle.HasExited) { continue }; throw }
     Start-Sleep -Milliseconds 250
   }
-  try { $InstallerProcess.Refresh() } catch { }
-  if (-not $InstallerProcess.HasExited) { throw "Installer process tree did not terminate within the bounded shutdown deadline." }
+  $script:InstallerTerminationProven = $false
+  throw "Installer termination could not prove the original root and every owned descendant are absent."
 }
 
 function Invoke-Installer {
   param([object]$Configuration, [switch]$WhatIf)
+  $script:InstallerTerminationProven = $false
   $logRoot = Join-Path $Configuration.data_root "release-logs"
   if (-not (Test-Path -LiteralPath $logRoot)) { New-Item -ItemType Directory -Path $logRoot -Force | Out-Null }
   Assert-Directory $logRoot
@@ -414,14 +470,19 @@ function Invoke-Installer {
   $stdoutLog = "$logStem.stdout.log"; $stderrLog = "$logStem.stderr.log"
   $arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $Installer, "-ProjectRoot", $ProjectRoot, "-DataRoot", $Configuration.data_root)
   if ($WhatIf) { $arguments += "-WhatIf" }
-  $installerProcess = $null; $failure = $null; $deadline = (Get-Date).AddMinutes(10)
+  $installerProcess = $null; $rootRecord = $null; $ownedInstances = @{}; $failure = $null; $deadline = (Get-Date).AddMinutes(10)
   try {
     $installerProcess = Start-Process -FilePath (Get-SystemPowerShellPath) -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+    $rootRecord = Get-InstallerRootRecord $installerProcess
+    $rootInstanceKey = "{0}|{1}" -f $rootRecord.process_id, $rootRecord.creation_key
+    $ownedInstances[$rootInstanceKey] = $rootRecord
+    Update-InstallerOwnedInstances $rootRecord $ownedInstances | Out-Null
     $listenerLeft = $false
     while (-not $installerProcess.HasExited -and (Get-Date) -lt $deadline) {
+      Update-InstallerOwnedInstances $rootRecord $ownedInstances | Out-Null
       $listenerCount = @(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -LocalPort $Configuration.port -ErrorAction SilentlyContinue).Count
       if ($listenerCount -eq 0) { $listenerLeft = $true }
-      if ($listenerCount -gt 1) { $failure = "Installer created more than one loopback listener." ; break }
+      if ($listenerCount -gt 1) { $failure = "Installer created more than one loopback listener."; break }
       Start-Sleep -Milliseconds 250
       $installerProcess.Refresh()
     }
@@ -429,8 +490,9 @@ function Invoke-Installer {
     if ($null -eq $failure -and $installerProcess.ExitCode -ne 0) { $failure = "Installer exited $($installerProcess.ExitCode)." }
     if ($null -eq $failure -and -not $WhatIf -and -not $listenerLeft) { $failure = "Installer never cleared the old listener." }
   } finally {
-    if ($null -ne $installerProcess -and ($null -ne $failure -or -not $installerProcess.HasExited)) { Stop-InstallerProcessTree $installerProcess }
-    if ($null -ne $installerProcess) { $installerProcess.Refresh(); if (-not $installerProcess.HasExited) { throw "Installer process is still running; refusing rollback." } }
+    if ($null -ne $installerProcess -and $null -ne $rootRecord) { Stop-InstallerProcessTree $installerProcess $rootRecord $ownedInstances }
+    if ($null -ne $installerProcess -and $null -eq $rootRecord -and -not $installerProcess.HasExited) { try { Stop-Process -InputObject $installerProcess -Force -ErrorAction Stop; $installerProcess.WaitForExit(30000) | Out-Null } catch { } }
+    if ($null -ne $installerProcess) { $installerProcess.Refresh(); if (-not $installerProcess.HasExited -or -not $script:InstallerTerminationProven) { throw "Installer termination is unproven; refusing rollback." } }
   }
   if ($null -ne $failure) { throw "$failure Diagnostics retained at $stdoutLog and $stderrLog." }
   Remove-Item -LiteralPath $stdoutLog, $stderrLog -Force -ErrorAction Stop
@@ -562,6 +624,7 @@ try {
       exit 0
     } catch {
       $failure = $_.Exception.Message
+      if ($script:CheckoutMutated -and -not $script:InstallerTerminationProven) { throw "rollback withheld because installer termination is unproven: $failure" }
       if ($script:CheckoutMutated -and -not $script:RollbackAttempted) {
         if (-not $backupPath) { $newBackups = @((Get-BackupNames $backupRoot) | Where-Object { $backupsBefore -notcontains $_ }); if ($newBackups.Count -eq 1) { $backupPath = Join-Path $backupRoot $newBackups[0] } }
         if ($backupPath) { Invoke-Rollback $configuration $binding $backupPath $failure }

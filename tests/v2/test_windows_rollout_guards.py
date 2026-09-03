@@ -1043,8 +1043,18 @@ def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_lim
     assert "old runtime recovery attempted without certifying data or task" in release
     assert "Stop-InstallerProcessTree" in release
     assert "$deadline = (Get-Date).AddMinutes(10)" in release
-    assert "Installer process is still running; refusing rollback" in release
-    assert "$null -ne $failure -or -not $installerProcess.HasExited" in release
+    assert "Installer termination is unproven; refusing rollback" in release
+    assert "Get-InstallerRootRecord" in release
+    assert "Get-CimCreationKey" in release
+    assert "Update-InstallerOwnedInstances" in release
+    assert "every owned descendant are absent" in release
+    assert "$rootInstanceKey = \"{0}|{1}\"" in release
+    assert "if (-not $rootPresent -and $present.Count -eq 0)" in release
+    assert "Test-ProcessInstanceMatch" in release
+    assert "$script:InstallerTerminationProven = $false" in release
+    withheld = release.index("rollback withheld because installer termination is unproven")
+    rollback = release.index("Invoke-Rollback $configuration $binding $backupPath $failure")
+    assert withheld < rollback
     copy = release.index("Copy-Item -LiteralPath $backup.database")
     restored_hash = release.index("Assert-RestoredRuntimeData $backup $Configuration")
     sqlite = release.index("PRAGMA integrity_check")
@@ -1087,6 +1097,7 @@ def test_grouped_matching_nuc_driver_is_one_shot_and_cleans_exact_remote_leaf() 
     assert "upload_attempted=true\nscp -q" in driver
     assert "remote_created" not in driver
     assert "remote release ownership hash differs" not in driver
+    assert "if(Test-Path -LiteralPath \\$p){\\$i=Get-Item" in driver
     assert "remote release leaf remains" in driver
     assert "assert len(rows)==1" in driver
     assert driver.count("invoke_mode Deploy") == 1

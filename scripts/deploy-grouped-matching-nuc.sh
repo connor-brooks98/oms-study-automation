@@ -42,7 +42,7 @@ assert_remote_parent_and_absent() {
 cleanup_remote() {
   if [[ "$upload_attempted" != true ]]; then return; fi
   local command
-  command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$parent=Split-Path -LiteralPath \$p -Parent;while(\$parent){\$parentItem=Get-Item -LiteralPath \$parent -Force -ErrorAction Stop;if((\$parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'remote release parent invalid'};\$next=Split-Path -LiteralPath \$parent -Parent;if(-not \$next -or \$next -eq \$parent){break};\$parent=\$next};\$i=Get-Item -LiteralPath \$p -Force -ErrorAction Stop;if(\$i.PSIsContainer -or ((\$i.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0)){throw 'remote release leaf invalid'};Remove-Item -LiteralPath \$p -Force -ErrorAction Stop;if(Test-Path -LiteralPath \$p){throw 'remote release leaf remains'}"
+  command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$parent=Split-Path -LiteralPath \$p -Parent;while(\$parent){\$parentItem=Get-Item -LiteralPath \$parent -Force -ErrorAction Stop;if((\$parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'remote release parent invalid'};\$next=Split-Path -LiteralPath \$parent -Parent;if(-not \$next -or \$next -eq \$parent){break};\$parent=\$next};if(Test-Path -LiteralPath \$p){\$i=Get-Item -LiteralPath \$p -Force -ErrorAction Stop;if(\$i.PSIsContainer -or ((\$i.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0)){throw 'remote release leaf invalid'};Remove-Item -LiteralPath \$p -Force -ErrorAction Stop};if(Test-Path -LiteralPath \$p){throw 'remote release leaf remains'}"
   printf '%s' "$command" | remote_ps >/dev/null
   upload_attempted=false
 }
