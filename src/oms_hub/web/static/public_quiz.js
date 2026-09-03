@@ -285,6 +285,12 @@
             value && typeof value === "object" && !Array.isArray(value)
             && Object.keys(value).sort().join("\0") === [...expected].sort().join("\0")
           );
+          const sameIdSet = (value, expected) => (
+            Array.isArray(value)
+            && value.length === expected.length
+            && new Set(value).size === value.length
+            && value.every((id) => expected.includes(id))
+          );
           const selected = candidate.selectedChoiceIds;
           const submitted = candidate.submitted === true;
           const feedback = candidate.feedback;
@@ -296,7 +302,10 @@
             && Object.values(feedback.row_results).every((value) => typeof value === "boolean")
             && typeof feedback.rationale === "string" && feedback.rationale.length > 0;
           if (
-            candidate.kind !== "matching" || !exactKeys(selected, baseline.promptIds)
+            candidate.kind !== "matching"
+            || !sameIdSet(candidate.promptIds, baseline.promptIds)
+            || !sameIdSet(candidate.choiceIds, baseline.choiceIds)
+            || !exactKeys(selected, baseline.promptIds)
             || Object.values(selected).some((id) => id !== null && !validChoices.has(id))
             || (submitted && (!feedbackValid || Object.values(selected).some((id) => !validChoices.has(id))))
           ) return fresh;
@@ -840,6 +849,7 @@
             select.disabled = questionProgress.submitted;
             const placeholder = element(documentRef, "option", "", "Choose a term");
             placeholder.value = "";
+            placeholder.disabled = true;
             select.append(placeholder);
             question.choices.forEach((choice, index) => {
               const option = element(documentRef, "option", "", `${index + 1}. ${choice.text}`);
@@ -853,6 +863,16 @@
               render();
             });
             row.append(label, select);
+            if (questionProgress.submitted && typeof result === "boolean") {
+              const status = element(
+                documentRef,
+                "p",
+                "quiz-matching-result",
+                result ? "Correct" : "Incorrect",
+              );
+              status.setAttribute("role", "status");
+              row.append(status);
+            }
             const correctChoiceId = questionProgress.feedback?.correct_matches?.[prompt.id];
             const correctChoice = question.choices.find((choice) => choice.id === correctChoiceId);
             if (questionProgress.submitted && result === false && correctChoice) {

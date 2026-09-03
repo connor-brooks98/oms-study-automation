@@ -13,7 +13,9 @@ class Element {
     this.textContent = "";
     this.value = "";
     this.open = false;
+    this.disabled = false;
     this.parentElement = null;
+    this._listeners = {};
     this.classList = {
       add: (name) => { if (!this.className.split(" ").includes(name)) this.className = `${this.className} ${name}`.trim(); },
       toggle: (name, enabled) => {
@@ -36,6 +38,7 @@ class Element {
     else this.children.splice(index, 0, item);
   }
   setAttribute(name, value) { this[name] = value; }
+  addEventListener(type, handler) { (this._listeners[type] ||= []).push(handler); }
   focus() { documentRef.activeElement = this; }
   remove() {
     if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((item) => item !== this);
@@ -72,8 +75,12 @@ class Element {
     if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
     if (selector === "[data-focus-key]") return Boolean(element.dataset.focusKey);
     if (selector === "[data-question-id]") return Boolean(element.dataset.questionId);
+    if (selector === "[data-question-edit]") return Boolean(element.dataset.questionEdit);
+    if (selector === "[data-matching-choice-ordinal]") return element.dataset.matchingChoiceOrdinal === "true";
     if (selector === "select") return element.tagName === "select";
     if (selector === "option") return element.tagName === "option";
+    const name = /^([a-z]+)?\[name="([^"]+)"\]$/.exec(selector);
+    if (name) return (!name[1] || element.tagName === name[1]) && element.name === name[2];
     return false;
   }
   querySelectorAll(selector) {
@@ -291,6 +298,52 @@ test("matching review renders one card and normalizes the entire group", () => {
   const firstPrompt = cards[0].querySelectorAll("[data-matching-prompt]")[0];
   assert.equal(firstPrompt.dataset.promptId, "p1");
   assert.equal(firstPrompt.querySelector("select")["aria-label"], "Correct choice for prompt A");
+  assert.equal(
+    cards[0].querySelector(".studio-review-matching-bank")
+      .querySelector('input[name="choice"]')["aria-label"],
+    "Choice 1",
+  );
+  assert.equal(
+    cards[0].querySelector(".studio-review-matching-bank")
+      .querySelector("[data-matching-choice-ordinal]").textContent,
+    "1.",
+  );
+});
+
+test("matching save rejects a blank bank row without sending a shifted PATCH", async () => {
+  const { page, questions } = reviewPage();
+  const message = new Element("p");
+  const controls = page.querySelector;
+  page.querySelector = (selector) => (
+    selector === "[data-review-message]" ? message : controls(selector)
+  );
+  page.dataset.practiceReview = "true";
+  page.dataset.reviewUrl = "/review";
+  page.dataset.runId = "run-1";
+  const documentWithPage = {
+    ...documentRef,
+    cookie: "",
+    querySelector: (selector) => selector === "[data-practice-review]" ? page : null,
+  };
+  let patches = 0;
+  const matching = matchingQuestion("m1");
+  matching.choices.push("Term three");
+  const payload = { blockers: [], issues: [], preview_url: null, questions: [matching] };
+  review.initialize(documentWithPage, async (_url, options = {}) => {
+    if (options.method === "PATCH") patches += 1;
+    return { ok: true, async json() { return payload; } };
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const form = questions.querySelector("[data-question-edit]");
+  form.querySelectorAll('input[name="choice"]')[1].value = "   ";
+  await page._listeners.submit[0]({
+    target: form, submitter: new Element("button"), preventDefault() {},
+  });
+  assert.equal(patches, 0);
+  assert.match(
+    form.closest("[data-question-id]").querySelector("[data-question-message]").textContent,
+    /non-empty prompts and choices/,
+  );
 });
 
 test("matching choice removal reindexes mappings and regeneration preserves valid selections", () => {
@@ -312,6 +365,8 @@ test("matching choice removal reindexes mappings and regeneration preserves vali
   assert.equal(selects[0].querySelectorAll("option").length, 3);
   const keys = card.querySelectorAll("[data-focus-key]").map((node) => node.dataset.focusKey);
   assert.equal(new Set(keys).size, keys.length);
+  assert.equal(documentRef.activeElement, bank.querySelectorAll(".studio-review-choice")[0]
+    .querySelector('[data-focus-key]'));
 });
 
 test("image saves block question saves until the image mutation settles", async () => {

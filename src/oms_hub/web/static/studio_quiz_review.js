@@ -64,7 +64,7 @@
           correct_index: Number.isInteger(index) ? index : null,
         };
       }),
-      choices: (values.choices || []).map((choice) => String(choice).trim()).filter(Boolean),
+      choices: (values.choices || []).map((choice) => String(choice).trim()),
       rationale: String(values.rationale || "").trim() || null,
     };
     ["topic", "area", "learning_objective"].forEach((key) => {
@@ -81,11 +81,13 @@
   const reindexChoiceRows = (group, questionId = "") => {
     Array.from(group?.querySelectorAll?.(".studio-review-choice") || []).forEach((row, index) => {
       const choice = row.querySelector?.('input[name="choice"]');
+      const ordinal = row.querySelector?.("[data-matching-choice-ordinal]");
       const correct = row.querySelector?.('input[name="correct_index"]');
       const overflow = row.querySelector?.("details");
       const summary = overflow?.querySelector?.("summary");
       const remove = row.querySelector?.("[data-remove-choice]");
       choice?.setAttribute?.("aria-label", `Choice ${index + 1}`);
+      if (ordinal) ordinal.textContent = `${index + 1}.`;
       correct?.setAttribute?.("aria-label", `Correct choice ${index + 1}`);
       summary?.setAttribute?.("aria-label", `More actions for choice ${index + 1}`);
       if (correct) correct.value = String(index);
@@ -153,6 +155,12 @@
     reindexMatchingChoiceRows(
       documentRef, group, promptContainer, removedIndex, card.dataset.questionId || "",
     );
+    const remaining = Array.from(group.querySelectorAll?.(".studio-review-choice") || []);
+    const fallbackRow = remaining[Math.min(Math.max(removedIndex, 0), remaining.length - 1)];
+    const fallback = fallbackRow?.querySelector?.("[data-focus-key]")
+      || group.querySelector?.("[data-add-choice]")
+      || card;
+    fallback?.focus?.({ preventScroll: true });
     return true;
   };
 
@@ -260,6 +268,8 @@
   const matchingChoiceRow = (documentRef, choice, index, questionId = "") => {
     const row = documentRef.createElement("div");
     row.className = "studio-review-choice";
+    const ordinal = text(documentRef, "span", `${index + 1}.`, "studio-review-choice-ordinal");
+    ordinal.dataset.matchingChoiceOrdinal = "true";
     const choiceInput = documentRef.createElement("input");
     choiceInput.type = "text";
     choiceInput.name = "choice";
@@ -285,7 +295,7 @@
     menu.className = "studio-review-choice-menu t-context-menu__panel";
     menu.append(remove);
     overflow.append(summary, menu);
-    row.append(choiceInput, overflow);
+    row.append(ordinal, choiceInput, overflow);
     return row;
   };
 
@@ -815,7 +825,8 @@
         });
       const matchingValid = payload.kind === "matching"
         && payload.prompts.length >= 2 && payload.prompts.length <= 8
-        && payload.prompts.every((prompt) => prompt.label && prompt.text);
+        && payload.prompts.every((prompt) => prompt.label && prompt.text)
+        && payload.choices.every(Boolean);
       if (
         payload.choices.length < 2 || payload.choices.length > 8
         || (payload.kind === "matching" ? !matchingValid : payload.correct_index < 0 || payload.correct_index >= payload.choices.length)

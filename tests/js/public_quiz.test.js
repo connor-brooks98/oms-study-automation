@@ -94,6 +94,8 @@ test("matching state requires every prompt and scores the group once", () => {
   let state = quiz.createQuizState(mixedContent());
   state = quiz.selectMatch(state, "q2", "p1", "c2");
   assert.throws(() => quiz.recordFeedback(state, "q2", matchingFeedback(true)), /every prompt/);
+  state = quiz.selectMatch(state, "q2", "p2", "c2");
+  assert.deepEqual(state.questions.q2.selectedChoiceIds, { p1: "c2", p2: "c2" });
   state = quiz.selectMatch(state, "q2", "p2", "c1");
   state = quiz.recordFeedback(state, "q2", matchingFeedback(true));
   const repeated = quiz.recordFeedback(state, "q2", matchingFeedback(true));
@@ -125,6 +127,23 @@ test("matching progress restores equivalent version strings but rejects corrupt 
   corrupt.questions.q2.feedback.row_results.p1 = "yes";
   const fresh = quiz.restoreProgress(rendered, quiz.serializeProgress(corrupt));
   assert.equal(fresh.questions.q2.submitted, false);
+  for (const mutate of [
+    (candidate) => { candidate.questions.q2.promptIds = ["p1", "stale"]; },
+    (candidate) => { candidate.questions.q2.choiceIds = ["c1", "stale"]; },
+    (candidate) => { candidate.questions.q2.selectedChoiceIds.p1 = null; },
+    (candidate) => { candidate.questions.q2.kind = "multiple_choice"; },
+    (candidate) => { candidate.questions.q2.feedback.correct_matches.p1 = "stale"; },
+    (candidate) => { candidate.questions.q2.feedback.rationale = ""; },
+  ]) {
+    const invalid = structuredClone(saved);
+    mutate(invalid);
+    assert.equal(quiz.restoreProgress(rendered, quiz.serializeProgress(invalid)).questions.q2.submitted, false);
+  }
+  const partial = structuredClone(saved);
+  partial.questions.q2.submitted = false;
+  partial.questions.q2.feedback = null;
+  partial.questions.q2.selectedChoiceIds.p2 = null;
+  assert.equal(quiz.restoreProgress(rendered, quiz.serializeProgress(partial)).questions.q2.submitted, false);
 });
 
 test("highlight ranges merge and can be cleared", () => {
@@ -423,6 +442,9 @@ test("submitted wrong matching rows reveal their correct bank choice without str
   assert.equal(rows.length, 2);
   assert.equal(rows[0].classList.contains("is-incorrect"), true);
   assert.match(rows[0].textContent, /Correct answer: 2\. Term two/);
+  const results = findAllByClass(rows[0], "quiz-matching-result");
+  assert.equal(results[0].textContent, "Incorrect");
+  assert.equal(results[0].role, "status");
   assert.equal(findAllByClass(app, "quiz-strike").length, 0);
   assert.equal(
     findAllByClass(app, "sh-select")
@@ -430,6 +452,26 @@ test("submitted wrong matching rows reveal their correct bank choice without str
       .every((select) => select.disabled),
     true,
   );
+});
+
+test("matching uses a disabled placeholder and native choice selection", async () => {
+  const rendered = { ...mixedContent(), questions: [mixedContent().questions[1]] };
+  const { documentRef, app } = buildQuizApp();
+  await quiz.initialize(documentRef, async () => ({ ok: true, async json() { return rendered; } }));
+  const select = findAllByClass(app, "sh-select")
+    .find((node) => node["aria-label"]?.startsWith("Choice for prompt"));
+  const selects = findAllByClass(app, "sh-select")
+    .filter((node) => node["aria-label"]?.startsWith("Choice for prompt"));
+  assert.equal(selects.length, 2);
+  assert.deepEqual(selects.map((node) => node["aria-label"]), [
+    "Choice for prompt A", "Choice for prompt B",
+  ]);
+  assert.equal(select.children[0].disabled, true);
+  select.value = "c2";
+  select._listeners.change[0]();
+  const selected = findAllByClass(app, "sh-select")
+    .find((node) => node["aria-label"]?.startsWith("Choice for prompt"));
+  assert.equal(selected.value, "c2");
 });
 
 test("initialize renders the could-not-load state when the fetch rejects", async () => {
