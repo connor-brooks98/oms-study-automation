@@ -86,16 +86,17 @@ def test_gemini_provider_sends_generate_content_request_and_parses_usage():
 
 
 @respx.mock
-def test_gemini_structured_generation_sends_response_format():
+def test_gemini_structured_generation_sends_response_format() -> None:
+    model = "gemini-any-compatible-model"
     route = respx.post(
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-3.6-flash:generateContent"
+        f"{model}:generateContent"
     ).mock(
         return_value=httpx.Response(
             200,
             headers={"x-request-id": "gemini-json"},
             json={
-                "modelVersion": "gemini-3.6-flash",
+                "modelVersion": model,
                 "candidates": [
                     {
                         "content": {
@@ -110,22 +111,29 @@ def test_gemini_structured_generation_sends_response_format():
             },
         )
     )
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    original_schema = json.loads(json.dumps(schema))
 
     result = GeminiProvider().generate_text(
         "Return a grounded answer.",
         "Question",
         api_key="secret",
-        model="gemini-3.6-flash",
-        output_schema={
-            "type": "object",
-            "properties": {"answer": {"type": "string"}},
-            "required": ["answer"],
-        },
+        model=model,
+        output_schema=schema,
     )
 
-    payload = route.calls.last.request.content.decode()
-    assert '"responseFormat"' in payload
-    assert '"application/json"' in payload
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["generationConfig"]["responseFormat"] == {
+        "text": {
+            "mimeType": "APPLICATION_JSON",
+            "schema": schema,
+        }
+    }
+    assert schema == original_schema
     assert result.text == '{"answer":"iron"}'
 
 
