@@ -1170,6 +1170,12 @@ def test_grouped_matching_release_checks_reparse_safety_for_changed_paths_and_ru
     assert "while (-not (Test-Path -LiteralPath $cursor))" in safety
     assert "Assert-NonReparsePath -Path $cursor" in safety
     assert "Release path escapes project root" in safety
+    assert '$root = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\\")' in safety
+    assert '$RelativePath.Replace("/", "\\")' in safety
+    assert '$prefix = $root + "\\"' in safety
+    assert '.TrimEnd("\\\\")' not in safety
+    assert '.Replace("/", "\\\\")' not in safety
+    assert '$prefix = $root + "\\\\"' not in safety
 
     release_paths = release[
         release.index("function Get-ReleasePaths") : release.index("function Get-BackupNames")
@@ -1189,9 +1195,12 @@ def test_grouped_matching_release_checks_reparse_safety_for_changed_paths_and_ru
     installer = release[
         release.index("function Invoke-Installer") : release.index("function Wait-ForFinalState")
     ]
-    assert installer.index("Assert-InstallerMutationPaths $Configuration") < installer.index(
+    mutation_paths = installer.index("Assert-InstallerMutationPaths $Configuration")
+    assert mutation_paths < installer.index(
         "$installerProcess = Start-Process"
     )
+    assert "if (-not $WhatIf) { Assert-InstallerMutationPaths $Configuration }" not in installer
+    assert installer.index("$logRoot") > mutation_paths
 
     rollback = release[
         release.index("function Invoke-Rollback") : release.index("function Get-Binding")
@@ -1206,7 +1215,7 @@ def test_grouped_matching_delivery_plan_limits_automatic_rollback_to_deploy() ->
         ROOT / "docs" / "superpowers" / "plans" / "2026-09-02-grouped-matching-delivery.md"
     ).read_text(encoding="utf-8")
 
-    assert "Automatic rollback covers the\n`Deploy` invocation" in delivery_plan
+    assert "Automatic rollback covers\nfailures during the `Deploy` invocation" in delivery_plan
     assert "OMS_GROUPED_MATCHING_DEPLOY_COMPLETE" in delivery_plan
     assert "`Postflight` is separate read-only verification" in delivery_plan
     assert "stops without an automatic mutation" in delivery_plan

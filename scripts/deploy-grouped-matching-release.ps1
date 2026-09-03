@@ -245,9 +245,9 @@ function Assert-ReadyHealth {
 function Assert-ReleasePathSafety {
   param([string]$RelativePath)
   if ([string]::IsNullOrWhiteSpace($RelativePath) -or [IO.Path]::IsPathRooted($RelativePath) -or $RelativePath -match "(^|\\)\.\.?(\\|$)") { throw "Unsafe release path: $RelativePath" }
-  $root = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\\")
-  $candidate = [IO.Path]::GetFullPath((Join-Path $root $RelativePath.Replace("/", "\\")))
-  $prefix = $root + "\\"
+  $root = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\")
+  $candidate = [IO.Path]::GetFullPath((Join-Path $root $RelativePath.Replace("/", "\")))
+  $prefix = $root + "\"
   if (-not $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Release path escapes project root: $RelativePath" }
   $cursor = $candidate
   while (-not (Test-Path -LiteralPath $cursor)) {
@@ -489,7 +489,7 @@ function Assert-InstallerMutationPaths {
 
 function Invoke-Installer {
   param([object]$Configuration, [switch]$WhatIf)
-  if (-not $WhatIf) { Assert-InstallerMutationPaths $Configuration }
+  Assert-InstallerMutationPaths $Configuration
   $logRoot = Join-Path $Configuration.data_root "release-logs"
   if (-not (Test-Path -LiteralPath $logRoot)) { New-Item -ItemType Directory -Path $logRoot -Force | Out-Null }
   Assert-Directory $logRoot

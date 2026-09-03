@@ -107,8 +107,9 @@ read-only preflight, runs the installer preview, fast-forwards only to the
 bound `origin/main` commit, runs the installer once, and then requires a
 complete verified rollback backup and replacement runtime before it returns
 success. The driver’s EXIT trap removes only its nonce-bound remote leaf and
-proves its absence on both success and failure. Automatic rollback covers the
-`Deploy` invocation until it emits `OMS_GROUPED_MATCHING_DEPLOY_COMPLETE`.
+proves its absence on both success and failure. Automatic rollback covers
+failures during the `Deploy` invocation until it emits
+`OMS_GROUPED_MATCHING_DEPLOY_COMPLETE`.
 `Postflight` is separate read-only verification: if it fails after that Deploy
 success marker, the driver reports and stops without an automatic mutation
 because the successful deployment transaction has already closed.
