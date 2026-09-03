@@ -1052,6 +1052,14 @@ def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_lim
     assert "if (-not $rootPresent -and $present.Count -eq 0)" in release
     assert "Test-ProcessInstanceMatch" in release
     assert "$script:InstallerTerminationProven = $false" in release
+    disagreement = release.index("$handleKey -cne [string]$deepest.creation_key")
+    termination_false = release.index(
+        "$script:InstallerTerminationProven = $false", disagreement
+    )
+    disagreement_throw = release.index(
+        "Installer process changed while acquiring its stable handle.", disagreement
+    )
+    assert disagreement < termination_false < disagreement_throw
     withheld = release.index("rollback withheld because installer termination is unproven")
     rollback = release.index("Invoke-Rollback $configuration $binding $backupPath $failure")
     assert withheld < rollback

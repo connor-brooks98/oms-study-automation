@@ -452,7 +452,7 @@ function Stop-InstallerProcessTree {
     $handle = Get-Process -Id ([int]$deepest.process_id) -ErrorAction SilentlyContinue
     if (-not $handle) { continue }
     try { $null = $handle.Handle; $handleKey = $handle.StartTime.ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff", [System.Globalization.CultureInfo]::InvariantCulture) } catch { if ($handle.HasExited) { continue }; throw }
-    if ($handleKey -cne [string]$deepest.creation_key) { throw "Installer process changed while acquiring its stable handle." }
+    if ($handleKey -cne [string]$deepest.creation_key) { $script:InstallerTerminationProven = $false; throw "Installer process changed while acquiring its stable handle." }
     try { Stop-Process -InputObject $handle -Force -ErrorAction Stop } catch { if ($handle.HasExited) { continue }; throw }
     Start-Sleep -Milliseconds 250
   }
