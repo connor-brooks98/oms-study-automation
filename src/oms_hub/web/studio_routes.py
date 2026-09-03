@@ -276,14 +276,17 @@ def _image_service(request: Request) -> StudioQuizImageService:
 def _review_payload(review: StudioQuizReview) -> dict[str, object]:
     question_by_id = {question.id: question for question in review.quiz.questions}
     number_by_id = {
-        question.id: number for number, question in enumerate(review.quiz.questions, start=1)
+        question.id: number
+        for number, question in enumerate(review.quiz.questions, start=1)
     }
     return {
         "run_id": review.run.id,
         "label": review.run.label,
         "state": review.run.state.value,
         "resolved": review.resolved,
-        "preview_url": (f"/studio/runs/{review.run.id}/preview" if review.resolved else None),
+        "preview_url": (
+            f"/studio/runs/{review.run.id}/preview" if review.resolved else None
+        ),
         "requirements": [
             {
                 "image_key": requirement.image_key,
@@ -355,9 +358,7 @@ def _review_question_payload(
         "stem": question.draft.stem,
         "choices": list(question.draft.choices),
         "rationale": question.draft.rationale,
-        "provenance": question.draft.answer_provenance.value
-        if question.draft.answer_provenance
-        else None,  # noqa: E501
+        "provenance": question.draft.answer_provenance.value if question.draft.answer_provenance else None,  # noqa: E501
         "verification_required": question.draft.verification_required,
         "verified_at": question.draft.verified_at,
         "confidence": question.draft.extraction_confidence,
@@ -643,15 +644,17 @@ def upload_practice_question_image(
 
 
 @router.get("/runs/{run_id}/questions/{question_id}/image/preview")
-def preview_practice_question_image(request: Request, run_id: str, question_id: str) -> Response:
+def preview_practice_question_image(
+    request: Request, run_id: str, question_id: str
+) -> Response:
     _direct_import_review_run(request, run_id)
     try:
         question = _practice_review(request).question(run_id, question_id)
         if question.chosen_image is None:
             raise KeyError(question_id)
-        image = cast(StudioRepository, request.app.state.studio_repository).import_review_image(
-            run_id, question.chosen_image.key
-        )
+        image = cast(
+            StudioRepository, request.app.state.studio_repository
+        ).import_review_image(run_id, question.chosen_image.key)
     except ReviewArtifactUnavailable as error:
         return _review_artifact_unavailable_response(error)
     except KeyError as error:
@@ -750,7 +753,9 @@ def _set_override(
         require_form_csrf(request, None)
         _direct_import_review_run(request, run_id)
         try:
-            _practice_review(request).set_image_not_needed(run_id, question_id, enabled)
+            _practice_review(request).set_image_not_needed(
+                run_id, question_id, enabled
+            )
         except ReviewArtifactUnavailable as error:
             return _review_artifact_unavailable_response(error)
         except KeyError as error:
@@ -847,7 +852,9 @@ def _preview_image_urls(
 ) -> dict[str, tuple[str, str, int | None, int | None]]:
     active_keys = {
         requirement.key
-        for requirement in image_requirements(_replace_overridden_image_refs(review))
+        for requirement in image_requirements(
+            _replace_overridden_image_refs(review)
+        )
     }
     return {
         requirement.image_key: (
@@ -983,7 +990,11 @@ def preview_quiz_media(
     review = _resolved_review(request, run_id)
     urls = _preview_image_urls(review)
     requirement = next(
-        (item for item in review.requirements if item.image_key == image_key and image_key in urls),
+        (
+            item
+            for item in review.requirements
+            if item.image_key == image_key and image_key in urls
+        ),
         None,
     )
     if requirement is None or requirement.image is None:
@@ -1048,7 +1059,11 @@ def preview_quiz_answer(
                 ),
                 headers={"Cache-Control": "no-store"},
             )
-        feedback = grade_answer(quiz, submission.question_id, submission.choice_id)
+        feedback = grade_answer(
+            quiz,
+            submission.question_id,
+            submission.choice_id,
+        )
     except KeyError as error:
         raise HTTPException(404, "quiz question was not found") from error
     except ValueError as error:

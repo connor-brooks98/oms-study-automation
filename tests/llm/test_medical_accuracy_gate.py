@@ -200,9 +200,9 @@ def test_validate_blocks_publication_when_reviewer_disapproves(tmp_path):
         ProviderName.GEMINI,
         "gemini-review-model",
     )
-    providers[
-        ProviderName.GEMINI
-    ].response_text = '{"approved": false, "issues": ["stem contradicts the rationale"]}'
+    providers[ProviderName.GEMINI].response_text = (
+        '{"approved": false, "issues": ["stem contradicts the rationale"]}'
+    )
 
     with pytest.raises(AccuracyGateError) as raised:
         gate.validate(_quiz("q1"))

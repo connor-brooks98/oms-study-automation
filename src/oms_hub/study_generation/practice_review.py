@@ -195,11 +195,17 @@ class PracticeReviewService:
         bindings: dict[tuple[str, str], _ImageCandidateBinding] = {}
         for reference in references:
             if documents is None:
-                artifact = self.repository.run_artifact(run_id, f"parse:{reference.source_id}")
-                document = _document_from_json(artifact.payload_json) if artifact else None
+                artifact = self.repository.run_artifact(
+                    run_id, f"parse:{reference.source_id}"
+                )
+                document = (
+                    _document_from_json(artifact.payload_json) if artifact else None
+                )
             else:
                 if reference.source_id not in documents:
-                    artifact = self.repository.run_artifact(run_id, f"parse:{reference.source_id}")
+                    artifact = self.repository.run_artifact(
+                        run_id, f"parse:{reference.source_id}"
+                    )
                     documents[reference.source_id] = (
                         _document_from_json(artifact.payload_json) if artifact else None
                     )
@@ -228,12 +234,9 @@ class PracticeReviewService:
                 if not (exact or explicit_citation or adjacent):
                     continue
                 score = 3 if exact else 2 if explicit_citation else 1
-                candidate_id = (
-                    "candidate-"
-                    + hashlib.sha256(
-                        f"{question.draft.question_id}:{reference.source_id}:{asset.key}".encode()
-                    ).hexdigest()[:32]
-                )
+                candidate_id = "candidate-" + hashlib.sha256(
+                    f"{question.draft.question_id}:{reference.source_id}:{asset.key}".encode()
+                ).hexdigest()[:32]
                 candidate = ImageCandidate(
                     candidate_id,
                     question.draft.question_id,
@@ -314,7 +317,9 @@ class PracticeReviewService:
         )
         return updated
 
-    def set_image_not_needed(self, run_id: str, question_id: str, enabled: bool) -> ReviewQuestion:
+    def set_image_not_needed(
+        self, run_id: str, question_id: str, enabled: bool
+    ) -> ReviewQuestion:
         current = self.question(run_id, question_id)
         if current.draft.image_ref is None:
             raise ValueError("question does not have an image requirement")
@@ -344,7 +349,9 @@ class PracticeReviewService:
             raise ValueError("imported image review is not configured")
         current = self.question(run_id, question_id)
         image_key = _image_key(question_id)
-        self.image_service.upload_import_review_image(run_id, image_key, original_filename, payload)
+        self.image_service.upload_import_review_image(
+            run_id, image_key, original_filename, payload
+        )
         chosen = QuizImageRef(
             image_key,
             "Reviewer upload",
@@ -497,7 +504,9 @@ class PracticeReviewService:
         stem = draft.stem if "stem" not in values else _required_text(values["stem"], "stem")
         choices = draft.choices if "choices" not in values else _choices(values["choices"])
         correct_index = (
-            draft.correct_index if "correct_index" not in values else values["correct_index"]
+            draft.correct_index
+            if "correct_index" not in values
+            else values["correct_index"]
         )
         rationale = (
             draft.rationale
@@ -534,7 +543,8 @@ class PracticeReviewService:
             tuple(
                 diagnostic
                 for diagnostic in draft.diagnostics
-                if diagnostic.code not in _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES
+                if diagnostic.code
+                not in _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES
             )
             if manually_resolved_answer
             else draft.diagnostics
@@ -545,17 +555,9 @@ class PracticeReviewService:
             choices=choices,
             correct_index=cast(int | None, correct_index),
             rationale=rationale,
-            answer_provenance=(
-                AnswerProvenance.MANUALLY_CORRECTED
-                if answer_changed or manually_resolved_answer
-                else draft.answer_provenance
-            ),  # noqa: E501
+            answer_provenance=(AnswerProvenance.MANUALLY_CORRECTED if answer_changed or manually_resolved_answer else draft.answer_provenance),  # noqa: E501
             diagnostics=diagnostics,
-            verification_required=(
-                requires_verification
-                if answer_changed or manually_resolved_answer
-                else draft.verification_required
-            ),  # noqa: E501
+            verification_required=(requires_verification if answer_changed or manually_resolved_answer else draft.verification_required),  # noqa: E501
             verified_at=(None if answer_changed or manually_resolved_answer else draft.verified_at),  # noqa: E501
         )
         updated = ReviewQuestion(
@@ -572,8 +574,7 @@ class PracticeReviewService:
             current.image_not_needed,
         )
         questions = tuple(
-            updated if item.draft.question_id == question_id else item
-            for item in self.review(run_id)  # noqa: E501
+            updated if item.draft.question_id == question_id else item for item in self.review(run_id)  # noqa: E501
         )
         self._save(run_id, questions)
         return updated
@@ -592,16 +593,11 @@ class PracticeReviewService:
             raise ValueError("answer does not require generated-answer verification")
         updated = replace(
             current,
-            draft=replace(
-                draft, verification_required=True, verified_at=datetime.now(UTC).isoformat()
-            ),  # noqa: E501
+            draft=replace(draft, verification_required=True, verified_at=datetime.now(UTC).isoformat()),  # noqa: E501
         )
         self._save(
             run_id,
-            tuple(
-                updated if item.draft.question_id == question_id else item
-                for item in self.review(run_id)
-            ),  # noqa: E501
+            tuple(updated if item.draft.question_id == question_id else item for item in self.review(run_id)),  # noqa: E501
         )
         return updated
 
@@ -658,7 +654,9 @@ class PracticeReviewService:
     def issues(self, run_id: str) -> tuple[ReviewIssue, ...]:
         return _issues(self.review(run_id))
 
-    def to_native_quiz_in_session(self, session: Session, run_id: str, *, title: str) -> NativeQuiz:
+    def to_native_quiz_in_session(
+        self, session: Session, run_id: str, *, title: str
+    ) -> NativeQuiz:
         artifact = session.scalar(
             select(StudioRunArtifactModel).where(
                 StudioRunArtifactModel.run_id == run_id,
@@ -808,11 +806,9 @@ def _issues(questions: tuple[ReviewQuestion, ...]) -> tuple[ReviewIssue, ...]:
                     DiagnosticSeverity.BLOCKER,
                 )
             )
-        if (
-            len(draft.choices) < 2
-            or len(draft.choices) > 8
-            or len({choice.casefold() for choice in draft.choices}) != len(draft.choices)
-        ):
+        if len(draft.choices) < 2 or len(draft.choices) > 8 or len(
+            {choice.casefold() for choice in draft.choices}
+        ) != len(draft.choices):
             issues.append(
                 ReviewIssue(
                     draft.question_id,

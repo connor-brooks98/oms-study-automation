@@ -351,7 +351,9 @@ def _legacy_extraction_result() -> ExtractionResult:
                 original_identifier="1",
                 stem="Which term is correct?",
                 choices=("Term one", "Term two"),
-                source_segments=(SegmentCitation(source_id="source-1", segment_key="question-1"),),
+                source_segments=(
+                    SegmentCitation(source_id="source-1", segment_key="question-1"),
+                ),
                 confidence=0.9,
             ),
         ),
@@ -360,7 +362,9 @@ def _legacy_extraction_result() -> ExtractionResult:
                 original_identifier="1",
                 correct_index=1,
                 rationale="The source key selects Term two.",
-                source_segments=(SegmentCitation(source_id="source-1", segment_key="answer-1"),),
+                source_segments=(
+                    SegmentCitation(source_id="source-1", segment_key="answer-1"),
+                ),
             ),
         ),
         question_source_refs=((question_ref,),),
@@ -377,7 +381,9 @@ def test_awaiting_review_can_read_a_legacy_extract_artifact_without_answer_refs(
     service.store("run-1", (_draft("q1", generated=False),))
     legacy = json.loads(_extraction_json(_legacy_extraction_result()))
     legacy.pop("answer_source_refs", None)
-    service.repository.save_run_artifact("run-1", "extract", "a" * 64, json.dumps(legacy))
+    service.repository.save_run_artifact(
+        "run-1", "extract", "a" * 64, json.dumps(legacy)
+    )
 
     assert service.candidates_by_question("run-1", service.review("run-1")) == {"q1": ()}
 
@@ -430,7 +436,9 @@ def _image_review_service(tmp_path: Path) -> tuple[PracticeReviewService, Path]:
     draft = _draft("q1", generated=False)
     service.store(
         "run-1",
-        (replace(draft, image_ref=QuizImageRef("manual-image", "source", "page 1", "image")),),
+        (
+            replace(draft, image_ref=QuizImageRef("manual-image", "source", "page 1", "image")),
+        ),
     )
     return service, path
 
@@ -474,7 +482,9 @@ def test_overridable_run_diagnostic_is_stored_once_and_acknowledgement_persists(
     with pytest.raises(ValueError, match="Question count needs review"):
         service.to_native_quiz("run-1")
 
-    service.acknowledge_run_diagnostic("run-1", "incomplete-sequential-question-extraction")
+    service.acknowledge_run_diagnostic(
+        "run-1", "incomplete-sequential-question-extraction"
+    )
     reloaded = PracticeReviewService(service.repository)
 
     assert reloaded.run_diagnostics("run-1")[0]["acknowledged"] is True
@@ -641,7 +651,9 @@ def test_resaving_legacy_manual_answer_clears_stale_conflict_blocker(
     )
     service.store("run-1", (legacy,))
 
-    assert service.blockers("run-1") == ("question-18-18: conflicting supplied answers",)
+    assert service.blockers("run-1") == (
+        "question-18-18: conflicting supplied answers",
+    )
     updated = service.update_question(
         "run-1",
         "question-18-18",
@@ -679,7 +691,9 @@ def test_resolving_import_diagnostic_does_not_bypass_ai_verification(
 
     assert updated.draft.diagnostics == ()
     assert updated.verification_required is True
-    assert service.blockers("run-1") == ("q1: AI-generated answer requires verification",)
+    assert service.blockers("run-1") == (
+        "q1: AI-generated answer requires verification",
+    )
 
 
 def test_structured_issues_keep_warnings_non_blocking_and_deduplicate(tmp_path: Path) -> None:

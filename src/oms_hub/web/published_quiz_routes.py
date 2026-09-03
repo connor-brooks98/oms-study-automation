@@ -108,10 +108,14 @@ def _library_scope(request: Request, token: str) -> dict[str, object]:
         raise KeyError(token)
     catalog = request.app.state.catalog_repository
     lecture = (
-        catalog.get_lecture(published.lecture_id) if published.lecture_id is not None else None
+        catalog.get_lecture(published.lecture_id)
+        if published.lecture_id is not None
+        else None
     )
     subject = lecture.subject if lecture is not None else published.destination_subject
-    exam_number = lecture.exam_number if lecture is not None else published.destination_exam_number
+    exam_number = (
+        lecture.exam_number if lecture is not None else published.destination_exam_number
+    )
     kinds = (
         frozenset({QuizContentKind.PRACTICE_QUESTIONS})
         if published.content_kind == QuizContentKind.PRACTICE_QUESTIONS.value
@@ -136,7 +140,9 @@ def _library_counts(request: Request, scope: dict[str, object]) -> dict[str, int
     course_count = exam_count = 0
     for candidate in repository.published_quizzes(kinds):
         candidate_lecture = (
-            catalog.get_lecture(candidate.lecture_id) if candidate.lecture_id is not None else None
+            catalog.get_lecture(candidate.lecture_id)
+            if candidate.lecture_id is not None
+            else None
         )
         candidate_subject = (
             candidate_lecture.subject
@@ -238,7 +244,9 @@ def replace_quiz_payload(
 ) -> JSONResponse:
     require_form_csrf(request, None)
     try:
-        published = _repository(request).replace_published_quiz_payload(token, payload.payload_json)
+        published = _repository(request).replace_published_quiz_payload(
+            token, payload.payload_json
+        )
     except KeyError as error:
         raise HTTPException(404, "published quiz was not found") from error
     except ValueError as error:

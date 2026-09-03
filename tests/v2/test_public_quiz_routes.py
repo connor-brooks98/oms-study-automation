@@ -37,7 +37,9 @@ def _quiz(title: str = "Lecture 1 Practice Quiz"):
                             "Stem-cell transformation",
                         ],
                         "correct_index": 0,
-                        "rationale": ("Parvovirus B19 infects erythroid precursor cells."),
+                        "rationale": (
+                            "Parvovirus B19 infects erythroid precursor cells."
+                        ),
                     }
                 ],
             }
@@ -325,7 +327,9 @@ def test_edit_questions_stages_current_quiz_for_private_review(tmp_path):
             headers={"X-CSRF-Token": csrf},
         )
         review_page = client.get(first.json()["review_url"])
-        review_data = client.get(f"/studio/runs/{first.json()['run_id']}/review/data")
+        review_data = client.get(
+            f"/studio/runs/{first.json()['run_id']}/review/data"
+        )
         public_content = client.get(f"/public/quizzes/{published.token}/content")
 
     assert first.status_code == second.status_code == 200
@@ -514,27 +518,15 @@ def test_question_payload_edit_keeps_an_authoritatively_renamed_title(tmp_path):
         csrf = client.cookies.get("study_hub_csrf")
         renamed = client.patch(
             f"/api/published-quizzes/{published.token}/title",
-            json={"title": "Renamed quiz"},
-            headers={"X-CSRF-Token": csrf},
+            json={"title": "Renamed quiz"}, headers={"X-CSRF-Token": csrf},
         )
         updated = client.patch(
             f"/api/published-quizzes/{published.token}/payload",
-            json={
-                "payload_json": json.dumps(
-                    {
-                        "title": published.title,
-                        "questions": [
-                            {
-                                "stem": "Updated?",
-                                "choices": ["A", "B"],
-                                "correct_index": 0,
-                                "rationale": "A.",
-                            }
-                        ],
-                    }
-                )
-            },
-            headers={"X-CSRF-Token": csrf},
+            json={"payload_json": json.dumps({
+                "title": published.title,
+                "questions": [{"stem": "Updated?", "choices": ["A", "B"],
+                               "correct_index": 0, "rationale": "A."}],
+            })}, headers={"X-CSRF-Token": csrf},
         )
         content = client.get(f"/public/quizzes/{published.token}/content")
     assert renamed.status_code == updated.status_code == 200
@@ -557,7 +549,7 @@ def test_local_owner_library_keeps_private_navigation_without_management_control
     assert 'href="/">Home</a>' in managed.text
     assert 'href="/lectures">Lectures</a>' in managed.text
     assert "Study Hub Quizzes" not in managed.text
-    assert "data-reset-quiz" in public.text
+    assert 'data-reset-quiz' in public.text
     assert f'title="Restart {published.title}"' in public.text
     for private_hook in (
         "data-quiz-drag-handle",
@@ -717,7 +709,9 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
     assert 'class="quiz-library-button sh-btn sh-btn--secondary"' in page.text
     assert "/public/quizzes/assets/player.css?v=" in page.text
     assert "/public/quizzes/assets/player.js?v=" in page.text
-    assert page.headers["content-security-policy"].startswith("default-src 'self'")
+    assert page.headers["content-security-policy"].startswith(
+        "default-src 'self'"
+    )
     assert content.status_code == 200
     assert content.json()["version"] == 1
     assert content.json()["course"] == "Neuro"

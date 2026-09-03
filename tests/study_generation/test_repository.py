@@ -200,22 +200,40 @@ def test_notebook_scope_lease_serializes_workers_and_recovers_after_expiry(tmp_p
     competitor = GenerationRepository(repository.database)
     now = datetime.now(UTC)
 
-    assert repository.acquire_notebook_scope("Neuro", 1, "generation", "job-1", now=now)
-    assert not competitor.acquire_notebook_scope("neuro", 1, "studio", "operation-1", now=now)
-    assert repository.acquire_notebook_scope("NEURO", 1, "generation", "job-1", now=now)
+    assert repository.acquire_notebook_scope(
+        "Neuro", 1, "generation", "job-1", now=now
+    )
+    assert not competitor.acquire_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=now
+    )
+    assert repository.acquire_notebook_scope(
+        "NEURO", 1, "generation", "job-1", now=now
+    )
 
     renewed_at = now + timedelta(minutes=20)
-    assert repository.renew_notebook_scope("neuro", 1, "generation", "job-1", now=renewed_at)
+    assert repository.renew_notebook_scope(
+        "neuro", 1, "generation", "job-1", now=renewed_at
+    )
     assert not competitor.acquire_notebook_scope(
         "neuro", 1, "studio", "operation-1", now=now + timedelta(minutes=31)
     )
-    assert not competitor.renew_notebook_scope("neuro", 1, "studio", "operation-1", now=renewed_at)
+    assert not competitor.renew_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=renewed_at
+    )
 
     after_expiry = renewed_at + timedelta(minutes=31)
-    assert not repository.renew_notebook_scope("neuro", 1, "generation", "job-1", now=after_expiry)
-    assert competitor.acquire_notebook_scope("neuro", 1, "studio", "operation-1", now=after_expiry)
-    assert not repository.release_notebook_scope("neuro", 1, "generation", "job-1")
-    assert competitor.release_notebook_scope("neuro", 1, "studio", "operation-1")
+    assert not repository.renew_notebook_scope(
+        "neuro", 1, "generation", "job-1", now=after_expiry
+    )
+    assert competitor.acquire_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=after_expiry
+    )
+    assert not repository.release_notebook_scope(
+        "neuro", 1, "generation", "job-1"
+    )
+    assert competitor.release_notebook_scope(
+        "neuro", 1, "studio", "operation-1"
+    )
 
 
 def test_claim_and_recovery_preserve_recorded_stage(tmp_path):
@@ -413,9 +431,9 @@ def test_replacement_studio_publication_uses_the_successor_content_kind(tmp_path
         assert replacement.token == original.token
         assert replacement.version == original.version + 1
         assert replacement.content_kind == QuizContentKind.PRACTICE_QUESTIONS
-        assert repository.published_quizzes(frozenset({QuizContentKind.PRACTICE_QUESTIONS})) == (
-            replacement,
-        )
+        assert repository.published_quizzes(
+            frozenset({QuizContentKind.PRACTICE_QUESTIONS})
+        ) == (replacement,)
         with repository.database.session() as session:
             predecessor = session.get(StudioRunModel, "exam-review-run")
             successor = session.get(StudioRunModel, "practice-successor-run")
@@ -426,25 +444,17 @@ def test_replacement_studio_publication_uses_the_successor_content_kind(tmp_path
         repository.database.engine.dispose()
 
 
-def test_atomic_studio_publication_rolls_back_if_completion_cannot_finish(tmp_path, monkeypatch):
+def test_atomic_studio_publication_rolls_back_if_completion_cannot_finish(
+    tmp_path, monkeypatch
+):
     repository, _ = prepared_repository(tmp_path)
     with repository.database.session() as session:
-        session.add(
-            StudioRunModel(
-                id="atomic-run",
-                subject="Neuro",
-                subject_key="neuro",
-                exam_number=1,
-                destination_subject="Neuro",
-                destination_subject_key="neuro",
-                destination_exam_number=1,
-                label="Atomic",
-                label_key="atomic",
-                prompt="",
-                state="running",
-                stage="publish",
-            )
-        )
+        session.add(StudioRunModel(
+            id="atomic-run", subject="Neuro", subject_key="neuro", exam_number=1,
+            destination_subject="Neuro", destination_subject_key="neuro",
+            destination_exam_number=1, label="Atomic", label_key="atomic", prompt="",
+            state="running", stage="publish",
+        ))
     original = repository._publish_studio_quiz_in_session
 
     def publish_then_crash(session, run_id, quiz):
@@ -466,24 +476,13 @@ def test_atomic_studio_publication_rolls_back_if_completion_cannot_finish(tmp_pa
 def test_atomic_studio_publication_adopts_historical_split_state(tmp_path):
     repository, _ = prepared_repository(tmp_path)
     with repository.database.session() as session:
-        session.add(
-            StudioRunModel(
-                id="split-run",
-                subject="Neuro",
-                subject_key="neuro",
-                exam_number=1,
-                destination_subject="Neuro",
-                destination_subject_key="neuro",
-                destination_exam_number=1,
-                label="Split",
-                label_key="split",
-                prompt="",
-                state="running",
-                stage="publish",
-                notebook_id="original-notebook",
-                raw_response="original durable response",
-            )
-        )
+        session.add(StudioRunModel(
+            id="split-run", subject="Neuro", subject_key="neuro", exam_number=1,
+            destination_subject="Neuro", destination_subject_key="neuro",
+            destination_exam_number=1, label="Split", label_key="split", prompt="",
+            state="running", stage="publish", notebook_id="original-notebook",
+            raw_response="original durable response",
+        ))
     try:
         original = repository.publish_studio_quiz("split-run", _quiz("Split"))
         replayed = repository.publish_and_complete_studio_run(
@@ -504,39 +503,37 @@ def test_atomic_studio_publication_adopts_historical_split_state(tmp_path):
 def test_claimed_run_reserves_scope_against_reviewed_notebook_publish(tmp_path):
     repository, _ = prepared_repository(tmp_path)
     with repository.database.session() as session:
-        session.add_all(
-            [
-                StudioRunModel(
-                    id="claimed-chat-run",
-                    subject="Neuro",
-                    subject_key="neuro",
-                    exam_number=1,
-                    destination_subject="Neuro",
-                    destination_subject_key="neuro",
-                    destination_exam_number=1,
-                    label="Reserved",
-                    label_key="reserved",
-                    prompt="Remote work",
-                    state="running",
-                    stage="chat",
-                ),
-                StudioRunModel(
-                    id="review-ready-run",
-                    subject="Neuro",
-                    subject_key="neuro",
-                    exam_number=1,
-                    destination_subject="Neuro",
-                    destination_subject_key="neuro",
-                    destination_exam_number=1,
-                    label="Reserved",
-                    label_key="reserved",
-                    prompt="Local review",
-                    state="awaiting_images",
-                    stage="images",
-                    draft_payload_json=serialize_native_quiz(_quiz("Reserved")),
-                ),
-            ]
-        )
+        session.add_all([
+            StudioRunModel(
+                id="claimed-chat-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Reserved",
+                label_key="reserved",
+                prompt="Remote work",
+                state="running",
+                stage="chat",
+            ),
+            StudioRunModel(
+                id="review-ready-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Reserved",
+                label_key="reserved",
+                prompt="Local review",
+                state="awaiting_images",
+                stage="images",
+                draft_payload_json=serialize_native_quiz(_quiz("Reserved")),
+            ),
+        ])
 
     try:
         with pytest.raises(
@@ -595,11 +592,15 @@ def test_published_quiz_management_preserves_content_and_orders_canonical_scope(
         assert moved.display_order == 1
         assert tuple(
             row.token
-            for row in repository.published_quizzes(frozenset({QuizContentKind.LECTURE_QUIZ}))
+            for row in repository.published_quizzes(
+                frozenset({QuizContentKind.LECTURE_QUIZ})
+            )
         ) == (second.token,)
         assert tuple(
             row.token
-            for row in repository.published_quizzes(frozenset({QuizContentKind.PRACTICE_QUESTIONS}))
+            for row in repository.published_quizzes(
+                frozenset({QuizContentKind.PRACTICE_QUESTIONS})
+            )
         ) == (moved.token,)
         with repository.database.session() as session:
             model = session.get(PublishedQuizModel, first.token)
@@ -612,8 +613,12 @@ def test_published_quiz_management_preserves_content_and_orders_canonical_scope(
 def test_moving_middle_quiz_compacts_the_source_section_order(tmp_path):
     repository, first_lecture_id = prepared_repository(tmp_path)
     catalog = CatalogRepository(repository.database)
-    second_lecture_id = catalog.upsert_lecture(LectureInput("Neuro", 1, 2, "Stroke", "", None))
-    third_lecture_id = catalog.upsert_lecture(LectureInput("Neuro", 1, 3, "Tumors", "", None))
+    second_lecture_id = catalog.upsert_lecture(
+        LectureInput("Neuro", 1, 2, "Stroke", "", None)
+    )
+    third_lecture_id = catalog.upsert_lecture(
+        LectureInput("Neuro", 1, 3, "Tumors", "", None)
+    )
     try:
         first = repository.publish_quiz(
             first_lecture_id,
@@ -638,7 +643,8 @@ def test_moving_middle_quiz_compacts_the_source_section_order(tmp_path):
 
         with repository.database.session() as session:
             remaining = [
-                session.get(PublishedQuizModel, token) for token in (first.token, third.token)
+                session.get(PublishedQuizModel, token)
+                for token in (first.token, third.token)
             ]
             assert [row.display_order for row in remaining if row is not None] == [1, 2]
     finally:
@@ -879,14 +885,11 @@ def test_binding_new_revision_supersedes_prior_ready_source(tmp_path):
     )
 
     assert first.remote_source_id == "remote-old"
-    assert (
-        repository.source_binding(
-            notebook.id,
-            lecture_id,
-            SourceKind.LECTURE_PDF,
-        )
-        == second
-    )
+    assert repository.source_binding(
+        notebook.id,
+        lecture_id,
+        SourceKind.LECTURE_PDF,
+    ) == second
 
 
 def test_notebook_mapping_is_upserted_by_course_and_exam(tmp_path):

@@ -39,7 +39,9 @@ def _client(tmp_path) -> TestClient:
             database_url=f"sqlite:///{tmp_path / 'hub.db'}",
         )
     )
-    app.state.catalog_repository.upsert_lecture(LectureInput("Neuro", 1, 1, "Seizures", "", None))
+    app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 1, "Seizures", "", None)
+    )
     client = TestClient(app)
     client.get("/studio")
     return client
@@ -243,24 +245,13 @@ def test_missing_review_artifacts_use_one_recovery_envelope(tmp_path) -> None:
     client = _client(tmp_path)
     run_id = "missing-review"
     with client.app.state.database.session() as session:
-        session.add(
-            StudioRunModel(
-                id=run_id,
-                subject="Neuro",
-                subject_key="neuro",
-                exam_number=1,
-                destination_subject="Neuro",
-                destination_subject_key="neuro",
-                destination_exam_number=1,
-                label="Missing",
-                label_key="missing",
-                prompt="",
-                workflow_kind="direct_import",
-                content_kind="practice_questions",
-                state="awaiting_review",
-                stage="review",
-            )
-        )
+        session.add(StudioRunModel(
+            id=run_id, subject="Neuro", subject_key="neuro", exam_number=1,
+            destination_subject="Neuro", destination_subject_key="neuro",
+            destination_exam_number=1, label="Missing", label_key="missing", prompt="",
+            workflow_kind="direct_import", content_kind="practice_questions",
+            state="awaiting_review", stage="review",
+        ))
     responses = [
         client.get(f"/studio/runs/{run_id}/review"),
         client.get(f"/studio/runs/{run_id}/review/data"),
@@ -278,7 +269,9 @@ def test_missing_review_artifacts_use_one_recovery_envelope(tmp_path) -> None:
             json={"image_candidate_id": None},
             headers=_csrf_headers(client),
         ),
-        client.get(f"/studio/runs/{run_id}/questions/question-1/candidates/missing/preview"),
+        client.get(
+            f"/studio/runs/{run_id}/questions/question-1/candidates/missing/preview"
+        ),
         client.get(f"/studio/runs/{run_id}/preview"),
         client.get(f"/studio/runs/{run_id}/preview/content"),
         client.get(f"/studio/runs/{run_id}/preview/media/missing"),
@@ -295,7 +288,8 @@ def test_missing_review_artifacts_use_one_recovery_envelope(tmp_path) -> None:
         }
     }
     assert all(
-        response.status_code == 409 and response.json() == expected for response in responses
+        response.status_code == 409 and response.json() == expected
+        for response in responses
     )
 
 
@@ -330,12 +324,8 @@ def test_sources_expose_safe_persisted_import_defaults(tmp_path) -> None:
     created = client.post(
         "/studio/import/sources/text",
         data={
-            "subject": "Neuro",
-            "exam_number": "1",
-            "title": "Reference",
-            "text": "facts",
-            "role": "supporting_reference",
-            "attach_to_notebook": "true",
+            "subject": "Neuro", "exam_number": "1", "title": "Reference", "text": "facts",
+            "role": "supporting_reference", "attach_to_notebook": "true",
         },
         headers=_csrf_headers(client),
     )
@@ -344,17 +334,15 @@ def test_sources_expose_safe_persisted_import_defaults(tmp_path) -> None:
     assert sources.status_code == 200
     record = sources.json()["sources"][0]
     assert record["purpose"] == "local_import"
-    assert record["import_defaults"] == {"role": "supporting_reference", "attach_to_notebook": True}
+    assert record["import_defaults"] == {
+        "role": "supporting_reference", "attach_to_notebook": True
+    }
 
     invalid = client.post(
         "/studio/import/sources/text",
         data={
-            "subject": "Neuro",
-            "exam_number": "1",
-            "title": "Questions",
-            "text": "facts",
-            "role": "questions",
-            "attach_to_notebook": "true",
+            "subject": "Neuro", "exam_number": "1", "title": "Questions", "text": "facts",
+            "role": "questions", "attach_to_notebook": "true",
         },
         headers=_csrf_headers(client),
     )
@@ -370,12 +358,16 @@ def test_all_import_source_forms_persist_checked_and_unchecked_defaults_across_r
         def fetch(self, source_id: str, title: str, url: str) -> SourceSnapshot:
             path = tmp_path / f"{source_id}.html"
             path.write_text("<h1>Reference</h1>", encoding="utf-8")
-            return SourceSnapshot(source_id, title, path, "text/html", sha256_file(path), url)
+            return SourceSnapshot(
+                source_id, title, path, "text/html", sha256_file(path), url
+            )
 
     client.app.state.studio_service.url_snapshot_service = Snapshotter()
     page = client.get("/studio")
     assert page.text.count('name="role" data-import-role') == 3
-    assert page.text.count('name="attach_to_notebook" value="true" data-import-notebook') == 3
+    assert page.text.count(
+        'name="attach_to_notebook" value="true" data-import-notebook'
+    ) == 3
 
     submissions = tuple(
         (
@@ -426,7 +418,9 @@ def test_all_import_source_forms_persist_checked_and_unchecked_defaults_across_r
             "attach_to_notebook": attach_to_notebook,
         }
 
-    refreshed = client.get("/studio/sources", params={"subject_key": "neuro", "exam_number": 1})
+    refreshed = client.get(
+        "/studio/sources", params={"subject_key": "neuro", "exam_number": 1}
+    )
     assert refreshed.status_code == 200
     records = {record["title"]: record for record in refreshed.json()["sources"]}
     assert set(records) == set(expected_defaults)
@@ -675,7 +669,9 @@ def test_candidate_preview_is_question_scoped_and_selection_is_csrf_protected(tm
     candidate = data["questions"][0]["candidates"][0]
 
     preview = client.get(candidate["preview_url"])
-    cross_question = client.get(candidate["preview_url"].replace("question-1", "question-2"))
+    cross_question = client.get(
+        candidate["preview_url"].replace("question-1", "question-2")
+    )
     forbidden = client.post(
         f"/studio/runs/{run_id}/questions/question-1/image-selection",
         json={"image_candidate_id": candidate["candidate_id"]},
@@ -716,7 +712,9 @@ def test_custom_image_can_be_uploaded_to_any_imported_question(tmp_path) -> None
     Image.new("RGB", (4, 3), "purple").save(payload, format="PNG")
     files = {"file": ("rash.png", payload.getvalue(), "image/png")}
 
-    forbidden = client.post(f"/studio/runs/{run_id}/questions/question-1/image", files=files)
+    forbidden = client.post(
+        f"/studio/runs/{run_id}/questions/question-1/image", files=files
+    )
     uploaded = client.post(
         f"/studio/runs/{run_id}/questions/question-1/image",
         files=files,
@@ -770,9 +768,9 @@ def test_imported_private_question_ids_are_replaced_for_preview_and_public_gradi
     assert "/public/quizzes/assets/" not in preview_page.text
     version = _player_asset_version()
     for asset in ("reset.css", "tokens.css", "study-hub.css", "public_quiz.css"):
-        assert f"/static/{asset}?v={version}" in preview_page.text
+        assert f'/static/{asset}?v={version}' in preview_page.text
         assert client.get(f"/static/{asset}").status_code == 200
-    assert f"/static/public_quiz.js?v={version}" in preview_page.text
+    assert f'/static/public_quiz.js?v={version}' in preview_page.text
     assert client.get("/static/public_quiz.js").status_code == 200
     assert preview_content.status_code == 200
     assert preview_content.json()["questions"][0]["id"] == "q1"

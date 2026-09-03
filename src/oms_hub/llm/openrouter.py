@@ -246,7 +246,9 @@ class OpenRouterProvider:
         cleaned = "".join(text_parts).strip()
         if not cleaned:
             finish_reasons = {
-                choice.get("finish_reason") for choice in choices if isinstance(choice, dict)
+                choice.get("finish_reason")
+                for choice in choices
+                if isinstance(choice, dict)
             }
             if "length" in finish_reasons:
                 raise LLMRequestError(
@@ -298,7 +300,8 @@ class OpenRouterProvider:
                     (
                         choice.get("error")
                         for choice in choices
-                        if isinstance(choice, dict) and isinstance(choice.get("error"), dict)
+                        if isinstance(choice, dict)
+                        and isinstance(choice.get("error"), dict)
                     ),
                     None,
                 )
@@ -346,8 +349,8 @@ _ACCURACY_REVIEW_INSTRUCTION = (
     "You are a cautious medical education fact checker. "
     "Assess only factual medical accuracy and whether the "
     "answer and rationale support one unambiguous best choice. "
-    'Return JSON only: {"approved": true|false, '
-    '"issues": ["short issue"]}. Do not rewrite the question.'
+    "Return JSON only: {\"approved\": true|false, "
+    "\"issues\": [\"short issue\"]}. Do not rewrite the question."
 )
 
 _ACCURACY_REVIEW_OUTPUT_SCHEMA: dict[str, object] = {
@@ -402,14 +405,17 @@ class MedicalAccuracyGate:
         try:
             provider.test_connection(api_key, model)
         except LLMRequestError as error:
-            raise AccuracyGateError("Medical accuracy review connection test failed") from error
+            raise AccuracyGateError(
+                "Medical accuracy review connection test failed"
+            ) from error
 
     def _resolve(self) -> tuple[LLMProvider, str, str]:
         try:
             return self.service.for_task(LLMTask.ACCURACY_REVIEW)
         except LLMRequestError as error:
             raise AccuracyGateError(
-                "Medical accuracy review is enabled but its provider credential is not configured"
+                "Medical accuracy review is enabled but its provider "
+                "credential is not configured"
             ) from error
 
     def _assess(
@@ -436,7 +442,9 @@ class MedicalAccuracyGate:
             if not isinstance(approved, bool) or not isinstance(issues, list):
                 raise TypeError("invalid accuracy response")
             normalized_issues = tuple(
-                " ".join(str(issue).split())[:500] for issue in issues if str(issue).strip()
+                " ".join(str(issue).split())[:500]
+                for issue in issues
+                if str(issue).strip()
             )
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise AccuracyGateError(

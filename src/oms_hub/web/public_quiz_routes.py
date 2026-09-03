@@ -228,7 +228,9 @@ def _quiz_library(
             lecture.subject if lecture is not None else published.destination_subject_key
         )
         exam_number = (
-            lecture.exam_number if lecture is not None else published.destination_exam_number
+            lecture.exam_number
+            if lecture is not None
+            else published.destination_exam_number
         )
         outline = (
             repository.current_outline(published.lecture_id)
@@ -245,7 +247,9 @@ def _quiz_library(
                 "version": published.version,
                 "title": published.title,
                 "display_order": published.display_order,
-                "lecture_number": (lecture.lecture_number if lecture is not None else None),
+                "lecture_number": (
+                    lecture.lecture_number if lecture is not None else None
+                ),
                 "is_studio": lecture is None,
                 "primary_label": (
                     lecture_label(lecture.subject, lecture.lecture_number)
@@ -260,7 +264,9 @@ def _quiz_library(
                     else 0
                 ),
                 "outline_url": (
-                    f"/public/quizzes/{published.token}/outline" if outline is not None else None
+                    f"/public/quizzes/{published.token}/outline"
+                    if outline is not None
+                    else None
                 ),
             }
         )
@@ -322,7 +328,9 @@ def quiz_library_response(
         summary="Choose a course, exam, and quiz.",
         empty_title="No quizzes are published yet",
         empty_summary="Published lecture and exam-review quizzes will appear here automatically.",
-        library_path=("/studio/library/quizzes" if management_mode else "/public/quizzes"),
+        library_path=(
+            "/studio/library/quizzes" if management_mode else "/public/quizzes"
+        ),
         management_mode=management_mode,
     )
 
@@ -397,7 +405,9 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
                 else "/public/quizzes"
             ),
             "library_label": (
-                "Back to practice questions" if is_practice_questions else "Back to quizzes"
+                "Back to practice questions"
+                if is_practice_questions
+                else "Back to quizzes"
             ),
             "player_asset_version": _player_asset_version(),
         },
@@ -425,11 +435,21 @@ def quiz_content(request: Request, token: str) -> JSONResponse:
     content = {
         "token": published.token,
         "version": published.version,
-        "course": (lecture.subject if lecture is not None else published.destination_subject),
-        "exam_number": (
-            lecture.exam_number if lecture is not None else published.destination_exam_number
+        "course": (
+            lecture.subject
+            if lecture is not None
+            else published.destination_subject
         ),
-        "topic": (lecture.topic if lecture is not None else published.title),
+        "exam_number": (
+            lecture.exam_number
+            if lecture is not None
+            else published.destination_exam_number
+        ),
+        "topic": (
+            lecture.topic
+            if lecture is not None
+            else published.title
+        ),
         **public_quiz_content(published.quiz, image_urls),
     }
     if lecture is not None:
@@ -492,7 +512,9 @@ def answer_question(
                 headers={"Cache-Control": "no-store"},
             )
         feedback = grade_answer(
-            published.quiz, submission.question_id, submission.choice_id
+            published.quiz,
+            submission.question_id,
+            submission.choice_id,
         )
     except KeyError as error:
         raise HTTPException(404, "quiz question was not found") from error
