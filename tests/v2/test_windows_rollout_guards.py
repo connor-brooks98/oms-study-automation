@@ -1305,6 +1305,33 @@ def test_grouped_matching_nuc_driver_is_one_shot_and_cleans_exact_remote_leaf() 
     assert "test -z \"$(git status --porcelain)\"" in driver
 
 
+def test_grouped_matching_release_parent_walks_use_ps51_safe_paths() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    driver = (ROOT / "scripts" / "deploy-grouped-matching-nuc.sh").read_text(
+        encoding="utf-8"
+    )
+
+    for source in (release, driver):
+        assert not re.search(
+            r"Split-Path\s+-LiteralPath\b[^\r\n;]*\s+-Parent\b", source
+        )
+    assert release.count("Split-Path -Path $cursor -Parent") == 2
+    assert driver.count("Split-Path -Path \\$p -Parent") == 3
+    assert driver.count("Split-Path -Path \\$parent -Parent") == 3
+
+    remote_ps = driver[
+        driver.index("remote_ps() {") : driver.index("\nremote_path_b64=")
+    ]
+    remote_prefix = (
+        'remote_prefix=\'$ErrorActionPreference="Stop";'
+        '$ProgressPreference="SilentlyContinue";\''
+    )
+    assert remote_prefix in remote_ps
+    assert 'printf \'%s\' "$remote_prefix" "$command"' in remote_ps
+
+
 def test_grouped_matching_delivery_plan_is_self_derived_not_cross_fence_bound() -> None:
     plan_path = ROOT / "docs" / "superpowers" / "plans"
     plan_path /= "2026-09-02-grouped-matching-delivery.md"

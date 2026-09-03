@@ -113,6 +113,11 @@ jobs:
             }
           }
 
+          $parent = Split-Path -Path "C:\Services\oms-study-automation-v2\scripts\deploy-grouped-matching-release.ps1" -Parent
+          if ($parent -cne "C:\Services\oms-study-automation-v2\scripts") {
+            throw "PowerShell parent-path smoke returned an unexpected value: $parent"
+          }
+
           $scriptPath = $scriptPaths[0]
 
           $source = Get-Content -LiteralPath $scriptPath -Raw

@@ -51,7 +51,7 @@ function Assert-NonReparsePath {
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
       throw "Reparse point is not permitted: $cursor"
     }
-    $parent = Split-Path -LiteralPath $cursor -Parent
+    $parent = Split-Path -Path $cursor -Parent
     if (-not $parent -or $parent -eq $cursor) { return }
     $cursor = $parent
   }
@@ -251,7 +251,7 @@ function Assert-ReleasePathSafety {
   if (-not $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Release path escapes project root: $RelativePath" }
   $cursor = $candidate
   while (-not (Test-Path -LiteralPath $cursor)) {
-    $parent = Split-Path -LiteralPath $cursor -Parent
+    $parent = Split-Path -Path $cursor -Parent
     if (-not $parent -or $parent -eq $cursor -or (-not [string]::Equals($parent, $root, [StringComparison]::OrdinalIgnoreCase) -and -not $parent.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))) { throw "Release path has no existing parent under project root: $RelativePath" }
     $cursor = $parent
   }
