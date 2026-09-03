@@ -977,6 +977,29 @@ def test_windows_installer_polls_local_health_for_expected_root_and_revision() -
     assert "port $Port: $LastFailure" not in script
 
 
+def test_grouped_matching_release_braces_variable_before_colon_interpolation() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'throw "rollback incomplete: installer began without a complete verified backup; '
+        '${unverifiedOutcome}: $failure"'
+    ) in release
+    assert (
+        'throw "rollback incomplete: installer began without a complete verified backup; '
+        '$unverifiedOutcome: $failure"'
+    ) not in release
+
+    scoped_variables = {"env", "global", "local", "private", "script", "using", "workflow"}
+    invalid = [
+        match.group(0)
+        for match in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*):", release)
+        if match.group(1).casefold() not in scoped_variables
+    ]
+    assert not invalid, f"unbraced variable-colon interpolation(s): {invalid}"
+
+
 def test_grouped_matching_release_is_tracked_three_mode_json_transaction() -> None:
     release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
         encoding="utf-8"

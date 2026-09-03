@@ -590,7 +590,7 @@ try {
         if ($backupPath) { Invoke-Rollback $configuration $binding $backupPath $failure }
         if (-not $script:InstallerStarted) { Invoke-Git @("checkout", "--detach", $binding.old_commit) | Out-Null; Assert-OldRuntimeIntact $configuration $binding -RequireOriginalListener; throw "release failed before installer; checkout restored and runtime was untouched: $failure" }
         $unverifiedOutcome = Invoke-UnverifiedOldRuntimeRecovery $configuration $binding
-        throw "rollback incomplete: installer began without a complete verified backup; $unverifiedOutcome: $failure"
+        throw "rollback incomplete: installer began without a complete verified backup; ${unverifiedOutcome}: $failure"
       }
       throw $failure
     }
