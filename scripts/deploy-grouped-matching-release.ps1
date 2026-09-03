@@ -131,7 +131,7 @@ function Get-ReleaseConfiguration {
 
 function Invoke-Git {
   param([string[]]$Arguments)
-  $result = @(& git.exe -C $ProjectRoot @Arguments 2>$null)
+  $result = @(& git.exe -C $ProjectRoot @Arguments)
   Assert-NativeSuccess -Operation ("git " + ($Arguments -join " "))
   return @($result)
 }

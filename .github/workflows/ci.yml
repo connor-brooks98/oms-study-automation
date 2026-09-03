@@ -118,7 +118,9 @@ jobs:
           $releaseAst = [System.Management.Automation.Language.Parser]::ParseFile(
             $scriptPaths[1], [ref]$tokens, [ref]$errors
           )
-          foreach ($functionName in @("Get-AccountSid", "Test-SameAccount")) {
+          foreach ($functionName in @(
+            "Get-AccountSid", "Test-SameAccount", "Assert-NativeSuccess", "Invoke-Git"
+          )) {
             $definitions = @($releaseAst.FindAll({
               param($node)
               $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -137,6 +139,15 @@ jobs:
           $administratorsAccount = $administratorsSid.Translate([System.Security.Principal.NTAccount]).Value
           if (Test-SameAccount -Left $currentIdentity.Name -Right $administratorsAccount) {
             throw "Current user unexpectedly matched the built-in Administrators group SID"
+          }
+
+          $ProjectRoot = (Resolve-Path ".").Path
+          $previousErrorActionPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = "Stop"
+            Invoke-Git @("fetch", "--verbose", "origin", "HEAD") | Out-Null
+          } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
           }
 
           $parent = Split-Path -Path "C:\Services\oms-study-automation-v2\scripts\deploy-grouped-matching-release.ps1" -Parent
