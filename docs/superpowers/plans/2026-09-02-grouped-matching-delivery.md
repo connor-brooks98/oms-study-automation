@@ -68,7 +68,6 @@ merge_commit=$(gh pr view "$pr_number" --json state,mergedAt,mergeCommit --jq 'i
 test "$(git rev-parse origin/main)" = "$merge_commit"
 merged_tree=$(git rev-parse "$merge_commit^{tree}")
 git merge-base --is-ancestor "$release_commit" "$merge_commit"
-printf '%s %s %s %s\n' "$release_commit" "$release_tree" "$merge_commit" "$merged_tree" > /tmp/oms-grouped-matching-release-binding.txt
 ```
 
 If `merged_tree` differs from `release_tree`, stop and run Python, JavaScript,
@@ -87,19 +86,18 @@ The release transaction is implemented in two tracked files:
   hashes, transfers, parses, invokes, postflights, and removes the exact
   release script with an EXIT trap.
 
-The driver consumes the exact four-field binding written in section 1. It
-refuses a different branch identity, a changed merge tree, a reused remote
-leaf, a hash mismatch, a reparse point, PowerShell 5.1 parse errors, more than
-one JSON response, or a missing expected marker.
+The driver derives its release and merge SHA/tree directly from a clean
+`codex/grouped-matching-quiz` checkout and `origin/main`; it requires their
+trees to be identical for this normal merge. It independently hashes the local
+PowerShell file against the exact `origin/main` blob before transfer. It
+refuses a changed tree, a reused remote leaf, a hash mismatch, a reparse point,
+PowerShell 5.1 parse errors, more than one JSON response, or a missing marker.
 
 ## 3. Run the tracked driver exactly once
 
 ```bash
 set -euo pipefail
 
-test "$(git rev-parse origin/main)" = "$merge_commit"
-test "$(git rev-parse "$merge_commit^{tree}")" = "$merged_tree"
-test -f /tmp/oms-grouped-matching-release-binding.txt
 bash -n scripts/deploy-grouped-matching-nuc.sh
 scripts/deploy-grouped-matching-nuc.sh
 ```

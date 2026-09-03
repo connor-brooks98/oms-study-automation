@@ -154,6 +154,26 @@ function Get-ProcessSnapshot {
   )
 }
 
+function Test-JsonBoolean {
+  param([AllowNull()][object]$Value)
+  return $Value -is [bool]
+}
+
+function Test-ExactJsonBoolean {
+  param([AllowNull()][object]$Value, [bool]$Expected)
+  return (Test-JsonBoolean $Value) -and ([bool]$Value -eq $Expected)
+}
+
+function Test-JsonInteger {
+  param([AllowNull()][object]$Value)
+  return $Value -is [sbyte] -or $Value -is [byte] -or $Value -is [int16] -or $Value -is [uint16] -or $Value -is [int32] -or $Value -is [uint32] -or $Value -is [int64] -or $Value -is [uint64]
+}
+
+function Test-ExactJsonInteger {
+  param([AllowNull()][object]$Value, [int64]$Expected)
+  return (Test-JsonInteger $Value) -and ([decimal]$Value -eq [decimal]$Expected)
+}
+
 function Get-LoopbackListener {
   param([int]$Port)
   $listeners = @(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -LocalPort $Port -ErrorAction Stop)
@@ -167,11 +187,11 @@ function Get-LoopbackListener {
 }
 
 function Assert-TaskBinding {
-  param([object]$Configuration, [object]$Binding)
+  param([object]$Configuration, [object]$Binding, [switch]$RequireXmlDigest)
   $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
   if ([string]$task.State -cne "Running" -or [string]$task.Settings.ExecutionTimeLimit -cne "PT0S") { throw "Scheduled task state differs." }
   if ([string]$task.Principal.UserId -cne [string]$Binding.task_principal -or [string]$task.Principal.LogonType -cne [string]$Binding.task_logon_type) { throw "Scheduled task principal differs." }
-  if ((Get-TaskXmlSha256) -cne [string]$Binding.task_xml_sha256) { throw "Scheduled task XML differs." }
+  if ($RequireXmlDigest -and (Get-TaskXmlSha256) -cne [string]$Binding.task_xml_sha256) { throw "Scheduled task XML differs." }
   $actions = @($task.Actions)
   $expectedIds = @("f28-primary-0", "f28-recovery-1", "f28-recovery-2", "f28-recovery-3")
   if ($actions.Count -ne 4) { throw "Scheduled task action count differs." }
@@ -192,7 +212,8 @@ function Assert-TaskBinding {
 function Assert-ListenerTaskOwnership {
   param([object]$Listener, [object]$Configuration, [object]$Binding)
   $rootPrefix = $ProjectRoot.TrimEnd("\") + "\"
-  if ([string]$Listener.executable_path -notlike ($rootPrefix + "*") -or -not ([IO.Path]::GetFileName([string]$Listener.executable_path) -ieq "oms-hub.exe")) { throw "Listener is not same-root oms-hub.exe." }
+  $hubPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+  if (-not [string]::Equals([string]$Listener.executable_path, $hubPython, [StringComparison]::OrdinalIgnoreCase) -or [string]$Listener.command_line -notmatch "(?:^|\s)-m\s+oms_hub\.cli\s+serve(?:\s|$)") { throw "Listener is not the same-root Python OMS Hub serve process." }
   if ([string]$Listener.owner -cne [string]$Binding.process_identity -or [string]$Listener.owner -cne [string]$Binding.task_principal -or [string]$Listener.owner -cne [string]$Binding.deployment_identity) { throw "Listener, task, and deployment identities differ." }
   $all = Get-ProcessSnapshot
   $byId = @{}; foreach ($row in $all) { $byId[[string]$row.process_id] = $row }
@@ -211,10 +232,10 @@ function Assert-ListenerTaskOwnership {
 function Assert-ReadyHealth {
   param([object]$Configuration, [object]$Binding, [string]$Commit, [string]$Tree)
   $health = Invoke-RestMethod -Uri ("http://127.0.0.1:" + $Configuration.port + "/health/ready") -TimeoutSec 3
-  if ([string]$health.status -cne "ok" -or $health.database_reachable -ne $true -or [string]$health.deployment_root -cne $ProjectRoot -or [string]$health.build_revision -cne $Commit -or [string]$health.build_tree -cne $Tree -or [int]$health.schema_version -ne [int]$Binding.schema_version) { throw "Ready health identity, database, or schema differs." }
+  if ([string]$health.status -cne "ok" -or -not (Test-ExactJsonBoolean $health.database_reachable $true) -or [string]$health.deployment_root -cne $ProjectRoot -or [string]$health.build_revision -cne $Commit -or [string]$health.build_tree -cne $Tree -or -not (Test-ExactJsonInteger $health.schema_version ([int64]$Binding.schema_version))) { throw "Ready health identity, database, or schema differs." }
   $wantedWorkers = @("generation_worker", "ingestion_worker", "studio_worker")
   if ((@($health.workers.PSObject.Properties.Name | Sort-Object) -join "|") -cne ($wantedWorkers -join "|")) { throw "Ready health workers differ." }
-  foreach ($workerName in $wantedWorkers) { $worker = $health.workers.$workerName; if ($worker.alive -ne $true -or [int]$worker.start_count -ne 1 -or $null -ne $worker.active_work_age_seconds) { throw "Ready health worker differs: $workerName" } }
+  foreach ($workerName in $wantedWorkers) { $worker = $health.workers.$workerName; if (-not (Test-ExactJsonBoolean $worker.alive $true) -or -not (Test-ExactJsonInteger $worker.start_count 1) -or $null -ne $worker.active_work_age_seconds) { throw "Ready health worker differs: $workerName" } }
 }
 
 function Get-ReleasePaths {
@@ -258,26 +279,96 @@ function Assert-VerifiedRollbackBackup {
   return [ordered]@{ path=$Path; database=$databaseBackup; task_xml=$taskBackup; artifacts=(Join-Path $Path "artifacts") }
 }
 
-function Stop-VerifiedRuntime {
-  param([object]$Configuration, [object]$Binding)
-  Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-  $clearSnapshots = 0; $deadline = (Get-Date).AddSeconds(30)
+function Assert-RestoredRuntimeData {
+  param([object]$Backup, [object]$Configuration)
+  $manifest = Get-Content -LiteralPath (Join-Path $Backup.path "backup-manifest.json") -Raw | ConvertFrom-Json
+  foreach ($member in @($manifest.files)) {
+    $relative = ([string]$member.path).Replace("/", "\")
+    if ($relative -ieq "hub.db") { $restoredPath = $Configuration.database_path }
+    elseif ($relative -like "artifacts\*") { $restoredPath = Join-Path $Configuration.data_root $relative }
+    else { continue }
+    Assert-Leaf $restoredPath
+    if ((Get-FileSha256 $restoredPath) -cne [string]$member.sha256 -or (Get-Item -LiteralPath $restoredPath).Length -ne [long]$member.size) { throw "Restored runtime member differs from verified manifest: $relative" }
+  }
+}
+
+function Assert-OldRuntimeIntact {
+  param([object]$Configuration, [object]$Binding, [switch]$RequireOriginalListener)
+  $source = Get-SourceIdentity
+  if ($source.commit -cne $Binding.old_commit -or $source.tree -cne $Binding.old_tree -or (Get-FileSha256 $EnvFile) -cne $Binding.env_sha256) { throw "Old source or env changed." }
+  $resolved = Get-ReleaseConfiguration
+  if ([string]$resolved.data_root -cne [string]$Binding.data_root -or [string]$resolved.database_path -cne [string]$Binding.database_path -or $resolved.port -ne [int]$Binding.port -or $resolved.env_sha256 -cne [string]$Binding.env_sha256) { throw "Old effective configuration changed." }
+  Assert-TaskBinding $Configuration $Binding -RequireXmlDigest
+  $listener = Get-LoopbackListener $Configuration.port
+  if ($RequireOriginalListener -and ($listener.process_id -ne [int]$Binding.old_listener_pid -or $listener.creation_date -cne [string]$Binding.old_listener_creation_date)) { throw "Old listener changed." }
+  Assert-ListenerTaskOwnership $listener $Configuration $Binding
+  Assert-ReadyHealth $Configuration $Binding $Binding.old_commit $Binding.old_tree
+}
+
+function Test-PathUnderProjectRoot {
+  param([string]$ExecutablePath)
+  if ([string]::IsNullOrWhiteSpace($ExecutablePath)) { return $false }
+  return $ExecutablePath.StartsWith($ProjectRoot.TrimEnd("\\") + "\\", [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-SameRootHubProcesses {
+  $processes = @(Get-CimInstance Win32_Process)
+  $children = @{}
+  foreach ($process in $processes) {
+    $parentKey = [string]$process.ParentProcessId
+    if (-not $children.ContainsKey($parentKey)) { $children[$parentKey] = [Collections.Generic.List[object]]::new() }
+    $children[$parentKey].Add($process)
+  }
+  $selected = [Collections.Generic.List[object]]::new()
+  $seen = [Collections.Generic.HashSet[int]]::new()
+  $pending = [Collections.Generic.Queue[object]]::new()
+  foreach ($process in $processes) {
+    $isHubPython = [string]$process.Name -ieq "python.exe" -and (Test-PathUnderProjectRoot ([string]$process.ExecutablePath)) -and ([string]$process.CommandLine -match "(?i)oms[_-]hub")
+    if ($isHubPython) { $pending.Enqueue($process) }
+  }
+  while ($pending.Count -gt 0) {
+    $process = $pending.Dequeue(); $processId = [int]$process.ProcessId
+    if (-not $seen.Add($processId)) { continue }
+    $selected.Add($process)
+    $childKey = [string]$processId
+    if ($children.ContainsKey($childKey)) { foreach ($child in $children[$childKey]) { $pending.Enqueue($child) } }
+  }
+  return @($selected)
+}
+
+function Stop-SameRootRuntime {
+  param([switch]$StopTask)
+  if ($StopTask) { Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop }
+  $deadline = (Get-Date).AddSeconds(30); $clearSnapshots = 0
   while ((Get-Date) -lt $deadline) {
-    $listeners = @(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -LocalPort $Configuration.port -ErrorAction SilentlyContinue)
-    if ($listeners.Count -eq 0) { $clearSnapshots++; if ($clearSnapshots -ge 2) { return }; Start-Sleep -Milliseconds 500; continue }
-    if ($listeners.Count -ne 1) { throw "More than one listener during stop." }
-    $clearSnapshots = 0; $targetId = [int]$listeners[0].OwningProcess
-    $selected = Get-CimInstance Win32_Process -Filter "ProcessId=$targetId" -ErrorAction Stop
-    $selectedCreation = ([datetime]$selected.CreationDate).ToUniversalTime().ToString("o")
-    $selectedOwner = Get-ProcessOwner $targetId
-    $selectedListener = [ordered]@{ process_id=$targetId; creation_date=$selectedCreation; executable_path=[string]$selected.ExecutablePath; command_line=[string]$selected.CommandLine; owner=$selectedOwner }
-    Assert-ListenerTaskOwnership $selectedListener $Configuration $Binding
-    $revalidated = Get-CimInstance Win32_Process -Filter "ProcessId=$targetId" -ErrorAction Stop
-    if (([datetime]$revalidated.CreationDate).ToUniversalTime().ToString("o") -cne $selectedCreation -or [string]$revalidated.ExecutablePath -cne [string]$selected.ExecutablePath -or [string]$revalidated.CommandLine -cne [string]$selected.CommandLine) { throw "Listener changed identity before termination." }
-    $processHandle = Get-Process -Id $targetId -ErrorAction Stop
-    $null = $processHandle.Handle
-    if ($processHandle.StartTime.ToUniversalTime().ToString("o") -cne $selectedCreation) { throw "Listener changed while acquiring stable process handle." }
-    Stop-Process -InputObject $processHandle -Force -ErrorAction Stop
+    $conflicts = @(Get-SameRootHubProcesses)
+    if ($conflicts.Count -eq 0) {
+      $clearSnapshots++
+      if ($clearSnapshots -ge 2) { return }
+      Start-Sleep -Milliseconds 500
+      continue
+    }
+    $clearSnapshots = 0
+    $byId = @{}
+    foreach ($conflict in $conflicts) { $key = [string]([int]$conflict.ProcessId); if ($byId.ContainsKey($key)) { throw "Duplicate same-root process $key." }; $byId[$key] = $conflict }
+    $deepest = $null; $deepestDepth = -1; $deepestId = -1
+    foreach ($conflict in $conflicts) {
+      $depth = 0; $lineage = [Collections.Generic.HashSet[int]]::new(); $cursor = $conflict
+      while ($true) { $cursorId = [int]$cursor.ProcessId; if (-not $lineage.Add($cursorId)) { throw "Same-root process ancestry cycle." }; $parentKey = [string]([int]$cursor.ParentProcessId); if (-not $byId.ContainsKey($parentKey)) { break }; $depth++; $cursor = $byId[$parentKey] }
+      $conflictId = [int]$conflict.ProcessId
+      if ($depth -gt $deepestDepth -or ($depth -eq $deepestDepth -and $conflictId -gt $deepestId)) { $deepest = $conflict; $deepestDepth = $depth; $deepestId = $conflictId }
+    }
+    if ($null -eq $deepest) { throw "No same-root process could be selected." }
+    $targetId = [int]$deepest.ProcessId
+    $live = Get-CimInstance Win32_Process -Filter "ProcessId=$targetId" -ErrorAction SilentlyContinue
+    if (-not $live) { continue }
+    $sameIdentity = ([string]$live.Name -ieq [string]$deepest.Name) -and ([string]$live.ExecutablePath -ieq [string]$deepest.ExecutablePath) -and ([int]$live.ParentProcessId -eq [int]$deepest.ParentProcessId) -and ([string]$live.CommandLine -eq [string]$deepest.CommandLine) -and (([datetime]$live.CreationDate).ToUniversalTime().ToString("o") -eq ([datetime]$deepest.CreationDate).ToUniversalTime().ToString("o"))
+    if (-not $sameIdentity) { throw "Same-root process changed identity before termination." }
+    $processHandle = Get-Process -Id $targetId -ErrorAction SilentlyContinue
+    if (-not $processHandle) { continue }
+    try { $null = $processHandle.Handle; $handleKey = $processHandle.StartTime.ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff", [System.Globalization.CultureInfo]::InvariantCulture); $cimKey = ([datetime]$live.CreationDate).ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff", [System.Globalization.CultureInfo]::InvariantCulture) } catch { if ($processHandle.HasExited) { continue }; throw }
+    if ($handleKey -cne $cimKey) { throw "Same-root process changed while acquiring its stable handle." }
+    try { Stop-Process -InputObject $processHandle -Force -ErrorAction Stop } catch { if ($processHandle.HasExited) { continue }; throw }
     Start-Sleep -Milliseconds 500
   }
   throw "Same-root runtime did not remain clear for two snapshots."
@@ -298,7 +389,8 @@ function Invoke-Installer {
     $listenerCount = @(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -LocalPort $Configuration.port -ErrorAction SilentlyContinue).Count
     if ($listenerCount -eq 0) { $listenerLeft = $true }
     if ($listenerCount -gt 1) {
-      $process.Kill()
+      try { $process.Kill(); $process.WaitForExit() } catch { }
+      if (-not $process.HasExited) { throw "Installer created more than one loopback listener and did not terminate; diagnostics retained at $stdoutLog and $stderrLog." }
       throw "Installer created more than one loopback listener; diagnostics retained at $stdoutLog and $stderrLog."
     }
     Start-Sleep -Milliseconds 250
@@ -306,6 +398,7 @@ function Invoke-Installer {
   }
   if ($process.ExitCode -ne 0) { throw "Installer failed; diagnostics retained at $stdoutLog and $stderrLog." }
   if (-not $WhatIf -and -not $listenerLeft) { throw "Installer never cleared the old listener; diagnostics retained at $stdoutLog and $stderrLog." }
+  Remove-Item -LiteralPath $stdoutLog, $stderrLog -Force -ErrorAction Stop
 }
 
 function Wait-ForFinalState {
@@ -323,7 +416,7 @@ function Wait-ForFinalState {
       Get-ReleasePaths $Binding | Out-Null
       Assert-VerifiedRollbackBackup $BackupPath $Configuration $Binding | Out-Null
       Assert-Leaf $PlayerAsset; if (-not (Get-Content -LiteralPath $PlayerAsset -Raw).Contains("selectedChoiceIds")) { throw "Grouped matching player marker absent." }
-      return
+      return $listener
     } catch { $lastFailure = $_.Exception.Message; Start-Sleep -Seconds 1 }
   }
   throw $lastFailure
@@ -334,6 +427,7 @@ function Invoke-UnverifiedOldRuntimeRecovery {
   # one best-effort attempt to get the old executable running, then reports failure.
   param([object]$Configuration, [object]$Binding)
   try {
+    Stop-SameRootRuntime -StopTask
     Invoke-Git @("checkout", "--detach", $Binding.old_commit) | Out-Null
     $source = Get-SourceIdentity
     if ($source.commit -cne $Binding.old_commit -or $source.tree -cne $Binding.old_tree) { throw "old checkout did not restore" }
@@ -351,7 +445,7 @@ function Invoke-Rollback {
   $rollbackCompletionMessage = $null
   try {
     $backup = Assert-VerifiedRollbackBackup $BackupPath $Configuration $Binding
-    Stop-VerifiedRuntime $Configuration $Binding
+    Stop-SameRootRuntime -StopTask
     Invoke-Git @("checkout", "--detach", $Binding.old_commit) | Out-Null
     $source = Get-SourceIdentity; if ($source.commit -cne $Binding.old_commit -or $source.tree -cne $Binding.old_tree) { throw "Old checkout did not restore." }
     $quarantine = Join-Path $Configuration.data_root ("failed-release-quarantine\" + [guid]::NewGuid().ToString("N")); New-Item -ItemType Directory -Path $quarantine -ErrorAction Stop | Out-Null
@@ -360,12 +454,15 @@ function Invoke-Rollback {
     if (Test-Path -LiteralPath $backup.artifacts -PathType Container) { Copy-Item -LiteralPath $backup.artifacts -Destination (Join-Path $Configuration.data_root "artifacts") -Recurse -ErrorAction Stop }
     $python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"; Assert-Leaf $python; & $python -c "import sqlite3,sys; assert sqlite3.connect(sys.argv[1]).execute('PRAGMA integrity_check').fetchone() == ('ok',)" $Configuration.database_path; Assert-NativeSuccess "SQLite integrity check"
     Invoke-Installer $Configuration
-    Stop-VerifiedRuntime $Configuration $Binding
+    Stop-SameRootRuntime -StopTask
+    Assert-RestoredRuntimeData $backup $Configuration
+    $resolved = Get-ReleaseConfiguration
+    if ([string]$resolved.data_root -cne [string]$Binding.data_root -or [string]$resolved.database_path -cne [string]$Binding.database_path -or $resolved.port -ne [int]$Binding.port -or $resolved.env_sha256 -cne [string]$Binding.env_sha256) { throw "Restored effective configuration differs." }
     Register-ScheduledTask -TaskName $TaskName -Xml (Get-Content -LiteralPath $backup.task_xml -Raw) -Force | Out-Null
     if ((Get-TaskXmlSha256) -cne [string]$Binding.task_xml_sha256) { throw "Old task XML did not restore." }
     Start-ScheduledTask -TaskName $TaskName
     $deadline = (Get-Date).AddSeconds(45); $restored = $false
-    while ((Get-Date) -lt $deadline) { try { Assert-TaskBinding $Configuration $Binding; $listener = Get-LoopbackListener $Configuration.port; Assert-ListenerTaskOwnership $listener $Configuration $Binding; Assert-ReadyHealth $Configuration $Binding $Binding.old_commit $Binding.old_tree; $restored = $true; break } catch { Start-Sleep -Seconds 1 } }
+    while ((Get-Date) -lt $deadline) { try { Assert-OldRuntimeIntact $Configuration $Binding; $restored = $true; break } catch { Start-Sleep -Seconds 1 } }
     if (-not $restored) { throw "Old runtime did not restore." }
     $rollbackCompletionMessage = "release failed and rollback completed: $Reason"
   } catch {
@@ -399,9 +496,11 @@ try {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop; $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     if ([string]$task.Principal.UserId -cne $identity) { throw "Deployment identity does not equal task principal." }
     $listener = Get-LoopbackListener $configuration.port
-    $binding = [ordered]@{ marker="OMS_GROUPED_MATCHING_PREFLIGHT_COMPLETE"; old_commit=$source.commit; old_tree=$source.tree; schema_version=[int](Invoke-RestMethod -Uri ("http://127.0.0.1:" + $configuration.port + "/health/ready") -TimeoutSec 3).schema_version; old_listener_pid=$listener.process_id; old_listener_creation_date=$listener.creation_date; process_identity=$listener.owner; task_xml_sha256=(Get-TaskXmlSha256); task_principal=[string]$task.Principal.UserId; task_logon_type=[string]$task.Principal.LogonType; deployment_identity=$identity; data_root=$configuration.data_root; database_url=$configuration.database_url; database_path=$configuration.database_path; port=$configuration.port; env_sha256=$configuration.env_sha256; merged_commit=$ExpectedMergedCommit; merged_tree=$ExpectedMergedTree }
+    $preflightHealth = Invoke-RestMethod -Uri ("http://127.0.0.1:" + $configuration.port + "/health/ready") -TimeoutSec 3
+    if (-not (Test-JsonInteger $preflightHealth.schema_version)) { throw "Preflight schema version is not an integer." }
+    $binding = [ordered]@{ marker="OMS_GROUPED_MATCHING_PREFLIGHT_COMPLETE"; old_commit=$source.commit; old_tree=$source.tree; schema_version=[int]$preflightHealth.schema_version; old_listener_pid=$listener.process_id; old_listener_creation_date=$listener.creation_date; process_identity=$listener.owner; task_xml_sha256=(Get-TaskXmlSha256); task_principal=[string]$task.Principal.UserId; task_logon_type=[string]$task.Principal.LogonType; deployment_identity=$identity; data_root=$configuration.data_root; database_url=$configuration.database_url; database_path=$configuration.database_path; port=$configuration.port; env_sha256=$configuration.env_sha256; merged_commit=$ExpectedMergedCommit; merged_tree=$ExpectedMergedTree }
     if ($binding.port -ne 8765) { throw "Configured port is not 8765." }
-    Assert-TaskBinding $configuration $binding; Assert-ListenerTaskOwnership $listener $configuration $binding; Assert-ReadyHealth $configuration $binding $binding.old_commit $binding.old_tree; $binding.release_paths = Get-ReleasePaths $binding
+    Assert-TaskBinding $configuration $binding -RequireXmlDigest; Assert-ListenerTaskOwnership $listener $configuration $binding; Assert-ReadyHealth $configuration $binding $binding.old_commit $binding.old_tree; $binding.release_paths = Get-ReleasePaths $binding
     $binding | ConvertTo-Json -Compress -Depth 8
     exit 0
   }
@@ -412,7 +511,7 @@ try {
     $backupRoot = Join-Path $configuration.data_root "backups"; $backupsBefore = Get-BackupNames $backupRoot; $backupPath = ""
     try {
       $source = Get-SourceIdentity; if ($source.commit -cne $binding.old_commit -or $source.tree -cne $binding.old_tree) { throw "Old source changed." }
-      Assert-TaskBinding $configuration $binding; $listener = Get-LoopbackListener $configuration.port
+      Assert-TaskBinding $configuration $binding -RequireXmlDigest; $listener = Get-LoopbackListener $configuration.port
       if ($listener.process_id -ne [int]$binding.old_listener_pid -or $listener.creation_date -cne [string]$binding.old_listener_creation_date) { throw "Old listener changed." }
       Assert-ListenerTaskOwnership $listener $configuration $binding; Assert-ReadyHealth $configuration $binding $binding.old_commit $binding.old_tree; Get-ReleasePaths $binding | Out-Null
       Invoke-Installer $configuration -WhatIf
@@ -422,15 +521,15 @@ try {
       $script:InstallerStarted = $true; Invoke-Installer $configuration
       $newBackups = @((Get-BackupNames $backupRoot) | Where-Object { $backupsBefore -notcontains $_ }); if ($newBackups.Count -ne 1) { throw "Expected exactly one new backup." }; $backupPath = Join-Path $backupRoot $newBackups[0]
       Assert-VerifiedRollbackBackup $backupPath $configuration $binding | Out-Null
-      Wait-ForFinalState $configuration $binding $backupPath
-      [ordered]@{ marker="OMS_GROUPED_MATCHING_DEPLOY_COMPLETE"; commit=$binding.merged_commit; tree=$binding.merged_tree; new_backup=$backupPath; env_sha256=$binding.env_sha256 } | ConvertTo-Json -Compress
+      $newListener = Wait-ForFinalState $configuration $binding $backupPath
+      [ordered]@{ marker="OMS_GROUPED_MATCHING_DEPLOY_COMPLETE"; commit=$binding.merged_commit; tree=$binding.merged_tree; new_backup=$backupPath; env_sha256=$binding.env_sha256; listener_pid=$newListener.process_id; listener_creation_date=$newListener.creation_date } | ConvertTo-Json -Compress
       exit 0
     } catch {
       $failure = $_.Exception.Message
       if ($script:CheckoutMutated -and -not $script:RollbackAttempted) {
         if (-not $backupPath) { $newBackups = @((Get-BackupNames $backupRoot) | Where-Object { $backupsBefore -notcontains $_ }); if ($newBackups.Count -eq 1) { $backupPath = Join-Path $backupRoot $newBackups[0] } }
         if ($backupPath) { Invoke-Rollback $configuration $binding $backupPath $failure }
-        if (-not $script:InstallerStarted) { Invoke-Git @("checkout", "--detach", $binding.old_commit) | Out-Null; $restored = Get-SourceIdentity; if ($restored.commit -ne $binding.old_commit -or $restored.tree -ne $binding.old_tree) { throw "rollback incomplete: checkout mutation occurred before installer and old checkout did not restore." }; throw "release failed before installer; checkout restored and runtime was untouched: $failure" }
+        if (-not $script:InstallerStarted) { Invoke-Git @("checkout", "--detach", $binding.old_commit) | Out-Null; Assert-OldRuntimeIntact $configuration $binding -RequireOriginalListener; throw "release failed before installer; checkout restored and runtime was untouched: $failure" }
         $unverifiedOutcome = Invoke-UnverifiedOldRuntimeRecovery $configuration $binding
         throw "rollback incomplete: installer began without a complete verified backup; $unverifiedOutcome: $failure"
       }
@@ -438,8 +537,8 @@ try {
     }
   }
   if ([string]::IsNullOrWhiteSpace($ExpectedBackupPath)) { throw "Postflight requires backup path." }
-  Wait-ForFinalState $configuration $binding $ExpectedBackupPath
-  [ordered]@{ marker="OMS_GROUPED_MATCHING_POSTFLIGHT_COMPLETE"; commit=$binding.merged_commit; tree=$binding.merged_tree; backup=$ExpectedBackupPath; env_sha256=$binding.env_sha256 } | ConvertTo-Json -Compress
+  $postflightListener = Wait-ForFinalState $configuration $binding $ExpectedBackupPath
+  [ordered]@{ marker="OMS_GROUPED_MATCHING_POSTFLIGHT_COMPLETE"; commit=$binding.merged_commit; tree=$binding.merged_tree; backup=$ExpectedBackupPath; env_sha256=$binding.env_sha256; listener_pid=$postflightListener.process_id; listener_creation_date=$postflightListener.creation_date } | ConvertTo-Json -Compress
 } catch {
   [Console]::Error.WriteLine($_.Exception.Message)
   exit 1

@@ -980,6 +980,7 @@ def test_grouped_matching_release_is_tracked_three_mode_json_transaction() -> No
     release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
         encoding="utf-8"
     )
+    launcher = (ROOT / "scripts" / "start-hub.ps1").read_text(encoding="utf-8")
 
     assert '[ValidateSet("Preflight", "Deploy", "Postflight")]' in release
     assert "OMS_GROUPED_MATCHING_PREFLIGHT_COMPLETE" in release
@@ -995,6 +996,13 @@ def test_grouped_matching_release_is_tracked_three_mode_json_transaction() -> No
     assert "[datetime]$process.CreationDate" in release
     assert "Expected exactly one loopback listener" in release
     assert "exactly one task-launched primary system PowerShell ancestor" in release
+    assert '.venv\\Scripts\\python.exe' in release
+    assert "oms_hub\\.cli\\s+serve" in release
+    assert "& $HubPython -m oms_hub.cli serve" in launcher
+    assert "Test-ExactJsonBoolean" in release
+    assert "Test-ExactJsonInteger" in release
+    assert "-RequireXmlDigest" in release
+    assert "if ($RequireXmlDigest -and" in release
 
 
 def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_limits() -> None:
@@ -1018,9 +1026,16 @@ def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_lim
     assert "Never rethrow inside this recovery try" in release
     assert "Stop-Process -InputObject $processHandle" in release
     assert "if ($clearSnapshots -ge 2) { return }" in release
+    assert "Get-SameRootHubProcesses" in release
+    assert "yyyyMMddHHmmss.ffffff" in release
+    assert "Stop-SameRootRuntime -StopTask" in release
     assert "Move-Item -LiteralPath $runtimePath -Destination $quarantine" in release
     assert "PRAGMA integrity_check" in release
     assert "Register-ScheduledTask -TaskName $TaskName -Xml" in release
+    assert "Assert-RestoredRuntimeData $backup $Configuration" in release
+    assert "Assert-OldRuntimeIntact $configuration $binding -RequireOriginalListener" in release
+    assert "old runtime recovery attempted without certifying data or task" in release
+    assert "$process.Kill(); $process.WaitForExit()" in release
 
 
 def test_grouped_matching_release_validates_complete_backup_members() -> None:
@@ -1051,6 +1066,27 @@ def test_grouped_matching_nuc_driver_is_one_shot_and_cleans_exact_remote_leaf() 
     assert "Get-FileHash -LiteralPath" in driver
     assert "[Management.Automation.Language.Parser]::ParseFile" in driver
     assert "trap cleanup_remote EXIT" in driver
+    assert "remote_created=false" in driver
+    assert 'if [[ "$remote_created" != true ]]; then return; fi' in driver
     assert "remote release leaf remains" in driver
     assert "assert len(rows)==1" in driver
     assert driver.count("invoke_mode Deploy") == 1
+    assert "git show \"$merge_commit:$release_script\"" in driver
+    assert "test \"$release_tree\" = \"$merged_tree\"" in driver
+    assert "/tmp/oms-grouped-matching-release-binding.txt" not in driver
+    assert "OMS_GROUPED_MATCHING_DELIVERY_COMPLETE" in driver
+    assert '"listener_creation_date":post["listener_creation_date"]' in driver
+    assert "expected_blob_sha256=$(git show" in driver
+    assert "test -z \"$(git status --porcelain)\"" in driver
+
+
+def test_grouped_matching_delivery_plan_is_self_derived_not_cross_fence_bound() -> None:
+    plan_path = ROOT / "docs" / "superpowers" / "plans"
+    plan_path /= "2026-09-02-grouped-matching-delivery.md"
+    plan = plan_path.read_text(
+        encoding="utf-8"
+    )
+
+    assert "/tmp/oms-grouped-matching-release-binding.txt" not in plan
+    assert "driver derives its release and merge SHA/tree directly" in plan
+    assert "scripts/deploy-grouped-matching-nuc.sh" in plan
