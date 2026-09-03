@@ -4,7 +4,10 @@ from pathlib import Path
 import pytest
 
 from oms_hub.config import Settings
-from oms_hub.study_generation.domain import PromptSnapshot
+from oms_hub.study_generation.domain import (
+    PromptSnapshot,
+    QuizMatchingQuestion,
+)
 from oms_hub.study_generation.native_quiz import (
     QuizContractError,
     grade_answer,
@@ -13,6 +16,7 @@ from oms_hub.study_generation.native_quiz import (
     quiz_origin,
     quiz_prompt,
     quiz_url,
+    serialize_native_quiz,
     validate_native_quiz_url,
 )
 
@@ -31,6 +35,89 @@ def _payload(**overrides):
     }
     question.update(overrides)
     return {"title": "Aplastic Crisis", "questions": [question]}
+
+
+def _matching_payload(**overrides: object) -> dict[str, object]:
+    question: dict[str, object] = {
+        "kind": "matching",
+        "stem": "Match each description with its term.",
+        "prompts": [
+            {"label": "A", "text": "Description alpha", "correct_index": 1},
+            {"label": "B", "text": "Description beta", "correct_index": 1},
+        ],
+        "choices": ["Term one", "Term two"],
+        "rationale": "Source-marked matches: A -> Term two; B -> Term two.",
+        "image_ref": None,
+    }
+    question.update(overrides)
+    return {"title": "Matching set", "questions": [question]}
+
+
+def test_matching_quiz_round_trips_with_stable_group_prompt_and_choice_ids() -> None:
+    quiz = parse_native_quiz(json.dumps(_matching_payload()))
+    question = quiz.questions[0]
+
+    assert isinstance(question, QuizMatchingQuestion)
+    assert question.id == "q1"
+    assert tuple(prompt.id for prompt in question.prompts) == ("p1", "p2")
+    assert tuple(choice.id for choice in question.choices) == ("c1", "c2")
+    assert tuple(prompt.correct_choice_id for prompt in question.prompts) == ("c2", "c2")
+    assert serialize_native_quiz(quiz) == json.dumps(
+        _matching_payload(), ensure_ascii=False, separators=(",", ":")
+    )
+
+
+def test_legacy_multiple_choice_serialization_does_not_gain_a_kind_field() -> None:
+    quiz = parse_native_quiz(json.dumps(_payload()))
+    serialized = json.loads(serialize_native_quiz(quiz))
+
+    assert serialized["questions"] == [
+        {
+            **_payload()["questions"][0],
+            "image_ref": None,
+        }
+    ]
+    assert "kind" not in serialized["questions"][0]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"prompts": [{"label": "A", "text": "One", "correct_index": 0}]}, "prompts"),
+        (
+            {
+                "prompts": [
+                    {"label": "A", "text": "One", "correct_index": 0},
+                    {"label": "a", "text": "Two", "correct_index": 1},
+                ]
+            },
+            "labels must be distinct",
+        ),
+        (
+            {
+                "prompts": [
+                    {"label": "A", "text": "One", "correct_index": 0},
+                    {"label": "B", "text": "Two"},
+                ]
+            },
+            "correct_index",
+        ),
+        (
+            {
+                "prompts": [
+                    {"label": "A", "text": "One", "correct_index": 0},
+                    {"label": "B", "text": "Two", "correct_index": 2},
+                ]
+            },
+            "available choice",
+        ),
+    ],
+)
+def test_invalid_matching_native_contract_is_rejected(
+    overrides: dict[str, object], message: str
+) -> None:
+    with pytest.raises(QuizContractError, match=message):
+        parse_native_quiz(json.dumps(_matching_payload(**overrides)))
 
 
 @pytest.mark.parametrize(
