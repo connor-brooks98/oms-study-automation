@@ -133,7 +133,7 @@ jobs:
               "-ProjectRoot", "`"$projectRoot`"", "-DataRoot", "`"$dataRoot`"",
               "-CapturePath", "`"$captureOutput`""
             )
-            $captureProcess = Start-Process -FilePath (Join-Path [Environment]::SystemDirectory "WindowsPowerShell\v1.0\powershell.exe") -ArgumentList $captureArguments -PassThru -Wait -WindowStyle Hidden
+            $captureProcess = Start-Process -FilePath (Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe") -ArgumentList $captureArguments -PassThru -Wait -WindowStyle Hidden
             if ($captureProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $captureOutput -PathType Leaf)) {
               throw "PowerShell argument capture failed with exit code $($captureProcess.ExitCode)"
             }

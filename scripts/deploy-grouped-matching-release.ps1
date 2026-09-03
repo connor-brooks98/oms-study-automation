@@ -131,7 +131,7 @@ function Get-SourceIdentity {
 }
 
 function Get-SystemPowerShellPath {
-  $path = [IO.Path]::GetFullPath((Join-Path [Environment]::SystemDirectory "WindowsPowerShell\v1.0\powershell.exe"))
+  $path = [IO.Path]::GetFullPath((Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe"))
   Assert-Leaf -Path $path
   return $path
 }
