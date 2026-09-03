@@ -974,3 +974,83 @@ def test_windows_installer_polls_local_health_for_expected_root_and_revision() -
     assert "Study Hub did not start from the expected root/build" in script
     assert "port ${Port}: $LastFailure" in script
     assert "port $Port: $LastFailure" not in script
+
+
+def test_grouped_matching_release_is_tracked_three_mode_json_transaction() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert '[ValidateSet("Preflight", "Deploy", "Postflight")]' in release
+    assert "OMS_GROUPED_MATCHING_PREFLIGHT_COMPLETE" in release
+    assert "OMS_GROUPED_MATCHING_DEPLOY_COMPLETE" in release
+    assert "OMS_GROUPED_MATCHING_POSTFLIGHT_COMPLETE" in release
+    assert "-RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog" in release
+    assert "[Console]::Error.WriteLine" in release
+    assert "ManagementDateTimeConverter" not in release
+    assert "function H(" not in release
+    assert "function PS(" not in release
+    assert "$pid" not in release.casefold()
+    assert "[datetime]$_.CreationDate" in release
+    assert "[datetime]$process.CreationDate" in release
+    assert "Expected exactly one loopback listener" in release
+    assert "exactly one task-launched primary system PowerShell ancestor" in release
+
+
+def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_limits() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    preflight = release.index('if ($Mode -eq "Preflight")')
+    deploy = release.index('if ($Mode -eq "Deploy")')
+    preview = release.index("Invoke-Installer $configuration -WhatIf", deploy)
+    mutation = release.index("$script:CheckoutMutated = $true", deploy)
+    merge = release.index('Invoke-Git @("merge", "--ff-only", "origin/main")', deploy)
+    installer = release.index(
+        "$script:InstallerStarted = $true; Invoke-Installer $configuration", deploy
+    )
+    assert preflight < deploy < preview < mutation < merge < installer
+    assert "release failed before installer; checkout restored and runtime was untouched" in release
+    assert "installer began without a complete verified backup" in release
+    assert "old runtime recovery attempted without certifying data or task" in release
+    assert "rollback incomplete:" in release
+    assert "Never rethrow inside this recovery try" in release
+    assert "Stop-Process -InputObject $processHandle" in release
+    assert "if ($clearSnapshots -ge 2) { return }" in release
+    assert "Move-Item -LiteralPath $runtimePath -Destination $quarantine" in release
+    assert "PRAGMA integrity_check" in release
+    assert "Register-ScheduledTask -TaskName $TaskName -Xml" in release
+
+
+def test_grouped_matching_release_validates_complete_backup_members() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "backup-manifest.json.sha256" in release
+    assert "Backup completion record differs" in release
+    assert "Backup manifest bindings differ" in release
+    assert "Backup effective configuration differs" in release
+    assert "Duplicate backup member" in release
+    assert "Backup member hash or size differs" in release
+    assert "Critical backup member missing or not exactly once" in release
+    assert "Unsafe backup member path" in release
+
+
+def test_grouped_matching_nuc_driver_is_one_shot_and_cleans_exact_remote_leaf() -> None:
+    driver = (ROOT / "scripts" / "deploy-grouped-matching-nuc.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert driver.startswith("#!/usr/bin/env bash\n")
+    assert "set -euo pipefail" in driver
+    assert "remote_transport_path=\"C:/Users/conbr/AppData/Local/Temp/" in driver
+    assert "remote_native_path=\"C:\\\\Users" in driver
+    assert "unique remote release path already exists" in driver
+    assert "Get-FileHash -LiteralPath" in driver
+    assert "[Management.Automation.Language.Parser]::ParseFile" in driver
+    assert "trap cleanup_remote EXIT" in driver
+    assert "remote release leaf remains" in driver
+    assert "assert len(rows)==1" in driver
+    assert driver.count("invoke_mode Deploy") == 1
