@@ -83,3 +83,39 @@ class QuestionDraft:
             for diagnostic in self.diagnostics
             if diagnostic.severity is DiagnosticSeverity.BLOCKER
         )
+
+
+@dataclass(frozen=True, slots=True)
+class MatchingPromptDraft:
+    id: str
+    label: str
+    text: str
+    correct_index: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class MatchingQuestionDraft:
+    question_id: str
+    original_identifier: str | None
+    stem: str
+    prompts: tuple[MatchingPromptDraft, ...]
+    choices: tuple[str, ...]
+    rationale: str | None
+    image_ref: QuizImageRef | None
+    source_refs: tuple[QuestionSourceRef, ...]
+    answer_provenance: AnswerProvenance | None
+    extraction_confidence: float
+    diagnostics: tuple[DraftDiagnostic, ...]
+    verification_required: bool
+    verified_at: str | None
+
+    @property
+    def blocking_diagnostics(self) -> tuple[str, ...]:
+        return tuple(
+            item.message
+            for item in self.diagnostics
+            if item.severity is DiagnosticSeverity.BLOCKER
+        )
+
+
+QuestionDraftValue = QuestionDraft | MatchingQuestionDraft

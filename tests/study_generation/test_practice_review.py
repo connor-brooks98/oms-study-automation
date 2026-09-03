@@ -340,7 +340,7 @@ def test_manual_answer_save_clears_import_blockers_and_can_publish(
         candidate_assets=(),
         confidence=0.8,
     )
-    draft = pair_supplied_answers((extracted,), ())[0]
+    draft = pair_supplied_answers((extracted,), ()).drafts[0]
     service.store("run-1", (draft,))
     with service.repository.database.session() as session:
         run = session.get(StudioRunModel, "run-1")

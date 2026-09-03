@@ -722,7 +722,7 @@ def test_document_scoped_citations_preserve_real_question_source_refs(tmp_path: 
         result.questions,
         result.answers,
         question_source_refs=result.question_source_refs,
-    )
+    ).drafts
 
     assert result.question_source_refs[0][0].source_id == "questions"
     assert result.question_source_refs[0][0].segment_key == "questions-1"
