@@ -412,7 +412,7 @@ function Invoke-Installer {
   Assert-Directory $logRoot
   $logStem = Join-Path $logRoot ("grouped-matching-" + [guid]::NewGuid().ToString("N"))
   $stdoutLog = "$logStem.stdout.log"; $stderrLog = "$logStem.stderr.log"
-  $arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $Installer, "-ProjectRoot", $ProjectRoot, "-DataRoot", $Configuration.data_root)
+  $arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "`"$Installer`"", "-ProjectRoot", "`"$ProjectRoot`"", "-DataRoot", "`"$($Configuration.data_root)`"")
   if ($WhatIf) { $arguments += "-WhatIf" }
   $installerProcess = $null; $failure = $null; $deadline = (Get-Date).AddMinutes(10)
   try {

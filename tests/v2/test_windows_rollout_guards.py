@@ -1332,6 +1332,27 @@ def test_grouped_matching_release_parent_walks_use_ps51_safe_paths() -> None:
     assert 'printf \'%s\' "$remote_prefix" "$command"' in remote_ps
 
 
+def test_grouped_matching_release_quotes_installer_path_arguments_for_ps51() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    installer = release[
+        release.index("function Invoke-Installer") : release.index(
+            "function Wait-ForFinalState"
+        )
+    ]
+
+    assert (
+        '$arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", '
+        '"Bypass", "-File", "`"$Installer`"", "-ProjectRoot", '
+        '"`"$ProjectRoot`"", "-DataRoot", "`"$($Configuration.data_root)`"")'
+    ) in installer
+    assert (
+        "Start-Process -FilePath (Get-SystemPowerShellPath) -ArgumentList $arguments"
+        in installer
+    )
+
+
 def test_grouped_matching_delivery_plan_is_self_derived_not_cross_fence_bound() -> None:
     plan_path = ROOT / "docs" / "superpowers" / "plans"
     plan_path /= "2026-09-02-grouped-matching-delivery.md"
