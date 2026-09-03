@@ -1037,6 +1037,33 @@ def test_grouped_matching_release_is_tracked_three_mode_json_transaction() -> No
     assert '"^[0-9a-f]{40}$"' in release
 
 
+def test_grouped_matching_release_binds_redirected_listener_to_exact_venv_lineage() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    ownership = release[
+        release.index("function Assert-ListenerTaskOwnership") : release.index(
+            "function Assert-ReadyHealth"
+        )
+    ]
+
+    assert "$matchingVenvProcesses = 0" in ownership
+    assert "$matchingTaskAncestors = 0" in ownership
+    assert "[string]$row.name -ieq \"python.exe\"" in ownership
+    assert (
+        "[string]::Equals([string]$row.executable_path, $hubPython, "
+        "[StringComparison]::OrdinalIgnoreCase)"
+    ) in ownership
+    assert "$matchingVenvProcesses++" in ownership
+    assert "$matchingTaskAncestors++" in ownership
+    assert "$matchingVenvProcesses -ne 1" in ownership
+    assert "$matchingTaskAncestors -ne 1" in ownership
+    assert (
+        "[string]::Equals([string]$Listener.executable_path, $hubPython"
+        not in ownership
+    )
+
+
 def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_limits() -> None:
     release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
         encoding="utf-8"
@@ -1305,6 +1332,40 @@ def test_grouped_matching_nuc_driver_is_one_shot_and_cleans_exact_remote_leaf() 
     assert '"listener_creation_date":post["listener_creation_date"]' in driver
     assert "expected_blob_sha256=$(git show" in driver
     assert "test -z \"$(git status --porcelain)\"" in driver
+
+
+def test_grouped_matching_nuc_driver_preserves_remote_failure_status() -> None:
+    driver = (ROOT / "scripts" / "deploy-grouped-matching-nuc.sh").read_text(
+        encoding="utf-8"
+    )
+    bash = shutil.which("bash")
+    if bash is None:
+        return
+
+    invoke_mode = driver[
+        driver.index("invoke_mode() {") : driver.index("\n\npreflight_json=")
+    ]
+    harness = (
+        "set -uo pipefail\n"
+        "remote_path_b64=x\n"
+        "script_sha256=x\n"
+        "merge_commit=x\n"
+        "merged_tree=x\n"
+        "remote_ps() { printf '%s\\n' REMOTE_PREFLIGHT_FAILURE >&2; return 23; }\n"
+        "json_one() { printf '%s\\n' PARSER_RAN >&2; return 42; }\n"
+        f"{invoke_mode}\n"
+        "invoke_mode Preflight\n"
+    )
+    result = subprocess.run(
+        [bash, "-c", harness],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 23
+    assert "REMOTE_PREFLIGHT_FAILURE" in result.stderr
+    assert "PARSER_RAN" not in result.stderr
 
 
 def test_grouped_matching_release_parent_walks_use_ps51_safe_paths() -> None:

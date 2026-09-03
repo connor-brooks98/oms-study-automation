@@ -230,22 +230,27 @@ function Assert-TaskBinding {
 
 function Assert-ListenerTaskOwnership {
   param([object]$Listener, [object]$Configuration, [object]$Binding)
-  $rootPrefix = $ProjectRoot.TrimEnd("\") + "\"
   $hubPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-  if (-not [string]::Equals([string]$Listener.executable_path, $hubPython, [StringComparison]::OrdinalIgnoreCase) -or [string]$Listener.command_line -notmatch "(?:^|\s)-m\s+oms_hub\.cli\s+serve(?:\s|$)") { throw "Listener is not the same-root Python OMS Hub serve process." }
+  $servePattern = "(?:^|\s)-m\s+oms_hub\.cli\s+serve(?:\s|$)"
+  if ([string]$Listener.command_line -notmatch $servePattern) { throw "Listener is not the OMS Hub serve process." }
   if (-not (Test-SameAccount -Left ([string]$Listener.owner) -Right ([string]$Binding.process_identity)) -or -not (Test-SameAccount -Left ([string]$Listener.owner) -Right ([string]$Binding.task_principal)) -or -not (Test-SameAccount -Left ([string]$Listener.owner) -Right ([string]$Binding.deployment_identity))) { throw "Listener, task, and deployment identities differ." }
   $all = Get-ProcessSnapshot
   $byId = @{}; foreach ($row in $all) { $byId[[string]$row.process_id] = $row }
+  if (-not $byId.ContainsKey([string]$Listener.process_id)) { throw "Listener disappeared during ownership validation." }
+  $listenerRow = $byId[[string]$Listener.process_id]
+  if ([string]$listenerRow.name -ine "python.exe" -or [string]$listenerRow.creation_date -cne [string]$Listener.creation_date -or -not [string]::Equals([string]$listenerRow.executable_path, [string]$Listener.executable_path, [StringComparison]::OrdinalIgnoreCase) -or [string]$listenerRow.command_line -cne [string]$Listener.command_line) { throw "Listener changed during ownership validation." }
   $systemPowerShell = Get-SystemPowerShellPath
   $startScript = Join-Path $ProjectRoot "scripts\start-hub.ps1"
-  $matchingAncestors = 0; $seen = @{}; $cursor = [int]$Listener.process_id
+  $matchingVenvProcesses = 0; $matchingTaskAncestors = 0; $seen = @{}; $cursor = [int]$Listener.process_id
   while ($byId.ContainsKey([string]$cursor)) {
     if ($seen.ContainsKey([string]$cursor)) { throw "Process ancestry cycle." }
     $seen[[string]$cursor] = $true; $row = $byId[[string]$cursor]
-    if ([string]::Equals([string]$row.executable_path, $systemPowerShell, [StringComparison]::OrdinalIgnoreCase) -and [string]$row.command_line -like ("*" + $startScript + "*") -and [string]$row.command_line -like ("*-DataRoot*" + $Configuration.data_root + "*") -and [string]$row.command_line -match "(?:^|\s)-ActionIndex\s+0(?:\s|$)") { $matchingAncestors++ }
+    if ([string]$row.name -ieq "python.exe" -and [string]::Equals([string]$row.executable_path, $hubPython, [StringComparison]::OrdinalIgnoreCase) -and [string]$row.command_line -match $servePattern) { $matchingVenvProcesses++ }
+    if ([string]::Equals([string]$row.executable_path, $systemPowerShell, [StringComparison]::OrdinalIgnoreCase) -and [string]$row.command_line -like ("*" + $startScript + "*") -and [string]$row.command_line -like ("*-DataRoot*" + $Configuration.data_root + "*") -and [string]$row.command_line -match "(?:^|\s)-ActionIndex\s+0(?:\s|$)") { $matchingTaskAncestors++ }
     $cursor = [int]$row.parent_process_id
   }
-  if ($matchingAncestors -ne 1) { throw "Listener must have exactly one task-launched primary system PowerShell ancestor." }
+  if ($matchingVenvProcesses -ne 1) { throw "Listener must have exactly one pinned venv Python process in its lineage." }
+  if ($matchingTaskAncestors -ne 1) { throw "Listener must have exactly one task-launched primary system PowerShell ancestor." }
 }
 
 function Assert-ReadyHealth {
