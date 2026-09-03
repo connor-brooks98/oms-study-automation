@@ -114,11 +114,16 @@ failures during the `Deploy` invocation until it emits
 success marker, the driver reports and stops without an automatic mutation
 because the successful deployment transaction has already closed.
 
-If the checkout changes before the installer begins, the PowerShell script
-restores the old checkout and certifies that the runtime was untouched. If an
-installer has begun without a complete verified backup, it attempts old-runtime
-recovery but reports rollback incomplete; it never certifies task, data, or
-health state. It never retries the release.
+If a real installer exits zero with no supervision failure, the script accepts
+that bounded completion path. For a nonzero exit, timeout, or any supervision
+failure, it does not force-stop the installer or certify containment: logs are
+retained, automatic rollback is withheld, and manual containment and recovery
+are required before any runtime mutation. If the checkout changes before the
+installer begins, the PowerShell script restores the old checkout and certifies
+that the runtime was untouched. If a successfully completed installer has begun
+without a complete verified backup, it attempts old-runtime recovery but reports
+rollback incomplete; it never certifies task, data, or health state. It never
+retries the release.
 
 ## 4. Capture delivery evidence
 

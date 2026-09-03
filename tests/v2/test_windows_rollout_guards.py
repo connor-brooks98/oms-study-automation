@@ -1040,31 +1040,11 @@ def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_lim
     assert "Assert-RestoredRuntimeData $backup $Configuration" in release
     assert "Assert-OldRuntimeIntact $configuration $binding -RequireOriginalListener" in release
     assert "old runtime recovery attempted without certifying data or task" in release
-    assert "Stop-InstallerProcessTree" in release
     assert "$deadline = (Get-Date).AddMinutes(10)" in release
-    assert "Installer termination is unproven; refusing rollback" in release
-    assert "Get-InstallerRootRecord" in release
-    assert "Get-CimCreationKey" in release
-    assert "Update-InstallerOwnedInstances" in release
-    assert "every owned descendant are absent" in release
-    assert "$rootInstanceKey = \"{0}|{1}\"" in release
-    assert "if (-not $rootPresent -and $present.Count -eq 0)" in release
-    assert "Test-ProcessInstanceMatch" in release
-    assert "$script:InstallerTerminationProven = $false" in release
-    disagreement = release.index("$handleKey -cne [string]$deepest.creation_key")
-    termination_false = release.index(
-        "$script:InstallerTerminationProven = $false", disagreement
-    )
-    disagreement_throw = release.index(
-        "Installer process changed while acquiring its stable handle.", disagreement
-    )
-    assert disagreement < termination_false < disagreement_throw
-    final_handle = release.index(
-        "if (-not $installerProcess.HasExited -or -not $script:InstallerTerminationProven)"
-    )
-    final_reset = release.index("$script:InstallerTerminationProven = $false", final_handle)
-    final_throw = release.index("Installer termination is unproven; refusing rollback.")
-    assert final_handle < final_reset < final_throw
+    assert "Stop-InstallerProcessTree" not in release
+    assert "Get-InstallerRootRecord" not in release
+    assert "Update-InstallerOwnedInstances" not in release
+    assert "Installer exited abnormally or supervision failed; containment is unproven" in release
     withheld = release.index("rollback withheld because installer termination is unproven")
     rollback = release.index("Invoke-Rollback $configuration $binding $backupPath $failure")
     assert withheld < rollback
@@ -1136,6 +1116,39 @@ def test_grouped_matching_release_stops_recovery_when_installer_termination_is_u
     assert recovery_catch.index(withheld) < recovery_catch.index(
         'return "old runtime recovery attempt failed:'
     )
+
+
+def test_grouped_matching_release_never_certifies_or_rolls_back_after_untrusted_installer_end(
+) -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    installer = release[
+        release.index("function Invoke-Installer") : release.index("function Wait-ForFinalState")
+    ]
+    deploy = release[release.index('if ($Mode -eq "Deploy")') :]
+
+    trusted_exit = (
+        "if ($installerProcess.HasExited -and $installerProcess.ExitCode -eq 0 "
+        "-and $null -eq $failure)"
+    )
+    containment_failure = (
+        "Installer exited abnormally or supervision failed; containment is unproven; "
+        "manual recovery required. Diagnostics retained at"
+    )
+    assert trusted_exit in installer
+    assert installer.index(trusted_exit) < installer.index(
+        "$script:InstallerTerminationProven = $true"
+    )
+    assert "Stop-InstallerProcessTree" not in installer
+    assert "Update-InstallerOwnedInstances" not in release
+    assert containment_failure in installer
+    assert "if ($null -eq $failure) { $failure = \"Installer supervision failed:" in installer
+    assert installer.index("} catch {") < installer.index("} finally {")
+
+    withheld = deploy.index("rollback withheld because installer termination is unproven")
+    rollback = deploy.index("Invoke-Rollback $configuration $binding $backupPath $failure")
+    assert withheld < rollback
 
 
 def test_grouped_matching_release_marks_installer_started_only_after_real_process_launch() -> None:
@@ -1219,6 +1232,8 @@ def test_grouped_matching_delivery_plan_limits_automatic_rollback_to_deploy() ->
     assert "OMS_GROUPED_MATCHING_DEPLOY_COMPLETE" in delivery_plan
     assert "`Postflight` is separate read-only verification" in delivery_plan
     assert "stops without an automatic mutation" in delivery_plan
+    assert "does not force-stop the installer or certify containment" in delivery_plan
+    assert "manual containment and recovery" in delivery_plan
 
 
 def test_grouped_matching_release_validates_complete_backup_members() -> None:
