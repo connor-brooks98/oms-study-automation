@@ -122,8 +122,10 @@ function Invoke-Git {
 }
 
 function Get-SourceIdentity {
-  $commit = ([string](Invoke-Git @("rev-parse", "HEAD"))[0]).Trim().ToLowerInvariant()
-  $tree = ([string](Invoke-Git @("rev-parse", "HEAD^{tree}"))[0]).Trim().ToLowerInvariant()
+  $commitLines = @(Invoke-Git @("rev-parse", "HEAD"))
+  $treeLines = @(Invoke-Git @("rev-parse", "HEAD^{tree}"))
+  $commit = ([string]$commitLines[0]).Trim().ToLowerInvariant()
+  $tree = ([string]$treeLines[0]).Trim().ToLowerInvariant()
   if (@(Invoke-Git @("status", "--porcelain=v1", "--untracked-files=no")).Count -ne 0) { throw "Tracked checkout is dirty." }
   return [ordered]@{ commit=$commit; tree=$tree }
 }
@@ -240,10 +242,27 @@ function Assert-ReadyHealth {
   foreach ($workerName in $wantedWorkers) { $worker = $health.workers.$workerName; if (-not (Test-ExactJsonBoolean $worker.alive $true) -or -not (Test-ExactJsonInteger $worker.start_count 1) -or $null -ne $worker.active_work_age_seconds) { throw "Ready health worker differs: $workerName" } }
 }
 
+function Assert-ReleasePathSafety {
+  param([string]$RelativePath)
+  if ([string]::IsNullOrWhiteSpace($RelativePath) -or [IO.Path]::IsPathRooted($RelativePath) -or $RelativePath -match "(^|\\)\.\.?(\\|$)") { throw "Unsafe release path: $RelativePath" }
+  $root = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\\")
+  $candidate = [IO.Path]::GetFullPath((Join-Path $root $RelativePath.Replace("/", "\\")))
+  $prefix = $root + "\\"
+  if (-not $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Release path escapes project root: $RelativePath" }
+  $cursor = $candidate
+  while (-not (Test-Path -LiteralPath $cursor)) {
+    $parent = Split-Path -LiteralPath $cursor -Parent
+    if (-not $parent -or $parent -eq $cursor -or (-not [string]::Equals($parent, $root, [StringComparison]::OrdinalIgnoreCase) -and -not $parent.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))) { throw "Release path has no existing parent under project root: $RelativePath" }
+    $cursor = $parent
+  }
+  Assert-NonReparsePath -Path $cursor
+}
+
 function Get-ReleasePaths {
   param([object]$Binding)
   $paths = @(Invoke-Git @("diff", "--name-only", $Binding.old_commit, $Binding.merged_commit))
   foreach ($path in $paths) {
+    Assert-ReleasePathSafety -RelativePath $path
     if (@(Invoke-Git @("ls-files", "--others", "--exclude-standard", "--", $path)).Count -ne 0 -or @(Invoke-Git @("ls-files", "--others", "--ignored", "--exclude-standard", "--", $path)).Count -ne 0) { throw "Ignored or untracked release-path collision: $path" }
   }
   return $paths
@@ -460,9 +479,17 @@ function Stop-InstallerProcessTree {
   throw "Installer termination could not prove the original root and every owned descendant are absent."
 }
 
+function Assert-InstallerMutationPaths {
+  param([object]$Configuration)
+  $venv = Join-Path $ProjectRoot ".venv"
+  $artifacts = Join-Path $Configuration.data_root "artifacts"
+  Assert-Directory -Path $venv
+  if (Test-Path -LiteralPath $artifacts) { Assert-Directory -Path $artifacts }
+}
+
 function Invoke-Installer {
   param([object]$Configuration, [switch]$WhatIf)
-  $script:InstallerTerminationProven = $false
+  if (-not $WhatIf) { Assert-InstallerMutationPaths $Configuration }
   $logRoot = Join-Path $Configuration.data_root "release-logs"
   if (-not (Test-Path -LiteralPath $logRoot)) { New-Item -ItemType Directory -Path $logRoot -Force | Out-Null }
   Assert-Directory $logRoot
@@ -473,6 +500,10 @@ function Invoke-Installer {
   $installerProcess = $null; $rootRecord = $null; $ownedInstances = @{}; $failure = $null; $deadline = (Get-Date).AddMinutes(10)
   try {
     $installerProcess = Start-Process -FilePath (Get-SystemPowerShellPath) -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+    if (-not $WhatIf) {
+      $script:InstallerStarted = $true
+      $script:InstallerTerminationProven = $false
+    }
     $rootRecord = Get-InstallerRootRecord $installerProcess
     $rootInstanceKey = "{0}|{1}" -f $rootRecord.process_id, $rootRecord.creation_key
     $ownedInstances[$rootInstanceKey] = $rootRecord
@@ -529,6 +560,7 @@ function Invoke-UnverifiedOldRuntimeRecovery {
   # A missing/invalid backup cannot prove data or task recovery. This only makes
   # one best-effort attempt to get the old executable running, then reports failure.
   param([object]$Configuration, [object]$Binding)
+  if (-not $script:InstallerTerminationProven) { throw "rollback incomplete; further recovery withheld because installer termination is unproven" }
   try {
     Stop-SameRootRuntime -StopTask
     Invoke-Git @("checkout", "--detach", $Binding.old_commit) | Out-Null
@@ -537,6 +569,7 @@ function Invoke-UnverifiedOldRuntimeRecovery {
     Invoke-Installer $Configuration
     return "old runtime recovery attempted without certifying data or task"
   } catch {
+    if (-not $script:InstallerTerminationProven) { throw "rollback incomplete; further recovery withheld because installer termination is unproven" }
     return "old runtime recovery attempt failed: $($_.Exception.Message)"
   }
 }
@@ -552,7 +585,9 @@ function Invoke-Rollback {
     Invoke-Git @("checkout", "--detach", $Binding.old_commit) | Out-Null
     $source = Get-SourceIdentity; if ($source.commit -cne $Binding.old_commit -or $source.tree -cne $Binding.old_tree) { throw "Old checkout did not restore." }
     $quarantine = Join-Path $Configuration.data_root ("failed-release-quarantine\" + [guid]::NewGuid().ToString("N")); New-Item -ItemType Directory -Path $quarantine -ErrorAction Stop | Out-Null; Assert-Directory $quarantine
-    foreach ($runtimePath in @($Configuration.database_path, ($Configuration.database_path + "-wal"), ($Configuration.database_path + "-shm"), (Join-Path $Configuration.data_root "artifacts"))) { if (Test-Path -LiteralPath $runtimePath) { Assert-NonReparsePath $runtimePath; Move-Item -LiteralPath $runtimePath -Destination $quarantine -ErrorAction Stop } }
+    $artifacts = Join-Path $Configuration.data_root "artifacts"
+    if (Test-Path -LiteralPath $artifacts) { Assert-Directory -Path $artifacts }
+    foreach ($runtimePath in @($Configuration.database_path, ($Configuration.database_path + "-wal"), ($Configuration.database_path + "-shm"), $artifacts)) { if (Test-Path -LiteralPath $runtimePath) { Assert-NonReparsePath $runtimePath; Move-Item -LiteralPath $runtimePath -Destination $quarantine -ErrorAction Stop } }
     Copy-Item -LiteralPath $backup.database -Destination $Configuration.database_path -ErrorAction Stop
     if (Test-Path -LiteralPath $backup.artifacts -PathType Container) { Copy-Item -LiteralPath $backup.artifacts -Destination (Join-Path $Configuration.data_root "artifacts") -Recurse -ErrorAction Stop }
     Assert-RestoredRuntimeData $backup $Configuration
@@ -573,6 +608,7 @@ function Invoke-Rollback {
     # Never rethrow inside this recovery try: the outer caller must see the explicit incomplete state.
   }
   if ($rollbackCompletionMessage) { throw $rollbackCompletionMessage }
+  if (-not $script:InstallerTerminationProven) { throw "rollback incomplete; further recovery withheld because installer termination is unproven" }
   $unverifiedOutcome = Invoke-UnverifiedOldRuntimeRecovery $Configuration $Binding
   throw "rollback incomplete: release failure: $Reason; recovery failure: $($recoveryFailures -join '; '); $unverifiedOutcome"
 }
@@ -594,7 +630,8 @@ $configuration = Get-ReleaseConfiguration
 try {
   if ($Mode -eq "Preflight") {
     $source = Get-SourceIdentity; Invoke-Git @("fetch", "origin", "main") | Out-Null
-    $originMain = ([string](Invoke-Git @("rev-parse", "origin/main"))[0]).Trim().ToLowerInvariant()
+    $originMainLines = @(Invoke-Git @("rev-parse", "origin/main"))
+    $originMain = ([string]$originMainLines[0]).Trim().ToLowerInvariant()
     if ($originMain -cne $ExpectedMergedCommit) { throw "origin/main does not equal expected merge." }
     Invoke-Git @("merge-base", "--is-ancestor", "HEAD", "origin/main") | Out-Null
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop; $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -622,7 +659,7 @@ try {
       $script:CheckoutMutated = $true
       Invoke-Git @("merge", "--ff-only", "origin/main") | Out-Null
       $source = Get-SourceIdentity; if ($source.commit -cne $binding.merged_commit -or $source.tree -cne $binding.merged_tree) { throw "Merged source differs." }
-      $script:InstallerStarted = $true; Invoke-Installer $configuration
+      Invoke-Installer $configuration
       $newBackups = @((Get-BackupNames $backupRoot) | Where-Object { $backupsBefore -notcontains $_ }); if ($newBackups.Count -ne 1) { throw "Expected exactly one new backup." }; $backupPath = Join-Path $backupRoot $newBackups[0]
       Assert-VerifiedRollbackBackup $backupPath $configuration $binding | Out-Null
       $newListener = Wait-ForFinalState $configuration $binding $backupPath

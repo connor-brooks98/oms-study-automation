@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -1021,9 +1022,7 @@ def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_lim
     preview = release.index("Invoke-Installer $configuration -WhatIf", deploy)
     mutation = release.index("$script:CheckoutMutated = $true", deploy)
     merge = release.index('Invoke-Git @("merge", "--ff-only", "origin/main")', deploy)
-    installer = release.index(
-        "$script:InstallerStarted = $true; Invoke-Installer $configuration", deploy
-    )
+    installer = release.index("Invoke-Installer $configuration", merge)
     assert preflight < deploy < preview < mutation < merge < installer
     assert "release failed before installer; checkout restored and runtime was untouched" in release
     assert "installer began without a complete verified backup" in release
@@ -1076,6 +1075,141 @@ def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_lim
     assert copy < restored_hash < sqlite < installer
     quarantine = release.index("New-Item -ItemType Directory -Path $quarantine")
     assert quarantine < release.index("Assert-Directory $quarantine", quarantine)
+
+
+def test_grouped_matching_release_wraps_indexed_git_output_before_selecting_line_zero() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    # Mirror the scalar-output regression covered by the launcher/installer
+    # test above: a one-line native result is a scalar in PowerShell, where
+    # `[0]` selects only its first character. The release wrapper must make
+    # every indexed native result an array before selecting line zero.
+    complete_hash = "a" * 40
+    assert complete_hash[0] != complete_hash
+    assert [complete_hash][0] == complete_hash
+    for variable, arguments in (
+        ("commitLines", '"rev-parse", "HEAD"'),
+        ("treeLines", '"rev-parse", "HEAD^{tree}"'),
+        ("originMainLines", '"rev-parse", "origin/main"'),
+    ):
+        assignment = re.escape(f"${variable} = @(Invoke-Git @({arguments}))")
+        selection = re.escape(f"[string]${variable}[0]")
+        assignment_match = re.search(assignment, release)
+        selection_match = re.search(selection, release)
+        assert assignment_match
+        assert selection_match
+        assert release.index(assignment_match.group()) < release.index(
+            selection_match.group()
+        )
+    assert "(Invoke-Git @(\"rev-parse\", \"HEAD\"))[0]" not in release
+    assert "(Invoke-Git @(\"rev-parse\", \"HEAD^{tree}\"))[0]" not in release
+    assert "(Invoke-Git @(\"rev-parse\", \"origin/main\"))[0]" not in release
+
+
+def test_grouped_matching_release_stops_recovery_when_installer_termination_is_unproven() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    recovery = release[
+        release.index("function Invoke-UnverifiedOldRuntimeRecovery") : release.index(
+            "function Invoke-Rollback"
+        )
+    ]
+    rollback = release[
+        release.index("function Invoke-Rollback") : release.index("function Get-Binding")
+    ]
+    withheld = (
+        "rollback incomplete; further recovery withheld because installer termination is unproven"
+    )
+
+    rollback_gate = rollback.index("if (-not $script:InstallerTerminationProven)")
+    subsequent_recovery = rollback.index("Invoke-UnverifiedOldRuntimeRecovery")
+    assert rollback_gate < subsequent_recovery
+    assert withheld in rollback
+    assert recovery.index("if (-not $script:InstallerTerminationProven)") < recovery.index(
+        "Stop-SameRootRuntime -StopTask"
+    )
+    recovery_catch = recovery[recovery.index("} catch {") :]
+    assert f'throw "{withheld}"' in recovery_catch
+    assert recovery_catch.index(withheld) < recovery_catch.index(
+        'return "old runtime recovery attempt failed:'
+    )
+
+
+def test_grouped_matching_release_marks_installer_started_only_after_real_process_launch() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    installer = release[
+        release.index("function Invoke-Installer") : release.index("function Wait-ForFinalState")
+    ]
+    start_process = installer.index("$installerProcess = Start-Process")
+    started = installer.index("$script:InstallerStarted = $true")
+    assert start_process < started
+    assert "if (-not $WhatIf) {\n      $script:InstallerStarted = $true" in installer
+    assert "$script:InstallerTerminationProven = $false" not in installer[:start_process]
+
+    deploy = release[release.index('if ($Mode -eq "Deploy")') :]
+    assert "$script:InstallerStarted = $true; Invoke-Installer $configuration" not in deploy
+    pre_installer_failure = deploy.index("if (-not $script:InstallerStarted)")
+    withheld = deploy.index("rollback withheld because installer termination is unproven")
+    assert withheld < pre_installer_failure
+    assert "release failed before installer; checkout restored and runtime was untouched" in deploy
+
+
+def test_grouped_matching_release_checks_reparse_safety_for_changed_paths_and_runtime_trees(
+) -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    safety_start = release.index("function Assert-ReleasePathSafety")
+    safety_end = release.index("function Get-ReleasePaths")
+    safety = release[safety_start:safety_end]
+    assert "while (-not (Test-Path -LiteralPath $cursor))" in safety
+    assert "Assert-NonReparsePath -Path $cursor" in safety
+    assert "Release path escapes project root" in safety
+
+    release_paths = release[
+        release.index("function Get-ReleasePaths") : release.index("function Get-BackupNames")
+    ]
+    assert "Assert-ReleasePathSafety -RelativePath $path" in release_paths
+
+    installer_paths = release[
+        release.index("function Assert-InstallerMutationPaths") : release.index(
+            "function Invoke-Installer"
+        )
+    ]
+    assert 'Join-Path $ProjectRoot ".venv"' in installer_paths
+    assert "Assert-Directory -Path $venv" in installer_paths
+    assert 'Join-Path $Configuration.data_root "artifacts"' in installer_paths
+    assert "Assert-Directory -Path $artifacts" in installer_paths
+
+    installer = release[
+        release.index("function Invoke-Installer") : release.index("function Wait-ForFinalState")
+    ]
+    assert installer.index("Assert-InstallerMutationPaths $Configuration") < installer.index(
+        "$installerProcess = Start-Process"
+    )
+
+    rollback = release[
+        release.index("function Invoke-Rollback") : release.index("function Get-Binding")
+    ]
+    artifacts_guard = rollback.index("Assert-Directory -Path $artifacts")
+    artifacts_move = rollback.index("Move-Item -LiteralPath $runtimePath")
+    assert artifacts_guard < artifacts_move
+
+
+def test_grouped_matching_delivery_plan_limits_automatic_rollback_to_deploy() -> None:
+    delivery_plan = (
+        ROOT / "docs" / "superpowers" / "plans" / "2026-09-02-grouped-matching-delivery.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Automatic rollback covers the\n`Deploy` invocation" in delivery_plan
+    assert "OMS_GROUPED_MATCHING_DEPLOY_COMPLETE" in delivery_plan
+    assert "`Postflight` is separate read-only verification" in delivery_plan
+    assert "stops without an automatic mutation" in delivery_plan
 
 
 def test_grouped_matching_release_validates_complete_backup_members() -> None:
