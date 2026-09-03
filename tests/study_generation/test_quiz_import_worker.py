@@ -261,7 +261,15 @@ def _matching_worker_fixture(
 
 def _mixed_worker_fixture(
     tmp_path: Path,
-) -> tuple[QuizImportWorker, StudioRepository, StudioRun, _RecordingAnswers]:
+    *,
+    content_kind: QuizContentKind = QuizContentKind.PRACTICE_QUESTIONS,
+) -> tuple[
+    QuizImportWorker,
+    StudioRepository,
+    StudioRun,
+    _RecordingAnswers,
+    "_AttachingNotebook",
+]:
     repository = _repository(tmp_path)
     source = _ready_source(repository, tmp_path, "Mixed questions")
     supporting = _ready_source(repository, tmp_path, "Mixed supporting reference")
@@ -271,7 +279,7 @@ def _mixed_worker_fixture(
         "Imported mixed practice",
         "Neuro",
         1,
-        QuizContentKind.PRACTICE_QUESTIONS,
+        content_kind,
         (
             ImportSourceSelection(source.id, ImportSourceRole.QUESTIONS),
             ImportSourceSelection(
@@ -324,15 +332,16 @@ def _mixed_worker_fixture(
         diagnostics=(),
     )
     answers = _RecordingAnswers()
+    notebook = _AttachingNotebook()
     worker = QuizImportWorker(
         repository,
         _Parser(),
         _StaticExtractor(extraction),
         answers,
-        _AttachingNotebook(),
+        notebook,
         tmp_path / "assets",
     )
-    return worker, repository, run, answers
+    return worker, repository, run, answers, notebook
 
 
 class _ResolvedAnswers:
@@ -1633,7 +1642,7 @@ def test_incomplete_matching_group_stops_before_any_answer_provider_call(tmp_pat
 
 
 def test_mixed_import_resolves_only_the_unanswered_mcq(tmp_path: Path) -> None:
-    worker, repository, run, answers = _mixed_worker_fixture(tmp_path)
+    worker, repository, run, answers, _notebook = _mixed_worker_fixture(tmp_path)
 
     worker.run(repository.claim_next_run())
 
@@ -1643,6 +1652,21 @@ def test_mixed_import_resolves_only_the_unanswered_mcq(tmp_path: Path) -> None:
     drafts = _drafts_from_json(repository.run_artifact(run.id, "normalized").payload_json)
     matching = next(item for item in drafts if isinstance(item, MatchingQuestionDraft))
     assert tuple(prompt.correct_index for prompt in matching.prompts) == (1, 0)
+
+
+def test_non_practice_mixed_import_rejects_matching_before_resolution(tmp_path: Path) -> None:
+    worker, repository, run, answers, notebook = _mixed_worker_fixture(
+        tmp_path,
+        content_kind=QuizContentKind.EXAM_REVIEW,
+    )
+
+    worker.run(repository.claim_next_run())
+
+    rejected = repository.get_run(run.id)
+    assert answers.calls == []
+    assert notebook.calls == []
+    assert rejected.state is StudioRunState.FAILED
+    assert rejected.error == "matching questions require practice-question content"
 
 
 def test_non_practice_direct_import_rejects_matching_before_review(tmp_path: Path) -> None:

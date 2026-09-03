@@ -179,6 +179,11 @@ class QuizImportWorker:
             parsed = self._parse(run, sources, roles)
             extracted = self._extract(run, parsed, sources, roles)
             drafts = self._pair(run, extracted, sources, roles)
+            if (
+                any(isinstance(draft, MatchingQuestionDraft) for draft in drafts)
+                and run.content_kind is not QuizContentKind.PRACTICE_QUESTIONS
+            ):
+                raise ValueError("matching questions require practice-question content")
             if any(_requires_review_before_resolution(draft) for draft in drafts):
                 self._review(run, drafts, sources, roles)
                 return
@@ -689,11 +694,6 @@ class QuizImportWorker:
         sources: tuple[StudioSource, ...],
         roles: tuple[ImportSourceRole, ...],
     ) -> None:
-        if (
-            any(isinstance(draft, MatchingQuestionDraft) for draft in drafts)
-            and run.content_kind is not QuizContentKind.PRACTICE_QUESTIONS
-        ):
-            raise ValueError("matching questions require practice-question content")
         self.repository.set_run_stage(run.id, StudioRunStage.NORMALIZE)
         pair_or_answer = "answered" if self.repository.run_artifact(run.id, "answered") else "pair"
         signature = stage_signature(
