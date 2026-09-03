@@ -1,3 +1,5 @@
+import base64
+import json
 import re
 import shutil
 import subprocess
@@ -1303,6 +1305,127 @@ def test_grouped_matching_nuc_driver_is_one_shot_and_cleans_exact_remote_leaf() 
     assert '"listener_creation_date":post["listener_creation_date"]' in driver
     assert "expected_blob_sha256=$(git show" in driver
     assert "test -z \"$(git status --porcelain)\"" in driver
+
+
+def test_grouped_matching_release_parent_walks_use_ps51_safe_paths() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    driver = (ROOT / "scripts" / "deploy-grouped-matching-nuc.sh").read_text(
+        encoding="utf-8"
+    )
+
+    for source in (release, driver):
+        assert not re.search(
+            r"Split-Path\s+-LiteralPath\b[^\r\n;]*\s+-Parent\b", source
+        )
+    assert release.count("Split-Path -Path $cursor -Parent") == 2
+    assert driver.count("Split-Path -Path \\$p -Parent") == 3
+    assert driver.count("Split-Path -Path \\$parent -Parent") == 3
+
+    remote_ps = driver[
+        driver.index("remote_ps() {") : driver.index("\nremote_path_b64=")
+    ]
+    remote_prefix = (
+        'remote_prefix=\'$ErrorActionPreference="Stop";'
+        '$ProgressPreference="SilentlyContinue";\''
+    )
+    assert remote_prefix in remote_ps
+    assert 'printf \'%s\' "$remote_prefix" "$command"' in remote_ps
+
+
+def test_grouped_matching_release_quotes_installer_path_arguments_for_ps51() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    installer = release[
+        release.index("function Invoke-Installer") : release.index(
+            "function Wait-ForFinalState"
+        )
+    ]
+
+    assert (
+        '$arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", '
+        '"Bypass", "-File", "`"$Installer`"", "-ProjectRoot", '
+        '"`"$ProjectRoot`"", "-DataRoot", "`"$($Configuration.data_root)`"")'
+    ) in installer
+    assert (
+        "Start-Process -FilePath (Get-SystemPowerShellPath) -ArgumentList $arguments"
+        in installer
+    )
+
+
+def test_grouped_matching_release_keeps_paths_out_of_binding_and_bounds_ssh_command() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    driver = (ROOT / "scripts" / "deploy-grouped-matching-nuc.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "$binding.release_paths" not in release
+    assert "Get-ReleasePaths $binding | Out-Null" in release
+    assert "REMOTE_COMMAND_MAX=7000" in driver
+    bash = shutil.which("bash")
+    if bash is None:
+        return
+
+    remote_ps = driver[
+        driver.index("remote_ps() {") : driver.index("\njson_one() {")
+    ]
+    binding = {
+        "marker": "OMS_GROUPED_MATCHING_PREFLIGHT_COMPLETE",
+        "old_commit": "a" * 40,
+        "old_tree": "b" * 40,
+        "schema_version": 1,
+        "old_listener_pid": 1234,
+        "old_listener_creation_date": "2026-09-03T12:00:00.0000000Z",
+        "process_identity": "OMS\\release",
+        "task_xml_sha256": "c" * 64,
+        "task_principal": "OMS\\release",
+        "task_logon_type": "Password",
+        "deployment_identity": "OMS\\release",
+        "data_root": "C:\\ProgramData\\OMS Study Hub",
+        "database_path": "C:\\ProgramData\\OMS Study Hub\\hub.db",
+        "port": 8765,
+        "env_sha256": "d" * 64,
+        "merged_commit": "e" * 40,
+        "merged_tree": "f" * 40,
+    }
+    binding_b64 = base64.b64encode(json.dumps(binding, separators=(",", ":")).encode()).decode()
+    remote_path_b64 = base64.b64encode(
+        b"C:\\Users\\conbr\\AppData\\Local\\Temp\\oms-grouped-matching-12345678.ps1"
+    ).decode()
+    command = (
+        f"$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{remote_path_b64}')); "
+        f"& $p -Mode Deploy -ExpectedScriptSha256 '{'0' * 64}' "
+        f"-ExpectedMergedCommit '{'e' * 40}' -ExpectedMergedTree '{'f' * 40}' "
+        f"-BindingJsonBase64 '{binding_b64}'"
+    )
+
+    def invoke_remote(payload: str) -> subprocess.CompletedProcess[bytes]:
+        harness = (
+            "set -euo pipefail\n"
+            "REMOTE_COMMAND_MAX=7000\n"
+            f"{remote_ps}\n"
+            "ssh() { printf '%s' \"$2\"; }\n"
+            "printf '%s' \"$1\" | remote_ps\n"
+        )
+        return subprocess.run(
+            [bash, "-c", harness, "--", payload],
+            check=False,
+            capture_output=True,
+        )
+
+    representative = invoke_remote(command)
+    assert representative.returncode == 0, representative.stderr.decode()
+    assert 4000 < len(representative.stdout) <= 7000
+    assert representative.stdout.startswith(b"powershell.exe -NoProfile ")
+
+    oversized = invoke_remote("x" * 3000)
+    assert oversized.returncode != 0
+    assert oversized.stdout == b""
+    assert b"Remote PowerShell command exceeds" in oversized.stderr
 
 
 def test_grouped_matching_delivery_plan_is_self_derived_not_cross_fence_bound() -> None:

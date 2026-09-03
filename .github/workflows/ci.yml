@@ -113,6 +113,38 @@ jobs:
             }
           }
 
+          $parent = Split-Path -Path "C:\Services\oms-study-automation-v2\scripts\deploy-grouped-matching-release.ps1" -Parent
+          if ($parent -cne "C:\Services\oms-study-automation-v2\scripts") {
+            throw "PowerShell parent-path smoke returned an unexpected value: $parent"
+          }
+
+          $captureScript = Join-Path $env:RUNNER_TEMP ("argument-capture-" + [guid]::NewGuid().ToString("N") + ".ps1")
+          $captureOutput = Join-Path $env:RUNNER_TEMP ("argument-capture-" + [guid]::NewGuid().ToString("N") + ".json")
+          $projectRoot = "C:\Services\OMS Study Hub"
+          $dataRoot = "C:\ProgramData\OMS Study Hub"
+          try {
+          @'
+          param([string]$ProjectRoot, [string]$DataRoot, [string]$CapturePath)
+          [ordered]@{ file_path=$PSCommandPath; project_root=$ProjectRoot; data_root=$DataRoot } |
+            ConvertTo-Json -Compress | Set-Content -LiteralPath $CapturePath -NoNewline -Encoding UTF8
+          '@ | Set-Content -LiteralPath $captureScript -NoNewline -Encoding UTF8
+            $captureArguments = @(
+              "-NoProfile", "-NonInteractive", "-File", "`"$captureScript`"",
+              "-ProjectRoot", "`"$projectRoot`"", "-DataRoot", "`"$dataRoot`"",
+              "-CapturePath", "`"$captureOutput`""
+            )
+            $captureProcess = Start-Process -FilePath (Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe") -ArgumentList $captureArguments -PassThru -Wait -WindowStyle Hidden
+            if ($captureProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $captureOutput -PathType Leaf)) {
+              throw "PowerShell argument capture failed with exit code $($captureProcess.ExitCode)"
+            }
+            $capture = Get-Content -LiteralPath $captureOutput -Raw | ConvertFrom-Json
+            if ($capture.file_path -cne $captureScript -or $capture.project_root -cne $projectRoot -or $capture.data_root -cne $dataRoot) {
+              throw "PowerShell argument capture did not preserve a path argument boundary"
+            }
+          } finally {
+            Remove-Item -LiteralPath $captureScript, $captureOutput -Force -ErrorAction SilentlyContinue
+          }
+
           $scriptPath = $scriptPaths[0]
 
           $source = Get-Content -LiteralPath $scriptPath -Raw

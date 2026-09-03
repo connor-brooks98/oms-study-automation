@@ -51,7 +51,7 @@ function Assert-NonReparsePath {
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
       throw "Reparse point is not permitted: $cursor"
     }
-    $parent = Split-Path -LiteralPath $cursor -Parent
+    $parent = Split-Path -Path $cursor -Parent
     if (-not $parent -or $parent -eq $cursor) { return }
     $cursor = $parent
   }
@@ -131,7 +131,7 @@ function Get-SourceIdentity {
 }
 
 function Get-SystemPowerShellPath {
-  $path = [IO.Path]::GetFullPath((Join-Path [Environment]::SystemDirectory "WindowsPowerShell\v1.0\powershell.exe"))
+  $path = [IO.Path]::GetFullPath((Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe"))
   Assert-Leaf -Path $path
   return $path
 }
@@ -251,7 +251,7 @@ function Assert-ReleasePathSafety {
   if (-not $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Release path escapes project root: $RelativePath" }
   $cursor = $candidate
   while (-not (Test-Path -LiteralPath $cursor)) {
-    $parent = Split-Path -LiteralPath $cursor -Parent
+    $parent = Split-Path -Path $cursor -Parent
     if (-not $parent -or $parent -eq $cursor -or (-not [string]::Equals($parent, $root, [StringComparison]::OrdinalIgnoreCase) -and -not $parent.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))) { throw "Release path has no existing parent under project root: $RelativePath" }
     $cursor = $parent
   }
@@ -412,7 +412,7 @@ function Invoke-Installer {
   Assert-Directory $logRoot
   $logStem = Join-Path $logRoot ("grouped-matching-" + [guid]::NewGuid().ToString("N"))
   $stdoutLog = "$logStem.stdout.log"; $stderrLog = "$logStem.stderr.log"
-  $arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $Installer, "-ProjectRoot", $ProjectRoot, "-DataRoot", $Configuration.data_root)
+  $arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "`"$Installer`"", "-ProjectRoot", "`"$ProjectRoot`"", "-DataRoot", "`"$($Configuration.data_root)`"")
   if ($WhatIf) { $arguments += "-WhatIf" }
   $installerProcess = $null; $failure = $null; $deadline = (Get-Date).AddMinutes(10)
   try {
@@ -558,7 +558,7 @@ try {
     if (-not (Test-JsonInteger $preflightHealth.schema_version)) { throw "Preflight schema version is not an integer." }
     $binding = [ordered]@{ marker="OMS_GROUPED_MATCHING_PREFLIGHT_COMPLETE"; old_commit=$source.commit; old_tree=$source.tree; schema_version=[int]$preflightHealth.schema_version; old_listener_pid=$listener.process_id; old_listener_creation_date=$listener.creation_date; process_identity=$listener.owner; task_xml_sha256=(Get-TaskXmlSha256); task_principal=[string]$task.Principal.UserId; task_logon_type=[string]$task.Principal.LogonType; deployment_identity=$identity; data_root=$configuration.data_root; database_url=$configuration.database_url; database_path=$configuration.database_path; port=$configuration.port; env_sha256=$configuration.env_sha256; merged_commit=$ExpectedMergedCommit; merged_tree=$ExpectedMergedTree }
     if ($binding.port -ne 8765) { throw "Configured port is not 8765." }
-    Assert-TaskBinding $configuration $binding -RequireXmlDigest; Assert-ListenerTaskOwnership $listener $configuration $binding; Assert-ReadyHealth $configuration $binding $binding.old_commit $binding.old_tree; $binding.release_paths = Get-ReleasePaths $binding
+    Assert-TaskBinding $configuration $binding -RequireXmlDigest; Assert-ListenerTaskOwnership $listener $configuration $binding; Assert-ReadyHealth $configuration $binding $binding.old_commit $binding.old_tree; Get-ReleasePaths $binding | Out-Null
     $binding | ConvertTo-Json -Compress -Depth 8
     exit 0
   }

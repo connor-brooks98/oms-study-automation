@@ -23,12 +23,20 @@ nonce=$(uuidgen | tr '[:upper:]' '[:lower:]')
 remote_transport_path="C:/Users/conbr/AppData/Local/Temp/oms-grouped-matching-${nonce}.ps1"
 remote_native_path="C:\\Users\\conbr\\AppData\\Local\\Temp\\oms-grouped-matching-${nonce}.ps1"
 upload_attempted=false
+# OpenSSH invokes cmd.exe remotely; reserve more than 1 KiB below its 8,191-character limit.
+REMOTE_COMMAND_MAX=7000
 
 to_b64() { LC_ALL=C python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())'; }
 remote_ps() {
-  local encoded
-  encoded=$(LC_ALL=C python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.read().encode("utf-16le")).decode())')
-  ssh nuc "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
+  local command encoded remote_command remote_prefix='$ErrorActionPreference="Stop";$ProgressPreference="SilentlyContinue";'
+  command=$(cat)
+  encoded=$(printf '%s' "$remote_prefix" "$command" | LC_ALL=C python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.read().encode("utf-16le")).decode())')
+  remote_command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
+  if (( ${#remote_command} > REMOTE_COMMAND_MAX )); then
+    printf 'Remote PowerShell command exceeds %d characters (limit %d).\n' "${#remote_command}" "$REMOTE_COMMAND_MAX" >&2
+    return 1
+  fi
+  ssh nuc "$remote_command"
 }
 json_one() {
   python3 -c 'import json,sys; rows=[line for line in sys.stdin.read().splitlines() if line.strip()]; assert len(rows)==1, rows; print(json.dumps(json.loads(rows[0]),separators=(",",":")))'
@@ -36,13 +44,13 @@ json_one() {
 remote_path_b64=$(printf '%s' "$remote_native_path" | to_b64)
 assert_remote_parent_and_absent() {
   local command
-  command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$parent=Split-Path -LiteralPath \$p -Parent;while(\$parent){\$item=Get-Item -LiteralPath \$parent -Force -ErrorAction Stop;if((\$item.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'remote release parent invalid'};\$next=Split-Path -LiteralPath \$parent -Parent;if(-not \$next -or \$next -eq \$parent){break};\$parent=\$next};if(Test-Path -LiteralPath \$p){throw 'unique remote release path already exists'}"
+  command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$parent=Split-Path -Path \$p -Parent;while(\$parent){\$item=Get-Item -LiteralPath \$parent -Force -ErrorAction Stop;if((\$item.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'remote release parent invalid'};\$next=Split-Path -Path \$parent -Parent;if(-not \$next -or \$next -eq \$parent){break};\$parent=\$next};if(Test-Path -LiteralPath \$p){throw 'unique remote release path already exists'}"
   printf '%s' "$command" | remote_ps >/dev/null
 }
 cleanup_remote() {
   if [[ "$upload_attempted" != true ]]; then return; fi
   local command
-  command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$parent=Split-Path -LiteralPath \$p -Parent;while(\$parent){\$parentItem=Get-Item -LiteralPath \$parent -Force -ErrorAction Stop;if((\$parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'remote release parent invalid'};\$next=Split-Path -LiteralPath \$parent -Parent;if(-not \$next -or \$next -eq \$parent){break};\$parent=\$next};if(Test-Path -LiteralPath \$p){\$i=Get-Item -LiteralPath \$p -Force -ErrorAction Stop;if(\$i.PSIsContainer -or ((\$i.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0)){throw 'remote release leaf invalid'};Remove-Item -LiteralPath \$p -Force -ErrorAction Stop};if(Test-Path -LiteralPath \$p){throw 'remote release leaf remains'}"
+  command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$parent=Split-Path -Path \$p -Parent;while(\$parent){\$parentItem=Get-Item -LiteralPath \$parent -Force -ErrorAction Stop;if((\$parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'remote release parent invalid'};\$next=Split-Path -Path \$parent -Parent;if(-not \$next -or \$next -eq \$parent){break};\$parent=\$next};if(Test-Path -LiteralPath \$p){\$i=Get-Item -LiteralPath \$p -Force -ErrorAction Stop;if(\$i.PSIsContainer -or ((\$i.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0)){throw 'remote release leaf invalid'};Remove-Item -LiteralPath \$p -Force -ErrorAction Stop};if(Test-Path -LiteralPath \$p){throw 'remote release leaf remains'}"
   printf '%s' "$command" | remote_ps >/dev/null
   upload_attempted=false
 }
@@ -52,7 +60,7 @@ assert_remote_parent_and_absent
 upload_attempted=true
 scp -q "$release_script" "nuc:$remote_transport_path"
 
-verify_command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$i=Get-Item -LiteralPath \$p -Force -ErrorAction Stop;if(\$i.PSIsContainer -or ((\$i.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0)){throw 'remote release leaf invalid'};\$parent=Split-Path -LiteralPath \$p -Parent;while(\$parent){\$parentItem=Get-Item -LiteralPath \$parent -Force -ErrorAction Stop;if((\$parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'remote release parent invalid'};\$next=Split-Path -LiteralPath \$parent -Parent;if(-not \$next -or \$next -eq \$parent){break};\$parent=\$next};if((Get-FileHash -LiteralPath \$p -Algorithm SHA256).Hash.ToLowerInvariant() -cne '$script_sha256'){throw 'remote release hash differs'};\$tokens=\$null;\$errors=\$null;[Management.Automation.Language.Parser]::ParseFile(\$p,[ref]\$tokens,[ref]\$errors)|Out-Null;if(\$errors.Count -ne 0){throw ((\$errors|ForEach-Object { \$_.Message }) -join ';')}"
+verify_command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64'));\$i=Get-Item -LiteralPath \$p -Force -ErrorAction Stop;if(\$i.PSIsContainer -or ((\$i.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0)){throw 'remote release leaf invalid'};\$parent=Split-Path -Path \$p -Parent;while(\$parent){\$parentItem=Get-Item -LiteralPath \$parent -Force -ErrorAction Stop;if((\$parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'remote release parent invalid'};\$next=Split-Path -Path \$parent -Parent;if(-not \$next -or \$next -eq \$parent){break};\$parent=\$next};if((Get-FileHash -LiteralPath \$p -Algorithm SHA256).Hash.ToLowerInvariant() -cne '$script_sha256'){throw 'remote release hash differs'};\$tokens=\$null;\$errors=\$null;[Management.Automation.Language.Parser]::ParseFile(\$p,[ref]\$tokens,[ref]\$errors)|Out-Null;if(\$errors.Count -ne 0){throw ((\$errors|ForEach-Object { \$_.Message }) -join ';')}"
 printf '%s' "$verify_command" | remote_ps >/dev/null
 
 invoke_mode() {
