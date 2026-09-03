@@ -64,12 +64,18 @@ verify_command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(
 printf '%s' "$verify_command" | remote_ps >/dev/null
 
 invoke_mode() {
-  local mode=$1 binding_b64=${2:-} backup_b64=${3:-} command output
+  local mode=$1 binding_b64=${2:-} backup_b64=${3:-} command output remote_status
   command="\$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$remote_path_b64')); & \$p -Mode $mode -ExpectedScriptSha256 '$script_sha256' -ExpectedMergedCommit '$merge_commit' -ExpectedMergedTree '$merged_tree'"
   if [[ -n "$binding_b64" ]]; then command+=" -BindingJsonBase64 '$binding_b64'"; fi
   if [[ -n "$backup_b64" ]]; then command+=" -ExpectedBackupPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$backup_b64')))"; fi
-  output=$(printf '%s' "$command" | remote_ps) || return
-  printf '%s\n' "$output" | json_one
+  if output=$(printf '%s' "$command" | remote_ps); then
+    printf '%s\n' "$output" | json_one
+  else
+    remote_status=$?
+    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+    printf 'Remote %s failed with exit %d before valid JSON.\n' "$mode" "$remote_status" >&2
+    return "$remote_status"
+  fi
 }
 
 preflight_json=$(invoke_mode Preflight)
