@@ -22,7 +22,7 @@ from oms_hub.study_generation.domain import (
 )
 from oms_hub.study_generation.native_quiz import (
     QuizContractError,
-    parse_native_quiz,
+    parse_notebook_quiz,
     quiz_prompt,
 )
 from oms_hub.study_generation.notebook_errors import (
@@ -260,7 +260,7 @@ class GenerationWorker:
             quiz_url = job.quiz_url
         else:
             try:
-                quiz = parse_native_quiz(answer.text)
+                quiz = parse_notebook_quiz(answer.text)
             except QuizContractError as error:
                 self.repository.record_attempt(
                     job.id,

@@ -11,7 +11,9 @@ from oms_hub.study_generation.domain import (
 from oms_hub.study_generation.native_quiz import (
     QuizContractError,
     grade_answer,
+    grade_matching_answer,
     parse_native_quiz,
+    parse_notebook_quiz,
     public_quiz_content,
     quiz_origin,
     quiz_prompt,
@@ -231,6 +233,63 @@ def test_public_content_omits_answers_and_rationales():
     }
     assert "correct" not in repr(content)
     assert "rationale" not in repr(content)
+
+
+def test_matching_public_content_withholds_every_mapping() -> None:
+    content = public_quiz_content(parse_native_quiz(json.dumps(_matching_payload())))
+
+    assert content["questions"] == [{
+        "kind": "matching",
+        "id": "q1",
+        "stem": "Match each description with its term.",
+        "prompts": [
+            {"id": "p1", "label": "A", "text": "Description alpha"},
+            {"id": "p2", "label": "B", "text": "Description beta"},
+        ],
+        "choices": [
+            {"id": "c1", "text": "Term one"},
+            {"id": "c2", "text": "Term two"},
+        ],
+    }]
+    assert "correct" not in repr(content)
+
+
+def test_matching_grading_is_all_or_nothing_with_row_feedback_and_choice_reuse() -> None:
+    quiz = parse_native_quiz(json.dumps(_matching_payload()))
+
+    correct = grade_matching_answer(quiz, "q1", {"p1": "c2", "p2": "c2"})
+    wrong = grade_matching_answer(quiz, "q1", {"p1": "c1", "p2": "c2"})
+
+    assert correct.correct is True
+    assert correct.row_results == {"p1": True, "p2": True}
+    assert wrong.correct is False
+    assert wrong.correct_matches == {"p1": "c2", "p2": "c2"}
+    assert wrong.row_results == {"p1": False, "p2": True}
+
+
+@pytest.mark.parametrize(
+    "matches",
+    [
+        {"p1": "c2"},
+        {"p1": "c2", "p2": "c2", "p3": "c1"},
+        {"p1": "c2", "p9": "c2"},
+        {"p1": "c9", "p2": "c2"},
+    ],
+)
+def test_matching_grading_rejects_partial_extra_unknown_or_invalid_maps(
+    matches: dict[str, str]
+) -> None:
+    with pytest.raises(ValueError, match="matching answer"):
+        grade_matching_answer(
+            parse_native_quiz(json.dumps(_matching_payload())), "q1", matches
+        )
+
+
+def test_notebook_parser_rejects_matching_but_native_parser_accepts_it() -> None:
+    raw = json.dumps(_matching_payload())
+    assert len(parse_native_quiz(raw).questions) == 1
+    with pytest.raises(QuizContractError, match="multiple-choice"):
+        parse_notebook_quiz(raw)
 
 
 def test_grading_returns_feedback_only_for_the_requested_question():
