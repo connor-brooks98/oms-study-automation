@@ -36,7 +36,7 @@ from oms_hub.study_generation.native_quiz import (
 from oms_hub.study_generation.practice_domain import (
     ImportSourceRole,
     ImportSourceSelection,
-    QuestionDraft,
+    QuestionDraftValue,
     QuizContentKind,
     QuizWorkflowKind,
     StudioSourcePurpose,
@@ -1292,7 +1292,7 @@ class StudioRepository:
             binding.remote_notebook_id = notebook_id
             binding.remote_source_id = remote_source_id
 
-    def await_import_review(self, run_id: str, drafts: Sequence[QuestionDraft]) -> StudioRun:
+    def await_import_review(self, run_id: str, drafts: Sequence[QuestionDraftValue]) -> StudioRun:
         """Persist direct-import provenance and stop before any publication path."""
         self.save_question_reviews(run_id, drafts)
         with self.database.session() as session:
@@ -1306,7 +1306,7 @@ class StudioRepository:
             session.flush()
             return self._run_domain(session, model)
 
-    def save_question_reviews(self, run_id: str, drafts: Sequence[QuestionDraft]) -> None:
+    def save_question_reviews(self, run_id: str, drafts: Sequence[QuestionDraftValue]) -> None:
         if len({draft.question_id for draft in drafts}) != len(drafts):
             raise ValueError("question drafts contain duplicate question identifiers")
         with self.database.session() as session:

@@ -9,7 +9,7 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, replace
 from datetime import timedelta
 from pathlib import Path
-from typing import Protocol, TypedDict, cast
+from typing import Any, Protocol, TypedDict, cast
 
 from oms_hub.db import is_sqlite_busy
 from oms_hub.document_processing.domain import (
@@ -21,6 +21,7 @@ from oms_hub.document_processing.domain import (
     SourceSnapshot,
 )
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, LLMTask
+from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.notebook_errors import NotebookGatewayError
 from oms_hub.study_generation.practice_answers import AnswerResolutionScope
 from oms_hub.study_generation.practice_contracts import (
@@ -36,8 +37,12 @@ from oms_hub.study_generation.practice_domain import (
     DiagnosticSeverity,
     DraftDiagnostic,
     ImportSourceRole,
+    MatchingPromptDraft,
+    MatchingQuestionDraft,
     QuestionDraft,
+    QuestionDraftValue,
     QuestionSourceRef,
+    QuizContentKind,
 )
 from oms_hub.study_generation.practice_extraction import (
     ExtractionError,
@@ -155,7 +160,7 @@ class QuizImportWorker:
         asset_root: Path,
         *,
         extraction_model: str | None = None,
-        extraction_prompt_version: str = "practice-extraction-v3",
+        extraction_prompt_version: str = "practice-extraction-v4",
     ) -> None:
         self.repository = repository
         self.parser = parser
@@ -358,21 +363,14 @@ class QuizImportWorker:
         extracted: ExtractionResult,
         sources: tuple[StudioSource, ...],
         roles: tuple[ImportSourceRole, ...],
-    ) -> tuple[QuestionDraft, ...]:
-        if any(
-            isinstance(value, (ExtractedMatchingQuestion, ExtractedMatchingAnswer))
-            for value in (*extracted.questions, *extracted.answers)
-        ):
-            raise ValueError(
-                "matching extraction is not supported until matching pairing is implemented"
-            )
+    ) -> tuple[QuestionDraftValue, ...]:
         self.repository.set_run_stage(run.id, StudioRunStage.PAIR)
         signature = stage_signature(
             "pair",
             source_hashes=tuple(source.snapshot_sha256 or "" for source in sources),
             parser_versions=(),
             provider_model="deterministic",
-            prompt_version="supplied-answer-pairing-v3",
+            prompt_version="supplied-answer-pairing-v4",
             artifact_hashes=(_artifact_hash(self.repository, run.id, "extract"),),
             roles=tuple(role.value for role in roles),
         )
@@ -384,17 +382,13 @@ class QuizImportWorker:
                 run.id, _DOWNSTREAM_PREFIXES[StudioRunStage.PAIR]
             )
         pairing = pair_supplied_answers(
-            cast(tuple[ExtractedQuestion, ...], extracted.questions),
-            cast(tuple[ExtractedAnswer, ...], extracted.answers),
+            extracted.questions,
+            extracted.answers,
             question_source_refs=extracted.question_source_refs,
+            answer_source_refs=extracted.answer_source_refs,
         )
-        if any(not isinstance(draft, QuestionDraft) for draft in pairing.drafts):
-            raise ValueError(
-                "matching extraction is not supported until matching pairing is implemented"
-            )
-        drafts = tuple(
-            draft for draft in pairing.drafts if isinstance(draft, QuestionDraft)
-        )
+        run_diagnostics = (*extracted.diagnostics, *pairing.diagnostics)
+        drafts = pairing.drafts
         # Extraction-level ambiguity belongs to the run, not every question.  Copying
         # it made one missing count look like N separate question failures.
         self.repository.save_run_artifact(
@@ -414,9 +408,14 @@ class QuizImportWorker:
                             "conflicting-question-identifier",
                             "conflicting-question-source-reference",
                             "incomplete-sequential-question-extraction",
+                            "unmatched-matching-answer-group",
+                            "unknown-matching-prompt-answer",
+                            "duplicate-matching-question-identifier",
+                            "conflicting-matching-question-identifier",
+                            "conflicting-matching-question-source-reference",
                         },
                     }
-                    for item in extracted.diagnostics
+                    for item in run_diagnostics
                 ],
                 sort_keys=True,
                 separators=(",", ":"),
@@ -428,11 +427,15 @@ class QuizImportWorker:
     def _resolve_answers(
         self,
         run: StudioRun,
-        drafts: tuple[QuestionDraft, ...],
+        drafts: tuple[QuestionDraftValue, ...],
         sources: tuple[StudioSource, ...],
         roles: tuple[ImportSourceRole, ...],
-    ) -> tuple[QuestionDraft, ...]:
-        missing = tuple(draft for draft in drafts if draft.correct_index is None)
+    ) -> tuple[QuestionDraftValue, ...]:
+        missing = tuple(
+            draft
+            for draft in drafts
+            if isinstance(draft, QuestionDraft) and draft.correct_index is None
+        )
         if not missing:
             return drafts
         if not any(
@@ -456,7 +459,7 @@ class QuizImportWorker:
                         ),
                     ),
                 )
-                if draft.correct_index is None
+                if isinstance(draft, QuestionDraft) and draft.correct_index is None
                 else draft
                 for draft in drafts
             )
@@ -468,7 +471,7 @@ class QuizImportWorker:
             source_hashes=tuple(source.snapshot_sha256 or "" for source in sources),
             parser_versions=(),
             provider_model=f"notebooklm+{self._answer_model()}",
-            prompt_version="practice-answer-resolution-v1",
+            prompt_version="practice-answer-resolution-v2",
             artifact_hashes=(_artifact_hash(self.repository, run.id, "pair"),),
             roles=tuple(role.value for role in roles),
             binding_identities=binding_identities,
@@ -481,13 +484,13 @@ class QuizImportWorker:
                 run.id, _DOWNSTREAM_PREFIXES[StudioRunStage.ANSWER_NOTEBOOK]
             )
         scope = AnswerResolutionScope(run.subject, run.exam_number, remote_ids)
-        resolved = tuple(
-            _without_resolved_missing_answer_diagnostics(
-                self.answers.resolve(draft, scope),
-                was_missing=draft.correct_index is None,
+        resolved_by_id = {
+            draft.question_id: _without_resolved_missing_answer_diagnostics(
+                self.answers.resolve(draft, scope), was_missing=True
             )
-            for draft in drafts
-        )
+            for draft in missing
+        }
+        resolved = tuple(resolved_by_id.get(draft.question_id, draft) for draft in drafts)
         if any(draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI for draft in resolved):
             self.repository.set_run_stage(run.id, StudioRunStage.ANSWER_FALLBACK)
         self.repository.save_run_artifact(run.id, "answered", signature, _drafts_json(resolved))
@@ -682,10 +685,15 @@ class QuizImportWorker:
     def _review(
         self,
         run: StudioRun,
-        drafts: tuple[QuestionDraft, ...],
+        drafts: tuple[QuestionDraftValue, ...],
         sources: tuple[StudioSource, ...],
         roles: tuple[ImportSourceRole, ...],
     ) -> None:
+        if (
+            any(isinstance(draft, MatchingQuestionDraft) for draft in drafts)
+            and run.content_kind is not QuizContentKind.PRACTICE_QUESTIONS
+        ):
+            raise ValueError("matching questions require practice-question content")
         self.repository.set_run_stage(run.id, StudioRunStage.NORMALIZE)
         pair_or_answer = "answered" if self.repository.run_artifact(run.id, "answered") else "pair"
         signature = stage_signature(
@@ -693,7 +701,7 @@ class QuizImportWorker:
             source_hashes=tuple(source.snapshot_sha256 or "" for source in sources),
             parser_versions=(),
             provider_model="local",
-            prompt_version="question-draft-review-v1",
+            prompt_version="question-draft-review-v2",
             artifact_hashes=(_artifact_hash(self.repository, run.id, pair_or_answer),),
             roles=tuple(role.value for role in roles),
         )
@@ -804,8 +812,12 @@ def _attachment_arguments(source: StudioSource) -> AttachmentArguments:
     raise ValueError("unsupported Studio source type for NotebookLM attachment")
 
 
-def _requires_review_before_resolution(draft: QuestionDraft) -> bool:
+def _requires_review_before_resolution(draft: QuestionDraftValue) -> bool:
     """Only pairing's expected missing-answer markers are eligible for resolution."""
+    if isinstance(draft, MatchingQuestionDraft):
+        return any(prompt.correct_index is None for prompt in draft.prompts) or bool(
+            draft.blocking_diagnostics
+        )
     return any(
         diagnostic.severity is DiagnosticSeverity.BLOCKER
         and diagnostic.code not in {"missing-supplied-answer", "unmatched-question"}
@@ -994,28 +1006,10 @@ def _extracted_answer_from_json(item: object) -> ExtractedAnswerValue:
     return ExtractedAnswer.model_validate(item)
 
 
-def _drafts_json(drafts: tuple[QuestionDraft, ...]) -> str:
+def _drafts_json(drafts: tuple[QuestionDraftValue, ...]) -> str:
     return json.dumps(
         [
-            {
-                "question_id": draft.question_id,
-                "original_identifier": draft.original_identifier,
-                "stem": draft.stem,
-                "choices": list(draft.choices),
-                "correct_index": draft.correct_index,
-                "rationale": draft.rationale,
-                "image_ref": asdict(draft.image_ref) if draft.image_ref else None,
-                "source_refs": [asdict(item) for item in draft.source_refs],
-                "answer_provenance": (
-                    draft.answer_provenance.value if draft.answer_provenance else None
-                ),
-                "extraction_confidence": draft.extraction_confidence,
-                "diagnostics": [
-                    {**asdict(item), "severity": item.severity.value} for item in draft.diagnostics
-                ],
-                "verification_required": draft.verification_required,
-                "verified_at": draft.verified_at,
-            }
+            _draft_json(draft)
             for draft in drafts
         ],
         sort_keys=True,
@@ -1023,32 +1017,91 @@ def _drafts_json(drafts: tuple[QuestionDraft, ...]) -> str:
     )
 
 
-def _drafts_from_json(payload_json: str) -> tuple[QuestionDraft, ...]:
-    from oms_hub.study_generation.domain import QuizImageRef
+def _draft_json(draft: QuestionDraftValue) -> dict[str, object]:
+    if isinstance(draft, MatchingQuestionDraft):
+        return {
+            "kind": "matching",
+            "question_id": draft.question_id,
+            "original_identifier": draft.original_identifier,
+            "stem": draft.stem,
+            "prompts": [asdict(prompt) for prompt in draft.prompts],
+            "choices": list(draft.choices),
+            "rationale": draft.rationale,
+            "image_ref": asdict(draft.image_ref) if draft.image_ref else None,
+            "source_refs": [asdict(item) for item in draft.source_refs],
+            "answer_provenance": draft.answer_provenance.value if draft.answer_provenance else None,
+            "extraction_confidence": draft.extraction_confidence,
+            "diagnostics": [
+                {**asdict(item), "severity": item.severity.value} for item in draft.diagnostics
+            ],
+            "verification_required": draft.verification_required,
+            "verified_at": draft.verified_at,
+        }
+    return {
+        "question_id": draft.question_id,
+        "original_identifier": draft.original_identifier,
+        "stem": draft.stem,
+        "choices": list(draft.choices),
+        "correct_index": draft.correct_index,
+        "rationale": draft.rationale,
+        "image_ref": asdict(draft.image_ref) if draft.image_ref else None,
+        "source_refs": [asdict(item) for item in draft.source_refs],
+        "answer_provenance": draft.answer_provenance.value if draft.answer_provenance else None,
+        "extraction_confidence": draft.extraction_confidence,
+        "diagnostics": [
+            {**asdict(item), "severity": item.severity.value} for item in draft.diagnostics
+        ],
+        "verification_required": draft.verification_required,
+        "verified_at": draft.verified_at,
+    }
 
+
+def _drafts_from_json(payload_json: str) -> tuple[QuestionDraftValue, ...]:
     payload = json.loads(payload_json)
     return tuple(
-        QuestionDraft(
+        _draft_from_json(item)
+        for item in payload
+    )
+
+
+def _draft_from_json(item: dict[str, Any]) -> QuestionDraftValue:
+    image_ref = QuizImageRef(**item["image_ref"]) if item["image_ref"] else None
+    diagnostics = tuple(
+        DraftDiagnostic(
+            value["code"],
+            value["message"],
+            DiagnosticSeverity(value["severity"]),
+        )
+        for value in item["diagnostics"]
+    )
+    if item.get("kind") == "matching":
+        return MatchingQuestionDraft(
+            item["question_id"],
+            item["original_identifier"],
+            item["stem"],
+            tuple(MatchingPromptDraft(**prompt) for prompt in item["prompts"]),
+            tuple(item["choices"]),
+            item["rationale"],
+            image_ref,
+            tuple(QuestionSourceRef(**ref) for ref in item["source_refs"]),
+            AnswerProvenance(item["answer_provenance"]) if item["answer_provenance"] else None,
+            item["extraction_confidence"],
+            diagnostics,
+            item["verification_required"],
+            item["verified_at"],
+        )
+    return QuestionDraft(
             item["question_id"],
             item["original_identifier"],
             item["stem"],
             tuple(item["choices"]),
             item["correct_index"],
             item["rationale"],
-            QuizImageRef(**item["image_ref"]) if item["image_ref"] else None,
+            image_ref,
             tuple(QuestionSourceRef(**ref) for ref in item["source_refs"]),
             AnswerProvenance(item["answer_provenance"]) if item["answer_provenance"] else None,
             item["extraction_confidence"],
-            tuple(
-                DraftDiagnostic(
-                    value["code"],
-                    value["message"],
-                    DiagnosticSeverity(value["severity"]),
-                )
-                for value in item["diagnostics"]
-            ),
+            diagnostics,
             item["verification_required"],
             item["verified_at"],
         )
-        for item in payload
-    )

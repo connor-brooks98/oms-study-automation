@@ -22,6 +22,8 @@ from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.notebook_errors import NotebookGatewayError
 from oms_hub.study_generation.practice_contracts import (
     ExtractedAnswer,
+    ExtractedMatchingAnswer,
+    ExtractedMatchingAnswerRow,
     ExtractedMatchingPrompt,
     ExtractedMatchingQuestion,
     ExtractedQuestion,
@@ -33,6 +35,8 @@ from oms_hub.study_generation.practice_domain import (
     DraftDiagnostic,
     ImportSourceRole,
     ImportSourceSelection,
+    MatchingPromptDraft,
+    MatchingQuestionDraft,
     QuestionDraft,
     QuestionSourceRef,
     QuizContentKind,
@@ -42,6 +46,7 @@ from oms_hub.study_generation.practice_extraction import (
     ExtractionError,
     ExtractionProviderMetadata,
     ExtractionResult,
+    SourceDocument,
 )
 from oms_hub.study_generation.practice_review import PracticeReviewService
 from oms_hub.study_generation.quiz_import_worker import (
@@ -55,6 +60,7 @@ from oms_hub.study_generation.quiz_import_worker import (
     stage_signature,
 )
 from oms_hub.study_generation.studio_domain import (
+    StudioRun,
     StudioRunState,
     StudioSourceState,
     StudioSourceType,
@@ -166,6 +172,167 @@ class _QuestionExtractor:
             (),
             (),
         )
+
+
+class _StaticExtractor:
+    def __init__(self, result: ExtractionResult) -> None:
+        self.result = result
+
+    def extract(self, documents: tuple[SourceDocument, ...]) -> ExtractionResult:
+        del documents
+        return self.result
+
+
+class _RecordingAnswers:
+    def __init__(self) -> None:
+        self.calls: list[tuple[QuestionDraft, object]] = []
+
+    def resolve(self, draft: QuestionDraft, scope: object) -> QuestionDraft:
+        self.calls.append((draft, scope))
+        return replace(
+            draft,
+            correct_index=0,
+            rationale="The source supports the first choice.",
+            answer_provenance=AnswerProvenance.NOTEBOOKLM,
+            verification_required=False,
+        )
+
+
+def _matching_worker_fixture(
+    tmp_path: Path,
+    *,
+    complete: bool,
+    content_kind: QuizContentKind = QuizContentKind.PRACTICE_QUESTIONS,
+) -> tuple[QuizImportWorker, StudioRepository, StudioRun, _RecordingAnswers]:
+    repository = _repository(tmp_path)
+    source = _ready_source(repository, tmp_path, "Matching questions")
+    run = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Imported matching practice",
+        "Neuro",
+        1,
+        content_kind,
+        (ImportSourceSelection(source.id, ImportSourceRole.QUESTIONS),),
+    )
+    citation = SegmentCitation(source_id=source.id, segment_key="block-1")
+    source_ref = QuestionSourceRef(source.id, "block-1", "block 1")
+    matching = ExtractedMatchingQuestion(
+        kind="matching",
+        original_identifier="1",
+        stem="Match each description with its term.",
+        prompts=(
+            ExtractedMatchingPrompt(
+                original_identifier="A",
+                text="Alpha description",
+                supplied_correct_index=1,
+            ),
+            ExtractedMatchingPrompt(
+                original_identifier="B",
+                text="Beta description",
+                supplied_correct_index=0 if complete else None,
+            ),
+        ),
+        choices=("Term one", "Term two"),
+        rationale=None,
+        source_segments=(citation,),
+        candidate_assets=(),
+        confidence=0.99,
+    )
+    extraction = ExtractionResult(
+        questions=(matching,),
+        answers=(),
+        question_source_refs=((source_ref,),),
+        answer_source_refs=(),
+        provider_metadata=(),
+        diagnostics=(),
+    )
+    answers = _RecordingAnswers()
+    worker = QuizImportWorker(
+        repository,
+        _Parser(),
+        _StaticExtractor(extraction),
+        answers,
+        object(),
+        tmp_path / "assets",
+    )
+    return worker, repository, run, answers
+
+
+def _mixed_worker_fixture(
+    tmp_path: Path,
+) -> tuple[QuizImportWorker, StudioRepository, StudioRun, _RecordingAnswers]:
+    repository = _repository(tmp_path)
+    source = _ready_source(repository, tmp_path, "Mixed questions")
+    supporting = _ready_source(repository, tmp_path, "Mixed supporting reference")
+    run = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Imported mixed practice",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (
+            ImportSourceSelection(source.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(
+                supporting.id,
+                ImportSourceRole.SUPPORTING_REFERENCE,
+                attach_to_notebook=True,
+            ),
+        ),
+    )
+    citation = SegmentCitation(source_id=source.id, segment_key="block-1")
+    source_ref = QuestionSourceRef(source.id, "block-1", "block 1")
+    matching = ExtractedMatchingQuestion(
+        kind="matching",
+        original_identifier="1",
+        stem="Match each description with its term.",
+        prompts=(
+            ExtractedMatchingPrompt(
+                original_identifier="A",
+                text="Alpha description",
+                supplied_correct_index=1,
+            ),
+            ExtractedMatchingPrompt(
+                original_identifier="B",
+                text="Beta description",
+                supplied_correct_index=0,
+            ),
+        ),
+        choices=("Term one", "Term two"),
+        rationale=None,
+        source_segments=(citation,),
+        candidate_assets=(),
+        confidence=0.99,
+    )
+    mcq = ExtractedQuestion(
+        original_identifier="2",
+        stem="Which option is correct?",
+        choices=("Yes", "No"),
+        supplied_correct_index=None,
+        rationale=None,
+        source_segments=(citation,),
+        candidate_assets=(),
+        confidence=0.9,
+    )
+    extraction = ExtractionResult(
+        questions=(matching, mcq),
+        answers=(),
+        question_source_refs=((source_ref,), (source_ref,)),
+        answer_source_refs=(),
+        provider_metadata=(),
+        diagnostics=(),
+    )
+    answers = _RecordingAnswers()
+    worker = QuizImportWorker(
+        repository,
+        _Parser(),
+        _StaticExtractor(extraction),
+        answers,
+        _AttachingNotebook(),
+        tmp_path / "assets",
+    )
+    return worker, repository, run, answers
 
 
 class _ResolvedAnswers:
@@ -356,6 +523,66 @@ def test_extraction_signature_changes_with_model_or_source() -> None:
             + b'"],"stage":"extract"}'
         ).hexdigest()
     )
+
+
+@pytest.mark.parametrize(
+    ("stage", "old_version", "new_version", "downstream"),
+    [
+        (
+            "extract",
+            "practice-extraction-v3",
+            "practice-extraction-v4",
+            ("pair", "answered", "normalized"),
+        ),
+        (
+            "pair",
+            "supplied-answer-pairing-v3",
+            "supplied-answer-pairing-v4",
+            ("answered", "normalized"),
+        ),
+        (
+            "answer",
+            "practice-answer-resolution-v1",
+            "practice-answer-resolution-v2",
+            ("normalized",),
+        ),
+        (
+            "normalize",
+            "question-draft-review-v1",
+            "question-draft-review-v2",
+            ("normalized",),
+        ),
+    ],
+)
+def test_stage_version_change_invalidates_cached_downstream_artifacts(
+    tmp_path: Path,
+    stage: str,
+    old_version: str,
+    new_version: str,
+    downstream: tuple[str, ...],
+) -> None:
+    repository = _repository(tmp_path)
+    run = _queued_import(repository, tmp_path)
+    old_signature = stage_signature(
+        stage,
+        source_hashes=("a" * 64,),
+        parser_versions=(),
+        provider_model="test",
+        prompt_version=old_version,
+    )
+    new_signature = stage_signature(
+        stage,
+        source_hashes=("a" * 64,),
+        parser_versions=(),
+        provider_model="test",
+        prompt_version=new_version,
+    )
+    for key in downstream:
+        repository.save_run_artifact(run.id, key, old_signature, "[]")
+
+    assert old_signature != new_signature
+    repository.invalidate_import_artifacts_after(run.id, downstream)
+    assert all(repository.run_artifact(run.id, key) is None for key in downstream)
 
 
 def test_parse_cache_is_rebuilt_after_parser_version_change(tmp_path: Path) -> None:
@@ -1178,10 +1405,46 @@ def test_artifact_serializers_round_trip_full_provenance(tmp_path: Path) -> None
                 source_segments=(SegmentCitation(source_id="source-1", segment_key="segment-1"),),
                 confidence=0.8,
             ),
+            ExtractedMatchingQuestion(
+                kind="matching",
+                original_identifier="2",
+                stem="Match these.",
+                prompts=(
+                    ExtractedMatchingPrompt(
+                        original_identifier="A", text="First", supplied_correct_index=1
+                    ),
+                    ExtractedMatchingPrompt(
+                        original_identifier="B", text="Second", supplied_correct_index=0
+                    ),
+                ),
+                choices=("One", "Two"),
+                rationale=None,
+                source_segments=(
+                    SegmentCitation(source_id="source-1", segment_key="matching-question"),
+                ),
+                confidence=0.9,
+            ),
         ),
-        (),
-        ((QuestionSourceRef("source-1", "segment-1", "p1"),),),
-        (),
+        (
+            ExtractedMatchingAnswer(
+                kind="matching",
+                original_identifier="2",
+                matches=(
+                    ExtractedMatchingAnswerRow(
+                        prompt_identifier="A",
+                        correct_index=1,
+                        source_segments=(
+                            SegmentCitation(source_id="source-1", segment_key="matching-answer"),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        (
+            (QuestionSourceRef("source-1", "segment-1", "p1"),),
+            (QuestionSourceRef("source-1", "matching-question", "p2"),),
+        ),
+        ((QuestionSourceRef("source-1", "matching-answer", "p3"),),),
         (ExtractionProviderMetadata(ProviderName.GEMINI, "extract", "req", 1, 2, 3, 4, 5),),
         (DraftDiagnostic("warning", "Review", DiagnosticSeverity.WARNING),),
     )
@@ -1200,10 +1463,31 @@ def test_artifact_serializers_round_trip_full_provenance(tmp_path: Path) -> None
         False,
         None,
     )
+    matching_draft = MatchingQuestionDraft(
+        "q2",
+        "2",
+        "Match these.",
+        (
+            MatchingPromptDraft("p1", "A", "First", 1),
+            MatchingPromptDraft("p2", "B", "Second", 0),
+        ),
+        ("One", "Two"),
+        "Source-marked matches: A -> Two; B -> One.",
+        None,
+        (QuestionSourceRef("source-1", "matching-question", "p2"),),
+        AnswerProvenance.PROVIDED_BY_SOURCE,
+        0.9,
+        (),
+        False,
+        None,
+    )
 
     assert _document_from_json(_document_json(document)) == document
     assert _extraction_from_json(_extraction_json(extracted)) == extracted
-    assert _drafts_from_json(_drafts_json((draft,))) == (draft,)
+    assert _drafts_from_json(_drafts_json((draft, matching_draft))) == (
+        draft,
+        matching_draft,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1248,33 +1532,129 @@ def test_extraction_artifact_rejects_present_invalid_answer_source_refs(
         _extraction_from_json(json.dumps(payload))
 
 
-def test_pair_rejects_matching_values_until_matching_pairing_is_implemented(
-    tmp_path: Path,
-) -> None:
-    repository = _repository(tmp_path)
-    run = _queued_import(repository, tmp_path)
-    worker = QuizImportWorker(
-        repository, _Parser(), _QuestionExtractor(), _UnusedAnswers(), object(), tmp_path / "assets"
-    )
-    matching = ExtractedMatchingQuestion(
+def test_legacy_extraction_artifact_without_answer_source_refs_is_readable() -> None:
+    matching = ExtractedMatchingAnswer(
         kind="matching",
         original_identifier="1",
-        stem="Match neutral labels.",
-        prompts=(
-            ExtractedMatchingPrompt(
-                original_identifier="A", text="Description A", supplied_correct_index=None
-            ),
-            ExtractedMatchingPrompt(
-                original_identifier="B", text="Description B", supplied_correct_index=None
+        matches=(
+            ExtractedMatchingAnswerRow(
+                prompt_identifier="A",
+                correct_index=0,
+                source_segments=(SegmentCitation(source_id="source-1", segment_key="answer-1"),),
             ),
         ),
-        choices=("Term one", "Term two"),
-        rationale=None,
-        source_segments=(SegmentCitation(source_id="source-1", segment_key="question-1"),),
-        candidate_assets=(),
-        confidence=0.8,
     )
-    extracted = ExtractionResult((matching,), (), ((),), (), (), ())
+    extracted = ExtractionResult(
+        questions=(
+            ExtractedMatchingQuestion(
+                kind="matching",
+                original_identifier="1",
+                stem="Match terms.",
+                prompts=(
+                    ExtractedMatchingPrompt(
+                        original_identifier="A", text="First", supplied_correct_index=0
+                    ),
+                    ExtractedMatchingPrompt(
+                        original_identifier="B", text="Second", supplied_correct_index=1
+                    ),
+                ),
+                choices=("One", "Two"),
+                rationale=None,
+                source_segments=(
+                    SegmentCitation(source_id="source-1", segment_key="question-1"),
+                ),
+                confidence=0.9,
+            ),
+        ),
+        answers=(matching,),
+        question_source_refs=((QuestionSourceRef("source-1", "question-1", "p1"),),),
+        answer_source_refs=((QuestionSourceRef("source-1", "answer-1", "p2"),),),
+        provider_metadata=(),
+        diagnostics=(),
+    )
+    payload = json.loads(_extraction_json(extracted))
+    del payload["answer_source_refs"]
 
-    with pytest.raises(ValueError, match="matching extraction is not supported"):
-        worker._pair(run, extracted, (), ())
+    restored = _extraction_from_json(json.dumps(payload))
+
+    assert restored.questions == extracted.questions
+    assert restored.answers == extracted.answers
+    assert restored.answer_source_refs == ((),)
+
+
+def test_matching_pairing_diagnostics_are_saved_as_overridable_run_diagnostics(
+    tmp_path: Path,
+) -> None:
+    worker, repository, run, _answers = _matching_worker_fixture(tmp_path, complete=True)
+    source_id = repository.import_sources(run.id)[0].source_id
+    unmatched = ExtractedMatchingAnswer(
+        kind="matching",
+        original_identifier="unmatched",
+        matches=(
+            ExtractedMatchingAnswerRow(
+                prompt_identifier="A",
+                correct_index=0,
+                source_segments=(SegmentCitation(source_id=source_id, segment_key="block-1"),),
+            ),
+        ),
+    )
+    extraction = worker.extractor.result
+    worker.extractor = _StaticExtractor(
+        replace(
+            extraction,
+            answers=(unmatched,),
+            answer_source_refs=((QuestionSourceRef(source_id, "block-1", "block 1"),),),
+        )
+    )
+
+    worker.run(repository.claim_next_run())
+
+    assert PracticeReviewService(repository).run_diagnostics(run.id) == (
+        {
+            "acknowledged": False,
+            "code": "unmatched-matching-answer-group",
+            "message": "unmatched matching answer group: unmatched",
+            "overridable": True,
+            "severity": "blocker",
+        },
+    )
+
+
+def test_incomplete_matching_group_stops_before_any_answer_provider_call(tmp_path: Path) -> None:
+    worker, repository, run, answers = _matching_worker_fixture(tmp_path, complete=False)
+
+    worker.run(repository.claim_next_run())
+
+    assert answers.calls == []
+    assert repository.get_run(run.id).state is StudioRunState.AWAITING_REVIEW
+    assert "missing-supplied-matching-answer" in repository.run_artifact(
+        run.id, "normalized"
+    ).payload_json
+
+
+def test_mixed_import_resolves_only_the_unanswered_mcq(tmp_path: Path) -> None:
+    worker, repository, run, answers = _mixed_worker_fixture(tmp_path)
+
+    worker.run(repository.claim_next_run())
+
+    assert [
+        (draft.original_identifier, draft.stem) for draft, _scope in answers.calls
+    ] == [("2", "Which option is correct?")]
+    drafts = _drafts_from_json(repository.run_artifact(run.id, "normalized").payload_json)
+    matching = next(item for item in drafts if isinstance(item, MatchingQuestionDraft))
+    assert tuple(prompt.correct_index for prompt in matching.prompts) == (1, 0)
+
+
+def test_non_practice_direct_import_rejects_matching_before_review(tmp_path: Path) -> None:
+    worker, repository, run, answers = _matching_worker_fixture(
+        tmp_path,
+        complete=True,
+        content_kind=QuizContentKind.EXAM_REVIEW,
+    )
+
+    worker.run(repository.claim_next_run())
+
+    rejected = repository.get_run(run.id)
+    assert answers.calls == []
+    assert rejected.state is StudioRunState.FAILED
+    assert rejected.error == "matching questions require practice-question content"
