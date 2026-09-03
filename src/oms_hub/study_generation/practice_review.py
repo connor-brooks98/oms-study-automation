@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Authoritative, restart-safe review state for imported practice questions."""
 
 from __future__ import annotations
@@ -16,13 +17,23 @@ from sqlalchemy.orm import Session
 from oms_hub.document_processing.domain import ParsedDocument
 from oms_hub.files.atomic import sha256_file
 from oms_hub.models import StudioRunArtifactModel
-from oms_hub.study_generation.domain import NativeQuiz, QuizChoice, QuizImageRef, QuizQuestion
+from oms_hub.study_generation.domain import (
+    NativeQuiz,
+    QuizChoice,
+    QuizImageRef,
+    QuizMatchingPrompt,
+    QuizMatchingQuestion,
+    QuizQuestion,
+)
 from oms_hub.study_generation.practice_domain import (
     AnswerProvenance,
     DiagnosticSeverity,
-    QuestionDraft,
+    MatchingPromptDraft,
+    MatchingQuestionDraft,
+    QuestionDraftValue,
 )
 from oms_hub.study_generation.practice_extraction import ExtractionResult
+from oms_hub.study_generation.practice_matching import matching_summary
 from oms_hub.study_generation.quiz_import_worker import (
     _document_from_json,
     _drafts_from_json,
@@ -48,6 +59,14 @@ _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES = frozenset(
         "unmatched-supplied-answer",
     }
 )
+_MANUALLY_RESOLVED_MATCHING_DIAGNOSTIC_CODES = frozenset(
+    {
+        "missing-supplied-matching-answer",
+        "conflicting-supplied-matching-answer",
+        "supplied-matching-answer-out-of-bounds",
+        "duplicate-matching-prompt-identifier",
+    }
+)
 
 
 class ReviewArtifactUnavailable(RuntimeError):
@@ -60,7 +79,7 @@ class ReviewArtifactUnavailable(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ReviewQuestion:
-    draft: QuestionDraft
+    draft: QuestionDraftValue
     topic: str | None = None
     area: str | None = None
     learning_objective: str | None = None
@@ -177,17 +196,11 @@ class PracticeReviewService:
         bindings: dict[tuple[str, str], _ImageCandidateBinding] = {}
         for reference in references:
             if documents is None:
-                artifact = self.repository.run_artifact(
-                    run_id, f"parse:{reference.source_id}"
-                )
-                document = (
-                    _document_from_json(artifact.payload_json) if artifact else None
-                )
+                artifact = self.repository.run_artifact(run_id, f"parse:{reference.source_id}")
+                document = _document_from_json(artifact.payload_json) if artifact else None
             else:
                 if reference.source_id not in documents:
-                    artifact = self.repository.run_artifact(
-                        run_id, f"parse:{reference.source_id}"
-                    )
+                    artifact = self.repository.run_artifact(run_id, f"parse:{reference.source_id}")
                     documents[reference.source_id] = (
                         _document_from_json(artifact.payload_json) if artifact else None
                     )
@@ -216,9 +229,12 @@ class PracticeReviewService:
                 if not (exact or explicit_citation or adjacent):
                     continue
                 score = 3 if exact else 2 if explicit_citation else 1
-                candidate_id = "candidate-" + hashlib.sha256(
-                    f"{question.draft.question_id}:{reference.source_id}:{asset.key}".encode()
-                ).hexdigest()[:32]
+                candidate_id = (
+                    "candidate-"
+                    + hashlib.sha256(
+                        f"{question.draft.question_id}:{reference.source_id}:{asset.key}".encode()
+                    ).hexdigest()[:32]
+                )
                 candidate = ImageCandidate(
                     candidate_id,
                     question.draft.question_id,
@@ -299,9 +315,7 @@ class PracticeReviewService:
         )
         return updated
 
-    def set_image_not_needed(
-        self, run_id: str, question_id: str, enabled: bool
-    ) -> ReviewQuestion:
+    def set_image_not_needed(self, run_id: str, question_id: str, enabled: bool) -> ReviewQuestion:
         current = self.question(run_id, question_id)
         if current.draft.image_ref is None:
             raise ValueError("question does not have an image requirement")
@@ -331,9 +345,7 @@ class PracticeReviewService:
             raise ValueError("imported image review is not configured")
         current = self.question(run_id, question_id)
         image_key = _image_key(question_id)
-        self.image_service.upload_import_review_image(
-            run_id, image_key, original_filename, payload
-        )
+        self.image_service.upload_import_review_image(run_id, image_key, original_filename, payload)
         chosen = QuizImageRef(
             image_key,
             "Reviewer upload",
@@ -381,7 +393,7 @@ class PracticeReviewService:
             raise KeyError(candidate_id) from error
         return binding.path, binding.candidate.media_type
 
-    def store(self, run_id: str, drafts: tuple[QuestionDraft, ...]) -> None:
+    def store(self, run_id: str, drafts: tuple[QuestionDraftValue, ...]) -> None:
         self._save(run_id, tuple(ReviewQuestion(draft) for draft in drafts))
 
     def store_review(self, run_id: str, questions: tuple[ReviewQuestion, ...]) -> None:
@@ -404,7 +416,7 @@ class PracticeReviewService:
         return _questions_from_json(stored.payload_json)
 
     def _initialize_image_requirements(
-        self, run_id: str, drafts: tuple[QuestionDraft, ...]
+        self, run_id: str, drafts: tuple[QuestionDraftValue, ...]
     ) -> tuple[ReviewQuestion, ...]:
         """Turn extraction-level image citations into stable review requirements."""
         initialized: list[ReviewQuestion] = []
@@ -437,7 +449,7 @@ class PracticeReviewService:
     def _candidate_asset_keys(
         self,
         run_id: str,
-        draft: QuestionDraft,
+        draft: QuestionDraftValue,
         extraction: ExtractionResult | None = None,
     ) -> frozenset[tuple[str, str]]:
         if extraction is None:
@@ -448,7 +460,7 @@ class PracticeReviewService:
         matches = [
             index
             for index, question in enumerate(extraction.questions)
-            if extraction.question_source_refs[index] == draft.source_refs
+            if set(extraction.question_source_refs[index]).issubset(set(draft.source_refs))
             and (
                 question.original_identifier == draft.original_identifier
                 or question.stem == draft.stem
@@ -468,6 +480,8 @@ class PracticeReviewService:
         self, run_id: str, question_id: str, values: dict[str, object]
     ) -> ReviewQuestion:
         current = self.question(run_id, question_id)
+        if isinstance(current.draft, MatchingQuestionDraft):
+            return self._update_matching_question(run_id, question_id, current, values)
         draft = current.draft
         allowed = {
             "stem",
@@ -484,9 +498,7 @@ class PracticeReviewService:
         stem = draft.stem if "stem" not in values else _required_text(values["stem"], "stem")
         choices = draft.choices if "choices" not in values else _choices(values["choices"])
         correct_index = (
-            draft.correct_index
-            if "correct_index" not in values
-            else values["correct_index"]
+            draft.correct_index if "correct_index" not in values else values["correct_index"]
         )
         rationale = (
             draft.rationale
@@ -523,8 +535,7 @@ class PracticeReviewService:
             tuple(
                 diagnostic
                 for diagnostic in draft.diagnostics
-                if diagnostic.code
-                not in _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES
+                if diagnostic.code not in _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES
             )
             if manually_resolved_answer
             else draft.diagnostics
@@ -535,9 +546,17 @@ class PracticeReviewService:
             choices=choices,
             correct_index=cast(int | None, correct_index),
             rationale=rationale,
-            answer_provenance=(AnswerProvenance.MANUALLY_CORRECTED if answer_changed or manually_resolved_answer else draft.answer_provenance),  # noqa: E501
+            answer_provenance=(
+                AnswerProvenance.MANUALLY_CORRECTED
+                if answer_changed or manually_resolved_answer
+                else draft.answer_provenance
+            ),  # noqa: E501
             diagnostics=diagnostics,
-            verification_required=(requires_verification if answer_changed or manually_resolved_answer else draft.verification_required),  # noqa: E501
+            verification_required=(
+                requires_verification
+                if answer_changed or manually_resolved_answer
+                else draft.verification_required
+            ),  # noqa: E501
             verified_at=(None if answer_changed or manually_resolved_answer else draft.verified_at),  # noqa: E501
         )
         updated = ReviewQuestion(
@@ -554,7 +573,8 @@ class PracticeReviewService:
             current.image_not_needed,
         )
         questions = tuple(
-            updated if item.draft.question_id == question_id else item for item in self.review(run_id)  # noqa: E501
+            updated if item.draft.question_id == question_id else item
+            for item in self.review(run_id)  # noqa: E501
         )
         self._save(run_id, questions)
         return updated
@@ -562,6 +582,8 @@ class PracticeReviewService:
     def verify_generated_answer(self, run_id: str, question_id: str) -> ReviewQuestion:
         current = self.question(run_id, question_id)
         draft = current.draft
+        if isinstance(draft, MatchingQuestionDraft):
+            raise ValueError("matching answers do not require generated-answer verification")
         if draft.correct_index is None or not draft.rationale or not draft.rationale.strip():
             raise ValueError("answer is incomplete")
         if draft.answer_provenance not in {
@@ -571,11 +593,16 @@ class PracticeReviewService:
             raise ValueError("answer does not require generated-answer verification")
         updated = replace(
             current,
-            draft=replace(draft, verification_required=True, verified_at=datetime.now(UTC).isoformat()),  # noqa: E501
+            draft=replace(
+                draft, verification_required=True, verified_at=datetime.now(UTC).isoformat()
+            ),  # noqa: E501
         )
         self._save(
             run_id,
-            tuple(updated if item.draft.question_id == question_id else item for item in self.review(run_id)),  # noqa: E501
+            tuple(
+                updated if item.draft.question_id == question_id else item
+                for item in self.review(run_id)
+            ),  # noqa: E501
         )
         return updated
 
@@ -608,6 +635,15 @@ class PracticeReviewService:
             if item.get("code") == code:
                 if not item.get("overridable"):
                     raise ValueError("this run diagnostic cannot be acknowledged")
+                if code in {
+                    "unmatched-matching-answer-group",
+                    "unknown-matching-prompt-answer",
+                } and not all(
+                    _matching_is_complete(question.draft)
+                    for question in self.review(run_id)
+                    if isinstance(question.draft, MatchingQuestionDraft)
+                ):
+                    raise ValueError("matching answers are incomplete")
                 item["acknowledged"] = True
                 updated = True
         if not updated:
@@ -623,9 +659,7 @@ class PracticeReviewService:
     def issues(self, run_id: str) -> tuple[ReviewIssue, ...]:
         return _issues(self.review(run_id))
 
-    def to_native_quiz_in_session(
-        self, session: Session, run_id: str, *, title: str
-    ) -> NativeQuiz:
+    def to_native_quiz_in_session(self, session: Session, run_id: str, *, title: str) -> NativeQuiz:
         artifact = session.scalar(
             select(StudioRunArtifactModel).where(
                 StudioRunArtifactModel.run_id == run_id,
@@ -654,6 +688,31 @@ class PracticeReviewService:
             payload,
         )
         self.repository.save_question_reviews(run_id, tuple(item.draft for item in questions))
+
+    def _update_matching_question(
+        self, run_id: str, question_id: str, current: ReviewQuestion, values: dict[str, object]
+    ) -> ReviewQuestion:
+        assert isinstance(current.draft, MatchingQuestionDraft)
+        updated_draft = _updated_matching_draft(current.draft, values)
+        updated = ReviewQuestion(
+            updated_draft,
+            current.topic if "topic" not in values else _optional_text(values["topic"]),
+            current.area if "area" not in values else _optional_text(values["area"]),
+            current.learning_objective
+            if "learning_objective" not in values
+            else _optional_text(values["learning_objective"]),
+            current.chosen_image,
+            current.selected_candidate_id,
+            current.image_not_needed,
+        )
+        self._save(
+            run_id,
+            tuple(
+                updated if item.draft.question_id == question_id else item
+                for item in self.review(run_id)
+            ),
+        )
+        return updated
 
     @staticmethod
     def _find(questions: tuple[ReviewQuestion, ...], question_id: str) -> ReviewQuestion:
@@ -688,7 +747,33 @@ def _issues(questions: tuple[ReviewQuestion, ...]) -> tuple[ReviewIssue, ...]:
         draft = question.draft
         display_label = draft.original_identifier or draft.question_id
 
-        if draft.correct_index is None:
+        if isinstance(draft, MatchingQuestionDraft):
+            for prompt in draft.prompts:
+                if prompt.correct_index is None:
+                    issues.append(
+                        ReviewIssue(
+                            draft.question_id,
+                            draft.original_identifier,
+                            display_label,
+                            "answer",
+                            "missing_answer",
+                            f"matching answer is missing for {prompt.label}",
+                            DiagnosticSeverity.BLOCKER,
+                        )
+                    )
+                elif not 0 <= prompt.correct_index < len(draft.choices):
+                    issues.append(
+                        ReviewIssue(
+                            draft.question_id,
+                            draft.original_identifier,
+                            display_label,
+                            "answer",
+                            "answer_out_of_range",
+                            f"matching answer is outside choices for {prompt.label}",
+                            DiagnosticSeverity.BLOCKER,
+                        )
+                    )
+        elif draft.correct_index is None:
             issues.append(
                 ReviewIssue(
                     draft.question_id,
@@ -724,9 +809,11 @@ def _issues(questions: tuple[ReviewQuestion, ...]) -> tuple[ReviewIssue, ...]:
                     DiagnosticSeverity.BLOCKER,
                 )
             )
-        if len(draft.choices) < 2 or len(draft.choices) > 8 or len(
-            {choice.casefold() for choice in draft.choices}
-        ) != len(draft.choices):
+        if (
+            len(draft.choices) < 2
+            or len(draft.choices) > 8
+            or len({choice.casefold() for choice in draft.choices}) != len(draft.choices)
+        ):
             issues.append(
                 ReviewIssue(
                     draft.question_id,
@@ -751,7 +838,7 @@ def _issues(questions: tuple[ReviewQuestion, ...]) -> tuple[ReviewIssue, ...]:
                 )
             )
         if (
-            draft.correct_index is not None
+            (not isinstance(draft, MatchingQuestionDraft) and draft.correct_index is not None)
             and draft.verification_required
             and not draft.verified_at
         ):
@@ -804,21 +891,137 @@ def _native_quiz(questions: tuple[ReviewQuestion, ...], title: str) -> NativeQui
         raise ValueError("; ".join(blockers))
     return NativeQuiz(
         title,
-        tuple(
-            QuizQuestion(
-                f"q{number}",
-                item.draft.stem,
-                tuple(QuizChoice(f"c{number}", choice) for number, choice in enumerate(item.draft.choices, 1)),  # noqa: E501
-                f"c{(item.draft.correct_index or 0) + 1}",
-                item.draft.rationale or "",
-                _public_image_ref(item.chosen_image),
-                item.area,
-                item.learning_objective,
-                item.topic,
-            )
-            for number, item in enumerate(questions, start=1)
-        ),
+        tuple(_native_question(item, number) for number, item in enumerate(questions, start=1)),
     )
+
+
+def _native_question(item: ReviewQuestion, number: int) -> QuizQuestion | QuizMatchingQuestion:
+    draft = item.draft
+    if isinstance(draft, MatchingQuestionDraft):
+        return QuizMatchingQuestion(
+            f"q{number}",
+            draft.stem,
+            tuple(
+                QuizMatchingPrompt(
+                    f"p{index}", prompt.label, prompt.text, f"c{(prompt.correct_index or 0) + 1}"
+                )
+                for index, prompt in enumerate(draft.prompts, 1)
+            ),
+            tuple(QuizChoice(f"c{index}", choice) for index, choice in enumerate(draft.choices, 1)),
+            draft.rationale or "",
+            _public_image_ref(item.chosen_image),
+            item.area,
+            item.learning_objective,
+            item.topic,
+        )
+    return QuizQuestion(
+        f"q{number}",
+        draft.stem,
+        tuple(QuizChoice(f"c{index}", choice) for index, choice in enumerate(draft.choices, 1)),
+        f"c{(draft.correct_index or 0) + 1}",
+        draft.rationale or "",
+        _public_image_ref(item.chosen_image),
+        item.area,
+        item.learning_objective,
+        item.topic,
+    )
+
+
+def _matching_is_complete(draft: MatchingQuestionDraft) -> bool:
+    return (
+        2 <= len(draft.prompts) <= 8
+        and 2 <= len(draft.choices) <= 8
+        and len({item.label.casefold() for item in draft.prompts}) == len(draft.prompts)
+        and len({item.casefold() for item in draft.choices}) == len(draft.choices)
+        and all(
+            item.correct_index is not None and 0 <= item.correct_index < len(draft.choices)
+            for item in draft.prompts
+        )
+    )
+
+
+def _nullable_matching_index(value: object, choice_count: int) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("matching correct index is invalid")
+    if not 0 <= value < choice_count:
+        raise ValueError("matching correct index is outside the available choices")
+    return value
+
+
+def _updated_matching_draft(
+    draft: MatchingQuestionDraft, values: dict[str, object]
+) -> MatchingQuestionDraft:
+    if values.get("kind") != "matching":
+        raise ValueError("matching question edit requires kind matching")
+    allowed = {
+        "kind",
+        "stem",
+        "prompts",
+        "choices",
+        "rationale",
+        "topic",
+        "area",
+        "learning_objective",
+    }
+    if set(values) - allowed:
+        raise ValueError("question edit contains unsupported fields")
+    choices = _choices(values.get("choices", draft.choices))
+    raw_prompts = values.get("prompts")
+    if not isinstance(raw_prompts, list) or tuple(
+        item.get("id") for item in raw_prompts if isinstance(item, dict)
+    ) != tuple(item.id for item in draft.prompts):
+        raise ValueError("matching prompt IDs must exactly match the current draft")
+    prompts = tuple(
+        MatchingPromptDraft(
+            current.id,
+            _required_text(raw["label"], "prompt label"),
+            _required_text(raw["text"], "prompt text"),
+            _nullable_matching_index(raw.get("correct_index"), len(choices)),
+        )
+        for current, raw in zip(draft.prompts, raw_prompts, strict=True)
+        if isinstance(raw, dict)
+    )
+    if len(prompts) != len(draft.prompts) or len(
+        {item.label.casefold() for item in prompts}
+    ) != len(prompts):
+        raise ValueError("matching prompt labels must be distinct")
+    submitted_rationale = _optional_text(values.get("rationale", draft.rationale))
+    mapping_changed = choices != draft.choices or tuple(
+        (item.label, item.correct_index) for item in prompts
+    ) != tuple((item.label, item.correct_index) for item in draft.prompts)
+    rationale = (
+        matching_summary(prompts, choices)
+        if mapping_changed and (submitted_rationale or "").startswith("Source-marked matches:")
+        else submitted_rationale
+    )
+    resolved_diagnostics = any(
+        item.code in _MANUALLY_RESOLVED_MATCHING_DIAGNOSTIC_CODES for item in draft.diagnostics
+    )
+    candidate = replace(
+        draft,
+        stem=_required_text(values.get("stem", draft.stem), "stem"),
+        prompts=prompts,
+        choices=choices,
+        rationale=rationale,
+        answer_provenance=AnswerProvenance.MANUALLY_CORRECTED
+        if mapping_changed or rationale != draft.rationale or resolved_diagnostics
+        else draft.answer_provenance,
+        verification_required=False,
+        verified_at=None,
+    )
+    if _matching_is_complete(candidate):
+        candidate = replace(
+            candidate,
+            rationale=candidate.rationale or matching_summary(candidate.prompts, candidate.choices),
+            diagnostics=tuple(
+                item
+                for item in candidate.diagnostics
+                if item.code not in _MANUALLY_RESOLVED_MATCHING_DIAGNOSTIC_CODES
+            ),
+        )
+    return candidate
 
 
 def _required_text(value: object, label: str) -> str:

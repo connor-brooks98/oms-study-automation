@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 import hashlib
 import json
 
@@ -8,9 +9,17 @@ from oms_hub.config import Settings
 from oms_hub.models import StudioRunModel
 from oms_hub.repositories import LectureInput
 from oms_hub.security.rate_limit import PublicQuizRateLimiter, RatePolicy
-from oms_hub.study_generation.domain import GenerationKind, PublishedQuizOrderDirection
+from oms_hub.study_generation.domain import (
+    GenerationKind,
+    NativeQuiz,
+    PublishedQuizOrderDirection,
+    QuizChoice,
+    QuizMatchingPrompt,
+    QuizMatchingQuestion,
+)
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.outline import OutlinePdfRenderer
+from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.web import public_quiz_routes
 
 
@@ -29,9 +38,7 @@ def _quiz(title: str = "Lecture 1 Practice Quiz"):
                             "Stem-cell transformation",
                         ],
                         "correct_index": 0,
-                        "rationale": (
-                            "Parvovirus B19 infects erythroid precursor cells."
-                        ),
+                        "rationale": ("Parvovirus B19 infects erythroid precursor cells."),
                     }
                 ],
             }
@@ -89,6 +96,73 @@ def _published_mixed_app(tmp_path, *, public=False):
         _quiz("Practice Questions"),
     )
     return app, lecture_quiz, practice
+
+
+def _matching_quiz() -> NativeQuiz:
+    return NativeQuiz(
+        "Matching practice",
+        (
+            QuizMatchingQuestion(
+                "q1",
+                "Match each description with its term.",
+                (
+                    QuizMatchingPrompt("p1", "A", "Alpha", "c2"),
+                    QuizMatchingPrompt("p2", "B", "Beta", "c1"),
+                ),
+                (QuizChoice("c1", "Term one"), QuizChoice("c2", "Term two")),
+                "Source-marked matches: A -> Term two; B -> Term one.",
+            ),
+        ),
+    )
+
+
+def test_public_matching_content_hides_answers_and_grades_only_complete_mapping(tmp_path) -> None:
+    app, _ = _published_app(tmp_path)
+    with app.state.database.session() as session:
+        session.add(
+            StudioRunModel(
+                id="matching-practice",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Matching",
+                label_key="matching",
+                prompt="",
+                workflow_kind="direct_import",
+                content_kind=QuizContentKind.PRACTICE_QUESTIONS.value,
+                state="awaiting_review",
+                stage="review",
+            )
+        )
+    published = app.state.generation_repository.publish_studio_quiz(
+        "matching-practice", _matching_quiz()
+    )
+    client = TestClient(app)
+    content = client.get(f"/public/quizzes/{published.token}/content")
+    assert content.json()["questions"][0]["kind"] == "matching"
+    assert "correct_choice_id" not in content.text and "correct_matches" not in content.text
+    result = client.post(
+        f"/public/quizzes/{published.token}/answer",
+        json={"kind": "matching", "question_id": "q1", "matches": {"p1": "c2", "p2": "c1"}},
+    )
+    assert result.json() == {
+        "kind": "matching",
+        "correct": True,
+        "correct_matches": {"p1": "c2", "p2": "c1"},
+        "row_results": {"p1": True, "p2": True},
+        "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
+    }
+    for payload in (
+        {"kind": "matching", "question_id": "q99", "matches": {"p1": "c2", "p2": "c1"}},
+        {"question_id": "q1", "choice_id": "c1"},
+        {"kind": "matching", "question_id": "q1", "matches": {"p1": "c2"}},
+        {"kind": "matching", "question_id": "q1", "matches": {"p1": "c2", "p2": "c9"}},
+    ):
+        response = client.post(f"/public/quizzes/{published.token}/answer", json=payload)
+        assert response.status_code == (404 if payload["question_id"] == "q99" else 422)
 
 
 def test_public_library_groups_only_published_quizzes(tmp_path):
@@ -160,9 +234,7 @@ def test_edit_questions_stages_current_quiz_for_private_review(tmp_path):
             headers={"X-CSRF-Token": csrf},
         )
         review_page = client.get(first.json()["review_url"])
-        review_data = client.get(
-            f"/studio/runs/{first.json()['run_id']}/review/data"
-        )
+        review_data = client.get(f"/studio/runs/{first.json()['run_id']}/review/data")
         public_content = client.get(f"/public/quizzes/{published.token}/content")
 
     assert first.status_code == second.status_code == 200
@@ -351,15 +423,27 @@ def test_question_payload_edit_keeps_an_authoritatively_renamed_title(tmp_path):
         csrf = client.cookies.get("study_hub_csrf")
         renamed = client.patch(
             f"/api/published-quizzes/{published.token}/title",
-            json={"title": "Renamed quiz"}, headers={"X-CSRF-Token": csrf},
+            json={"title": "Renamed quiz"},
+            headers={"X-CSRF-Token": csrf},
         )
         updated = client.patch(
             f"/api/published-quizzes/{published.token}/payload",
-            json={"payload_json": json.dumps({
-                "title": published.title,
-                "questions": [{"stem": "Updated?", "choices": ["A", "B"],
-                               "correct_index": 0, "rationale": "A."}],
-            })}, headers={"X-CSRF-Token": csrf},
+            json={
+                "payload_json": json.dumps(
+                    {
+                        "title": published.title,
+                        "questions": [
+                            {
+                                "stem": "Updated?",
+                                "choices": ["A", "B"],
+                                "correct_index": 0,
+                                "rationale": "A.",
+                            }
+                        ],
+                    }
+                )
+            },
+            headers={"X-CSRF-Token": csrf},
         )
         content = client.get(f"/public/quizzes/{published.token}/content")
     assert renamed.status_code == updated.status_code == 200
@@ -382,7 +466,7 @@ def test_local_owner_library_keeps_private_navigation_without_management_control
     assert 'href="/">Home</a>' in managed.text
     assert 'href="/lectures">Lectures</a>' in managed.text
     assert "Study Hub Quizzes" not in managed.text
-    assert 'data-reset-quiz' in public.text
+    assert "data-reset-quiz" in public.text
     assert f'title="Restart {published.title}"' in public.text
     for private_hook in (
         "data-quiz-drag-handle",
@@ -542,9 +626,7 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
     assert 'class="quiz-library-button sh-btn sh-btn--secondary"' in page.text
     assert "/public/quizzes/assets/player.css?v=" in page.text
     assert "/public/quizzes/assets/player.js?v=" in page.text
-    assert page.headers["content-security-policy"].startswith(
-        "default-src 'self'"
-    )
+    assert page.headers["content-security-policy"].startswith("default-src 'self'")
     assert content.status_code == 200
     assert content.json()["version"] == 1
     assert content.json()["course"] == "Neuro"

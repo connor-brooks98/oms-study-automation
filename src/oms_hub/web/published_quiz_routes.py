@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 import json
 from typing import Annotated, cast
 
@@ -8,11 +9,16 @@ from pydantic import BaseModel, StringConstraints
 from oms_hub.study_generation.domain import (
     PublishedQuizLibrarySection,
     PublishedQuizOrderDirection,
+    QuizMatchingQuestion,
+    QuizQuestionValue,
 )
 from oms_hub.study_generation.native_quiz import serialize_native_quiz
 from oms_hub.study_generation.practice_domain import (
     AnswerProvenance,
+    MatchingPromptDraft,
+    MatchingQuestionDraft,
     QuestionDraft,
+    QuestionDraftValue,
     QuizContentKind,
 )
 from oms_hub.study_generation.practice_review import PracticeReviewService, ReviewQuestion
@@ -47,6 +53,50 @@ def _repository(request: Request) -> GenerationRepository:
     return cast(GenerationRepository, request.app.state.generation_repository)
 
 
+def _published_review_draft(question: QuizQuestionValue) -> QuestionDraftValue:
+    if isinstance(question, QuizMatchingQuestion):
+        index_by_id = {choice.id: index for index, choice in enumerate(question.choices)}
+        return MatchingQuestionDraft(
+            question.id,
+            question.id,
+            question.stem,
+            tuple(
+                MatchingPromptDraft(
+                    prompt.id, prompt.label, prompt.text, index_by_id[prompt.correct_choice_id]
+                )
+                for prompt in question.prompts
+            ),
+            tuple(choice.text for choice in question.choices),
+            question.rationale,
+            question.image_ref,
+            (),
+            AnswerProvenance.PROVIDED_BY_SOURCE,
+            1.0,
+            (),
+            False,
+            None,
+        )
+    return QuestionDraft(
+        question.id,
+        question.id,
+        question.stem,
+        tuple(choice.text for choice in question.choices),
+        next(
+            index
+            for index, choice in enumerate(question.choices)
+            if choice.id == question.correct_choice_id
+        ),
+        question.rationale,
+        question.image_ref,
+        (),
+        AnswerProvenance.PROVIDED_BY_SOURCE,
+        1.0,
+        (),
+        False,
+        None,
+    )
+
+
 def _normalized_subject(value: str) -> str:
     return " ".join(value.casefold().split())
 
@@ -59,14 +109,10 @@ def _library_scope(request: Request, token: str) -> dict[str, object]:
         raise KeyError(token)
     catalog = request.app.state.catalog_repository
     lecture = (
-        catalog.get_lecture(published.lecture_id)
-        if published.lecture_id is not None
-        else None
+        catalog.get_lecture(published.lecture_id) if published.lecture_id is not None else None
     )
     subject = lecture.subject if lecture is not None else published.destination_subject
-    exam_number = (
-        lecture.exam_number if lecture is not None else published.destination_exam_number
-    )
+    exam_number = lecture.exam_number if lecture is not None else published.destination_exam_number
     kinds = (
         frozenset({QuizContentKind.PRACTICE_QUESTIONS})
         if published.content_kind == QuizContentKind.PRACTICE_QUESTIONS.value
@@ -91,9 +137,7 @@ def _library_counts(request: Request, scope: dict[str, object]) -> dict[str, int
     course_count = exam_count = 0
     for candidate in repository.published_quizzes(kinds):
         candidate_lecture = (
-            catalog.get_lecture(candidate.lecture_id)
-            if candidate.lecture_id is not None
-            else None
+            catalog.get_lecture(candidate.lecture_id) if candidate.lecture_id is not None else None
         )
         candidate_subject = (
             candidate_lecture.subject
@@ -193,9 +237,7 @@ def replace_quiz_payload(
 ) -> JSONResponse:
     require_form_csrf(request, None)
     try:
-        published = _repository(request).replace_published_quiz_payload(
-            token, payload.payload_json
-        )
+        published = _repository(request).replace_published_quiz_payload(token, payload.payload_json)
     except KeyError as error:
         raise HTTPException(404, "published quiz was not found") from error
     except ValueError as error:
@@ -229,25 +271,7 @@ def create_quiz_edit_run(request: Request, token: _PublishedQuizToken) -> JSONRe
     if created:
         questions = tuple(
             ReviewQuestion(
-                QuestionDraft(
-                    question.id,
-                    question.id,
-                    question.stem,
-                    tuple(choice.text for choice in question.choices),
-                    next(
-                        index
-                        for index, choice in enumerate(question.choices)
-                        if choice.id == question.correct_choice_id
-                    ),
-                    question.rationale,
-                    question.image_ref,
-                    (),
-                    AnswerProvenance.PROVIDED_BY_SOURCE,
-                    1.0,
-                    (),
-                    False,
-                    None,
-                ),
+                _published_review_draft(question),
                 question.topic,
                 question.area,
                 question.learning_objective,

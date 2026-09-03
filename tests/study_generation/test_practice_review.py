@@ -1,3 +1,4 @@
+# ruff: noqa: E501, E701
 import json
 from dataclasses import asdict, replace
 from io import BytesIO
@@ -20,6 +21,8 @@ from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.practice_contracts import (
     AssetCitation,
     ExtractedAnswer,
+    ExtractedMatchingPrompt,
+    ExtractedMatchingQuestion,
     ExtractedQuestion,
     SegmentCitation,
 )
@@ -27,12 +30,14 @@ from oms_hub.study_generation.practice_domain import (
     AnswerProvenance,
     DiagnosticSeverity,
     DraftDiagnostic,
+    MatchingPromptDraft,
+    MatchingQuestionDraft,
     QuestionDraft,
     QuestionSourceRef,
     QuizContentKind,
 )
 from oms_hub.study_generation.practice_extraction import ExtractionResult
-from oms_hub.study_generation.practice_matching import pair_supplied_answers
+from oms_hub.study_generation.practice_matching import matching_summary, pair_supplied_answers
 from oms_hub.study_generation.practice_review import PracticeReviewService
 from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.quiz_import_worker import (
@@ -86,6 +91,166 @@ def _draft(question_id: str, *, generated: bool) -> QuestionDraft:
     )
 
 
+def _matching_draft(question_id: str = "matching-1") -> MatchingQuestionDraft:
+    return MatchingQuestionDraft(
+        question_id,
+        "1",
+        "Match each description with its term.",
+        (MatchingPromptDraft("p1", "A", "Alpha", 1), MatchingPromptDraft("p2", "B", "Beta", 0)),
+        ("Term one", "Term two"),
+        "Source-marked matches: A -> Term two; B -> Term one.",
+        None,
+        (QuestionSourceRef("source-1", "question-1", "page 1"),),
+        AnswerProvenance.PROVIDED_BY_SOURCE,
+        0.99,
+        (),
+        False,
+        None,
+    )
+
+
+def test_matching_edit_is_atomic_and_regenerates_a_prefixed_summary(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_matching_draft(),))
+    updated = service.update_question(
+        "run-1",
+        "matching-1",
+        {
+            "kind": "matching",
+            "stem": "Updated group stem",
+            "prompts": [
+                {"id": "p1", "label": "A", "text": "Alpha", "correct_index": 0},
+                {"id": "p2", "label": "B", "text": "Beta", "correct_index": 1},
+            ],
+            "choices": ["Renamed one", "Renamed two"],
+            "rationale": "Source-marked matches: stale",
+        },
+    )
+    assert isinstance(updated.draft, MatchingQuestionDraft)
+    assert updated.draft.rationale == "Source-marked matches: A -> Renamed one; B -> Renamed two."
+    before = service.question("run-1", "matching-1")
+    with pytest.raises(ValueError, match="prompt IDs"):
+        service.update_question(
+            "run-1",
+            "matching-1",
+            {
+                "kind": "matching",
+                "stem": "Rejected",
+                "prompts": [{"id": "p9", "label": "A", "text": "Alpha", "correct_index": 0}],
+                "choices": ["One", "Two"],
+                "rationale": "Custom",
+            },
+        )
+    assert service.question("run-1", "matching-1") == before
+
+
+@pytest.mark.parametrize("change", ["prompt_label", "choice_text", "choice_order", "mapping"])
+def test_matching_synthesized_rationale_regenerates_for_every_mapping_edit(
+    tmp_path: Path, change: str
+) -> None:
+    service = _service(tmp_path)
+    draft = _matching_draft()
+    service.store("run-1", (draft,))
+    prompts = [
+        {"id": item.id, "label": item.label, "text": item.text, "correct_index": item.correct_index}
+        for item in draft.prompts
+    ]
+    choices = list(draft.choices)
+    if change == "prompt_label":
+        prompts[0]["label"] = "Alpha"
+    elif change == "choice_text":
+        choices[0] = "Renamed term"
+    elif change == "choice_order":
+        choices.reverse()
+    else:
+        prompts[0]["correct_index"] = 0
+    updated = service.update_question(
+        "run-1",
+        "matching-1",
+        {
+            "kind": "matching",
+            "stem": draft.stem,
+            "prompts": prompts,
+            "choices": choices,
+            "rationale": draft.rationale,
+        },
+    )
+    assert updated.draft.rationale == matching_summary(updated.draft.prompts, updated.draft.choices)
+    assert updated.draft.rationale != draft.rationale
+
+
+def test_matching_custom_rationale_survives_mapping_edit_and_complete_edit_clears_only_owned_codes(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    draft = replace(
+        _matching_draft(),
+        rationale="Reviewer-authored explanation.",
+        diagnostics=(
+            DraftDiagnostic(
+                "missing-supplied-matching-answer", "missing", DiagnosticSeverity.BLOCKER
+            ),
+            DraftDiagnostic("source-warning", "uncertain text", DiagnosticSeverity.WARNING),
+        ),
+    )
+    service.store("run-1", (draft,))
+    updated = service.update_question(
+        "run-1",
+        "matching-1",
+        {
+            "kind": "matching",
+            "stem": draft.stem,
+            "prompts": [
+                {
+                    "id": item.id,
+                    "label": item.label,
+                    "text": item.text,
+                    "correct_index": item.correct_index,
+                }
+                for item in draft.prompts
+            ],
+            "choices": list(draft.choices),
+            "rationale": draft.rationale,
+        },
+    )
+    assert updated.draft.rationale == "Reviewer-authored explanation."
+    assert updated.draft.answer_provenance is AnswerProvenance.MANUALLY_CORRECTED
+    assert tuple(item.code for item in updated.draft.diagnostics) == ("source-warning",)
+
+
+def test_matching_answer_refs_do_not_hide_group_image_candidates(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    question_ref = QuestionSourceRef("source-1", "question-1", "page 1")
+    answer_ref = QuestionSourceRef("source-1", "answer-1", "page 4")
+    extracted = ExtractedMatchingQuestion(
+        kind="matching",
+        original_identifier="1",
+        stem="Match them",
+        prompts=(
+            ExtractedMatchingPrompt(original_identifier="A", text="Alpha"),
+            ExtractedMatchingPrompt(original_identifier="B", text="Beta"),
+        ),
+        choices=("One", "Two"),
+        source_segments=(SegmentCitation(source_id="source-1", segment_key="question-1"),),
+        candidate_assets=(AssetCitation(source_id="source-1", asset_key="asset-1"),),
+        confidence=1.0,
+    )
+    extraction = ExtractionResult((extracted,), (), ((question_ref,),), (), (), ())
+    draft = replace(_matching_draft(), stem="Match them", source_refs=(question_ref, answer_ref))
+    assert service._candidate_asset_keys("run-1", draft, extraction) == frozenset(
+        {("source-1", "asset-1")}
+    )
+
+
+def test_matching_verification_is_rejected_without_server_error(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_matching_draft(),))
+    with pytest.raises(
+        ValueError, match="matching answers do not require generated-answer verification"
+    ):
+        service.verify_generated_answer("run-1", "matching-1")
+
+
 def _legacy_extraction_result() -> ExtractionResult:
     question_ref = QuestionSourceRef("source-1", "question-1", "page 1")
     answer_ref = QuestionSourceRef("source-1", "answer-1", "page 4")
@@ -95,9 +260,7 @@ def _legacy_extraction_result() -> ExtractionResult:
                 original_identifier="1",
                 stem="Which term is correct?",
                 choices=("Term one", "Term two"),
-                source_segments=(
-                    SegmentCitation(source_id="source-1", segment_key="question-1"),
-                ),
+                source_segments=(SegmentCitation(source_id="source-1", segment_key="question-1"),),
                 confidence=0.9,
             ),
         ),
@@ -106,9 +269,7 @@ def _legacy_extraction_result() -> ExtractionResult:
                 original_identifier="1",
                 correct_index=1,
                 rationale="The source key selects Term two.",
-                source_segments=(
-                    SegmentCitation(source_id="source-1", segment_key="answer-1"),
-                ),
+                source_segments=(SegmentCitation(source_id="source-1", segment_key="answer-1"),),
             ),
         ),
         question_source_refs=((question_ref,),),
@@ -125,9 +286,7 @@ def test_awaiting_review_can_read_a_legacy_extract_artifact_without_answer_refs(
     service.store("run-1", (_draft("q1", generated=False),))
     legacy = json.loads(_extraction_json(_legacy_extraction_result()))
     legacy.pop("answer_source_refs", None)
-    service.repository.save_run_artifact(
-        "run-1", "extract", "a" * 64, json.dumps(legacy)
-    )
+    service.repository.save_run_artifact("run-1", "extract", "a" * 64, json.dumps(legacy))
 
     assert service.candidates_by_question("run-1", service.review("run-1")) == {"q1": ()}
 
@@ -180,9 +339,7 @@ def _image_review_service(tmp_path: Path) -> tuple[PracticeReviewService, Path]:
     draft = _draft("q1", generated=False)
     service.store(
         "run-1",
-        (
-            replace(draft, image_ref=QuizImageRef("manual-image", "source", "page 1", "image")),
-        ),
+        (replace(draft, image_ref=QuizImageRef("manual-image", "source", "page 1", "image")),),
     )
     return service, path
 
@@ -226,9 +383,7 @@ def test_overridable_run_diagnostic_is_stored_once_and_acknowledgement_persists(
     with pytest.raises(ValueError, match="Question count needs review"):
         service.to_native_quiz("run-1")
 
-    service.acknowledge_run_diagnostic(
-        "run-1", "incomplete-sequential-question-extraction"
-    )
+    service.acknowledge_run_diagnostic("run-1", "incomplete-sequential-question-extraction")
     reloaded = PracticeReviewService(service.repository)
 
     assert reloaded.run_diagnostics("run-1")[0]["acknowledged"] is True
@@ -395,9 +550,7 @@ def test_resaving_legacy_manual_answer_clears_stale_conflict_blocker(
     )
     service.store("run-1", (legacy,))
 
-    assert service.blockers("run-1") == (
-        "question-18-18: conflicting supplied answers",
-    )
+    assert service.blockers("run-1") == ("question-18-18: conflicting supplied answers",)
     updated = service.update_question(
         "run-1",
         "question-18-18",
@@ -435,9 +588,7 @@ def test_resolving_import_diagnostic_does_not_bypass_ai_verification(
 
     assert updated.draft.diagnostics == ()
     assert updated.verification_required is True
-    assert service.blockers("run-1") == (
-        "q1: AI-generated answer requires verification",
-    )
+    assert service.blockers("run-1") == ("q1: AI-generated answer requires verification",)
 
 
 def test_structured_issues_keep_warnings_non_blocking_and_deduplicate(tmp_path: Path) -> None:

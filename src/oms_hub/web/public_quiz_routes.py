@@ -1,15 +1,18 @@
+# ruff: noqa: E501
+from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from oms_hub.files.atomic import sha256_file
 from oms_hub.study_generation.domain import PublishedQuizRecord
 from oms_hub.study_generation.native_quiz import (
     grade_answer,
+    grade_matching_answer,
     public_quiz_content,
 )
 from oms_hub.study_generation.practice_domain import QuizContentKind
@@ -63,8 +66,16 @@ def _shared_style_version() -> str:
 
 
 class AnswerSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     question_id: _PublicId
     choice_id: _PublicId
+
+
+class MatchingAnswerSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["matching"]
+    question_id: _PublicId
+    matches: dict[_PublicId, _PublicId] = Field(min_length=2, max_length=8)
 
 
 class QuestionFlagSubmission(BaseModel):
@@ -78,9 +89,7 @@ class QuestionFlagSubmission(BaseModel):
     ]
 
 
-@router.api_route(
-    "/quizzes/assets/player.js", methods=["GET", "HEAD"], include_in_schema=False
-)
+@router.api_route("/quizzes/assets/player.js", methods=["GET", "HEAD"], include_in_schema=False)
 def player_javascript() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz.js",
@@ -89,9 +98,7 @@ def player_javascript() -> FileResponse:
     )
 
 
-@router.api_route(
-    "/quizzes/assets/player.css", methods=["GET", "HEAD"], include_in_schema=False
-)
+@router.api_route("/quizzes/assets/player.css", methods=["GET", "HEAD"], include_in_schema=False)
 def player_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz.css",
@@ -100,9 +107,7 @@ def player_styles() -> FileResponse:
     )
 
 
-@router.api_route(
-    "/quizzes/assets/library.js", methods=["GET", "HEAD"], include_in_schema=False
-)
+@router.api_route("/quizzes/assets/library.js", methods=["GET", "HEAD"], include_in_schema=False)
 def library_javascript() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz_library.js",
@@ -122,9 +127,7 @@ def versioned_library_javascript(asset_version: str) -> FileResponse:
     return library_javascript()
 
 
-@router.api_route(
-    "/quizzes/assets/library.css", methods=["GET", "HEAD"], include_in_schema=False
-)
+@router.api_route("/quizzes/assets/library.css", methods=["GET", "HEAD"], include_in_schema=False)
 def library_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz_library.css",
@@ -133,9 +136,7 @@ def library_styles() -> FileResponse:
     )
 
 
-@router.api_route(
-    "/quizzes/assets/tokens.css", methods=["GET", "HEAD"], include_in_schema=False
-)
+@router.api_route("/quizzes/assets/tokens.css", methods=["GET", "HEAD"], include_in_schema=False)
 def design_tokens() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "tokens.css",
@@ -144,9 +145,7 @@ def design_tokens() -> FileResponse:
     )
 
 
-@router.api_route(
-    "/quizzes/assets/reset.css", methods=["GET", "HEAD"], include_in_schema=False
-)
+@router.api_route("/quizzes/assets/reset.css", methods=["GET", "HEAD"], include_in_schema=False)
 def reset_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "reset.css",
@@ -155,9 +154,7 @@ def reset_styles() -> FileResponse:
     )
 
 
-@router.api_route(
-    "/quizzes/assets/study-hub.css", methods=["GET", "HEAD"], include_in_schema=False
-)
+@router.api_route("/quizzes/assets/study-hub.css", methods=["GET", "HEAD"], include_in_schema=False)
 def study_hub_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "study-hub.css",
@@ -218,9 +215,7 @@ def _quiz_library(
             lecture.subject if lecture is not None else published.destination_subject_key
         )
         exam_number = (
-            lecture.exam_number
-            if lecture is not None
-            else published.destination_exam_number
+            lecture.exam_number if lecture is not None else published.destination_exam_number
         )
         outline = (
             repository.current_outline(published.lecture_id)
@@ -237,9 +232,7 @@ def _quiz_library(
                 "version": published.version,
                 "title": published.title,
                 "display_order": published.display_order,
-                "lecture_number": (
-                    lecture.lecture_number if lecture is not None else None
-                ),
+                "lecture_number": (lecture.lecture_number if lecture is not None else None),
                 "is_studio": lecture is None,
                 "primary_label": (
                     lecture_label(lecture.subject, lecture.lecture_number)
@@ -254,9 +247,7 @@ def _quiz_library(
                     else 0
                 ),
                 "outline_url": (
-                    f"/public/quizzes/{published.token}/outline"
-                    if outline is not None
-                    else None
+                    f"/public/quizzes/{published.token}/outline" if outline is not None else None
                 ),
             }
         )
@@ -318,9 +309,7 @@ def quiz_library_response(
         summary="Choose a course, exam, and quiz.",
         empty_title="No quizzes are published yet",
         empty_summary="Published lecture and exam-review quizzes will appear here automatically.",
-        library_path=(
-            "/studio/library/quizzes" if management_mode else "/public/quizzes"
-        ),
+        library_path=("/studio/library/quizzes" if management_mode else "/public/quizzes"),
         management_mode=management_mode,
     )
 
@@ -359,9 +348,7 @@ def practice_question_library(request: Request) -> HTMLResponse:
 @router.get("/quizzes/{token}", response_class=HTMLResponse)
 def quiz_page(request: Request, token: str) -> HTMLResponse:
     published = _published(request, token)
-    is_practice_questions = (
-        published.content_kind == QuizContentKind.PRACTICE_QUESTIONS
-    )
+    is_practice_questions = published.content_kind == QuizContentKind.PRACTICE_QUESTIONS
     lecture = (
         request.app.state.catalog_repository.get_lecture(published.lecture_id)
         if published.lecture_id is not None
@@ -374,30 +361,22 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
             "quiz": published,
             "quiz_context": {
                 "subject": (
-                    lecture.subject
-                    if lecture is not None
-                    else published.destination_subject
+                    lecture.subject if lecture is not None else published.destination_subject
                 ),
                 "exam_number": (
                     lecture.exam_number
                     if lecture is not None
                     else published.destination_exam_number
                 ),
-                "lecture_number": (
-                    lecture.lecture_number if lecture is not None else None
-                ),
+                "lecture_number": (lecture.lecture_number if lecture is not None else None),
             },
             "content_url": f"/public/quizzes/{token}/content",
             "answer_url": f"/public/quizzes/{token}/answer",
             "library_url": (
-                "/public/practice-questions"
-                if is_practice_questions
-                else "/public/quizzes"
+                "/public/practice-questions" if is_practice_questions else "/public/quizzes"
             ),
             "library_label": (
-                "Back to practice questions"
-                if is_practice_questions
-                else "Back to quizzes"
+                "Back to practice questions" if is_practice_questions else "Back to quizzes"
             ),
             "player_asset_version": _player_asset_version(),
         },
@@ -425,21 +404,11 @@ def quiz_content(request: Request, token: str) -> JSONResponse:
     content = {
         "token": published.token,
         "version": published.version,
-        "course": (
-            lecture.subject
-            if lecture is not None
-            else published.destination_subject
-        ),
+        "course": (lecture.subject if lecture is not None else published.destination_subject),
         "exam_number": (
-            lecture.exam_number
-            if lecture is not None
-            else published.destination_exam_number
+            lecture.exam_number if lecture is not None else published.destination_exam_number
         ),
-        "topic": (
-            lecture.topic
-            if lecture is not None
-            else published.title
-        ),
+        "topic": (lecture.topic if lecture is not None else published.title),
         **public_quiz_content(published.quiz, image_urls),
     }
     if lecture is not None:
@@ -488,31 +457,29 @@ def public_outline(request: Request, token: str) -> FileResponse:
 def answer_question(
     request: Request,
     token: str,
-    submission: AnswerSubmission,
+    submission: AnswerSubmission | MatchingAnswerSubmission,
 ) -> JSONResponse:
     published = _published(request, token)
     try:
-        feedback = grade_answer(
-            published.quiz,
-            submission.question_id,
-            submission.choice_id,
-        )
+        if isinstance(submission, MatchingAnswerSubmission):
+            return JSONResponse(
+                asdict(
+                    grade_matching_answer(
+                        published.quiz, submission.question_id, submission.matches
+                    )
+                ),
+                headers={"Cache-Control": "no-store"},
+            )
+        feedback = grade_answer(published.quiz, submission.question_id, submission.choice_id)
     except KeyError as error:
         raise HTTPException(404, "quiz question was not found") from error
-    return JSONResponse(
-        {
-            "correct": feedback.correct,
-            "correct_choice_id": feedback.correct_choice_id,
-            "rationale": feedback.rationale,
-        },
-        headers={"Cache-Control": "no-store"},
-    )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse({"correct": feedback.correct, "correct_choice_id": feedback.correct_choice_id, "rationale": feedback.rationale}, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/quizzes/{token}/flags")
-def flag_question(
-    request: Request, token: str, submission: QuestionFlagSubmission
-) -> JSONResponse:
+def flag_question(request: Request, token: str, submission: QuestionFlagSubmission) -> JSONResponse:
     require_form_csrf(request, None)
     try:
         _repository(request).record_published_quiz_flag(

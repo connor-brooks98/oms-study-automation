@@ -1,6 +1,8 @@
-from dataclasses import replace
+# ruff: noqa: E501
+import hashlib
+from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -11,12 +13,15 @@ from oms_hub.files.atomic import sha256_file
 from oms_hub.study_generation.domain import NativeQuiz
 from oms_hub.study_generation.native_quiz import (
     grade_answer,
+    grade_matching_answer,
     image_requirements,
     public_quiz_content,
+    serialize_native_quiz,
 )
 from oms_hub.study_generation.practice_domain import (
     ImportSourceRole,
     ImportSourceSelection,
+    MatchingQuestionDraft,
     QuizContentKind,
     QuizWorkflowKind,
 )
@@ -82,12 +87,39 @@ class PreviewAnswerSubmission(BaseModel):
     choice_id: str = Field(pattern=r"^c[0-9]{1,2}$", max_length=3)
 
 
+class MatchingPreviewAnswerSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["matching"]
+    question_id: str = Field(pattern=r"^q[0-9]{1,3}$", max_length=4)
+    matches: dict[str, str] = Field(min_length=2, max_length=8)
+
+
 class QuestionEditInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     stem: str | None = Field(default=None, max_length=10_000)
     choices: list[str] | None = Field(default=None, min_length=2, max_length=8)
     correct_index: int | None = Field(default=None, ge=0, le=7)
+    rationale: str | None = Field(default=None, max_length=20_000)
+    topic: str | None = Field(default=None, max_length=300)
+    area: str | None = Field(default=None, max_length=300)
+    learning_objective: str | None = Field(default=None, max_length=1_000)
+
+
+class MatchingPromptEditInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: Annotated[str, StringConstraints(pattern=r"^p[1-8]$", max_length=2)]
+    label: str = Field(min_length=1, max_length=100)
+    text: str = Field(min_length=1, max_length=10_000)
+    correct_index: int | None = Field(default=None, ge=0, le=7)
+
+
+class MatchingQuestionEditInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["matching"]
+    stem: str = Field(min_length=1, max_length=10_000)
+    prompts: list[MatchingPromptEditInput] = Field(min_length=2, max_length=8)
+    choices: list[str] = Field(min_length=2, max_length=8)
     rationale: str | None = Field(default=None, max_length=20_000)
     topic: str | None = Field(default=None, max_length=300)
     area: str | None = Field(default=None, max_length=300)
@@ -245,17 +277,14 @@ def _image_service(request: Request) -> StudioQuizImageService:
 def _review_payload(review: StudioQuizReview) -> dict[str, object]:
     question_by_id = {question.id: question for question in review.quiz.questions}
     number_by_id = {
-        question.id: number
-        for number, question in enumerate(review.quiz.questions, start=1)
+        question.id: number for number, question in enumerate(review.quiz.questions, start=1)
     }
     return {
         "run_id": review.run.id,
         "label": review.run.label,
         "state": review.run.state.value,
         "resolved": review.resolved,
-        "preview_url": (
-            f"/studio/runs/{review.run.id}/preview" if review.resolved else None
-        ),
+        "preview_url": (f"/studio/runs/{review.run.id}/preview" if review.resolved else None),
         "requirements": [
             {
                 "image_key": requirement.image_key,
@@ -321,14 +350,15 @@ def _review_question_payload(
     *,
     run_id: str | None = None,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "id": question.draft.question_id,
         "original_identifier": question.draft.original_identifier,
         "stem": question.draft.stem,
         "choices": list(question.draft.choices),
-        "correct_index": question.draft.correct_index,
         "rationale": question.draft.rationale,
-        "provenance": question.draft.answer_provenance.value if question.draft.answer_provenance else None,  # noqa: E501
+        "provenance": question.draft.answer_provenance.value
+        if question.draft.answer_provenance
+        else None,  # noqa: E501
         "verification_required": question.draft.verification_required,
         "verified_at": question.draft.verified_at,
         "confidence": question.draft.extraction_confidence,
@@ -376,6 +406,24 @@ def _review_question_payload(
             for item in candidates
         ],
     }
+    if isinstance(question.draft, MatchingQuestionDraft):
+        payload.update(
+            {
+                "kind": "matching",
+                "prompts": [
+                    {
+                        "id": item.id,
+                        "label": item.label,
+                        "text": item.text,
+                        "correct_index": item.correct_index,
+                    }
+                    for item in question.draft.prompts
+                ],
+            }
+        )
+    else:
+        payload["correct_index"] = question.draft.correct_index
+    return payload
 
 
 def _direct_review_payload(request: Request, run_id: str) -> dict[str, object]:
@@ -484,7 +532,10 @@ def practice_review_data(request: Request, run_id: str) -> JSONResponse:
 
 @router.patch("/runs/{run_id}/questions/{question_id}")
 def update_practice_question(
-    request: Request, run_id: str, question_id: str, submission: QuestionEditInput
+    request: Request,
+    run_id: str,
+    question_id: str,
+    submission: QuestionEditInput | MatchingQuestionEditInput,
 ) -> Response:
     require_form_csrf(request, None)
     _direct_import_review_run(request, run_id)
@@ -593,17 +644,15 @@ def upload_practice_question_image(
 
 
 @router.get("/runs/{run_id}/questions/{question_id}/image/preview")
-def preview_practice_question_image(
-    request: Request, run_id: str, question_id: str
-) -> Response:
+def preview_practice_question_image(request: Request, run_id: str, question_id: str) -> Response:
     _direct_import_review_run(request, run_id)
     try:
         question = _practice_review(request).question(run_id, question_id)
         if question.chosen_image is None:
             raise KeyError(question_id)
-        image = cast(
-            StudioRepository, request.app.state.studio_repository
-        ).import_review_image(run_id, question.chosen_image.key)
+        image = cast(StudioRepository, request.app.state.studio_repository).import_review_image(
+            run_id, question.chosen_image.key
+        )
     except ReviewArtifactUnavailable as error:
         return _review_artifact_unavailable_response(error)
     except KeyError as error:
@@ -702,9 +751,7 @@ def _set_override(
         require_form_csrf(request, None)
         _direct_import_review_run(request, run_id)
         try:
-            _practice_review(request).set_image_not_needed(
-                run_id, question_id, enabled
-            )
+            _practice_review(request).set_image_not_needed(run_id, question_id, enabled)
         except ReviewArtifactUnavailable as error:
             return _review_artifact_unavailable_response(error)
         except KeyError as error:
@@ -769,6 +816,10 @@ def _direct_preview_quiz(request: Request, run_id: str) -> tuple[StudioRun, Nati
     return run, quiz
 
 
+def _preview_version(quiz: NativeQuiz) -> str:
+    return f"preview:{hashlib.sha256(serialize_native_quiz(quiz).encode('utf-8')).hexdigest()}"
+
+
 def _direct_preview_image_urls(
     request: Request,
     run: StudioRun,
@@ -797,9 +848,7 @@ def _preview_image_urls(
 ) -> dict[str, tuple[str, str, int | None, int | None]]:
     active_keys = {
         requirement.key
-        for requirement in image_requirements(
-            _replace_overridden_image_refs(review)
-        )
+        for requirement in image_requirements(_replace_overridden_image_refs(review))
     }
     return {
         requirement.image_key: (
@@ -833,7 +882,7 @@ def preview_quiz_page(request: Request, run_id: str) -> Response:
         raise HTTPException(404, "Studio run was not found") from error
     if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
         try:
-            direct_run, _ = _direct_preview_quiz(request, run_id)
+            direct_run, quiz = _direct_preview_quiz(request, run_id)
         except ReviewArtifactUnavailable as error:
             return _review_artifact_unavailable_response(error)
         return templates.TemplateResponse(
@@ -845,6 +894,7 @@ def preview_quiz_page(request: Request, run_id: str) -> Response:
                 "answer_url": f"/studio/runs/{run_id}/preview/answer",
                 "publish_url": f"/studio/runs/{run_id}/publication",
                 "player_asset_version": _player_asset_version(),
+                "preview_version": _preview_version(quiz),
             },
             headers={"Cache-Control": "no-store"},
         )
@@ -858,6 +908,7 @@ def preview_quiz_page(request: Request, run_id: str) -> Response:
             "answer_url": f"/studio/runs/{run_id}/preview/answer",
             "publish_url": f"/studio/runs/{run_id}/publication",
             "player_asset_version": _player_asset_version(),
+            "preview_version": _preview_version(_replace_overridden_image_refs(review)),
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -877,7 +928,7 @@ def preview_quiz_content(request: Request, run_id: str) -> JSONResponse:
         return JSONResponse(
             {
                 "token": f"preview-{run_id}",
-                "version": 1,
+                "version": _preview_version(quiz),
                 "course": direct_run.destination_subject,
                 "exam_number": direct_run.destination_exam_number,
                 **public_quiz_content(quiz, _direct_preview_image_urls(request, direct_run, quiz)),
@@ -889,7 +940,7 @@ def preview_quiz_content(request: Request, run_id: str) -> JSONResponse:
     return JSONResponse(
         {
             "token": f"preview-{run_id}",
-            "version": 1,
+            "version": _preview_version(quiz),
             "course": review.run.destination_subject,
             "exam_number": review.run.destination_exam_number,
             **public_quiz_content(quiz, _preview_image_urls(review)),
@@ -933,11 +984,7 @@ def preview_quiz_media(
     review = _resolved_review(request, run_id)
     urls = _preview_image_urls(review)
     requirement = next(
-        (
-            item
-            for item in review.requirements
-            if item.image_key == image_key and image_key in urls
-        ),
+        (item for item in review.requirements if item.image_key == image_key and image_key in urls),
         None,
     )
     if requirement is None or requirement.image is None:
@@ -956,7 +1003,7 @@ def preview_quiz_media(
 def preview_quiz_answer(
     request: Request,
     run_id: str,
-    submission: PreviewAnswerSubmission,
+    submission: PreviewAnswerSubmission | MatchingPreviewAnswerSubmission,
 ) -> Response:
     try:
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
@@ -968,35 +1015,25 @@ def preview_quiz_answer(
         except ReviewArtifactUnavailable as error:
             return _review_artifact_unavailable_response(error)
         try:
+            if isinstance(submission, MatchingPreviewAnswerSubmission):
+                return JSONResponse(asdict(grade_matching_answer(quiz, submission.question_id, submission.matches)), headers={"Cache-Control": "no-store"})
             feedback = grade_answer(quiz, submission.question_id, submission.choice_id)
         except KeyError as error:
             raise HTTPException(404, "quiz question was not found") from error
-        return JSONResponse(
-            {
-                "correct": feedback.correct,
-                "correct_choice_id": feedback.correct_choice_id,
-                "rationale": feedback.rationale,
-            },
-            headers={"Cache-Control": "no-store"},
-        )
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        return JSONResponse({"correct": feedback.correct, "correct_choice_id": feedback.correct_choice_id, "rationale": feedback.rationale}, headers={"Cache-Control": "no-store"})
     review = _resolved_review(request, run_id)
     quiz = _replace_overridden_image_refs(review)
     try:
-        feedback = grade_answer(
-            quiz,
-            submission.question_id,
-            submission.choice_id,
-        )
+        if isinstance(submission, MatchingPreviewAnswerSubmission):
+            return JSONResponse(asdict(grade_matching_answer(quiz, submission.question_id, submission.matches)), headers={"Cache-Control": "no-store"})
+        feedback = grade_answer(quiz, submission.question_id, submission.choice_id)
     except KeyError as error:
         raise HTTPException(404, "quiz question was not found") from error
-    return JSONResponse(
-        {
-            "correct": feedback.correct,
-            "correct_choice_id": feedback.correct_choice_id,
-            "rationale": feedback.rationale,
-        },
-        headers={"Cache-Control": "no-store"},
-    )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse({"correct": feedback.correct, "correct_choice_id": feedback.correct_choice_id, "rationale": feedback.rationale}, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/runs/{run_id}/publication")

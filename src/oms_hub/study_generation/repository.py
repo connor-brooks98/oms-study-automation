@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 import re
 import secrets
 from dataclasses import dataclass, replace
@@ -51,6 +52,7 @@ from oms_hub.study_generation.domain import (
     PublishedQuizMediaRecord,
     PublishedQuizOrderDirection,
     PublishedQuizRecord,
+    QuizMatchingQuestion,
     QuizRecord,
     SourceKind,
 )
@@ -68,6 +70,14 @@ _ACTIVE_STATES = {
     GenerationState.PAUSED.value,
 }
 _ANKI_PROMPT_DIRECTORY_KEY = "anki_curation_prompt_directory"
+
+
+def _validate_question_kinds(quiz: NativeQuiz, content_kind: str) -> None:
+    if (
+        any(isinstance(question, QuizMatchingQuestion) for question in quiz.questions)
+        and content_kind != QuizContentKind.PRACTICE_QUESTIONS.value
+    ):
+        raise ValueError("matching questions are limited to practice-question content")
 
 
 class StudioPublicationRecoveryConflict(RuntimeError):
@@ -725,10 +735,7 @@ class GenerationRepository:
                 OutlineOutputModel.current.is_(True),
             )
         )
-        if (
-            current is not None
-            and current.provenance_kind == "imported_notebooklm"
-        ):
+        if current is not None and current.provenance_kind == "imported_notebooklm":
             review = session.get(OutlineReplacementReviewModel, job_id)
             if (
                 replacement_review is None
@@ -1041,6 +1048,7 @@ class GenerationRepository:
                 raise ValueError("lecture was removed")
             # Lecture generation owns this title; Studio/import labels remain untouched.
             quiz = replace(quiz, title=lecture.topic.strip())
+            _validate_question_kinds(quiz, QuizContentKind.LECTURE_QUIZ.value)
             self._validate_accuracy(quiz)
             model = session.scalar(
                 select(PublishedQuizModel).where(
@@ -1125,6 +1133,7 @@ class GenerationRepository:
         quiz = parse_native_quiz(payload_json)
         with self.database.session() as session:
             model = self._active_published_quiz_in_session(session, token)
+            _validate_question_kinds(quiz, model.content_kind)
             available_image_keys = set(
                 session.scalars(
                     select(PublishedQuizMediaModel.image_key).where(
@@ -1139,8 +1148,7 @@ class GenerationRepository:
             } - available_image_keys
             if unknown_images:
                 raise ValueError(
-                    "quiz references unavailable image media: "
-                    + ", ".join(sorted(unknown_images))
+                    "quiz references unavailable image media: " + ", ".join(sorted(unknown_images))
                 )
             old_version = model.version
             # Question editing is intentionally title-neutral: a stale library form
@@ -1180,8 +1188,13 @@ class GenerationRepository:
                     "occurrence_count = published_quiz_flags.occurrence_count + 1, "
                     "status = 'open', updated_at = :now"
                 ),
-                {"token": token, "version": version, "question_id": question_id, "reason": reason,
-                 "now": datetime.now(UTC).isoformat()},
+                {
+                    "token": token,
+                    "version": version,
+                    "question_id": question_id,
+                    "reason": reason,
+                    "now": datetime.now(UTC).isoformat(),
+                },
             )
 
     def open_published_quiz_flags(self, token: str) -> tuple[dict[str, object], ...]:
@@ -1198,9 +1211,15 @@ class GenerationRepository:
                     PublishedQuizFlagModel.id.desc(),
                 )
             ).all()
-            return tuple({"question_id": row.question_id, "reason": row.reason,
-                          "count": row.occurrence_count, "version": row.quiz_version}
-                         for row in rows)
+            return tuple(
+                {
+                    "question_id": row.question_id,
+                    "reason": row.reason,
+                    "count": row.occurrence_count,
+                    "version": row.quiz_version,
+                }
+                for row in rows
+            )
 
     def open_published_quiz_flag_count(self, token: str) -> int:
         with self.database.session() as session:
@@ -1231,6 +1250,7 @@ class GenerationRepository:
                 return self._published_quiz(model)
 
             target_kind = self._content_kind_for_section(model, section)
+            _validate_question_kinds(parse_native_quiz(model.payload_json), target_kind)
             model.content_kind = target_kind
             self._normalize_scope_order(
                 session,
@@ -1278,8 +1298,12 @@ class GenerationRepository:
         run_id: str,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
-        self._validate_accuracy(quiz)
         with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise ValueError("Studio run was removed")
+            _validate_question_kinds(quiz, run.content_kind)
+            self._validate_accuracy(quiz)
             return self._publish_studio_quiz_in_session(session, run_id, quiz)
 
     def publish_and_complete_studio_run(
@@ -1361,10 +1385,12 @@ class GenerationRepository:
         """
         with self.database.session() as session:
             publications = session.scalars(
-                select(PublishedQuizModel).where(
+                select(PublishedQuizModel)
+                .where(
                     PublishedQuizModel.studio_run_id.is_not(None),
                     PublishedQuizModel.active.is_(True),
-                ).order_by(
+                )
+                .order_by(
                     PublishedQuizModel.destination_subject_key,
                     PublishedQuizModel.destination_exam_number,
                     PublishedQuizModel.label_key,
@@ -1450,10 +1476,8 @@ class GenerationRepository:
             publications = session.scalars(
                 select(PublishedQuizModel).where(
                     PublishedQuizModel.studio_run_id.is_not(None),
-                    PublishedQuizModel.destination_subject_key
-                    == run.destination_subject_key,
-                    PublishedQuizModel.destination_exam_number
-                    == run.destination_exam_number,
+                    PublishedQuizModel.destination_subject_key == run.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number == run.destination_exam_number,
                     PublishedQuizModel.label_key == run.label_key,
                     PublishedQuizModel.active.is_(True),
                 )
@@ -1504,10 +1528,8 @@ class GenerationRepository:
     ) -> None:
         competing_active_run = session.scalar(
             select(StudioRunModel).where(
-                StudioRunModel.destination_subject_key
-                == run.destination_subject_key,
-                StudioRunModel.destination_exam_number
-                == run.destination_exam_number,
+                StudioRunModel.destination_subject_key == run.destination_subject_key,
+                StudioRunModel.destination_exam_number == run.destination_exam_number,
                 StudioRunModel.label_key == run.label_key,
                 StudioRunModel.id != run.id,
                 StudioRunModel.state.in_(
@@ -1521,8 +1543,7 @@ class GenerationRepository:
         )
         if competing_active_run is not None:
             raise ValueError(
-                "another active Studio run owns this publication scope; "
-                "publication was not changed"
+                "another active Studio run owns this publication scope; publication was not changed"
             )
 
     def _publish_studio_quiz_in_session(
@@ -1531,6 +1552,7 @@ class GenerationRepository:
         run = session.get(StudioRunModel, run_id)
         if run is None:
             raise ValueError("Studio run was removed")
+        _validate_question_kinds(quiz, run.content_kind)
         self._require_unreserved_studio_publication_scope(session, run)
         model = None
         if run.supersedes_run_id:
@@ -1550,9 +1572,7 @@ class GenerationRepository:
                 )
             )
             if duplicate is not None:
-                raise ValueError(
-                    "a published Studio quiz already uses this label for that exam"
-                )
+                raise ValueError("a published Studio quiz already uses this label for that exam")
             model = PublishedQuizModel(
                 token=secrets.token_hex(32),
                 lecture_id=None,
@@ -1599,11 +1619,7 @@ class GenerationRepository:
                 raise KeyError(run_id)
             if run.published_token:
                 existing = session.get(PublishedQuizModel, run.published_token)
-                if (
-                    existing is not None
-                    and existing.active
-                    and existing.studio_run_id == run_id
-                ):
+                if existing is not None and existing.active and existing.studio_run_id == run_id:
                     return self._published_quiz(existing)
             self._require_unreserved_studio_publication_scope(session, run)
             if run.workflow_kind == QuizWorkflowKind.DIRECT_IMPORT.value:
@@ -1616,6 +1632,7 @@ class GenerationRepository:
                     run.id,
                     title=run.label,
                 )
+                _validate_question_kinds(quiz, run.content_kind)
                 self._validate_accuracy(quiz)
                 return self._publish_direct_import_in_session(session, run, quiz)
             if run.state != StudioRunState.AWAITING_IMAGES.value:
@@ -1630,8 +1647,7 @@ class GenerationRepository:
                 .order_by(StudioQuizImageRequirementModel.id)
             ).all()
             requirements_by_key = {
-                requirement.image_key: requirement
-                for requirement in requirement_models
+                requirement.image_key: requirement for requirement in requirement_models
             }
             overridden = frozenset(
                 session.scalars(
@@ -1651,23 +1667,18 @@ class GenerationRepository:
                 requirement.key
                 for requirement in image_requirements(draft)
                 if active_question_ids_by_key.get(requirement.key)
-                and not self._stored_image_is_complete(
-                    requirements_by_key.get(requirement.key)
-                )
+                and not self._stored_image_is_complete(requirements_by_key.get(requirement.key))
             ]
             if unresolved:
-                raise ValueError(
-                    "quiz images are still required: " + ", ".join(unresolved)
-                )
+                raise ValueError("quiz images are still required: " + ", ".join(unresolved))
             quiz = replace(
                 draft,
                 questions=tuple(
-                    replace(question, image_ref=None)
-                    if question.id in overridden
-                    else question
+                    replace(question, image_ref=None) if question.id in overridden else question
                     for question in draft.questions
                 ),
             )
+            _validate_question_kinds(quiz, run.content_kind)
             self._validate_accuracy(quiz)
 
             model = None
@@ -1681,10 +1692,8 @@ class GenerationRepository:
                 duplicate = session.scalar(
                     select(PublishedQuizModel).where(
                         PublishedQuizModel.studio_run_id.is_not(None),
-                        PublishedQuizModel.destination_subject_key
-                        == run.destination_subject_key,
-                        PublishedQuizModel.destination_exam_number
-                        == run.destination_exam_number,
+                        PublishedQuizModel.destination_subject_key == run.destination_subject_key,
+                        PublishedQuizModel.destination_exam_number == run.destination_exam_number,
                         PublishedQuizModel.label_key == run.label_key,
                         PublishedQuizModel.active.is_(True),
                     )
@@ -1766,6 +1775,7 @@ class GenerationRepository:
         run: StudioRunModel,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
+        _validate_question_kinds(quiz, run.content_kind)
         requirements_by_key = {
             item.image_key: item
             for item in session.scalars(
@@ -1842,9 +1852,7 @@ class GenerationRepository:
             model.active = True
         session.flush()
         session.execute(
-            delete(PublishedQuizMediaModel).where(
-                PublishedQuizMediaModel.quiz_token == model.token
-            )
+            delete(PublishedQuizMediaModel).where(PublishedQuizMediaModel.quiz_token == model.token)
         )
         for image_key in active_image_keys:
             requirement = requirements_by_key[image_key]
@@ -1984,9 +1992,7 @@ class GenerationRepository:
     ) -> tuple[str, int, int, int, int, str, str]:
         scope = cls._published_quiz_scope(session, model)
         lecture = (
-            session.get(LectureModel, model.lecture_id)
-            if model.lecture_id is not None
-            else None
+            session.get(LectureModel, model.lecture_id) if model.lecture_id is not None else None
         )
         return (
             scope[0],

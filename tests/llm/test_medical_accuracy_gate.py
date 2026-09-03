@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 from dataclasses import dataclass, field
 
 import pytest
@@ -13,7 +14,13 @@ from oms_hub.llm.openrouter import AccuracyGateError, MedicalAccuracyGate
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import LLMService
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
-from oms_hub.study_generation.domain import NativeQuiz, QuizChoice, QuizQuestion
+from oms_hub.study_generation.domain import (
+    NativeQuiz,
+    QuizChoice,
+    QuizMatchingPrompt,
+    QuizMatchingQuestion,
+    QuizQuestion,
+)
 
 
 class MemorySecrets:
@@ -35,6 +42,7 @@ class RecordingProvider:
     name: ProviderName
     response_text: str = '{"approved": true, "issues": []}'
     calls: list[tuple[str, str]] = field(default_factory=list)
+    inputs: list[str] = field(default_factory=list)
 
     def clean(self, raw_text, prompt, *, api_key, model):
         raise NotImplementedError
@@ -45,6 +53,7 @@ class RecordingProvider:
 
     def generate_text(self, instruction, input_text, *, api_key, model, output_schema):
         self.calls.append((model, api_key))
+        self.inputs.append(input_text)
         return GeneratedText(
             text=self.response_text,
             provider=self.name,
@@ -77,6 +86,36 @@ def _quiz(*question_ids: str) -> NativeQuiz:
         title="Heme quiz",
         questions=tuple(_question(question_id) for question_id in question_ids),
     )
+
+
+def _matching_quiz() -> NativeQuiz:
+    return NativeQuiz(
+        "Matching quiz",
+        (
+            QuizMatchingQuestion(
+                "q1",
+                "Match each description with its term.",
+                (
+                    QuizMatchingPrompt("p1", "A", "Description alpha", "c2"),
+                    QuizMatchingPrompt("p2", "B", "Description beta", "c1"),
+                ),
+                (QuizChoice("c1", "Term one"), QuizChoice("c2", "Term two")),
+                "Source-marked matches: A -> Term two; B -> Term one.",
+            ),
+        ),
+    )
+
+
+def test_matching_accuracy_request_contains_one_group_and_every_mapping(tmp_path) -> None:
+    gate, llm_settings, _, providers = prepared_gate(tmp_path)
+    llm_settings.set_assignment(LLMTask.ACCURACY_REVIEW, ProviderName.GEMINI, "gemini-review-model")
+    gate.validate(_matching_quiz())
+    inputs = providers[ProviderName.GEMINI].inputs
+    assert len(inputs) == 1
+    assert inputs[0].count("Question:\n") == 1
+    assert "Matching prompts and proposed matches:" in inputs[0]
+    assert "p1 (A): Description alpha -> c2: Term two" in inputs[0]
+    assert "p2 (B): Description beta -> c1: Term one" in inputs[0]
 
 
 def prepared_gate(tmp_path, *, gate_enabled: bool = True):
@@ -162,9 +201,9 @@ def test_validate_blocks_publication_when_reviewer_disapproves(tmp_path):
         ProviderName.GEMINI,
         "gemini-review-model",
     )
-    providers[ProviderName.GEMINI].response_text = (
-        '{"approved": false, "issues": ["stem contradicts the rationale"]}'
-    )
+    providers[
+        ProviderName.GEMINI
+    ].response_text = '{"approved": false, "issues": ["stem contradicts the rationale"]}'
 
     with pytest.raises(AccuracyGateError) as raised:
         gate.validate(_quiz("q1"))
