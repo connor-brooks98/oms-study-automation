@@ -18,6 +18,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
+        env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
         run: python -m pip install -e ".[dev,document-processing,pdf-inspection]"
 
       - name: Ruff
@@ -61,6 +63,7 @@ jobs:
       - name: Install and test document processors
         shell: powershell
         env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
           PYTEST_ADDOPTS: -m "not windows_office"
         run: |
           py -3.12 -m venv .venv
@@ -87,6 +90,8 @@ jobs:
 
       - name: Install rehearsal test dependencies
         shell: powershell
+        env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
         run: |
           py -3.12 -m venv .venv
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
