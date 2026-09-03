@@ -21,6 +21,8 @@ from oms_hub.study_generation.domain import NativeQuiz, QuizChoice, QuizQuestion
 from oms_hub.study_generation.native_quiz import serialize_native_quiz
 from oms_hub.study_generation.practice_domain import (
     AnswerProvenance,
+    MatchingPromptDraft,
+    MatchingQuestionDraft,
     QuestionDraft,
     QuestionSourceRef,
 )
@@ -131,6 +133,112 @@ def _direct_review_run(client: TestClient, *, run_id: str = "direct-run") -> str
         ),
     )
     return run_id
+
+
+def _matching_review_run(client: TestClient, *, run_id: str = "matching-run") -> str:
+    _direct_review_run(client, run_id=run_id)
+    client.app.state.practice_review.store(
+        run_id,
+        (
+            MatchingQuestionDraft(
+                "matching-1",
+                "1",
+                "Match each description with its term.",
+                (
+                    MatchingPromptDraft("p1", "A", "Alpha", 1),
+                    MatchingPromptDraft("p2", "B", "Beta", 0),
+                ),
+                ("Term one", "Term two"),
+                "Source-marked matches: A -> Term two; B -> Term one.",
+                None,
+                (QuestionSourceRef("source", "segment", "page 1"),),
+                AnswerProvenance.PROVIDED_BY_SOURCE,
+                1.0,
+                (),
+                False,
+                None,
+            ),
+        ),
+    )
+    return run_id
+
+
+def test_matching_review_patch_and_preview_use_group_contract_and_fingerprint(tmp_path) -> None:
+    client = _client(tmp_path)
+    run_id = _matching_review_run(client)
+    before = client.get(f"/studio/runs/{run_id}/review/data")
+    question = before.json()["questions"][0]
+    assert question["kind"] == "matching"
+    assert question["prompts"] == [
+        {"id": "p1", "label": "A", "text": "Alpha", "correct_index": 1},
+        {"id": "p2", "label": "B", "text": "Beta", "correct_index": 0},
+    ]
+    verification = client.post(
+        f"/studio/runs/{run_id}/questions/matching-1/verify-answer",
+        headers=_csrf_headers(client),
+    )
+    assert verification.status_code == 409
+    invalid = client.patch(
+        f"/studio/runs/{run_id}/questions/matching-1",
+        json={
+            "kind": "matching",
+            "stem": "Changed",
+            "prompts": [{"id": "p1", "label": "A", "text": "Alpha", "correct_index": 1}],
+            "choices": ["Term one", "Term two"],
+            "rationale": "custom",
+        },
+        headers=_csrf_headers(client),
+    )
+    assert invalid.status_code == 422
+    assert client.get(f"/studio/runs/{run_id}/review/data").json() == before.json()
+    valid = client.patch(
+        f"/studio/runs/{run_id}/questions/matching-1",
+        json={
+            "kind": "matching",
+            "stem": "Changed",
+            "prompts": [
+                {"id": "p1", "label": "A", "text": "Alpha", "correct_index": 1},
+                {"id": "p2", "label": "B", "text": "Beta", "correct_index": 0},
+            ],
+            "choices": ["Term one", "Term two"],
+            "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
+        },
+        headers=_csrf_headers(client),
+    )
+    assert valid.status_code == 200
+    content = client.get(f"/studio/runs/{run_id}/preview/content")
+    page = client.get(f"/studio/runs/{run_id}/preview")
+    version = content.json()["version"]
+    assert version.startswith("preview:") and len(version) == len("preview:") + 64
+    assert f'data-quiz-version="{version}"' in page.text
+    assert "correct_choice_id" not in content.text
+    answer = client.post(
+        f"/studio/runs/{run_id}/preview/answer",
+        json={"kind": "matching", "question_id": "q1", "matches": {"p1": "c2", "p2": "c1"}},
+    )
+    assert answer.json() == {
+        "kind": "matching",
+        "correct": True,
+        "correct_matches": {"p1": "c2", "p2": "c1"},
+        "row_results": {"p1": True, "p2": True},
+        "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
+    }
+    changed = client.patch(
+        f"/studio/runs/{run_id}/questions/matching-1",
+        json={
+            "kind": "matching",
+            "stem": "Changed again",
+            "prompts": [
+                {"id": "p1", "label": "A", "text": "Alpha", "correct_index": 1},
+                {"id": "p2", "label": "B", "text": "Beta", "correct_index": 0},
+            ],
+            "choices": ["Term one", "Term two"],
+            "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
+        },
+        headers=_csrf_headers(client),
+    )
+    assert changed.status_code == 200
+    assert client.get(f"/studio/runs/{run_id}/preview/content").json()["version"] != version
 
 
 def test_missing_review_artifacts_use_one_recovery_envelope(tmp_path) -> None:

@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import replace
-from typing import TYPE_CHECKING, Annotated
+from dataclasses import asdict, replace
+from typing import TYPE_CHECKING, Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -15,6 +15,7 @@ from pydantic import (
     StringConstraints,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from oms_hub.study_generation.domain import (
@@ -23,6 +24,9 @@ from oms_hub.study_generation.domain import (
     QuizChoice,
     QuizFeedback,
     QuizImageRef,
+    QuizMatchingFeedback,
+    QuizMatchingPrompt,
+    QuizMatchingQuestion,
     QuizQuestion,
 )
 
@@ -201,11 +205,53 @@ class _QuestionInput(BaseModel):
         return correct_index
 
 
+class _MatchingPromptInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: _Text
+    text: _Text
+    correct_index: int = Field(ge=0)
+
+
+class _MatchingQuestionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["matching"]
+    stem: _Text
+    prompts: Annotated[list[_MatchingPromptInput], Field(min_length=2, max_length=8)]
+    choices: Annotated[list[_Text], Field(min_length=2, max_length=8)]
+    rationale: _Text
+    area: _Dimension | None = None
+    learning_objective: _Dimension | None = Field(
+        default=None, validation_alias=AliasChoices("learning_objective", "objective")
+    )
+    topic: _Dimension | None = None
+    image_ref: _ImageRefInput | None = None
+
+    @field_validator("choices")
+    @classmethod
+    def choices_are_distinct(cls, choices: list[str]) -> list[str]:
+        if len({choice.casefold() for choice in choices}) != len(choices):
+            raise ValueError("choices must be distinct")
+        return choices
+
+    @model_validator(mode="after")
+    def prompt_contract_is_valid(self) -> _MatchingQuestionInput:
+        if len({prompt.label.casefold() for prompt in self.prompts}) != len(self.prompts):
+            raise ValueError("prompt labels must be distinct after case-folding")
+        if any(prompt.correct_index >= len(self.choices) for prompt in self.prompts):
+            raise ValueError("correct_index must identify an available choice")
+        return self
+
+
+_QuestionValueInput = _QuestionInput | _MatchingQuestionInput
+
+
 class _QuizInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: _Title
-    questions: Annotated[list[_QuestionInput], Field(min_length=1, max_length=100)]
+    questions: Annotated[list[_QuestionValueInput], Field(min_length=1, max_length=100)]
 
 
 def quiz_prompt(
@@ -254,6 +300,56 @@ def subject_quiz_guidance(subject: str | None) -> str:
     )
 
 
+def _domain_question(
+    question: _QuestionValueInput, question_index: int
+) -> QuizQuestion | QuizMatchingQuestion:
+    choices = tuple(
+        QuizChoice(f"c{choice_index}", choice)
+        for choice_index, choice in enumerate(question.choices, start=1)
+    )
+    image_ref = (
+        QuizImageRef(
+            question.image_ref.key,
+            question.image_ref.source_title,
+            question.image_ref.locator,
+            question.image_ref.description,
+        )
+        if question.image_ref is not None
+        else None
+    )
+    if isinstance(question, _MatchingQuestionInput):
+        return QuizMatchingQuestion(
+            f"q{question_index}",
+            question.stem,
+            tuple(
+                QuizMatchingPrompt(
+                    f"p{prompt_index}",
+                    prompt.label,
+                    prompt.text,
+                    f"c{prompt.correct_index + 1}",
+                )
+                for prompt_index, prompt in enumerate(question.prompts, start=1)
+            ),
+            choices,
+            question.rationale,
+            image_ref,
+            question.area,
+            question.learning_objective,
+            question.topic,
+        )
+    return QuizQuestion(
+        f"q{question_index}",
+        question.stem,
+        choices,
+        f"c{question.correct_index + 1}",
+        question.rationale,
+        image_ref,
+        question.area,
+        question.learning_objective,
+        question.topic,
+    )
+
+
 def parse_native_quiz(raw: str) -> NativeQuiz:
     text = raw.strip()
     fenced = re.fullmatch(
@@ -281,38 +377,22 @@ def parse_native_quiz(raw: str) -> NativeQuiz:
     return NativeQuiz(
         validated.title,
         tuple(
-            QuizQuestion(
-                f"q{question_index}",
-                question.stem,
-                tuple(
-                    QuizChoice(f"c{choice_index}", choice)
-                    for choice_index, choice in enumerate(
-                        question.choices,
-                        start=1,
-                    )
-                ),
-                f"c{question.correct_index + 1}",
-                question.rationale,
-                (
-                    QuizImageRef(
-                        question.image_ref.key,
-                        question.image_ref.source_title,
-                        question.image_ref.locator,
-                        question.image_ref.description,
-                    )
-                    if question.image_ref is not None
-                    else None
-                ),
-                area=question.area,
-                learning_objective=question.learning_objective,
-                topic=question.topic,
-            )
+            _domain_question(question, question_index)
             for question_index, question in enumerate(
                 validated.questions,
                 start=1,
             )
         ),
     )
+
+
+def parse_notebook_quiz(raw: str) -> NativeQuiz:
+    quiz = parse_native_quiz(raw)
+    if any(isinstance(question, QuizMatchingQuestion) for question in quiz.questions):
+        raise QuizContractError(
+            "NotebookLM quiz JSON must contain only multiple-choice questions"
+        )
+    return quiz
 
 
 def image_requirements(quiz: NativeQuiz) -> tuple[QuizImageRef, ...]:
@@ -329,14 +409,29 @@ def public_quiz_content(
 ) -> dict[str, object]:
     questions: list[dict[str, object]] = []
     for question in quiz.questions:
-        item: dict[str, object] = {
-            "id": question.id,
-            "stem": question.stem,
-            "choices": [
-                {"id": choice.id, "text": choice.text}
-                for choice in question.choices
-            ],
-        }
+        if isinstance(question, QuizMatchingQuestion):
+            item: dict[str, object] = {
+                "kind": "matching",
+                "id": question.id,
+                "stem": question.stem,
+                "prompts": [
+                    {"id": prompt.id, "label": prompt.label, "text": prompt.text}
+                    for prompt in question.prompts
+                ],
+                "choices": [
+                    {"id": choice.id, "text": choice.text}
+                    for choice in question.choices
+                ],
+            }
+        else:
+            item = {
+                "id": question.id,
+                "stem": question.stem,
+                "choices": [
+                    {"id": choice.id, "text": choice.text}
+                    for choice in question.choices
+                ],
+            }
         if question.image_ref is not None and image_urls is not None:
             media = image_urls.get(question.image_ref.key)
             if media is not None:
@@ -365,6 +460,8 @@ def grade_answer(
     )
     if question is None:
         raise KeyError(question_id)
+    if isinstance(question, QuizMatchingQuestion):
+        raise ValueError("multiple-choice answer was submitted for a matching question")
     if choice_id not in {choice.id for choice in question.choices}:
         raise KeyError(choice_id)
     return QuizFeedback(
@@ -374,48 +471,90 @@ def grade_answer(
     )
 
 
+def grade_matching_answer(
+    quiz: NativeQuiz,
+    question_id: str,
+    matches: Mapping[str, str],
+) -> QuizMatchingFeedback:
+    question = next((item for item in quiz.questions if item.id == question_id), None)
+    if question is None:
+        raise KeyError(question_id)
+    if not isinstance(question, QuizMatchingQuestion):
+        raise ValueError("matching answer was submitted for a multiple-choice question")
+    prompt_ids = {prompt.id for prompt in question.prompts}
+    choice_ids = {choice.id for choice in question.choices}
+    if set(matches) != prompt_ids or any(
+        choice_id not in choice_ids for choice_id in matches.values()
+    ):
+        raise ValueError(
+            "matching answer must identify one available choice for every prompt"
+        )
+    correct_matches = {
+        prompt.id: prompt.correct_choice_id for prompt in question.prompts
+    }
+    row_results = {
+        prompt_id: matches[prompt_id] == correct_choice_id
+        for prompt_id, correct_choice_id in correct_matches.items()
+    }
+    return QuizMatchingFeedback(
+        "matching",
+        all(row_results.values()),
+        correct_matches,
+        row_results,
+        question.rationale,
+    )
+
+
+def _serialized_question(
+    question: QuizQuestion | QuizMatchingQuestion,
+) -> dict[str, object]:
+    shared: dict[str, object] = {
+        "stem": question.stem,
+        "choices": [choice.text for choice in question.choices],
+        "rationale": question.rationale,
+        **({"area": question.area} if question.area is not None else {}),
+        **(
+            {"learning_objective": question.learning_objective}
+            if question.learning_objective is not None
+            else {}
+        ),
+        **({"topic": question.topic} if question.topic is not None else {}),
+        "image_ref": asdict(question.image_ref) if question.image_ref is not None else None,
+    }
+    if isinstance(question, QuizMatchingQuestion):
+        index_by_choice_id = {
+            choice.id: index for index, choice in enumerate(question.choices)
+        }
+        return {
+            "kind": "matching",
+            "stem": question.stem,
+            "prompts": [
+                {
+                    "label": prompt.label,
+                    "text": prompt.text,
+                    "correct_index": index_by_choice_id[prompt.correct_choice_id],
+                }
+                for prompt in question.prompts
+            ],
+            **{key: value for key, value in shared.items() if key != "stem"},
+        }
+    return {
+        "stem": question.stem,
+        "choices": [choice.text for choice in question.choices],
+        "correct_index": next(
+            index
+            for index, choice in enumerate(question.choices)
+            if choice.id == question.correct_choice_id
+        ),
+        **{key: value for key, value in shared.items() if key not in {"stem", "choices"}},
+    }
+
+
 def serialize_native_quiz(quiz: NativeQuiz) -> str:
     return json.dumps(
         {
             "title": quiz.title,
-            "questions": [
-                {
-                    "stem": question.stem,
-                    "choices": [choice.text for choice in question.choices],
-                    "correct_index": next(
-                        index
-                        for index, choice in enumerate(question.choices)
-                        if choice.id == question.correct_choice_id
-                    ),
-                    "rationale": question.rationale,
-                    **(
-                        {"area": question.area}
-                        if question.area is not None
-                        else {}
-                    ),
-                    **(
-                        {"learning_objective": question.learning_objective}
-                        if question.learning_objective is not None
-                        else {}
-                    ),
-                    **(
-                        {"topic": question.topic}
-                        if question.topic is not None
-                        else {}
-                    ),
-                    "image_ref": (
-                        {
-                            "key": question.image_ref.key,
-                            "source_title": question.image_ref.source_title,
-                            "locator": question.image_ref.locator,
-                            "description": question.image_ref.description,
-                        }
-                        if question.image_ref is not None
-                        else None
-                    ),
-                }
-                for question in quiz.questions
-            ],
+            "questions": [_serialized_question(question) for question in quiz.questions],
         },
         ensure_ascii=False,
         separators=(",", ":"),

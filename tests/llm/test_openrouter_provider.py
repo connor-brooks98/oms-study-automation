@@ -12,7 +12,9 @@ from oms_hub.llm.domain import (
     ProviderName,
     ThinkingMode,
 )
+from oms_hub.llm.openai import openai_output_schema
 from oms_hub.llm.openrouter import OpenRouterProvider
+from oms_hub.study_generation.practice_contracts import ExtractionPayload
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
 
@@ -352,6 +354,37 @@ def test_openrouter_structured_generation_sends_provider_safe_schema_copy():
         "required": ["values"],
         "additionalProperties": False,
     }
+    assert schema == original
+
+
+@respx.mock
+def test_openrouter_sends_expanded_extraction_schema_without_mutating_source() -> None:
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "gen-extraction-schema",
+                "model": "openai/gpt-4o-mini",
+                "choices": [
+                    {"message": {"content": '{"questions":[],"answers":[]}'}}
+                ],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 5},
+            },
+        )
+    )
+    schema = ExtractionPayload.model_json_schema()
+    original = copy.deepcopy(schema)
+
+    OpenRouterProvider().generate_text(
+        "Return questions.",
+        "Question",
+        api_key="secret",
+        model="openai/gpt-4o-mini",
+        output_schema=schema,
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["response_format"]["json_schema"]["schema"] == openai_output_schema(original)
     assert schema == original
 
 

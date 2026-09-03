@@ -23,10 +23,18 @@ from oms_hub.study_generation.notebook import NotebookQuestionResult, NotebookQu
 from oms_hub.study_generation.practice_answers import PracticeAnswerResolver
 from oms_hub.study_generation.practice_contracts import (
     ExtractedAnswer,
+    ExtractedMatchingAnswer,
+    ExtractedMatchingAnswerRow,
+    ExtractedMatchingPrompt,
+    ExtractedMatchingQuestion,
     ExtractedQuestion,
     SegmentCitation,
 )
-from oms_hub.study_generation.practice_domain import AnswerProvenance, ImportSourceRole
+from oms_hub.study_generation.practice_domain import (
+    AnswerProvenance,
+    ImportSourceRole,
+    QuestionSourceRef,
+)
 from oms_hub.study_generation.practice_extraction import ExtractionResult, SourceDocument
 from oms_hub.study_generation.quiz_import_worker import QuizImportWorker
 
@@ -95,8 +103,55 @@ class FixtureExtractor:
             questions=(question,),
             answers=answers,
             question_source_refs=((),),
+            answer_source_refs=tuple(() for _ in answers),
             provider_metadata=(),
             diagnostics=(),
+        )
+
+
+class MixedFixtureExtractor:
+    def extract(self, documents: tuple[SourceDocument, ...]) -> ExtractionResult:
+        question_source = next(item for item in documents if item.role == "questions")
+        answer_source = next(item for item in documents if item.role == "answer_key")
+        question_citation = SegmentCitation(
+            source_id=question_source.document.source_id, segment_key="block-1"
+        )
+        answer_citation = SegmentCitation(
+            source_id=answer_source.document.source_id, segment_key="block-1"
+        )
+        question_ref = QuestionSourceRef(question_source.document.source_id, "block-1", "block 1")
+        answer_ref = QuestionSourceRef(answer_source.document.source_id, "block-1", "block 1")
+        labels = tuple("ABCDEFG")
+        mapping = (5, 4, 1, 0, 2, 6, 3)
+        matching = ExtractedMatchingQuestion(
+            kind="matching", original_identifier="1",
+            stem="Match each neutral description with its neutral term.",
+            prompts=tuple(ExtractedMatchingPrompt(
+                original_identifier=label, text=f"Description {label}", supplied_correct_index=None,
+            ) for label in labels),
+            choices=tuple(f"Term {number}" for number in range(1, 8)), rationale=None,
+            source_segments=(question_citation,), candidate_assets=(), confidence=0.99,
+        )
+        matching_answer = ExtractedMatchingAnswer(
+            kind="matching", original_identifier="1",
+            matches=tuple(ExtractedMatchingAnswerRow(
+                prompt_identifier=label, correct_index=correct_index, rationale=None,
+                source_segments=(answer_citation,),
+            ) for label, correct_index in zip(labels, mapping, strict=True)),
+        )
+        mcq = ExtractedQuestion(
+            original_identifier="2", stem="Which option is correct?", choices=("Yes", "No"),
+            supplied_correct_index=None, rationale=None, source_segments=(question_citation,),
+            candidate_assets=(), confidence=0.9,
+        )
+        mcq_answer = ExtractedAnswer(
+            original_identifier="2", correct_index=0, rationale="The source key selects Yes.",
+            source_segments=(answer_citation,),
+        )
+        return ExtractionResult(
+            questions=(matching, mcq), answers=(matching_answer, mcq_answer),
+            question_source_refs=((question_ref,), (question_ref,)),
+            answer_source_refs=((answer_ref,), (answer_ref,)), provider_metadata=(), diagnostics=(),
         )
 
 
@@ -180,6 +235,7 @@ def acceptance_app(
     notebook: FailIfCalledNotebook | NoSupportNotebook,
     fallback: FailIfCalledFallback | GeneratedFallback,
     supplied_answer: bool,
+    extractor: object | None = None,
 ) -> object:
     app = create_app(
         Settings(
@@ -192,7 +248,7 @@ def acceptance_app(
     worker = QuizImportWorker(
         app.state.studio_repository,
         FixtureParser(),
-        FixtureExtractor(supplied_answer=supplied_answer),
+        extractor or FixtureExtractor(supplied_answer=supplied_answer),
         PracticeAnswerResolver(notebook, fallback),
         notebook,
         tmp_path / "import-assets",
@@ -309,3 +365,51 @@ def test_generated_answer_cannot_publish_before_question_verification(tmp_path: 
     assert notebook.attach_calls == 1
     assert notebook.answer_calls == 1
     assert notebook.no_support_results == 1
+
+
+def test_mixed_import_stays_grouped_through_review_publication_and_grading(
+    tmp_path: Path,
+) -> None:
+    app = acceptance_app(
+        tmp_path,
+        notebook=FailIfCalledNotebook(),
+        fallback=FailIfCalledFallback(),
+        supplied_answer=True,
+        extractor=MixedFixtureExtractor(),
+    )
+    client = TestClient(app)
+    headers = _csrf_headers(client)
+    run_id = _queue_import(client, headers, answer_mode="supplied")
+
+    _drain_studio_worker(app)
+    review = client.get(f"/studio/runs/{run_id}/review/data").json()
+    assert len(review["questions"]) == 2
+    assert review["questions"][0]["kind"] == "matching"
+    assert len(review["questions"][0]["prompts"]) == 7
+    published = client.post(f"/studio/runs/{run_id}/publication", headers=headers)
+    assert published.status_code == 200
+    token = published.json()["token"]
+    content = client.get(f"/public/quizzes/{token}/content").json()
+    assert [item.get("kind", "multiple_choice") for item in content["questions"]] == [
+        "matching", "multiple_choice"
+    ]
+    assert "correct_index" not in json.dumps(content)
+    matching_answer = client.post(
+        f"/public/quizzes/{token}/answer",
+        headers=headers,
+        json={
+            "kind": "matching", "question_id": "q1",
+            "matches": {
+                f"p{row}": f"c{choice + 1}"
+                for row, choice in enumerate((5, 4, 1, 0, 2, 6, 3), 1)
+            },
+        },
+    )
+    mcq_answer = client.post(
+        f"/public/quizzes/{token}/answer",
+        headers=headers,
+        json={"question_id": "q2", "choice_id": "c1"},
+    )
+    assert matching_answer.json()["correct"] is True
+    assert len(matching_answer.json()["row_results"]) == 7
+    assert mcq_answer.json()["correct"] is True

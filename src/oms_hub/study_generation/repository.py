@@ -51,6 +51,7 @@ from oms_hub.study_generation.domain import (
     PublishedQuizMediaRecord,
     PublishedQuizOrderDirection,
     PublishedQuizRecord,
+    QuizMatchingQuestion,
     QuizRecord,
     SourceKind,
 )
@@ -68,6 +69,14 @@ _ACTIVE_STATES = {
     GenerationState.PAUSED.value,
 }
 _ANKI_PROMPT_DIRECTORY_KEY = "anki_curation_prompt_directory"
+
+
+def _validate_question_kinds(quiz: NativeQuiz, content_kind: str) -> None:
+    if (
+        any(isinstance(question, QuizMatchingQuestion) for question in quiz.questions)
+        and content_kind != QuizContentKind.PRACTICE_QUESTIONS.value
+    ):
+        raise ValueError("matching questions are limited to practice-question content")
 
 
 class StudioPublicationRecoveryConflict(RuntimeError):
@@ -1041,6 +1050,7 @@ class GenerationRepository:
                 raise ValueError("lecture was removed")
             # Lecture generation owns this title; Studio/import labels remain untouched.
             quiz = replace(quiz, title=lecture.topic.strip())
+            _validate_question_kinds(quiz, QuizContentKind.LECTURE_QUIZ.value)
             self._validate_accuracy(quiz)
             model = session.scalar(
                 select(PublishedQuizModel).where(
@@ -1125,6 +1135,7 @@ class GenerationRepository:
         quiz = parse_native_quiz(payload_json)
         with self.database.session() as session:
             model = self._active_published_quiz_in_session(session, token)
+            _validate_question_kinds(quiz, model.content_kind)
             available_image_keys = set(
                 session.scalars(
                     select(PublishedQuizMediaModel.image_key).where(
@@ -1231,6 +1242,7 @@ class GenerationRepository:
                 return self._published_quiz(model)
 
             target_kind = self._content_kind_for_section(model, section)
+            _validate_question_kinds(parse_native_quiz(model.payload_json), target_kind)
             model.content_kind = target_kind
             self._normalize_scope_order(
                 session,
@@ -1278,8 +1290,12 @@ class GenerationRepository:
         run_id: str,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
-        self._validate_accuracy(quiz)
         with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise ValueError("Studio run was removed")
+            _validate_question_kinds(quiz, run.content_kind)
+            self._validate_accuracy(quiz)
             return self._publish_studio_quiz_in_session(session, run_id, quiz)
 
     def publish_and_complete_studio_run(
@@ -1294,11 +1310,12 @@ class GenerationRepository:
         The same-run branch also repairs the historical split-commit state: an
         active publication already owned by the run is adopted, not duplicated.
         """
-        self._validate_accuracy(quiz)
         with self.database.session() as session:
             run = session.get(StudioRunModel, run_id)
             if run is None:
                 raise ValueError("Studio run was removed")
+            _validate_question_kinds(quiz, run.content_kind)
+            self._validate_accuracy(quiz)
             owned = session.scalar(
                 select(PublishedQuizModel).where(
                     PublishedQuizModel.studio_run_id == run_id,
@@ -1531,6 +1548,7 @@ class GenerationRepository:
         run = session.get(StudioRunModel, run_id)
         if run is None:
             raise ValueError("Studio run was removed")
+        _validate_question_kinds(quiz, run.content_kind)
         self._require_unreserved_studio_publication_scope(session, run)
         model = None
         if run.supersedes_run_id:
@@ -1616,6 +1634,7 @@ class GenerationRepository:
                     run.id,
                     title=run.label,
                 )
+                _validate_question_kinds(quiz, run.content_kind)
                 self._validate_accuracy(quiz)
                 return self._publish_direct_import_in_session(session, run, quiz)
             if run.state != StudioRunState.AWAITING_IMAGES.value:
@@ -1668,6 +1687,7 @@ class GenerationRepository:
                     for question in draft.questions
                 ),
             )
+            _validate_question_kinds(quiz, run.content_kind)
             self._validate_accuracy(quiz)
 
             model = None
@@ -1766,6 +1786,7 @@ class GenerationRepository:
         run: StudioRunModel,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
+        _validate_question_kinds(quiz, run.content_kind)
         requirements_by_key = {
             item.image_key: item
             for item in session.scalars(

@@ -8,6 +8,7 @@ import respx
 from oms_hub.anki.card_centric import s2_generation_parameters
 from oms_hub.llm.anthropic import (
     AnthropicProvider,
+    anthropic_output_schema,
     resolve_anthropic_model_capabilities,
 )
 from oms_hub.llm.domain import (
@@ -18,6 +19,7 @@ from oms_hub.llm.domain import (
     ThinkingCapability,
     ThinkingMode,
 )
+from oms_hub.study_generation.practice_contracts import ExtractionPayload
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
 
@@ -104,6 +106,37 @@ def test_anthropic_structured_generation_sends_output_config():
     assert payload["thinking"] == {"type": "disabled"}
     assert payload["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
     assert result.text == '{"answer":"iron"}'
+
+
+@respx.mock
+def test_anthropic_sends_expanded_extraction_schema_without_mutating_source() -> None:
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "message-extraction-schema",
+                "model": "claude-sonnet-5",
+                "content": [
+                    {"type": "text", "text": '{"questions":[],"answers":[]}'}
+                ],
+                "usage": {"input_tokens": 12, "output_tokens": 5},
+            },
+        )
+    )
+    schema = ExtractionPayload.model_json_schema()
+    original = copy.deepcopy(schema)
+
+    AnthropicProvider().generate_text(
+        "Return questions.",
+        "Question",
+        api_key="secret",
+        model="claude-sonnet-5",
+        output_schema=schema,
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["output_config"]["format"]["schema"] == anthropic_output_schema(original)
+    assert schema == original
 
 
 @pytest.mark.parametrize(

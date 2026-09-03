@@ -299,6 +299,43 @@ def test_openai_structured_generation_sends_provider_safe_schema_copy():
 
 
 @respx.mock
+def test_openai_sends_expanded_extraction_schema_without_mutating_source() -> None:
+    route = respx.post("https://api.openai.com/v1/responses").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "resp-extraction-schema",
+                "status": "completed",
+                "model": "gpt-5.6-terra",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": '{"questions":[],"answers":[]}'}
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 12, "output_tokens": 5},
+            },
+        )
+    )
+    schema = ExtractionPayload.model_json_schema()
+    original = copy.deepcopy(schema)
+
+    OpenAIProvider().generate_text(
+        "Return questions.",
+        "Question",
+        api_key="secret",
+        model="gpt-5.6-terra",
+        output_schema=schema,
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["text"]["format"]["schema"] == openai_output_schema(original)
+    assert schema == original
+
+
+@respx.mock
 def test_openai_list_models_returns_sorted_ids():
     route = respx.get("https://api.openai.com/v1/models").mock(
         return_value=httpx.Response(

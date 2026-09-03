@@ -1,15 +1,17 @@
+from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from oms_hub.files.atomic import sha256_file
 from oms_hub.study_generation.domain import PublishedQuizRecord
 from oms_hub.study_generation.native_quiz import (
     grade_answer,
+    grade_matching_answer,
     public_quiz_content,
 )
 from oms_hub.study_generation.practice_domain import QuizContentKind
@@ -63,8 +65,16 @@ def _shared_style_version() -> str:
 
 
 class AnswerSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     question_id: _PublicId
     choice_id: _PublicId
+
+
+class MatchingAnswerSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["matching"]
+    question_id: _PublicId
+    matches: dict[_PublicId, _PublicId] = Field(min_length=2, max_length=8)
 
 
 class QuestionFlagSubmission(BaseModel):
@@ -488,10 +498,19 @@ def public_outline(request: Request, token: str) -> FileResponse:
 def answer_question(
     request: Request,
     token: str,
-    submission: AnswerSubmission,
+    submission: AnswerSubmission | MatchingAnswerSubmission,
 ) -> JSONResponse:
     published = _published(request, token)
     try:
+        if isinstance(submission, MatchingAnswerSubmission):
+            return JSONResponse(
+                asdict(
+                    grade_matching_answer(
+                        published.quiz, submission.question_id, submission.matches
+                    )
+                ),
+                headers={"Cache-Control": "no-store"},
+            )
         feedback = grade_answer(
             published.quiz,
             submission.question_id,
@@ -499,6 +518,8 @@ def answer_question(
         )
     except KeyError as error:
         raise HTTPException(404, "quiz question was not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     return JSONResponse(
         {
             "correct": feedback.correct,

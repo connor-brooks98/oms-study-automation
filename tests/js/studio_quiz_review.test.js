@@ -13,7 +13,9 @@ class Element {
     this.textContent = "";
     this.value = "";
     this.open = false;
+    this.disabled = false;
     this.parentElement = null;
+    this._listeners = {};
     this.classList = {
       add: (name) => { if (!this.className.split(" ").includes(name)) this.className = `${this.className} ${name}`.trim(); },
       toggle: (name, enabled) => {
@@ -36,6 +38,7 @@ class Element {
     else this.children.splice(index, 0, item);
   }
   setAttribute(name, value) { this[name] = value; }
+  addEventListener(type, handler) { (this._listeners[type] ||= []).push(handler); }
   focus() { documentRef.activeElement = this; }
   remove() {
     if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((item) => item !== this);
@@ -51,12 +54,16 @@ class Element {
   static matches(element, selector) {
     if (!element?.dataset) return false;
     if (selector === ".studio-review-choice") return element.className.split(" ").includes("studio-review-choice");
+    if (selector === ".studio-review-matching-bank") return element.className.split(" ").includes("studio-review-matching-bank");
     if (selector === "details") return element.tagName === "details";
     if (selector === "summary") return element.tagName === "summary";
     if (selector === "li") return element.tagName === "li";
     if (selector === 'input[name="choice"]') return element.tagName === "input" && element.name === "choice";
     if (selector === 'input[name="correct_index"]') return element.tagName === "input" && element.name === "correct_index";
+    if (selector === 'input[name="correct_index"]:checked') return element.tagName === "input" && element.name === "correct_index" && element.checked;
     if (selector === "[data-choices]") return element.dataset.choices === "true";
+    if (selector === "[data-matching-prompt]") return element.dataset.matchingPrompt === "true";
+    if (selector === "[data-matching-prompts]") return element.dataset.matchingPrompts === "true";
     if (selector === "[data-add-choice]") return element.dataset.addChoice === "true";
     if (selector === "[data-remove-choice]") return element.dataset.removeChoice === "true";
     if (selector === "[data-acknowledge-run-diagnostic]") return Boolean(element.dataset.acknowledgeRunDiagnostic);
@@ -69,6 +76,12 @@ class Element {
     if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
     if (selector === "[data-focus-key]") return Boolean(element.dataset.focusKey);
     if (selector === "[data-question-id]") return Boolean(element.dataset.questionId);
+    if (selector === "[data-question-edit]") return Boolean(element.dataset.questionEdit);
+    if (selector === "[data-matching-choice-ordinal]") return element.dataset.matchingChoiceOrdinal === "true";
+    if (selector === "select") return element.tagName === "select";
+    if (selector === "option") return element.tagName === "option";
+    const name = /^([a-z]+)?\[name="([^"]+)"\]$/.exec(selector);
+    if (name) return (!name[1] || element.tagName === name[1]) && element.name === name[2];
     return false;
   }
   querySelectorAll(selector) {
@@ -96,6 +109,21 @@ const question = (id, stem) => ({
   verification_required: false, verified_at: null, candidates: [], selected_candidate_id: null,
   image_required: false, image_not_needed: false, image_attached: false,
 });
+
+const matchingQuestion = (id) => {
+  const item = {
+    ...question(id, "Match each description with its term."),
+    kind: "matching",
+    prompts: [
+      { id: "p1", label: "A", text: "Alpha", correct_index: 1 },
+      { id: "p2", label: "B", text: "Beta", correct_index: 0 },
+    ],
+    choices: ["Term one", "Term two"],
+    rationale: "Source-marked matches: A -> Term two; B -> Term one.",
+  };
+  delete item.correct_index;
+  return item;
+};
 
 const reviewPage = () => {
   const page = new Element("main");
@@ -242,6 +270,271 @@ test("edit and candidate payload helpers normalize only supported values", () =>
     review.candidateSelectionUrl("run / 1", "question/1"),
     "/studio/runs/run%20%2F%201/questions/question%2F1/image-selection",
   );
+});
+
+test("matching review renders one card and normalizes the entire group", () => {
+  const { page, questions } = reviewPage();
+  review.render(documentRef, page, {
+    blockers: ["matching-1: answer is missing"], issues: [], preview_url: null,
+    questions: [matchingQuestion("matching-1")],
+  });
+  const cards = questions.querySelectorAll("[data-question-id]");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].querySelectorAll("[data-matching-prompt]").length, 2);
+  assert.deepEqual(review.normalizedMatchingEditPayload({
+    stem: " Match them ",
+    prompts: [
+      { id: "p1", label: " A ", text: " Alpha ", correct_index: "1" },
+      { id: "p2", label: " B ", text: " Beta ", correct_index: "" },
+    ],
+    choices: [" One ", " Two "], rationale: " ",
+  }), {
+    kind: "matching", stem: "Match them",
+    prompts: [
+      { id: "p1", label: "A", text: "Alpha", correct_index: 1 },
+      { id: "p2", label: "B", text: "Beta", correct_index: null },
+    ],
+    choices: ["One", "Two"], rationale: null,
+  });
+  const firstPrompt = cards[0].querySelectorAll("[data-matching-prompt]")[0];
+  assert.equal(firstPrompt.dataset.promptId, "p1");
+  assert.equal(firstPrompt.querySelector("select")["aria-label"], "Correct choice for prompt A");
+  assert.equal(
+    cards[0].querySelector(".studio-review-matching-bank")
+      .querySelector('input[name="choice"]')["aria-label"],
+    "Choice 1",
+  );
+  assert.equal(
+    cards[0].querySelector(".studio-review-matching-bank")
+      .querySelector("[data-matching-choice-ordinal]").textContent,
+    "1.",
+  );
+});
+
+test("matching save rejects a blank bank row without sending a shifted PATCH", async () => {
+  const { page, questions } = reviewPage();
+  const message = new Element("p");
+  const controls = page.querySelector;
+  page.querySelector = (selector) => (
+    selector === "[data-review-message]" ? message : controls(selector)
+  );
+  page.dataset.practiceReview = "true";
+  page.dataset.reviewUrl = "/review";
+  page.dataset.runId = "run-1";
+  const documentWithPage = {
+    ...documentRef,
+    cookie: "",
+    querySelector: (selector) => selector === "[data-practice-review]" ? page : null,
+  };
+  let patches = 0;
+  const matching = matchingQuestion("m1");
+  matching.choices.push("Term three");
+  const payload = { blockers: [], issues: [], preview_url: null, questions: [matching] };
+  review.initialize(documentWithPage, async (_url, options = {}) => {
+    if (options.method === "PATCH") patches += 1;
+    return { ok: true, async json() { return payload; } };
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const form = questions.querySelector("[data-question-edit]");
+  form.querySelectorAll('input[name="choice"]')[1].value = "   ";
+  await page._listeners.submit[0]({
+    target: form, submitter: new Element("button"), preventDefault() {},
+  });
+  assert.equal(patches, 0);
+  assert.match(
+    form.closest("[data-question-id]").querySelector("[data-question-message]").textContent,
+    /non-empty prompts and choices/,
+  );
+});
+
+test("matching save completes an unmapped group without requiring a rationale", async () => {
+  const { page, questions } = reviewPage();
+  const message = new Element("p");
+  const controls = page.querySelector;
+  page.querySelector = (selector) => (
+    selector === "[data-review-message]" ? message : controls(selector)
+  );
+  page.dataset.practiceReview = "true";
+  page.dataset.reviewUrl = "/review";
+  page.dataset.runId = "run-1";
+  const documentWithPage = {
+    ...documentRef,
+    cookie: "study_hub_csrf=csrf-token",
+    querySelector: (selector) => selector === "[data-practice-review]" ? page : null,
+  };
+  const matching = matchingQuestion("m1");
+  matching.prompts = matching.prompts.map((prompt) => ({ ...prompt, correct_index: null }));
+  matching.rationale = null;
+  const initial = {
+    blockers: ["m1: answer is missing"], issues: [], preview_url: null, questions: [matching],
+  };
+  const saved = {
+    ...matching,
+    prompts: matching.prompts.map((prompt, index) => ({ ...prompt, correct_index: index })),
+    rationale: "Source-marked matches: A -> Term one; B -> Term two.",
+  };
+  const updated = { blockers: [], issues: [], preview_url: null, questions: [saved] };
+  const patches = [];
+  review.initialize(documentWithPage, async (url, options = {}) => {
+    if (options.method === "PATCH") {
+      patches.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, async json() { return updated; } };
+    }
+    return { ok: true, async json() { return initial; } };
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const form = questions.querySelector("[data-question-edit]");
+  form.querySelectorAll("select[name=\"correct_index\"]").forEach((select, index) => {
+    select.value = String(index);
+  });
+  form.querySelector('[name="rationale"]').value = "   ";
+  await page._listeners.submit[0]({
+    target: form, submitter: new Element("button"), preventDefault() {},
+  });
+
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].url, "/studio/runs/run-1/questions/m1");
+  assert.deepEqual(patches[0].body, {
+    kind: "matching",
+    stem: "Match each description with its term.",
+    prompts: [
+      { id: "p1", label: "A", text: "Alpha", correct_index: 0 },
+      { id: "p2", label: "B", text: "Beta", correct_index: 1 },
+    ],
+    choices: ["Term one", "Term two"],
+    rationale: null,
+    topic: null,
+    area: null,
+    learning_objective: null,
+  });
+  assert.equal(
+    questions.querySelector("[data-question-edit]").querySelector('[name="rationale"]').value,
+    saved.rationale,
+  );
+});
+
+test("multiple-choice save still requires a rationale", async () => {
+  const { page, questions } = reviewPage();
+  const message = new Element("p");
+  const controls = page.querySelector;
+  page.querySelector = (selector) => (
+    selector === "[data-review-message]" ? message : controls(selector)
+  );
+  page.dataset.practiceReview = "true";
+  page.dataset.reviewUrl = "/review";
+  page.dataset.runId = "run-1";
+  const documentWithPage = {
+    ...documentRef,
+    cookie: "",
+    querySelector: (selector) => selector === "[data-practice-review]" ? page : null,
+  };
+  const item = question("q1", "Stem");
+  item.rationale = null;
+  const payload = { blockers: [], issues: [], preview_url: null, questions: [item] };
+  let patches = 0;
+  review.initialize(documentWithPage, async (_url, options = {}) => {
+    if (options.method === "PATCH") patches += 1;
+    return { ok: true, async json() { return payload; } };
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const form = questions.querySelector("[data-question-edit]");
+  form.querySelector('[name="rationale"]').value = "   ";
+  await page._listeners.submit[0]({
+    target: form, submitter: new Element("button"), preventDefault() {},
+  });
+
+  assert.equal(patches, 0);
+  assert.equal(
+    form.closest("[data-question-id]").querySelector("[data-question-message]").textContent,
+    "Provide an answer rationale before saving.",
+  );
+});
+
+test("matching save sends one complete atomic PATCH payload", async () => {
+  const { page, questions } = reviewPage();
+  const message = new Element("p");
+  const controls = page.querySelector;
+  page.querySelector = (selector) => (
+    selector === "[data-review-message]" ? message : controls(selector)
+  );
+  page.dataset.practiceReview = "true";
+  page.dataset.reviewUrl = "/review";
+  page.dataset.runId = "run-1";
+  const documentWithPage = {
+    ...documentRef,
+    cookie: "study_hub_csrf=csrf-token",
+    querySelector: (selector) => selector === "[data-practice-review]" ? page : null,
+  };
+  const item = matchingQuestion("m1");
+  const payload = { blockers: [], issues: [], preview_url: null, questions: [item] };
+  let sent;
+  review.initialize(documentWithPage, async (_url, options = {}) => {
+    if (options.method === "PATCH") sent = JSON.parse(options.body);
+    return { ok: true, async json() { return payload; } };
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const form = questions.querySelector("[data-question-edit]");
+  form.querySelector('[name="stem"]').value = " Updated stem ";
+  form.querySelectorAll('input[name="choice"]')[0].value = " First term ";
+  form.querySelectorAll('input[name="choice"]')[1].value = " Second term ";
+  const prompts = form.querySelectorAll("[data-matching-prompt]");
+  prompts[0].querySelector('[name="prompt_label"]').value = " A ";
+  prompts[0].querySelector('[name="prompt_text"]').value = " Alpha revised ";
+  prompts[0].querySelector('select[name="correct_index"]').value = "0";
+  prompts[1].querySelector('[name="prompt_label"]').value = " B ";
+  prompts[1].querySelector('[name="prompt_text"]').value = " Beta revised ";
+  prompts[1].querySelector('select[name="correct_index"]').value = "1";
+  form.querySelector('[name="rationale"]').value = " Source rationale ";
+  form.querySelector('[name="topic"]').value = " Neuro ";
+  form.querySelector('[name="area"]').value = " CNS ";
+  form.querySelector('[name="learning_objective"]').value = " Match terms ";
+  await page._listeners.submit[0]({
+    target: form, submitter: new Element("button"), preventDefault() {},
+  });
+  assert.deepEqual(sent, {
+    kind: "matching",
+    stem: "Updated stem",
+    prompts: [
+      { id: "p1", label: "A", text: "Alpha revised", correct_index: 0 },
+      { id: "p2", label: "B", text: "Beta revised", correct_index: 1 },
+    ],
+    choices: ["First term", "Second term"],
+    rationale: "Source rationale",
+    topic: "Neuro",
+    area: "CNS",
+    learning_objective: "Match terms",
+  });
+});
+
+test("matching choice bank has desktop and incumbent mobile grid contracts", () => {
+  const css = fs.readFileSync("src/oms_hub/web/static/app.css", "utf8");
+  assert.match(css, /\.studio-review-matching-bank \.studio-review-choice \{ grid-template-columns: auto minmax\(0, 1fr\) 44px; \}/);
+  assert.match(css, /@media \(max-width: 42rem\) \{[\s\S]*\.studio-review-matching-bank \.studio-review-choice-overflow \{ grid-column: 3; grid-row: 1; \}/);
+});
+
+test("matching choice removal reindexes mappings and regeneration preserves valid selections", () => {
+  const { page, questions } = reviewPage();
+  const item = matchingQuestion("m1");
+  item.choices.push("Term three");
+  review.render(documentRef, page, {
+    blockers: [], issues: [], preview_url: null, questions: [item],
+  });
+  const card = questions.querySelector("[data-question-id]");
+  const bank = card.querySelector(".studio-review-matching-bank");
+  const prompts = card.querySelector("[data-matching-prompts]");
+  const remove = bank.querySelector("[data-remove-choice]");
+  assert.equal(review.removeMatchingChoiceRow(documentRef, remove), true);
+  const selects = prompts.querySelectorAll("select");
+  assert.equal(selects[0].value, "0");
+  assert.equal(selects[1].value, "");
+  review.reindexMatchingChoiceRows(documentRef, bank, prompts, null, "m1");
+  assert.equal(selects[0].querySelectorAll("option").length, 3);
+  const keys = card.querySelectorAll("[data-focus-key]").map((node) => node.dataset.focusKey);
+  assert.equal(new Set(keys).size, keys.length);
+  assert.equal(documentRef.activeElement, bank.querySelectorAll(".studio-review-choice")[0]
+    .querySelector('[data-focus-key]'));
 });
 
 test("image saves block question saves until the image mutation settles", async () => {

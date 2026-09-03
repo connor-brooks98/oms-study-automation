@@ -8,11 +8,16 @@ from pydantic import BaseModel, StringConstraints
 from oms_hub.study_generation.domain import (
     PublishedQuizLibrarySection,
     PublishedQuizOrderDirection,
+    QuizMatchingQuestion,
+    QuizQuestionValue,
 )
 from oms_hub.study_generation.native_quiz import serialize_native_quiz
 from oms_hub.study_generation.practice_domain import (
     AnswerProvenance,
+    MatchingPromptDraft,
+    MatchingQuestionDraft,
     QuestionDraft,
+    QuestionDraftValue,
     QuizContentKind,
 )
 from oms_hub.study_generation.practice_review import PracticeReviewService, ReviewQuestion
@@ -45,6 +50,50 @@ class PublishedQuizPayloadUpdate(BaseModel):
 
 def _repository(request: Request) -> GenerationRepository:
     return cast(GenerationRepository, request.app.state.generation_repository)
+
+
+def _published_review_draft(question: QuizQuestionValue) -> QuestionDraftValue:
+    if isinstance(question, QuizMatchingQuestion):
+        index_by_id = {choice.id: index for index, choice in enumerate(question.choices)}
+        return MatchingQuestionDraft(
+            question.id,
+            question.id,
+            question.stem,
+            tuple(
+                MatchingPromptDraft(
+                    prompt.id, prompt.label, prompt.text, index_by_id[prompt.correct_choice_id]
+                )
+                for prompt in question.prompts
+            ),
+            tuple(choice.text for choice in question.choices),
+            question.rationale,
+            question.image_ref,
+            (),
+            AnswerProvenance.PROVIDED_BY_SOURCE,
+            1.0,
+            (),
+            False,
+            None,
+        )
+    return QuestionDraft(
+        question.id,
+        question.id,
+        question.stem,
+        tuple(choice.text for choice in question.choices),
+        next(
+            index
+            for index, choice in enumerate(question.choices)
+            if choice.id == question.correct_choice_id
+        ),
+        question.rationale,
+        question.image_ref,
+        (),
+        AnswerProvenance.PROVIDED_BY_SOURCE,
+        1.0,
+        (),
+        False,
+        None,
+    )
 
 
 def _normalized_subject(value: str) -> str:
@@ -156,6 +205,8 @@ def move_quiz_to_library(
         published = _repository(request).move_published_quiz(token, payload.section)
     except KeyError as error:
         raise HTTPException(404, "published quiz was not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     return JSONResponse(
         {
             "token": published.token,
@@ -229,25 +280,7 @@ def create_quiz_edit_run(request: Request, token: _PublishedQuizToken) -> JSONRe
     if created:
         questions = tuple(
             ReviewQuestion(
-                QuestionDraft(
-                    question.id,
-                    question.id,
-                    question.stem,
-                    tuple(choice.text for choice in question.choices),
-                    next(
-                        index
-                        for index, choice in enumerate(question.choices)
-                        if choice.id == question.correct_choice_id
-                    ),
-                    question.rationale,
-                    question.image_ref,
-                    (),
-                    AnswerProvenance.PROVIDED_BY_SOURCE,
-                    1.0,
-                    (),
-                    False,
-                    None,
-                ),
+                _published_review_draft(question),
                 question.topic,
                 question.area,
                 question.learning_objective,

@@ -92,21 +92,28 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
           .\.venv\Scripts\python.exe -m pip install -e ".[dev,document-processing,pdf-inspection]"
 
-      - name: Parse capsule export PowerShell and check source contract
+      - name: Parse rollout PowerShell and check source contract
         shell: powershell
         run: |
-          $scriptPath = (Resolve-Path "scripts\export-a0-rehearsal-capsule.ps1").Path
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            $scriptPath,
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -ne 0) {
-            $errors | ForEach-Object { Write-Error $_.Message }
-            throw "PowerShell parser rejected the capsule export script"
+          $scriptPaths = @(
+            (Resolve-Path "scripts\export-a0-rehearsal-capsule.ps1").Path,
+            (Resolve-Path "scripts\deploy-grouped-matching-release.ps1").Path
+          )
+          foreach ($scriptPath in $scriptPaths) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $scriptPath,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error "${scriptPath}: $($_.Message)" }
+              throw "PowerShell parser rejected $scriptPath"
+            }
           }
+
+          $scriptPath = $scriptPaths[0]
 
           $source = Get-Content -LiteralPath $scriptPath -Raw
           $required = @(

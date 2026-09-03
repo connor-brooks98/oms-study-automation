@@ -28,6 +28,21 @@ from oms_hub.study_generation.studio_domain import (
 from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.study_generation.studio_worker import StudioWorker
 
+MATCHING_QUIZ_JSON = json.dumps({
+    "title": "Matching set",
+    "questions": [{
+        "kind": "matching",
+        "stem": "Match each description with its term.",
+        "prompts": [
+            {"label": "A", "text": "Alpha", "correct_index": 1},
+            {"label": "B", "text": "Beta", "correct_index": 0},
+        ],
+        "choices": ["Term one", "Term two"],
+        "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
+        "image_ref": None,
+    }],
+})
+
 _OPEN_DATABASES: list[Database] = []
 
 
@@ -96,6 +111,13 @@ class _SuccessfulGateway:
         )
 
 
+class _MatchingGateway(_SuccessfulGateway):
+    def ask_studio(self, subject, exam_number, prompt, remote_source_ids):
+        del subject, exam_number, prompt, remote_source_ids
+        self.ask_calls += 1
+        return "matching-notebook", MATCHING_QUIZ_JSON
+
+
 class _ImportWorker:
     def __init__(self) -> None:
         self.runs = []
@@ -145,6 +167,26 @@ def _quiz(title: str):
             }
         )
     )
+
+
+def test_studio_notebook_worker_rejects_matching_output(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    publisher = GenerationRepository(database)
+    run = _queued_run(repository)
+    worker = StudioWorker(
+        repository,
+        _MatchingGateway(),
+        object(),
+        _FakeConnection(),
+        publisher=publisher,
+    )
+
+    assert worker.run_once() is True
+    rejected = repository.get_run(run.id)
+    assert rejected.state is StudioRunState.RETRYING
+    assert rejected.diagnostic_source == DiagnosticSource.CONTRACT.value
+    assert publisher.published_quizzes(frozenset({QuizContentKind.EXAM_REVIEW})) == ()
 
 
 def test_recovery_adopts_owned_publication_without_repeating_remote_chat(

@@ -33,6 +33,20 @@ QUIZ_JSON = json.dumps(
         ],
     }
 )
+MATCHING_QUIZ_JSON = json.dumps({
+    "title": "Matching set",
+    "questions": [{
+        "kind": "matching",
+        "stem": "Match each description with its term.",
+        "prompts": [
+            {"label": "A", "text": "Alpha", "correct_index": 1},
+            {"label": "B", "text": "Beta", "correct_index": 0},
+        ],
+        "choices": ["Term one", "Term two"],
+        "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
+        "image_ref": None,
+    }],
+})
 QUIZ_URL = "https://study.example.com/public/quizzes/" + "a" * 64
 
 
@@ -220,6 +234,30 @@ def test_worker_validates_and_publishes_notebook_quiz_natively(tmp_path):
         V2StepName.QUIZ_PUBLISHED,
         StepStatus.COMPLETE,
     )
+
+
+def test_generation_worker_rejects_matching_notebook_output(tmp_path: Path) -> None:
+    publisher = Publisher()
+    worker, repository, _, _ = _worker(
+        tmp_path,
+        _job(
+            stage=GenerationStage.QUIZ_VALIDATE,
+            notebook_answer=MATCHING_QUIZ_JSON,
+        ),
+        publisher,
+    )
+    attempts: list[tuple[object, ...]] = []
+    failures: list[tuple[str, str, bool]] = []
+    repository.record_attempt = lambda *values: attempts.append(values)
+    repository.contract_failure_count = lambda _job_id: 2
+    repository.fail = lambda job_id, error, paused=False: failures.append(
+        (job_id, error, paused)
+    )
+
+    assert worker.run_once() is True
+    assert publisher.calls == []
+    assert attempts and "multiple-choice" in str(attempts[0][-1])
+    assert failures and "multiple-choice" in failures[0][1]
 
 
 @pytest.mark.parametrize("error", [ArtifactWriteContended("held"), ArtifactWriteClaimLost("lost")])

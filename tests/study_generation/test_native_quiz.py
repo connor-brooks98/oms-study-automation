@@ -4,15 +4,21 @@ from pathlib import Path
 import pytest
 
 from oms_hub.config import Settings
-from oms_hub.study_generation.domain import PromptSnapshot
+from oms_hub.study_generation.domain import (
+    PromptSnapshot,
+    QuizMatchingQuestion,
+)
 from oms_hub.study_generation.native_quiz import (
     QuizContractError,
     grade_answer,
+    grade_matching_answer,
     parse_native_quiz,
+    parse_notebook_quiz,
     public_quiz_content,
     quiz_origin,
     quiz_prompt,
     quiz_url,
+    serialize_native_quiz,
     validate_native_quiz_url,
 )
 
@@ -31,6 +37,89 @@ def _payload(**overrides):
     }
     question.update(overrides)
     return {"title": "Aplastic Crisis", "questions": [question]}
+
+
+def _matching_payload(**overrides: object) -> dict[str, object]:
+    question: dict[str, object] = {
+        "kind": "matching",
+        "stem": "Match each description with its term.",
+        "prompts": [
+            {"label": "A", "text": "Description alpha", "correct_index": 1},
+            {"label": "B", "text": "Description beta", "correct_index": 1},
+        ],
+        "choices": ["Term one", "Term two"],
+        "rationale": "Source-marked matches: A -> Term two; B -> Term two.",
+        "image_ref": None,
+    }
+    question.update(overrides)
+    return {"title": "Matching set", "questions": [question]}
+
+
+def test_matching_quiz_round_trips_with_stable_group_prompt_and_choice_ids() -> None:
+    quiz = parse_native_quiz(json.dumps(_matching_payload()))
+    question = quiz.questions[0]
+
+    assert isinstance(question, QuizMatchingQuestion)
+    assert question.id == "q1"
+    assert tuple(prompt.id for prompt in question.prompts) == ("p1", "p2")
+    assert tuple(choice.id for choice in question.choices) == ("c1", "c2")
+    assert tuple(prompt.correct_choice_id for prompt in question.prompts) == ("c2", "c2")
+    assert serialize_native_quiz(quiz) == json.dumps(
+        _matching_payload(), ensure_ascii=False, separators=(",", ":")
+    )
+
+
+def test_legacy_multiple_choice_serialization_does_not_gain_a_kind_field() -> None:
+    quiz = parse_native_quiz(json.dumps(_payload()))
+    serialized = json.loads(serialize_native_quiz(quiz))
+
+    assert serialized["questions"] == [
+        {
+            **_payload()["questions"][0],
+            "image_ref": None,
+        }
+    ]
+    assert "kind" not in serialized["questions"][0]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"prompts": [{"label": "A", "text": "One", "correct_index": 0}]}, "prompts"),
+        (
+            {
+                "prompts": [
+                    {"label": "A", "text": "One", "correct_index": 0},
+                    {"label": "a", "text": "Two", "correct_index": 1},
+                ]
+            },
+            "labels must be distinct",
+        ),
+        (
+            {
+                "prompts": [
+                    {"label": "A", "text": "One", "correct_index": 0},
+                    {"label": "B", "text": "Two"},
+                ]
+            },
+            "correct_index",
+        ),
+        (
+            {
+                "prompts": [
+                    {"label": "A", "text": "One", "correct_index": 0},
+                    {"label": "B", "text": "Two", "correct_index": 2},
+                ]
+            },
+            "available choice",
+        ),
+    ],
+)
+def test_invalid_matching_native_contract_is_rejected(
+    overrides: dict[str, object], message: str
+) -> None:
+    with pytest.raises(QuizContractError, match=message):
+        parse_native_quiz(json.dumps(_matching_payload(**overrides)))
 
 
 @pytest.mark.parametrize(
@@ -144,6 +233,75 @@ def test_public_content_omits_answers_and_rationales():
     }
     assert "correct" not in repr(content)
     assert "rationale" not in repr(content)
+
+
+def test_matching_public_content_withholds_every_mapping() -> None:
+    content = public_quiz_content(parse_native_quiz(json.dumps(_matching_payload())))
+
+    assert content["questions"] == [{
+        "kind": "matching",
+        "id": "q1",
+        "stem": "Match each description with its term.",
+        "prompts": [
+            {"id": "p1", "label": "A", "text": "Description alpha"},
+            {"id": "p2", "label": "B", "text": "Description beta"},
+        ],
+        "choices": [
+            {"id": "c1", "text": "Term one"},
+            {"id": "c2", "text": "Term two"},
+        ],
+    }]
+    assert "correct" not in repr(content)
+
+
+def test_matching_grading_is_all_or_nothing_with_row_feedback_and_choice_reuse() -> None:
+    quiz = parse_native_quiz(json.dumps(_matching_payload()))
+
+    correct = grade_matching_answer(quiz, "q1", {"p1": "c2", "p2": "c2"})
+    wrong = grade_matching_answer(quiz, "q1", {"p1": "c1", "p2": "c2"})
+
+    assert correct.correct is True
+    assert correct.row_results == {"p1": True, "p2": True}
+    assert wrong.correct is False
+    assert wrong.correct_matches == {"p1": "c2", "p2": "c2"}
+    assert wrong.row_results == {"p1": False, "p2": True}
+
+
+@pytest.mark.parametrize(
+    "matches",
+    [
+        {"p1": "c2"},
+        {"p1": "c2", "p2": "c2", "p3": "c1"},
+        {"p1": "c2", "p9": "c2"},
+        {"p1": "c9", "p2": "c2"},
+    ],
+)
+def test_matching_grading_rejects_partial_extra_unknown_or_invalid_maps(
+    matches: dict[str, str]
+) -> None:
+    with pytest.raises(ValueError, match="matching answer"):
+        grade_matching_answer(
+            parse_native_quiz(json.dumps(_matching_payload())), "q1", matches
+        )
+
+
+def test_notebook_parser_rejects_matching_but_native_parser_accepts_it() -> None:
+    raw = json.dumps(_matching_payload())
+    assert len(parse_native_quiz(raw).questions) == 1
+    with pytest.raises(QuizContractError, match="multiple-choice"):
+        parse_notebook_quiz(raw)
+
+
+def test_multiple_choice_grading_rejects_matching_question() -> None:
+    with pytest.raises(
+        ValueError,
+        match="multiple-choice answer was submitted for a matching question",
+    ):
+        grade_answer(
+            parse_native_quiz(json.dumps(_matching_payload())),
+            "q1",
+            "c2",
+        )
 
 
 def test_grading_returns_feedback_only_for_the_requested_question():
