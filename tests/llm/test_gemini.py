@@ -1,3 +1,4 @@
+import copy
 import json
 
 import httpx
@@ -12,6 +13,7 @@ from oms_hub.llm.domain import (
     ThinkingMode,
 )
 from oms_hub.llm.gemini import GeminiProvider
+from oms_hub.study_generation.practice_contracts import ExtractionPayload
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
 
@@ -135,6 +137,42 @@ def test_gemini_structured_generation_sends_response_format() -> None:
     }
     assert schema == original_schema
     assert result.text == '{"answer":"iron"}'
+
+
+@respx.mock
+def test_gemini_sends_expanded_extraction_schema_without_mutating_source() -> None:
+    model = "gemini-schema-model"
+    route = respx.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "modelVersion": model,
+                "candidates": [
+                    {"content": {"parts": [{"text": '{"questions":[],"answers":[]}'}]}}
+                ],
+                "usageMetadata": {"promptTokenCount": 12, "candidatesTokenCount": 5},
+            },
+        )
+    )
+    schema = ExtractionPayload.model_json_schema()
+    original = copy.deepcopy(schema)
+
+    GeminiProvider().generate_text(
+        "Return questions.",
+        "Question",
+        api_key="secret",
+        model=model,
+        output_schema=schema,
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["generationConfig"]["responseFormat"] == {
+        "text": {"mimeType": "APPLICATION_JSON", "schema": original}
+    }
+    assert schema == original
 
 
 @respx.mock
