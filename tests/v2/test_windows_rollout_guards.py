@@ -1060,6 +1060,12 @@ def test_grouped_matching_release_binds_before_mutation_and_handles_rollback_lim
         "Installer process changed while acquiring its stable handle.", disagreement
     )
     assert disagreement < termination_false < disagreement_throw
+    final_handle = release.index(
+        "if (-not $installerProcess.HasExited -or -not $script:InstallerTerminationProven)"
+    )
+    final_reset = release.index("$script:InstallerTerminationProven = $false", final_handle)
+    final_throw = release.index("Installer termination is unproven; refusing rollback.")
+    assert final_handle < final_reset < final_throw
     withheld = release.index("rollback withheld because installer termination is unproven")
     rollback = release.index("Invoke-Rollback $configuration $binding $backupPath $failure")
     assert withheld < rollback

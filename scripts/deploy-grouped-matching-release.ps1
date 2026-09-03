@@ -492,7 +492,13 @@ function Invoke-Installer {
   } finally {
     if ($null -ne $installerProcess -and $null -ne $rootRecord) { Stop-InstallerProcessTree $installerProcess $rootRecord $ownedInstances }
     if ($null -ne $installerProcess -and $null -eq $rootRecord -and -not $installerProcess.HasExited) { try { Stop-Process -InputObject $installerProcess -Force -ErrorAction Stop; $installerProcess.WaitForExit(30000) | Out-Null } catch { } }
-    if ($null -ne $installerProcess) { $installerProcess.Refresh(); if (-not $installerProcess.HasExited -or -not $script:InstallerTerminationProven) { throw "Installer termination is unproven; refusing rollback." } }
+    if ($null -ne $installerProcess) {
+      $installerProcess.Refresh()
+      if (-not $installerProcess.HasExited -or -not $script:InstallerTerminationProven) {
+        $script:InstallerTerminationProven = $false
+        throw "Installer termination is unproven; refusing rollback."
+      }
+    }
   }
   if ($null -ne $failure) { throw "$failure Diagnostics retained at $stdoutLog and $stderrLog." }
   Remove-Item -LiteralPath $stdoutLog, $stderrLog -Force -ErrorAction Stop
