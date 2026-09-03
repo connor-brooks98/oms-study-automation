@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-02
 
-**Status:** Approved in chat; awaiting written-spec review
+**Status:** Approved for implementation
 
 **Scope:** Direct-import practice questions, native quiz review/publication/player, and the Gemini structured-output transport
 
