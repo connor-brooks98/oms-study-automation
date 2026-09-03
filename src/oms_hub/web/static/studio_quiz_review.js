@@ -836,7 +836,7 @@
           : "Provide two to eight choices and select the correct answer.";
         return;
       }
-      if (!payload.rationale) {
+      if (payload.kind !== "matching" && !payload.rationale) {
         localMessage.textContent = "Provide an answer rationale before saving.";
         return;
       }

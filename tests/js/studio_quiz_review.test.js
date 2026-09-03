@@ -60,6 +60,7 @@ class Element {
     if (selector === "li") return element.tagName === "li";
     if (selector === 'input[name="choice"]') return element.tagName === "input" && element.name === "choice";
     if (selector === 'input[name="correct_index"]') return element.tagName === "input" && element.name === "correct_index";
+    if (selector === 'input[name="correct_index"]:checked') return element.tagName === "input" && element.name === "correct_index" && element.checked;
     if (selector === "[data-choices]") return element.dataset.choices === "true";
     if (selector === "[data-matching-prompt]") return element.dataset.matchingPrompt === "true";
     if (selector === "[data-matching-prompts]") return element.dataset.matchingPrompts === "true";
@@ -343,6 +344,111 @@ test("matching save rejects a blank bank row without sending a shifted PATCH", a
   assert.match(
     form.closest("[data-question-id]").querySelector("[data-question-message]").textContent,
     /non-empty prompts and choices/,
+  );
+});
+
+test("matching save completes an unmapped group without requiring a rationale", async () => {
+  const { page, questions } = reviewPage();
+  const message = new Element("p");
+  const controls = page.querySelector;
+  page.querySelector = (selector) => (
+    selector === "[data-review-message]" ? message : controls(selector)
+  );
+  page.dataset.practiceReview = "true";
+  page.dataset.reviewUrl = "/review";
+  page.dataset.runId = "run-1";
+  const documentWithPage = {
+    ...documentRef,
+    cookie: "study_hub_csrf=csrf-token",
+    querySelector: (selector) => selector === "[data-practice-review]" ? page : null,
+  };
+  const matching = matchingQuestion("m1");
+  matching.prompts = matching.prompts.map((prompt) => ({ ...prompt, correct_index: null }));
+  matching.rationale = null;
+  const initial = {
+    blockers: ["m1: answer is missing"], issues: [], preview_url: null, questions: [matching],
+  };
+  const saved = {
+    ...matching,
+    prompts: matching.prompts.map((prompt, index) => ({ ...prompt, correct_index: index })),
+    rationale: "Source-marked matches: A -> Term one; B -> Term two.",
+  };
+  const updated = { blockers: [], issues: [], preview_url: null, questions: [saved] };
+  const patches = [];
+  review.initialize(documentWithPage, async (url, options = {}) => {
+    if (options.method === "PATCH") {
+      patches.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, async json() { return updated; } };
+    }
+    return { ok: true, async json() { return initial; } };
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const form = questions.querySelector("[data-question-edit]");
+  form.querySelectorAll("select[name=\"correct_index\"]").forEach((select, index) => {
+    select.value = String(index);
+  });
+  form.querySelector('[name="rationale"]').value = "   ";
+  await page._listeners.submit[0]({
+    target: form, submitter: new Element("button"), preventDefault() {},
+  });
+
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].url, "/studio/runs/run-1/questions/m1");
+  assert.deepEqual(patches[0].body, {
+    kind: "matching",
+    stem: "Match each description with its term.",
+    prompts: [
+      { id: "p1", label: "A", text: "Alpha", correct_index: 0 },
+      { id: "p2", label: "B", text: "Beta", correct_index: 1 },
+    ],
+    choices: ["Term one", "Term two"],
+    rationale: null,
+    topic: null,
+    area: null,
+    learning_objective: null,
+  });
+  assert.equal(
+    questions.querySelector("[data-question-edit]").querySelector('[name="rationale"]').value,
+    saved.rationale,
+  );
+});
+
+test("multiple-choice save still requires a rationale", async () => {
+  const { page, questions } = reviewPage();
+  const message = new Element("p");
+  const controls = page.querySelector;
+  page.querySelector = (selector) => (
+    selector === "[data-review-message]" ? message : controls(selector)
+  );
+  page.dataset.practiceReview = "true";
+  page.dataset.reviewUrl = "/review";
+  page.dataset.runId = "run-1";
+  const documentWithPage = {
+    ...documentRef,
+    cookie: "",
+    querySelector: (selector) => selector === "[data-practice-review]" ? page : null,
+  };
+  const item = question("q1", "Stem");
+  item.rationale = null;
+  const payload = { blockers: [], issues: [], preview_url: null, questions: [item] };
+  let patches = 0;
+  review.initialize(documentWithPage, async (_url, options = {}) => {
+    if (options.method === "PATCH") patches += 1;
+    return { ok: true, async json() { return payload; } };
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const form = questions.querySelector("[data-question-edit]");
+  form.querySelector('[name="rationale"]').value = "   ";
+  await page._listeners.submit[0]({
+    target: form, submitter: new Element("button"), preventDefault() {},
+  });
+
+  assert.equal(patches, 0);
+  assert.equal(
+    form.closest("[data-question-id]").querySelector("[data-question-message]").textContent,
+    "Provide an answer rationale before saving.",
   );
 });
 
