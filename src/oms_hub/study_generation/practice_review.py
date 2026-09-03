@@ -146,7 +146,7 @@ class PracticeReviewService:
         extraction = (
             _extraction_from_json(artifact.payload_json)
             if artifact
-            else ExtractionResult((), (), (), (), ())
+            else ExtractionResult((), (), (), (), (), ())
         )
         return {
             question.draft.question_id: tuple(

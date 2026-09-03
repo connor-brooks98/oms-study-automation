@@ -95,6 +95,7 @@ class FixtureExtractor:
             questions=(question,),
             answers=answers,
             question_source_refs=((),),
+            answer_source_refs=tuple(() for _ in answers),
             provider_metadata=(),
             diagnostics=(),
         )

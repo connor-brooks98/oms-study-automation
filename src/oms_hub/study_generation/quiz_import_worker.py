@@ -23,7 +23,14 @@ from oms_hub.document_processing.domain import (
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, LLMTask
 from oms_hub.study_generation.notebook_errors import NotebookGatewayError
 from oms_hub.study_generation.practice_answers import AnswerResolutionScope
-from oms_hub.study_generation.practice_contracts import ExtractedAnswer, ExtractedQuestion
+from oms_hub.study_generation.practice_contracts import (
+    ExtractedAnswer,
+    ExtractedAnswerValue,
+    ExtractedMatchingAnswer,
+    ExtractedMatchingQuestion,
+    ExtractedQuestion,
+    ExtractedQuestionValue,
+)
 from oms_hub.study_generation.practice_domain import (
     AnswerProvenance,
     DiagnosticSeverity,
@@ -370,8 +377,8 @@ class QuizImportWorker:
                 run.id, _DOWNSTREAM_PREFIXES[StudioRunStage.PAIR]
             )
         drafts = pair_supplied_answers(
-            extracted.questions,
-            extracted.answers,
+            cast(tuple[ExtractedQuestion, ...], extracted.questions),
+            cast(tuple[ExtractedAnswer, ...], extracted.answers),
             question_source_refs=extracted.question_source_refs,
         )
         # Extraction-level ambiguity belongs to the run, not every question.  Copying
@@ -896,6 +903,9 @@ def _extraction_json(result: ExtractionResult) -> str:
             "question_source_refs": [
                 [asdict(item) for item in refs] for refs in result.question_source_refs
             ],
+            "answer_source_refs": [
+                [asdict(item) for item in refs] for refs in result.answer_source_refs
+            ],
             "provider_metadata": [
                 {**asdict(item), "provider": item.provider.value}
                 for item in result.provider_metadata
@@ -913,13 +923,25 @@ def _extraction_from_json(payload_json: str) -> ExtractionResult:
     from oms_hub.llm.domain import ProviderName
 
     payload = json.loads(payload_json)
+    questions = tuple(_extracted_question_from_json(item) for item in payload["questions"])
+    answers = tuple(_extracted_answer_from_json(item) for item in payload["answers"])
+    stored_answer_refs = payload.get("answer_source_refs")
+    answer_source_refs = (
+        tuple(
+            tuple(QuestionSourceRef(**item) for item in refs)
+            for refs in stored_answer_refs
+        )
+        if isinstance(stored_answer_refs, list)
+        else tuple(() for _ in answers)
+    )
     return ExtractionResult(
-        tuple(ExtractedQuestion.model_validate(item) for item in payload["questions"]),
-        tuple(ExtractedAnswer.model_validate(item) for item in payload["answers"]),
+        questions,
+        answers,
         tuple(
             tuple(QuestionSourceRef(**item) for item in refs)
             for refs in payload["question_source_refs"]
         ),
+        answer_source_refs,
         tuple(
             ExtractionProviderMetadata(
                 ProviderName(item["provider"]),
@@ -938,6 +960,18 @@ def _extraction_from_json(payload_json: str) -> ExtractionResult:
             for item in payload["diagnostics"]
         ),
     )
+
+
+def _extracted_question_from_json(item: object) -> ExtractedQuestionValue:
+    if isinstance(item, dict) and item.get("kind") == "matching":
+        return ExtractedMatchingQuestion.model_validate(item)
+    return ExtractedQuestion.model_validate(item)
+
+
+def _extracted_answer_from_json(item: object) -> ExtractedAnswerValue:
+    if isinstance(item, dict) and item.get("kind") == "matching":
+        return ExtractedMatchingAnswer.model_validate(item)
+    return ExtractedAnswer.model_validate(item)
 
 
 def _drafts_json(drafts: tuple[QuestionDraft, ...]) -> str:

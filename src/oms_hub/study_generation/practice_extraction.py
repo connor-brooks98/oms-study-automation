@@ -11,8 +11,11 @@ from pydantic import ValidationError
 from oms_hub.document_processing.domain import ParsedDocument, ParsedSegment, SegmentKind
 from oms_hub.llm.domain import GeneratedText, LLMTask, ProviderName
 from oms_hub.study_generation.practice_contracts import (
-    ExtractedAnswer,
+    ExtractedAnswerValue,
+    ExtractedMatchingAnswer,
+    ExtractedMatchingQuestion,
     ExtractedQuestion,
+    ExtractedQuestionValue,
     ExtractionPayload,
     SegmentCitation,
     validate_source_references,
@@ -31,15 +34,23 @@ _STYLED_OPTION = re.compile(
     re.IGNORECASE,
 )
 _OPTION_PREFIX = re.compile(r"^\s*[A-H][).:]\s*", re.IGNORECASE)
-_EXTRACTION_INSTRUCTION = """Extract supplied practice questions and answer-key entries.
+_EXTRACTION_INSTRUCTION = (
+    """Extract supplied practice questions and answer-key entries.
 Return only JSON matching the provided schema. Preserve source wording, cite every
 question and answer with document-qualified source_segments, and cite only
 document-qualified candidate_assets present in the input. Do not invent
-questions, answers, references, or assets. Treat source_style_metadata as evidence:
-when a slide repeats the preceding question and exactly one option is emphasized by
-color, highlighting, bold, underline, or italics, record it as supplied_correct_index.
-Explicit answer-key labels remain stronger evidence; ordinary emphasized medical terms
-and slides with multiple emphasized options are not answers."""
+questions, answers, references, or assets. Preserve a matching set as one grouped """
+    """matching question with its shared ordered choice bank; do not flatten its prompts
+into independent questions. Store each source prompt label separately from prompt
+text, remove leading source labels and choice ordinals, and use zero-based indexes
+into the emitted choices array. A separately located matching key is one matching
+answer record with one cited row per prompt. Treat source_style_metadata as evidence:
+when a slide repeats the preceding multiple-choice question and exactly one option
+is emphasized by color, highlighting, bold, underline, or italics, record it as
+supplied_correct_index. Explicit answer-key labels remain stronger evidence;
+ordinary emphasized medical terms and slides with multiple emphasized options are
+not answers."""
+)
 
 
 class ExtractionTextGenerator(Protocol):
@@ -93,9 +104,10 @@ class ExtractionProviderMetadata:
 
 @dataclass(frozen=True, slots=True)
 class ExtractionResult:
-    questions: tuple[ExtractedQuestion, ...]
-    answers: tuple[ExtractedAnswer, ...]
+    questions: tuple[ExtractedQuestionValue, ...]
+    answers: tuple[ExtractedAnswerValue, ...]
     question_source_refs: tuple[tuple[QuestionSourceRef, ...], ...]
+    answer_source_refs: tuple[tuple[QuestionSourceRef, ...], ...]
     provider_metadata: tuple[ExtractionProviderMetadata, ...]
     diagnostics: tuple[DraftDiagnostic, ...]
 
@@ -142,13 +154,13 @@ class PracticeQuestionExtractor:
         canonical_documents = tuple(source.document for source in sources)
         metadata: list[ExtractionProviderMetadata] = []
         diagnostics: list[DraftDiagnostic] = []
-        merged_questions: list[ExtractedQuestion] = []
+        merged_questions: list[ExtractedQuestionValue] = []
         questions_by_composite: dict[
-            tuple[str | None, tuple[SegmentCitation, ...]], list[ExtractedQuestion]
+            tuple[str | None, tuple[SegmentCitation, ...]], list[ExtractedQuestionValue]
         ] = {}
         source_refs_by_identifier: dict[str, set[tuple[SegmentCitation, ...]]] = {}
         identifiers_by_source_refs: dict[tuple[SegmentCitation, ...], set[str | None]] = {}
-        answers: list[ExtractedAnswer] = []
+        answers: list[ExtractedAnswerValue] = []
 
         for chunk in chunks:
             payload, attempts = self._extract_chunk(chunk, canonical_documents)
@@ -163,7 +175,11 @@ class PracticeQuestionExtractor:
                 if existing:
                     diagnostics.append(
                         DraftDiagnostic(
-                            "conflicting-duplicate-question",
+                            (
+                                "conflicting-matching-question-identifier"
+                                if isinstance(question, ExtractedMatchingQuestion)
+                                else "conflicting-duplicate-question"
+                            ),
                             "conflicting duplicate question was extracted; review is required",
                             DiagnosticSeverity.BLOCKER,
                         )
@@ -176,7 +192,11 @@ class PracticeQuestionExtractor:
                 ):
                     diagnostics.append(
                         DraftDiagnostic(
-                            "conflicting-question-identifier",
+                            (
+                                "conflicting-matching-question-identifier"
+                                if isinstance(question, ExtractedMatchingQuestion)
+                                else "conflicting-question-identifier"
+                            ),
                             "question identifier cites different source references; "
                             "review is required",
                             DiagnosticSeverity.BLOCKER,
@@ -186,7 +206,11 @@ class PracticeQuestionExtractor:
                 if prior_identifiers and normalized_identifier not in prior_identifiers:
                     diagnostics.append(
                         DraftDiagnostic(
-                            "conflicting-question-source-reference",
+                            (
+                                "conflicting-matching-question-source-reference"
+                                if isinstance(question, ExtractedMatchingQuestion)
+                                else "conflicting-question-source-reference"
+                            ),
                             "source reference identifies different questions; review is required",
                             DiagnosticSeverity.BLOCKER,
                         )
@@ -229,14 +253,19 @@ class PracticeQuestionExtractor:
         questions = _apply_unique_styled_answers(
             tuple(merged_questions), canonical_documents
         )
-        question_source_refs = [
-            _resolve_question_source_refs(question, canonical_documents)
+        question_source_refs = tuple(
+            _resolve_source_refs(question.source_segments, canonical_documents)
             for question in questions
-        ]
+        )
+        answer_source_refs = tuple(
+            _resolve_source_refs(_answer_citations(answer), canonical_documents)
+            for answer in answers
+        )
         return ExtractionResult(
             questions,
             tuple(answers),
-            tuple(question_source_refs),
+            question_source_refs,
+            answer_source_refs,
             tuple(metadata),
             tuple(diagnostics),
         )
@@ -279,9 +308,9 @@ def _parse_payload(text: str) -> ExtractionPayload:
 
 
 def _apply_unique_styled_answers(
-    questions: tuple[ExtractedQuestion, ...],
+    questions: tuple[ExtractedQuestionValue, ...],
     documents: tuple[ParsedDocument, ...],
-) -> tuple[ExtractedQuestion, ...]:
+) -> tuple[ExtractedQuestionValue, ...]:
     segments = {
         (document.source_id, segment.key): segment
         for document in documents
@@ -305,8 +334,11 @@ def _apply_unique_styled_answers(
             if segment.locator.slide_number is not None
         }
     }
-    resolved: list[ExtractedQuestion] = []
+    resolved: list[ExtractedQuestionValue] = []
     for question in questions:
+        if isinstance(question, ExtractedMatchingQuestion):
+            resolved.append(question)
+            continue
         if question.supplied_correct_index is not None:
             resolved.append(question)
             continue
@@ -391,12 +423,12 @@ def _source_document(document: ParsedDocument | SourceDocument) -> SourceDocumen
     return SourceDocument(document, document.source_id, "unspecified")
 
 
-def _resolve_question_source_refs(
-    question: ExtractedQuestion, documents: tuple[ParsedDocument, ...]
+def _resolve_source_refs(
+    citations: tuple[SegmentCitation, ...], documents: tuple[ParsedDocument, ...]
 ) -> tuple[QuestionSourceRef, ...]:
     documents_by_id = {document.source_id: document for document in documents}
     references: list[QuestionSourceRef] = []
-    for citation in question.source_segments:
+    for citation in dict.fromkeys(citations):
         document = documents_by_id[citation.source_id]
         segment = next(
             segment for segment in document.segments if segment.key == citation.segment_key
@@ -405,6 +437,18 @@ def _resolve_question_source_refs(
             QuestionSourceRef(citation.source_id, citation.segment_key, segment.locator.label)
         )
     return tuple(references)
+
+
+def _answer_citations(answer: ExtractedAnswerValue) -> tuple[SegmentCitation, ...]:
+    if isinstance(answer, ExtractedMatchingAnswer):
+        return tuple(
+            dict.fromkeys(
+                citation
+                for match in answer.matches
+                for citation in match.source_segments
+            )
+        )
+    return answer.source_segments
 
 
 def _citation_sort_key(citation: SegmentCitation) -> tuple[str, str]:

@@ -19,6 +19,7 @@ from oms_hub.models import PublishedQuizModel, StudioRunModel
 from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.practice_contracts import (
     AssetCitation,
+    ExtractedAnswer,
     ExtractedQuestion,
     SegmentCitation,
 )
@@ -83,6 +84,52 @@ def _draft(question_id: str, *, generated: bool) -> QuestionDraft:
         generated,
         None,
     )
+
+
+def _legacy_extraction_result() -> ExtractionResult:
+    question_ref = QuestionSourceRef("source-1", "question-1", "page 1")
+    answer_ref = QuestionSourceRef("source-1", "answer-1", "page 4")
+    return ExtractionResult(
+        questions=(
+            ExtractedQuestion(
+                original_identifier="1",
+                stem="Which term is correct?",
+                choices=("Term one", "Term two"),
+                source_segments=(
+                    SegmentCitation(source_id="source-1", segment_key="question-1"),
+                ),
+                confidence=0.9,
+            ),
+        ),
+        answers=(
+            ExtractedAnswer(
+                original_identifier="1",
+                correct_index=1,
+                rationale="The source key selects Term two.",
+                source_segments=(
+                    SegmentCitation(source_id="source-1", segment_key="answer-1"),
+                ),
+            ),
+        ),
+        question_source_refs=((question_ref,),),
+        answer_source_refs=((answer_ref,),),
+        provider_metadata=(),
+        diagnostics=(),
+    )
+
+
+def test_awaiting_review_can_read_a_legacy_extract_artifact_without_answer_refs(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=False),))
+    legacy = json.loads(_extraction_json(_legacy_extraction_result()))
+    legacy.pop("answer_source_refs", None)
+    service.repository.save_run_artifact(
+        "run-1", "extract", "a" * 64, json.dumps(legacy)
+    )
+
+    assert service.candidates_by_question("run-1", service.review("run-1")) == {"q1": ()}
 
 
 def _candidate_asset(tmp_path: Path) -> tuple[Path, ParsedDocument]:
@@ -699,7 +746,7 @@ def test_extraction_candidate_citation_creates_a_stable_image_requirement(tmp_pa
         "run-1",
         "extract",
         "c" * 64,
-        _extraction_json(ExtractionResult((extracted,), (), (draft.source_refs,), (), ())),
+        _extraction_json(ExtractionResult((extracted,), (), (draft.source_refs,), (), (), ())),
     )
     service.repository.save_run_artifact("run-1", "normalized", "d" * 64, _drafts_json((draft,)))
 
@@ -732,7 +779,7 @@ def test_review_does_not_auto_select_a_source_screenshot(tmp_path: Path) -> None
         "run-1",
         "extract",
         "c" * 64,
-        _extraction_json(ExtractionResult((extracted,), (), (draft.source_refs,), (), ())),
+        _extraction_json(ExtractionResult((extracted,), (), (draft.source_refs,), (), (), ())),
     )
     service.repository.save_run_artifact("run-1", "normalized", "d" * 64, _drafts_json((draft,)))
     service.set_image_service(StudioQuizImageService(service.repository, tmp_path / "quiz-media"))

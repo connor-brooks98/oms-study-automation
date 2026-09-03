@@ -158,6 +158,7 @@ class _QuestionExtractor:
             ((QuestionSourceRef(source.source_id, "block-1", "block 1"),),),
             (),
             (),
+            (),
         )
 
 
@@ -1174,6 +1175,7 @@ def test_artifact_serializers_round_trip_full_provenance(tmp_path: Path) -> None
         ),
         (),
         ((QuestionSourceRef("source-1", "segment-1", "p1"),),),
+        (),
         (ExtractionProviderMetadata(ProviderName.GEMINI, "extract", "req", 1, 2, 3, 4, 5),),
         (DraftDiagnostic("warning", "Review", DiagnosticSeverity.WARNING),),
     )
