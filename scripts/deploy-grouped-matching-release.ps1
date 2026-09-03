@@ -38,6 +38,21 @@ function Get-StringSha256 {
   } finally { $hasher.Dispose() }
 }
 
+function Get-AccountSid {
+  param([string]$Identity)
+  if ([string]::IsNullOrWhiteSpace($Identity)) { throw "Account identity is empty." }
+  try {
+    $account = New-Object System.Security.Principal.NTAccount($Identity)
+    $sid = $account.Translate([System.Security.Principal.SecurityIdentifier])
+    return [string]$sid.Value
+  } catch { throw "Account identity cannot be resolved." }
+}
+
+function Test-SameAccount {
+  param([string]$Left, [string]$Right)
+  return (Get-AccountSid $Left) -ceq (Get-AccountSid $Right)
+}
+
 function Assert-NativeSuccess {
   param([string]$Operation)
   if ($LASTEXITCODE -ne 0) { throw "$Operation failed with native exit code $LASTEXITCODE." }
@@ -194,7 +209,7 @@ function Assert-TaskBinding {
   param([object]$Configuration, [object]$Binding, [switch]$RequireXmlDigest)
   $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
   if ([string]$task.State -cne "Running" -or [string]$task.Settings.ExecutionTimeLimit -cne "PT0S") { throw "Scheduled task state differs." }
-  if ([string]$task.Principal.UserId -cne [string]$Binding.task_principal -or [string]$task.Principal.LogonType -cne [string]$Binding.task_logon_type) { throw "Scheduled task principal differs." }
+  if (-not (Test-SameAccount -Left ([string]$task.Principal.UserId) -Right ([string]$Binding.task_principal)) -or [string]$task.Principal.LogonType -cne [string]$Binding.task_logon_type) { throw "Scheduled task principal differs." }
   if ($RequireXmlDigest -and (Get-TaskXmlSha256) -cne [string]$Binding.task_xml_sha256) { throw "Scheduled task XML differs." }
   $actions = @($task.Actions)
   $expectedIds = @("f28-primary-0", "f28-recovery-1", "f28-recovery-2", "f28-recovery-3")
@@ -218,7 +233,7 @@ function Assert-ListenerTaskOwnership {
   $rootPrefix = $ProjectRoot.TrimEnd("\") + "\"
   $hubPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
   if (-not [string]::Equals([string]$Listener.executable_path, $hubPython, [StringComparison]::OrdinalIgnoreCase) -or [string]$Listener.command_line -notmatch "(?:^|\s)-m\s+oms_hub\.cli\s+serve(?:\s|$)") { throw "Listener is not the same-root Python OMS Hub serve process." }
-  if ([string]$Listener.owner -cne [string]$Binding.process_identity -or [string]$Listener.owner -cne [string]$Binding.task_principal -or [string]$Listener.owner -cne [string]$Binding.deployment_identity) { throw "Listener, task, and deployment identities differ." }
+  if (-not (Test-SameAccount -Left ([string]$Listener.owner) -Right ([string]$Binding.process_identity)) -or -not (Test-SameAccount -Left ([string]$Listener.owner) -Right ([string]$Binding.task_principal)) -or -not (Test-SameAccount -Left ([string]$Listener.owner) -Right ([string]$Binding.deployment_identity))) { throw "Listener, task, and deployment identities differ." }
   $all = Get-ProcessSnapshot
   $byId = @{}; foreach ($row in $all) { $byId[[string]$row.process_id] = $row }
   $systemPowerShell = Get-SystemPowerShellPath
@@ -552,7 +567,7 @@ try {
     if ($originMain -cne $ExpectedMergedCommit) { throw "origin/main does not equal expected merge." }
     Invoke-Git @("merge-base", "--is-ancestor", "HEAD", "origin/main") | Out-Null
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop; $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    if ([string]$task.Principal.UserId -cne $identity) { throw "Deployment identity does not equal task principal." }
+    if (-not (Test-SameAccount -Left ([string]$task.Principal.UserId) -Right $identity)) { throw "Deployment identity does not equal task principal." }
     $listener = Get-LoopbackListener $configuration.port
     $preflightHealth = Invoke-RestMethod -Uri ("http://127.0.0.1:" + $configuration.port + "/health/ready") -TimeoutSec 3
     if (-not (Test-JsonInteger $preflightHealth.schema_version)) { throw "Preflight schema version is not an integer." }
@@ -564,7 +579,7 @@ try {
   }
 
   $binding = Get-Binding
-  if ([string]$binding.deployment_identity -cne [System.Security.Principal.WindowsIdentity]::GetCurrent().Name -or [string]$configuration.data_root -cne [string]$binding.data_root -or [string]$configuration.database_path -cne [string]$binding.database_path -or $configuration.port -ne [int]$binding.port -or $configuration.env_sha256 -cne [string]$binding.env_sha256) { throw "Runtime changed since preflight." }
+  if (-not (Test-SameAccount -Left ([string]$binding.deployment_identity) -Right ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)) -or [string]$configuration.data_root -cne [string]$binding.data_root -or [string]$configuration.database_path -cne [string]$binding.database_path -or $configuration.port -ne [int]$binding.port -or $configuration.env_sha256 -cne [string]$binding.env_sha256) { throw "Runtime changed since preflight." }
   if ($Mode -eq "Deploy") {
     $backupRoot = Join-Path $configuration.data_root "backups"; $backupsBefore = Get-BackupNames $backupRoot; $backupPath = ""
     try {

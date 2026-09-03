@@ -113,6 +113,32 @@ jobs:
             }
           }
 
+          $tokens = $null
+          $errors = $null
+          $releaseAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPaths[1], [ref]$tokens, [ref]$errors
+          )
+          foreach ($functionName in @("Get-AccountSid", "Test-SameAccount")) {
+            $definitions = @($releaseAst.FindAll({
+              param($node)
+              $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $functionName
+            }, $true))
+            if ($definitions.Count -ne 1) {
+              throw "Expected exactly one $functionName definition"
+            }
+            Invoke-Expression $definitions[0].Extent.Text
+          }
+          $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          if (-not (Test-SameAccount -Left $currentIdentity.Name -Right $env:USERNAME)) {
+            throw "Qualified and short current-account names did not resolve to the same SID"
+          }
+          $administratorsSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+          $administratorsAccount = $administratorsSid.Translate([System.Security.Principal.NTAccount]).Value
+          if (Test-SameAccount -Left $currentIdentity.Name -Right $administratorsAccount) {
+            throw "Current user unexpectedly matched the built-in Administrators group SID"
+          }
+
           $parent = Split-Path -Path "C:\Services\oms-study-automation-v2\scripts\deploy-grouped-matching-release.ps1" -Parent
           if ($parent -cne "C:\Services\oms-study-automation-v2\scripts") {
             throw "PowerShell parent-path smoke returned an unexpected value: $parent"

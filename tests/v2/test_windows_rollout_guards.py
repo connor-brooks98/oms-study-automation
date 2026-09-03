@@ -1334,6 +1334,18 @@ def test_grouped_matching_release_parent_walks_use_ps51_safe_paths() -> None:
     assert 'printf \'%s\' "$remote_prefix" "$command"' in remote_ps
 
 
+def test_grouped_matching_release_compares_windows_accounts_by_sid() -> None:
+    release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function Test-SameAccount" in release
+    assert "System.Security.Principal.SecurityIdentifier" in release
+    assert release.count("Test-SameAccount -Left") == 6
+    assert ".Principal.UserId -cne $identity" not in release
+    assert "$Listener.owner -cne" not in release
+
+
 def test_grouped_matching_release_quotes_installer_path_arguments_for_ps51() -> None:
     release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
         encoding="utf-8"
