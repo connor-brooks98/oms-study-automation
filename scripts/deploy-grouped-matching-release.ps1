@@ -558,7 +558,7 @@ try {
     if (-not (Test-JsonInteger $preflightHealth.schema_version)) { throw "Preflight schema version is not an integer." }
     $binding = [ordered]@{ marker="OMS_GROUPED_MATCHING_PREFLIGHT_COMPLETE"; old_commit=$source.commit; old_tree=$source.tree; schema_version=[int]$preflightHealth.schema_version; old_listener_pid=$listener.process_id; old_listener_creation_date=$listener.creation_date; process_identity=$listener.owner; task_xml_sha256=(Get-TaskXmlSha256); task_principal=[string]$task.Principal.UserId; task_logon_type=[string]$task.Principal.LogonType; deployment_identity=$identity; data_root=$configuration.data_root; database_url=$configuration.database_url; database_path=$configuration.database_path; port=$configuration.port; env_sha256=$configuration.env_sha256; merged_commit=$ExpectedMergedCommit; merged_tree=$ExpectedMergedTree }
     if ($binding.port -ne 8765) { throw "Configured port is not 8765." }
-    Assert-TaskBinding $configuration $binding -RequireXmlDigest; Assert-ListenerTaskOwnership $listener $configuration $binding; Assert-ReadyHealth $configuration $binding $binding.old_commit $binding.old_tree; $binding.release_paths = Get-ReleasePaths $binding
+    Assert-TaskBinding $configuration $binding -RequireXmlDigest; Assert-ListenerTaskOwnership $listener $configuration $binding; Assert-ReadyHealth $configuration $binding $binding.old_commit $binding.old_tree; Get-ReleasePaths $binding | Out-Null
     $binding | ConvertTo-Json -Compress -Depth 8
     exit 0
   }

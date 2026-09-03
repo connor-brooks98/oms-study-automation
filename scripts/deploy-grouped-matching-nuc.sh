@@ -23,13 +23,20 @@ nonce=$(uuidgen | tr '[:upper:]' '[:lower:]')
 remote_transport_path="C:/Users/conbr/AppData/Local/Temp/oms-grouped-matching-${nonce}.ps1"
 remote_native_path="C:\\Users\\conbr\\AppData\\Local\\Temp\\oms-grouped-matching-${nonce}.ps1"
 upload_attempted=false
+# OpenSSH invokes cmd.exe remotely; reserve more than 1 KiB below its 8,191-character limit.
+REMOTE_COMMAND_MAX=7000
 
 to_b64() { LC_ALL=C python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())'; }
 remote_ps() {
-  local command encoded remote_prefix='$ErrorActionPreference="Stop";$ProgressPreference="SilentlyContinue";'
+  local command encoded remote_command remote_prefix='$ErrorActionPreference="Stop";$ProgressPreference="SilentlyContinue";'
   command=$(cat)
   encoded=$(printf '%s' "$remote_prefix" "$command" | LC_ALL=C python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.read().encode("utf-16le")).decode())')
-  ssh nuc "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
+  remote_command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
+  if (( ${#remote_command} > REMOTE_COMMAND_MAX )); then
+    printf 'Remote PowerShell command exceeds %d characters (limit %d).\n' "${#remote_command}" "$REMOTE_COMMAND_MAX" >&2
+    return 1
+  fi
+  ssh nuc "$remote_command"
 }
 json_one() {
   python3 -c 'import json,sys; rows=[line for line in sys.stdin.read().splitlines() if line.strip()]; assert len(rows)==1, rows; print(json.dumps(json.loads(rows[0]),separators=(",",":")))'
