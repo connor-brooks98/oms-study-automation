@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import datetime
 from threading import Barrier, Event
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from sqlalchemy import event, text
@@ -145,10 +146,11 @@ def test_pass_patch_records_local_date_preserves_it_for_resource_and_clears_on_u
     client, lecture_id = _client_with_lecture(tmp_path)
     url = f"/api/lectures/{lecture_id}/passes/1"
     headers = _csrf_headers(client)
-    dates = {date.today().isoformat()}
+    timezone = ZoneInfo(client.app.state.settings.timezone)
+    dates = {datetime.now(timezone).date().isoformat()}
 
     completed = client.patch(url, json={"completed": True}, headers=headers)
-    dates.add(date.today().isoformat())
+    dates.add(datetime.now(timezone).date().isoformat())
 
     assert completed.status_code == 200
     assert completed.json() == {
