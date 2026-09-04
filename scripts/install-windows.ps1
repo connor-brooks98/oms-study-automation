@@ -13,6 +13,7 @@ if (-not (Test-Path $ProjectRoot)) {
   throw "Project directory not found: $ProjectRoot"
 }
 $ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
+Set-Location -LiteralPath $ProjectRoot
 $StartScript = Join-Path $ProjectRoot "scripts\start-hub.ps1"
 if (-not (Test-Path -LiteralPath $StartScript)) {
   throw "Study Hub start script not found: $StartScript"
