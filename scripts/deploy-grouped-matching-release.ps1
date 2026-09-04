@@ -436,7 +436,7 @@ function Invoke-Installer {
   if ($WhatIf) { $arguments += "-WhatIf" }
   $installerProcess = $null; $failure = $null; $deadline = (Get-Date).AddMinutes(10)
   try {
-    $installerProcess = Start-Process -FilePath (Get-SystemPowerShellPath) -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+    $installerProcess = Start-Process -FilePath (Get-SystemPowerShellPath) -ArgumentList $arguments -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
     if (-not $WhatIf) {
       $script:InstallerStarted = $true
       $script:InstallerTerminationProven = $false
