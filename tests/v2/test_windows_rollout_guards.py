@@ -772,9 +772,10 @@ def test_windows_installer_resolves_config_stops_tree_and_backs_up_before_pip() 
     assert "Verified rollback backup was not completed; installation is blocked." in script
 
 
-def test_windows_installer_preflights_config_before_downtime_without_live_db_mutation() -> None:
+def test_windows_installer_loads_project_dotenv_before_preflight_and_downtime() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 
+    project_location = script.index("Set-Location -LiteralPath $ProjectRoot")
     preflight_database = script.index(
         '[Environment]::SetEnvironmentVariable(\n'
         '      "OMS_HUB_DATABASE_URL",\n'
@@ -789,7 +790,13 @@ def test_windows_installer_preflights_config_before_downtime_without_live_db_mut
         "Stop-ScheduledTask -TaskName $TaskName", restore_environment
     )
 
-    assert preflight_database < preflight_validate < restore_environment < task_stop
+    assert (
+        project_location
+        < preflight_database
+        < preflight_validate
+        < restore_environment
+        < task_stop
+    )
     assert "Existing Study Hub configuration preflight" in script
     assert "$PreviousProcessDatabaseUrl" in script
 
