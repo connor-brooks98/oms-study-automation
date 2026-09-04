@@ -1441,6 +1441,57 @@ def test_grouped_matching_release_quotes_installer_path_arguments_for_ps51() -> 
     )
 
 
+def test_grouped_matching_release_starts_installer_from_project_root() -> None:
+    release_path = ROOT / "scripts" / "deploy-grouped-matching-release.ps1"
+    harness_path = (
+        ROOT / "tests" / "v2" / "grouped_matching_installer_working_directory.ps1"
+    )
+    release = release_path.read_text(encoding="utf-8")
+    installer = release[
+        release.index("function Invoke-Installer") : release.index(
+            "function Wait-ForFinalState"
+        )
+    ]
+    start_process = next(
+        line for line in installer.splitlines() if "$installerProcess = Start-Process" in line
+    )
+
+    assert "-WorkingDirectory $ProjectRoot" in start_process
+    assert (
+        "GROUPED_MATCHING_INSTALLER_WORKING_DIRECTORY_VERIFIED"
+        in harness_path.read_text(encoding="utf-8")
+    )
+
+    powershell = next(
+        (
+            executable
+            for name in ("powershell.exe", "powershell")
+            if (executable := shutil.which(name)) is not None
+        ),
+        None,
+    )
+    if powershell is None:
+        return
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness_path),
+            "-ReleaseScript",
+            str(release_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "GROUPED_MATCHING_INSTALLER_WORKING_DIRECTORY_VERIFIED" in result.stdout
+
+
 def test_grouped_matching_release_keeps_paths_out_of_binding_and_bounds_ssh_command() -> None:
     release = (ROOT / "scripts" / "deploy-grouped-matching-release.ps1").read_text(
         encoding="utf-8"
