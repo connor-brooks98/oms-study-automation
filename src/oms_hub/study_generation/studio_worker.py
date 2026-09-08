@@ -14,7 +14,7 @@ from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.study_generation.native_quiz import (
     QuizContractError,
     image_requirements,
-    parse_native_quiz,
+    parse_notebook_quiz,
 )
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_errors import (
@@ -198,7 +198,7 @@ class StudioWorker:
                 self.repository.complete_run(run.id, notebook_id, answer)
                 return True
             self.repository.set_run_stage(run.id, StudioRunStage.QUIZ_VALIDATE)
-            quiz = replace(parse_native_quiz(answer), title=run.label)
+            quiz = replace(parse_notebook_quiz(answer), title=run.label)
             if image_requirements(quiz):
                 self.repository.await_image_review(
                     run.id,

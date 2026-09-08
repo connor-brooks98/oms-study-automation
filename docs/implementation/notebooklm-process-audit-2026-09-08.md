@@ -1,6 +1,6 @@
 # NotebookLM process audit — 2026-09-08
 
-Running record of confirmed findings, fixes, and verification. This audit covers the current local application at base commit `8cbd942c61bf804edff3e93febe95c6b30cf6396`, including the uncommitted reconnect correction. Local code/tests do not establish NUC deployment or live Google acceptance.
+Running record of confirmed findings, fixes, and verification. The initial audit started at base commit `8cbd942c61bf804edff3e93febe95c6b30cf6396`, including the reconnect correction. The integration follow-up below incorporates the newer main branch. Local code/tests do not establish NUC deployment or live Google acceptance.
 
 ## Coverage
 
@@ -29,6 +29,7 @@ Running record of confirmed findings, fixes, and verification. This audit covers
 | NLM-013 | P3 | Obsolete Gemini browser/share adapters and an older NotebookLM adapter duplicated inactive workflows. The Studio upload extension allowlist was also duplicated. | Removed the unused adapters and their adapter-only tests after caller inspection; reused the existing extension validator. Historical database fields remain compatible. | Caller search found only adapter tests. Current gateway, native publication, application routes and import acceptance are included in the final regression. |
 | NLM-014 | P2 | Imported-answer resolution validated evidence and uncertainty notes, then discarded them before human review. | Fixed: preserve evidence/uncertainty through artifacts and review data; label it model-provided rather than verified citations; clear it after question edits. | Resolver and artifact roundtrips, old-record defaults, review edits, route payloads and text-safe rendering regressions. |
 | NLM-015 | P2 | A local database error while advancing Studio validation/image review escaped the worker, leaving the run running until a Hub restart. | Fixed: extend the existing durable retry boundary; preserve manual image review after optional image auto-binding fails. | Validation, image-review and completion write failures retry from saved chat; auto-binding failure retains unresolved manual review. |
+| NLM-016 | P2 | Integrating newer grouped-matching support required keeping MCQ-only answer/evidence fields away from matching drafts. Automatic merging alone left review payloads accessing nonexistent matching evidence fields. | Fixed during integration: preserve matching serializers and review payloads, skip matching drafts during AI answer resolution, and retain the generated-quiz MCQ contract. | Existing matching review/preview tests and both branches' worker/serializer regressions retained. Focused merged worker/repository tests: 93 passed. |
 
 ## Process traced
 
@@ -37,7 +38,7 @@ Running record of confirmed findings, fixes, and verification. This audit covers
 3. **Practice-question import:** preserve local snapshots; parse and extract with source-qualified references; pair supplied answers first. Only selected supporting/combined sources attach to NotebookLM. Missing answers use NotebookLM first; the configured fallback runs only after explicit no-support, with human verification required. Input hashes keep stage and per-question caches current across retries. Questions, evidence and images are reviewed before transactional publication.
 4. **Student delivery:** the public content route serves published questions and attached media without answer keys; grading returns feedback for the submitted question. CSRF checks, versioning, publication ownership, image review and source isolation remain covered by existing regressions.
 
-## Final verification
+## Initial audit verification
 
 - Combined Python regression: **573 passed in 155.17 seconds**. Includes all `tests/study_generation` tests plus Quiz Builder routes/acceptance, generation routes, public quiz routes, Notebook settings routes and the Notebook rollout contract.
 - JavaScript: **123 passed**, covering settings, Notebook Studio, quiz review/images/preview, public quiz and public library.
@@ -57,4 +58,14 @@ Running record of confirmed findings, fixes, and verification. This audit covers
 - A crash before a provider response reaches durable storage can still require another request. Saved responses and completed per-question answers are now reused.
 - Historical evidence that was already discarded cannot be recovered. Older saved drafts remain readable with empty evidence fields.
 - The outline prompt now requires inline content; offline tests verify the contract, not future model compliance or medical accuracy.
-- This is a local, uncommitted patch. No NUC/Hub deployment, production restart, Google login, real-source upload/deletion, provider generation, or live speed benchmark was performed.
+- The initial audit did not deploy or restart the Hub. Google login, real-source upload/deletion, provider generation, and live speed benchmarks remain outside this verification.
+
+## Main integration and deployment preparation
+
+- Connor subsequently authorized merging into main and updating the running NUC with minimal downtime.
+- Integrated main commit `b8396dafcbc07cf4d96a66d548d1470c16044159` (55 commits newer than the audit base), preserving grouped matching and all tests from both sides of the conflicts.
+- Merged-tree checks: all **234 JavaScript tests**, **93 focused worker/repository tests**, Ruff across `src tests scripts`, and mypy across **202 source files** passed. Full-suite and deployment results are recorded with the release receipt.
+- NUC preflight verified a healthy, idle server at `7d5d5dd4e63986f7d7dfec582545bd575a2cd85c`, tree `27f85c6c86bbd84340fa67475e4076b5964cd29f`, schema 31, with one listener and three supervised workers.
+- The schema, configuration and startup scripts are unchanged. The only dependency declaration change is the existing main-branch AnyIO bound, already satisfied by NUC version 4.14.2; `pip check` passed.
+- Created an online SQLite backup and saved the existing scheduled-task XML at `C:\ProgramData\OMSStudyHub-V2\backups\notebooklm-20260908-31fc3868947b465d9adbca4991bbb5a3`. Database integrity and backup hashes passed before any downtime.
+- Deployment uses the existing scheduled task and environment, with the prior commit retained for rollback. An exact release/health receipt is recorded separately after cutover; preparation is not deployment acceptance.

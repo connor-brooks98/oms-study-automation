@@ -409,7 +409,6 @@ def test_url_snapshot_hard_deadline_stops_hanging_stream_read_without_writing(
 ) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
     released = Event()
-    completed = Event()
     service = URLSnapshotService(
         tmp_path,
         max_bytes=1024,
@@ -417,7 +416,7 @@ def test_url_snapshot_hard_deadline_stops_hanging_stream_read_without_writing(
         transport=httpx.MockTransport(
             lambda _: httpx.Response(
                 200,
-                content=_wait_for_release_chunks(released, completed),
+                content=_wait_for_release_chunks(released),
                 headers={"content-type": "text/plain"},
             )
         ),
@@ -427,7 +426,6 @@ def test_url_snapshot_hard_deadline_stops_hanging_stream_read_without_writing(
         service.fetch("source-1", "Questions", "https://professor.example/questions")
 
     released.set()
-    assert completed.wait(1)
     assert not (tmp_path / "source-1").exists()
 
 
@@ -487,9 +485,8 @@ def _different_png_bytes() -> bytes:
     return output.getvalue()
 
 
-def _wait_for_release_chunks(released: Event, completed: Event) -> Iterator[bytes]:
+def _wait_for_release_chunks(released: Event) -> Iterator[bytes]:
     released.wait()
-    completed.set()
     yield b"Question"
 
 

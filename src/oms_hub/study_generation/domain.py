@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 
 class GenerationKind(StrEnum):
@@ -220,15 +221,48 @@ class QuizQuestion:
 
 
 @dataclass(frozen=True, slots=True)
+class QuizMatchingPrompt:
+    id: str
+    label: str
+    text: str
+    correct_choice_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class QuizMatchingQuestion:
+    id: str
+    stem: str
+    prompts: tuple[QuizMatchingPrompt, ...]
+    choices: tuple[QuizChoice, ...]
+    rationale: str
+    image_ref: QuizImageRef | None = None
+    area: str | None = None
+    learning_objective: str | None = None
+    topic: str | None = None
+
+
+QuizQuestionValue = QuizQuestion | QuizMatchingQuestion
+
+
+@dataclass(frozen=True, slots=True)
 class NativeQuiz:
     title: str
-    questions: tuple[QuizQuestion, ...]
+    questions: tuple[QuizQuestionValue, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class QuizFeedback:
     correct: bool
     correct_choice_id: str
+    rationale: str
+
+
+@dataclass(frozen=True, slots=True)
+class QuizMatchingFeedback:
+    kind: Literal["matching"]
+    correct: bool
+    correct_matches: dict[str, str]
+    row_results: dict[str, bool]
     rationale: str
 
 

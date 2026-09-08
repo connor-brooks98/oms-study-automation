@@ -163,7 +163,7 @@ class GeminiProvider:
         if output_schema is not None:
             generation_config["responseFormat"] = {
                 "text": {
-                    "mimeType": "application/json",
+                    "mimeType": "APPLICATION_JSON",
                     "schema": output_schema,
                 }
             }

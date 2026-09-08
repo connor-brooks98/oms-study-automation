@@ -12,8 +12,10 @@ from oms_hub.document_processing.domain import (
     SegmentKind,
 )
 from oms_hub.llm.domain import GeneratedText, LLMTask, ProviderName
+from oms_hub.study_generation.practice_contracts import ExtractedAnswer, SegmentCitation
 from oms_hub.study_generation.practice_extraction import (
     ExtractionError,
+    ExtractionResult,
     PracticeQuestionExtractor,
     SourceDocument,
 )
@@ -140,6 +142,194 @@ def valid_answer_only_json(source_id: str = "answers") -> str:
             ],
         }
     )
+
+
+def matching_extraction_json() -> str:
+    labels = tuple("ABCDEFG")
+    mapping = (5, 4, 1, 0, 2, 6, 3)
+    return json.dumps(
+        {
+            "questions": [
+                {
+                    "kind": "matching",
+                    "original_identifier": "1",
+                    "stem": "Match each neutral description with its neutral term.",
+                    "prompts": [
+                        {
+                            "original_identifier": label,
+                            "text": f"{label}. Description {label}",
+                            "supplied_correct_index": None,
+                        }
+                        for label in labels
+                    ],
+                    "choices": [f"{number}. Term {number}" for number in range(1, 8)],
+                    "rationale": None,
+                    "source_segments": [
+                        {"source_id": "source-1", "segment_key": "question-1"}
+                    ],
+                    "candidate_assets": [],
+                    "confidence": 0.99,
+                }
+            ],
+            "answers": [
+                {
+                    "kind": "matching",
+                    "original_identifier": "1",
+                    "matches": [
+                        {
+                            "prompt_identifier": label,
+                            "correct_index": correct_index,
+                            "rationale": None,
+                            "source_segments": [
+                                {
+                                    "source_id": "source-1",
+                                    "segment_key": f"answer-{label.lower()}",
+                                }
+                            ],
+                        }
+                        for label, correct_index in zip(labels, mapping, strict=True)
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def test_extractor_keeps_a_seven_row_matching_set_grouped_and_resolves_answer_refs(
+    tmp_path: Path,
+) -> None:
+    segments = (
+        ParsedSegment(
+            "question-1",
+            SegmentKind.PARAGRAPH,
+            "1. Match A through G to 1 through 7",
+            DocumentLocator("page 1", page_number=1),
+        ),
+        *(
+            ParsedSegment(
+                f"answer-{label.lower()}",
+                SegmentKind.PARAGRAPH,
+                f"{label} maps to the source choice",
+                DocumentLocator("page 4", page_number=4),
+            )
+            for label in "ABCDEFG"
+        ),
+    )
+    generator = StructuredGenerator([matching_extraction_json()])
+
+    result = PracticeQuestionExtractor(generator).extract(
+        (_document(tmp_path, segments=segments),)
+    )
+
+    assert len(result.questions) == len(result.answers) == 1
+    assert len(result.questions[0].prompts) == len(result.questions[0].choices) == 7
+    assert tuple(prompt.text for prompt in result.questions[0].prompts) == tuple(
+        f"Description {label}" for label in "ABCDEFG"
+    )
+    assert result.questions[0].choices == tuple(f"Term {number}" for number in range(1, 8))
+    assert tuple(ref.segment_key for ref in result.answer_source_refs[0]) == tuple(
+        f"answer-{label.lower()}" for label in "ABCDEFG"
+    )
+    assert "one grouped matching question" in generator.requests[0].instruction
+    assert "zero-based" in generator.requests[0].instruction
+
+
+def test_extraction_result_rejects_misaligned_answer_source_refs() -> None:
+    answer = ExtractedAnswer(
+        original_identifier="1",
+        correct_index=0,
+        rationale=None,
+        source_segments=(SegmentCitation(source_id="source-1", segment_key="answer-1"),),
+    )
+
+    with pytest.raises(ValueError, match="answer_source_refs must align with answers"):
+        ExtractionResult((), (answer,), (), (), (), ())
+
+
+def test_extractor_merges_disjoint_matching_answer_rows_with_aligned_refs(
+    tmp_path: Path,
+) -> None:
+    first = json.loads(matching_extraction_json())
+    second = json.loads(matching_extraction_json())
+    first["answers"][0]["matches"] = first["answers"][0]["matches"][:3]
+    second["answers"][0]["matches"] = second["answers"][0]["matches"][3:]
+    second["questions"] = first["questions"]
+    for match in second["answers"][0]["matches"]:
+        match["source_segments"][0]["source_id"] = "source-2"
+    first_segments = (
+        ParsedSegment(
+            "question-1", SegmentKind.PARAGRAPH, "1. Match entries", DocumentLocator("p1")
+        ),
+        *(
+            ParsedSegment(
+                f"answer-{label.lower()}",
+                SegmentKind.PARAGRAPH,
+                f"{label} maps to term",
+                DocumentLocator("p4"),
+            )
+            for label in "ABCDEFG"
+            if label in "ABC"
+        ),
+    )
+    second_segments = tuple(
+        ParsedSegment(
+            f"answer-{label.lower()}",
+            SegmentKind.PARAGRAPH,
+            f"{label} maps to term",
+            DocumentLocator("p4"),
+        )
+        for label in "DEFG"
+    )
+    result = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(first), json.dumps(second)]), max_input_characters=500
+    ).extract(
+        (
+            _document(tmp_path, source_id="source-1", segments=first_segments),
+            _document(tmp_path, source_id="source-2", segments=second_segments),
+        ),
+    )
+
+    assert len(result.questions) == 1
+    assert len(result.answers) == len(result.answer_source_refs) == 2
+    assert tuple(ref.segment_key for ref in result.answer_source_refs[0]) == (
+        "answer-a",
+        "answer-b",
+        "answer-c",
+    )
+    assert tuple(ref.segment_key for ref in result.answer_source_refs[1]) == (
+        "answer-d",
+        "answer-e",
+        "answer-f",
+        "answer-g",
+    )
+
+
+def test_matching_duplicate_identity_uses_matching_specific_diagnostic(tmp_path: Path) -> None:
+    first = json.loads(matching_extraction_json())
+    second = json.loads(matching_extraction_json())
+    second["questions"][0]["stem"] = "Conflicting matching wording."
+    first["answers"] = []
+    second["answers"] = []
+    first_segments = (
+        ParsedSegment(
+            "question-1", SegmentKind.PARAGRAPH, "1. Match entries", DocumentLocator("p1")
+        ),
+    )
+    second_segments = (
+        ParsedSegment("extra", SegmentKind.PARAGRAPH, "Answer key", DocumentLocator("p2")),
+    )
+    result = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(first), json.dumps(second)]), max_input_characters=230
+    ).extract(
+        (
+            _document(tmp_path, source_id="source-1", segments=first_segments),
+            _document(tmp_path, source_id="source-2", segments=second_segments),
+        )
+    )
+
+    assert {item.code for item in result.diagnostics} == {
+        "conflicting-matching-question-identifier"
+    }
 
 
 def test_extractor_retries_schema_failure_once(tmp_path: Path) -> None:
@@ -532,7 +722,7 @@ def test_document_scoped_citations_preserve_real_question_source_refs(tmp_path: 
         result.questions,
         result.answers,
         question_source_refs=result.question_source_refs,
-    )
+    ).drafts
 
     assert result.question_source_refs[0][0].source_id == "questions"
     assert result.question_source_refs[0][0].segment_key == "questions-1"

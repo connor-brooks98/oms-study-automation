@@ -18,6 +18,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
+        env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
         run: python -m pip install -e ".[dev,document-processing,pdf-inspection]"
 
       - name: Ruff
@@ -61,6 +63,7 @@ jobs:
       - name: Install and test document processors
         shell: powershell
         env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
           PYTEST_ADDOPTS: -m "not windows_office"
         run: |
           py -3.12 -m venv .venv
@@ -87,26 +90,104 @@ jobs:
 
       - name: Install rehearsal test dependencies
         shell: powershell
+        env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
         run: |
           py -3.12 -m venv .venv
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
           .\.venv\Scripts\python.exe -m pip install -e ".[dev,document-processing,pdf-inspection]"
 
-      - name: Parse capsule export PowerShell and check source contract
+      - name: Parse rollout PowerShell and check source contract
         shell: powershell
         run: |
-          $scriptPath = (Resolve-Path "scripts\export-a0-rehearsal-capsule.ps1").Path
+          $scriptPaths = @(
+            (Resolve-Path "scripts\export-a0-rehearsal-capsule.ps1").Path,
+            (Resolve-Path "scripts\deploy-grouped-matching-release.ps1").Path
+          )
+          foreach ($scriptPath in $scriptPaths) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $scriptPath,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error "${scriptPath}: $($_.Message)" }
+              throw "PowerShell parser rejected $scriptPath"
+            }
+          }
+
           $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            $scriptPath,
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -ne 0) {
-            $errors | ForEach-Object { Write-Error $_.Message }
-            throw "PowerShell parser rejected the capsule export script"
+          $releaseAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPaths[1], [ref]$tokens, [ref]$errors
+          )
+          foreach ($functionName in @(
+            "Get-AccountSid", "Test-SameAccount", "Assert-NativeSuccess", "Invoke-Git"
+          )) {
+            $definitions = @($releaseAst.FindAll({
+              param($node)
+              $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $functionName
+            }, $true))
+            if ($definitions.Count -ne 1) {
+              throw "Expected exactly one $functionName definition"
+            }
+            Invoke-Expression $definitions[0].Extent.Text
           }
+          $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          if (-not (Test-SameAccount -Left $currentIdentity.Name -Right $env:USERNAME)) {
+            throw "Qualified and short current-account names did not resolve to the same SID"
+          }
+          $administratorsSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+          $administratorsAccount = $administratorsSid.Translate([System.Security.Principal.NTAccount]).Value
+          if (Test-SameAccount -Left $currentIdentity.Name -Right $administratorsAccount) {
+            throw "Current user unexpectedly matched the built-in Administrators group SID"
+          }
+
+          $ProjectRoot = (Resolve-Path ".").Path
+          $previousErrorActionPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = "Stop"
+            Invoke-Git @("fetch", "--verbose", "origin", "HEAD") | Out-Null
+          } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+          }
+
+          $parent = Split-Path -Path "C:\Services\oms-study-automation-v2\scripts\deploy-grouped-matching-release.ps1" -Parent
+          if ($parent -cne "C:\Services\oms-study-automation-v2\scripts") {
+            throw "PowerShell parent-path smoke returned an unexpected value: $parent"
+          }
+
+          $captureScript = Join-Path $env:RUNNER_TEMP ("argument-capture-" + [guid]::NewGuid().ToString("N") + ".ps1")
+          $captureOutput = Join-Path $env:RUNNER_TEMP ("argument-capture-" + [guid]::NewGuid().ToString("N") + ".json")
+          $projectRoot = "C:\Services\OMS Study Hub"
+          $dataRoot = "C:\ProgramData\OMS Study Hub"
+          try {
+          @'
+          param([string]$ProjectRoot, [string]$DataRoot, [string]$CapturePath)
+          [ordered]@{ file_path=$PSCommandPath; project_root=$ProjectRoot; data_root=$DataRoot } |
+            ConvertTo-Json -Compress | Set-Content -LiteralPath $CapturePath -NoNewline -Encoding UTF8
+          '@ | Set-Content -LiteralPath $captureScript -NoNewline -Encoding UTF8
+            $captureArguments = @(
+              "-NoProfile", "-NonInteractive", "-File", "`"$captureScript`"",
+              "-ProjectRoot", "`"$projectRoot`"", "-DataRoot", "`"$dataRoot`"",
+              "-CapturePath", "`"$captureOutput`""
+            )
+            $captureProcess = Start-Process -FilePath (Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe") -ArgumentList $captureArguments -PassThru -Wait -WindowStyle Hidden
+            if ($captureProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $captureOutput -PathType Leaf)) {
+              throw "PowerShell argument capture failed with exit code $($captureProcess.ExitCode)"
+            }
+            $capture = Get-Content -LiteralPath $captureOutput -Raw | ConvertFrom-Json
+            if ($capture.file_path -cne $captureScript -or $capture.project_root -cne $projectRoot -or $capture.data_root -cne $dataRoot) {
+              throw "PowerShell argument capture did not preserve a path argument boundary"
+            }
+          } finally {
+            Remove-Item -LiteralPath $captureScript, $captureOutput -Force -ErrorAction SilentlyContinue
+          }
+
+          $scriptPath = $scriptPaths[0]
 
           $source = Get-Content -LiteralPath $scriptPath -Raw
           $required = @(

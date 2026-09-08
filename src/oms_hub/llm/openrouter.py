@@ -35,7 +35,11 @@ from oms_hub.llm.provider import (
     transcript_input,
 )
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
-from oms_hub.study_generation.domain import NativeQuiz, QuizQuestion
+from oms_hub.study_generation.domain import (
+    NativeQuiz,
+    QuizMatchingQuestion,
+    QuizQuestionValue,
+)
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
 if TYPE_CHECKING:
@@ -392,7 +396,7 @@ class MedicalAccuracyGate:
                 "Medical accuracy review blocked publication: " + " | ".join(failures[:8])
             )
 
-    def assess(self, question: QuizQuestion) -> AccuracyAssessment:
+    def assess(self, question: QuizQuestionValue) -> AccuracyAssessment:
         provider, model, api_key = self._resolve()
         return self._assess(question, provider, model, api_key)
 
@@ -416,7 +420,7 @@ class MedicalAccuracyGate:
 
     def _assess(
         self,
-        question: QuizQuestion,
+        question: QuizQuestionValue,
         provider: LLMProvider,
         model: str,
         api_key: str,
@@ -449,7 +453,20 @@ class MedicalAccuracyGate:
         return AccuracyAssessment(approved, normalized_issues)
 
 
-def _question_text(question: QuizQuestion) -> str:
+def _question_text(question: QuizQuestionValue) -> str:
+    if isinstance(question, QuizMatchingQuestion):
+        choice_by_id = {choice.id: choice.text for choice in question.choices}
+        matches = "\n".join(
+            f"{prompt.id} ({prompt.label}): {prompt.text} -> "
+            f"{prompt.correct_choice_id}: {choice_by_id[prompt.correct_choice_id]}"
+            for prompt in question.prompts
+        )
+        choices = "\n".join(f"{choice.id}. {choice.text}" for choice in question.choices)
+        return (
+            f"Question:\n{question.stem}\n\nChoices:\n{choices}\n\n"
+            f"Matching prompts and proposed matches:\n{matches}\n"
+            f"Rationale: {question.rationale}"
+        )
     choices = "\n".join(f"{choice.id}. {choice.text}" for choice in question.choices)
     return (
         f"Question:\n{question.stem}\n\nChoices:\n{choices}\n\n"

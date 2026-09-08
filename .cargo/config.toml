@@ -1,0 +1,3 @@
+# ponytail: CI-only pin; remove after tinyvec 1.13.0 is yanked or replaced.
+[patch.crates-io]
+tinyvec = { git = "https://github.com/Lokathor/tinyvec.git", rev = "347ddc6463159eec38d3758a8881a22f44d50373" }

@@ -8,9 +8,17 @@ from oms_hub.config import Settings
 from oms_hub.models import StudioRunModel
 from oms_hub.repositories import LectureInput
 from oms_hub.security.rate_limit import PublicQuizRateLimiter, RatePolicy
-from oms_hub.study_generation.domain import GenerationKind, PublishedQuizOrderDirection
+from oms_hub.study_generation.domain import (
+    GenerationKind,
+    NativeQuiz,
+    PublishedQuizOrderDirection,
+    QuizChoice,
+    QuizMatchingPrompt,
+    QuizMatchingQuestion,
+)
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.outline import OutlinePdfRenderer
+from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.web import public_quiz_routes
 
 
@@ -89,6 +97,165 @@ def _published_mixed_app(tmp_path, *, public=False):
         _quiz("Practice Questions"),
     )
     return app, lecture_quiz, practice
+
+
+def _matching_quiz() -> NativeQuiz:
+    return NativeQuiz(
+        "Matching practice",
+        (
+            QuizMatchingQuestion(
+                "q1",
+                "Match each description with its term.",
+                (
+                    QuizMatchingPrompt("p1", "A", "Alpha", "c2"),
+                    QuizMatchingPrompt("p2", "B", "Beta", "c1"),
+                ),
+                (QuizChoice("c1", "Term one"), QuizChoice("c2", "Term two")),
+                "Source-marked matches: A -> Term two; B -> Term one.",
+            ),
+        ),
+    )
+
+
+def test_public_matching_content_hides_answers_and_grades_only_complete_mapping(tmp_path) -> None:
+    app, _ = _published_app(tmp_path)
+    with app.state.database.session() as session:
+        session.add(
+            StudioRunModel(
+                id="matching-practice",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Matching",
+                label_key="matching",
+                prompt="",
+                workflow_kind="direct_import",
+                content_kind=QuizContentKind.PRACTICE_QUESTIONS.value,
+                state="awaiting_review",
+                stage="review",
+            )
+        )
+    published = app.state.generation_repository.publish_studio_quiz(
+        "matching-practice", _matching_quiz()
+    )
+    client = TestClient(app)
+    content = client.get(f"/public/quizzes/{published.token}/content")
+    assert content.json()["questions"][0]["kind"] == "matching"
+    assert "correct_choice_id" not in content.text and "correct_matches" not in content.text
+    result = client.post(
+        f"/public/quizzes/{published.token}/answer",
+        json={"kind": "matching", "question_id": "q1", "matches": {"p1": "c2", "p2": "c1"}},
+    )
+    assert result.json() == {
+        "kind": "matching",
+        "correct": True,
+        "correct_matches": {"p1": "c2", "p2": "c1"},
+        "row_results": {"p1": True, "p2": True},
+        "rationale": "Source-marked matches: A -> Term two; B -> Term one.",
+    }
+    for payload in (
+        {"kind": "matching", "question_id": "q99", "matches": {"p1": "c2", "p2": "c1"}},
+        {"question_id": "q1", "choice_id": "c1"},
+        {"kind": "matching", "question_id": "q1", "matches": {"p1": "c2"}},
+        {"kind": "matching", "question_id": "q1", "matches": {"p1": "c2", "p2": "c1", "p3": "c1"}},
+        {"kind": "matching", "question_id": "q1", "matches": {"p9": "c2", "p2": "c1"}},
+        {"kind": "matching", "question_id": "q1", "matches": {"p1": "c2", "p2": "c9"}},
+    ):
+        response = client.post(f"/public/quizzes/{published.token}/answer", json=payload)
+        assert response.status_code == (404 if payload["question_id"] == "q99" else 422)
+
+    reused = client.post(
+        f"/public/quizzes/{published.token}/answer",
+        json={"kind": "matching", "question_id": "q1", "matches": {"p1": "c2", "p2": "c2"}},
+    )
+    assert reused.status_code == 200
+    assert reused.json()["row_results"] == {"p1": True, "p2": False}
+
+
+def test_matching_practice_quiz_cannot_move_to_quiz_library(tmp_path) -> None:
+    app, _ = _published_app(tmp_path)
+    with app.state.database.session() as session:
+        session.add(
+            StudioRunModel(
+                id="matching-move",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Matching move",
+                label_key="matching move",
+                prompt="",
+                workflow_kind="direct_import",
+                content_kind=QuizContentKind.PRACTICE_QUESTIONS.value,
+                state="awaiting_review",
+                stage="review",
+            )
+        )
+    published = app.state.generation_repository.publish_studio_quiz(
+        "matching-move", _matching_quiz()
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    client.get(f"/public/quizzes/{published.token}")
+    response = client.patch(
+        f"/api/published-quizzes/{published.token}/library",
+        json={"section": "quizzes"},
+        headers={"X-CSRF-Token": client.cookies["study_hub_csrf"]},
+    )
+    assert response.status_code == 422
+
+
+def test_matching_answer_is_rejected_for_a_multiple_choice_question(tmp_path) -> None:
+    app, published = _published_app(tmp_path)
+    response = TestClient(app).post(
+        f"/public/quizzes/{published.token}/answer",
+        json={"kind": "matching", "question_id": "q1", "matches": {"p1": "c1", "p2": "c2"}},
+    )
+
+    assert response.status_code == 422
+
+
+def test_matching_published_quiz_reconstructs_an_editable_group(tmp_path) -> None:
+    app, _ = _published_app(tmp_path)
+    with app.state.database.session() as session:
+        session.add(
+            StudioRunModel(
+                id="matching-edit",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Matching edit",
+                label_key="matching edit",
+                prompt="",
+                workflow_kind="direct_import",
+                content_kind=QuizContentKind.PRACTICE_QUESTIONS.value,
+                state="awaiting_review",
+                stage="review",
+            )
+        )
+    published = app.state.generation_repository.publish_studio_quiz(
+        "matching-edit", _matching_quiz()
+    )
+    with TestClient(app) as client:
+        client.get(f"/public/quizzes/{published.token}")
+        created = client.post(
+            f"/api/published-quizzes/{published.token}/edit-run",
+            headers={"X-CSRF-Token": client.cookies["study_hub_csrf"]},
+        )
+        data = client.get(f"/studio/runs/{created.json()['run_id']}/review/data")
+
+    assert created.status_code == 200
+    assert data.json()["questions"][0]["prompts"] == [
+        {"id": "p1", "label": "A", "text": "Alpha", "correct_index": 1},
+        {"id": "p2", "label": "B", "text": "Beta", "correct_index": 0},
+    ]
 
 
 def test_public_library_groups_only_published_quizzes(tmp_path):
