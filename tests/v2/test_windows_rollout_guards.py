@@ -1,8 +1,10 @@
 import base64
 import json
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from oms_hub.config import Settings
@@ -611,13 +613,91 @@ def test_windows_installer_whatif_never_stops_processes_or_reports_completion() 
 def test_windows_installer_guard_covers_same_root_tree_but_not_unrelated_python() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 
-    # A same-root oms-hub.exe seeds descendant traversal. An orphaned same-root
+    # A same-root oms-hub.exe seeds descendant traversal. A same-root
     # Python process additionally needs an OMS Hub command-line match. A Python
     # process outside this deployment cannot be selected merely for being Python.
     assert "if ($IsHubLauncher -and $IsExpectedRoot)" in script
     assert "if ($IsPython -and $IsExpectedRoot -and $HasHubCommandLine" in script
     assert "positively identifies the process tree" in script
     assert "generic Python processes from another deployment" in script
+
+
+def test_windows_installer_discovers_python_root_and_base_interpreter_descendants() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+    discovery = script[
+        script.index("function Test-ProcessPathUnderRoot") : script.index(
+            "function Get-DashboardPort"
+        )
+    ]
+    # Enforce the regression on hosts without PowerShell as well: Python roots
+    # must enter the descendant queue, not be added after traversal finishes.
+    python_seed = discovery.index(
+        "if ($IsPython -and $IsExpectedRoot -and $HasHubCommandLine)"
+    )
+    traversal = discovery.index("while ($Pending.Count -gt 0)")
+    assert python_seed < discovery.index("$Pending.Enqueue($Process)", python_seed) < traversal
+
+    powershell = next(
+        (
+            executable
+            for name in ("powershell.exe", "powershell", "pwsh")
+            if (executable := shutil.which(name)) is not None
+        ),
+        None,
+    )
+    if powershell is None:
+        return
+    harness = "$ErrorActionPreference = 'Stop'\n" + discovery + r'''
+$Root = 'C:\Services\oms-study-automation-v2'
+$VenvPython = "$Root\.venv\Scripts\python.exe"
+$BasePython = 'C:\Python312\python.exe'
+$script:MockProcesses = @(
+  [pscustomobject]@{ ProcessId=101; ParentProcessId=1; Name='python.exe'
+    ExecutablePath=$VenvPython
+    CommandLine='python.exe -m oms_hub.cli serve' }
+  [pscustomobject]@{ ProcessId=102; ParentProcessId=101; Name='python.exe'
+    ExecutablePath=$BasePython
+    CommandLine='python.exe -m oms_hub.cli serve' }
+  [pscustomobject]@{ ProcessId=103; ParentProcessId=102; Name='helper.exe'
+    ExecutablePath='C:\Tools\helper.exe'
+    CommandLine='helper' }
+  [pscustomobject]@{ ProcessId=201; ParentProcessId=1; Name='oms-hub.exe'
+    ExecutablePath="$Root\.venv\Scripts\oms-hub.exe"
+    CommandLine='oms-hub.exe serve' }
+  [pscustomobject]@{ ProcessId=202; ParentProcessId=201; Name='python.exe'
+    ExecutablePath=$BasePython
+    CommandLine='python.exe -m oms_hub.cli serve' }
+  [pscustomobject]@{ ProcessId=301; ParentProcessId=1; Name='python.exe'
+    ExecutablePath=$VenvPython
+    CommandLine='python.exe unrelated.py' }
+  [pscustomobject]@{ ProcessId=302; ParentProcessId=1; Name='python.exe'
+    ExecutablePath=$BasePython
+    CommandLine='python.exe -m oms_hub.cli serve' }
+  [pscustomobject]@{ ProcessId=303; ParentProcessId=1; Name='python.exe'
+    ExecutablePath="${Root}-other\.venv\Scripts\python.exe"
+    CommandLine='python.exe -m oms_hub.cli serve' }
+)
+function Get-CimInstance { param([string]$ClassName) return $script:MockProcesses }
+$Selected = @(Get-ConflictingHubProcesses -ExpectedProjectRoot $Root)
+$Ids = ($Selected | Sort-Object ProcessId | ForEach-Object { $_.ProcessId }) -join ','
+if ($Ids -cne '101,102,103,201,202') { throw "Unexpected selected process IDs: $Ids" }
+Write-Output 'PYTHON_ROOT_DESCENDANTS_VERIFIED'
+'''
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            base64.b64encode(harness.encode("utf-16le")).decode("ascii"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "PYTHON_ROOT_DESCENDANTS_VERIFIED" in result.stdout
 
 
 def test_windows_installer_builds_a_single_separator_root_prefix() -> None:
@@ -656,7 +736,7 @@ def test_windows_installer_selects_every_descendant_of_verified_launcher() -> No
     assert "descendant belongs to that tree" in script
     assert "$Selected.Add($Process)" in script
     selection_start = script.index("while ($Pending.Count -gt 0)")
-    selection_end = script.index("foreach ($Process in $Processes)", selection_start)
+    selection_end = script.index("return @($Selected)", selection_start)
     selection_block = script[selection_start:selection_end]
     assert "-or [string]$Process.Name -ieq" not in selection_block
 
@@ -1541,9 +1621,11 @@ def test_grouped_matching_release_keeps_paths_out_of_binding_and_bounds_ssh_comm
     )
 
     def invoke_remote(payload: str) -> subprocess.CompletedProcess[bytes]:
+        python = shlex.quote(Path(sys.executable).as_posix())
         harness = (
             "set -euo pipefail\n"
             "REMOTE_COMMAND_MAX=7000\n"
+            f'python3() {{ {python} "$@"; }}\n'
             f"{remote_ps}\n"
             "ssh() { printf '%s' \"$2\"; }\n"
             "printf '%s' \"$1\" | remote_ps\n"

@@ -348,10 +348,17 @@ function Get-ConflictingHubProcesses {
   $Pending = [System.Collections.Generic.Queue[object]]::new()
   foreach ($Process in $Processes) {
     $IsHubLauncher = [string]$Process.Name -ieq "oms-hub.exe"
+    $IsPython = [string]$Process.Name -ieq "python.exe"
     $IsExpectedRoot = Test-ProcessPathUnderRoot `
       -ExecutablePath ([string]$Process.ExecutablePath) `
       -ExpectedProjectRoot $ExpectedProjectRoot
+    $HasHubCommandLine = ([string]$Process.CommandLine) -match "(?i)oms[-_]hub"
     if ($IsHubLauncher -and $IsExpectedRoot) {
+      $Pending.Enqueue($Process)
+    }
+    # The scheduled task starts Python directly; its child may use the base
+    # interpreter outside this root. Seed it before walking descendants.
+    if ($IsPython -and $IsExpectedRoot -and $HasHubCommandLine) {
       $Pending.Enqueue($Process)
     }
   }
@@ -360,7 +367,7 @@ function Get-ConflictingHubProcesses {
     $Process = $Pending.Dequeue()
     $ProcessId = [int]$Process.ProcessId
     if (-not $Seen.Add($ProcessId)) { continue }
-    # The same-root launcher positively identifies the process tree. Every
+    # The same-root Hub command positively identifies the process tree. Every
     # descendant belongs to that tree and must stop before editable install,
     # including helpers whose executable name is neither Hub nor Python.
     $Selected.Add($Process)
@@ -372,18 +379,6 @@ function Get-ConflictingHubProcesses {
     }
   }
 
-  foreach ($Process in $Processes) {
-    $IsPython = [string]$Process.Name -ieq "python.exe"
-    $IsExpectedRoot = Test-ProcessPathUnderRoot `
-      -ExecutablePath ([string]$Process.ExecutablePath) `
-      -ExpectedProjectRoot $ExpectedProjectRoot
-    $HasHubCommandLine = ([string]$Process.CommandLine) -match "(?i)oms[-_]hub"
-    # If the wrapper already exited, a same-root orphaned Python child is safe
-    # to stop only when its command line also positively identifies OMS Hub.
-    if ($IsPython -and $IsExpectedRoot -and $HasHubCommandLine -and $Seen.Add([int]$Process.ProcessId)) {
-      $Selected.Add($Process)
-    }
-  }
   return @($Selected)
 }
 
