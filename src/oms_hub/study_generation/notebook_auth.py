@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MAX_AUTH_OUTPUT_BYTES = 64 * 1024
+NOTEBOOK_CHECK_UNVERIFIED = (
+    "Gemini Notebook connection could not be verified. "
+    "Use Test connection in Settings to try again."
+)
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -14,6 +18,7 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 class NotebookAuthCheck:
     connected: bool
     message: str | None = None
+    requires_login: bool = False
 
 
 class NotebookCLIAuth:
@@ -70,34 +75,49 @@ class NotebookCLIAuth:
         except subprocess.TimeoutExpired:
             return NotebookAuthCheck(
                 False,
-                "NotebookLM authentication check timed out.",
+                "Gemini Notebook connection check timed out. Try again.",
             )
         except FileNotFoundError:
             return NotebookAuthCheck(
                 False,
                 "NotebookLM authentication is unavailable. Reinstall Study Hub.",
             )
-        if result.returncode != 0:
-            return NotebookAuthCheck(False, "NotebookLM login is required.")
+        except OSError:
+            return NotebookAuthCheck(False, NOTEBOOK_CHECK_UNVERIFIED)
         if len(result.stdout.encode("utf-8")) > MAX_AUTH_OUTPUT_BYTES:
-            return NotebookAuthCheck(
-                False,
-                "NotebookLM authentication could not be verified.",
-            )
+            return NotebookAuthCheck(False, NOTEBOOK_CHECK_UNVERIFIED)
         try:
             payload = json.loads(result.stdout)
-            connected = (
-                payload.get("status") == "ok"
-                and payload.get("checks", {}).get("token_fetch") is True
-            )
-        except (AttributeError, json.JSONDecodeError):
-            connected = False
-        if not connected:
-            return NotebookAuthCheck(
-                False,
-                "NotebookLM authentication could not be verified.",
-            )
-        return NotebookAuthCheck(True)
+        except json.JSONDecodeError:
+            return NotebookAuthCheck(False, NOTEBOOK_CHECK_UNVERIFIED)
+        checks = payload.get("checks") if isinstance(payload, dict) else None
+        if isinstance(checks, dict):
+            local_checks = [
+                checks.get(name)
+                for name in ("storage_exists", "json_valid", "cookies_present", "sid_cookie")
+            ]
+            if (
+                result.returncode == 0
+                and payload.get("status") == "ok"
+                and all(value is True for value in local_checks)
+                and checks.get("token_fetch") is True
+            ):
+                return NotebookAuthCheck(True)
+            # The CLI gives expired cookies and network errors the same token_fetch=False.
+            # Only its complete missing-storage result establishes that sign-in is needed.
+            if (
+                result.returncode == 1
+                and payload.get("status") == "error"
+                and all(value is False for value in local_checks)
+                and "token_fetch" in checks
+                and checks["token_fetch"] is None
+            ):
+                return NotebookAuthCheck(
+                    False,
+                    "Gemini Notebook login is required. Connect Notebook in Settings.",
+                    requires_login=True,
+                )
+        return NotebookAuthCheck(False, NOTEBOOK_CHECK_UNVERIFIED)
 
     def _run(
         self,

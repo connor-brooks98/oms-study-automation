@@ -88,7 +88,12 @@ class NotebookAttacher(Protocol):
         url: str | None = None,
     ) -> str: ...
 
-    def list_studio_source_ids(self, notebook_id: str) -> frozenset[str]: ...
+    def list_studio_source_ids(
+        self,
+        notebook_id: str,
+        *,
+        baseline_ids: frozenset[str] | None = None,
+    ) -> frozenset[str]: ...
 
 
 class AttachmentArguments(TypedDict, total=False):
@@ -460,13 +465,24 @@ class QuizImportWorker:
                 run.id, _DOWNSTREAM_PREFIXES[StudioRunStage.ANSWER_NOTEBOOK]
             )
         scope = AnswerResolutionScope(run.subject, run.exam_number, remote_ids)
-        resolved = tuple(
-            _without_resolved_missing_answer_diagnostics(
-                self.answers.resolve(draft, scope),
-                was_missing=draft.correct_index is None,
-            )
-            for draft in drafts
-        )
+        resolved_drafts: list[QuestionDraft] = []
+        for draft in drafts:
+            if draft.correct_index is not None:
+                resolved_drafts.append(draft)
+                continue
+            key = f"answered:{draft.question_id}"
+            cached_answer = self.repository.run_artifact(run.id, key)
+            if cached_answer is not None and cached_answer.signature_sha256 == signature:
+                (resolved_draft,) = _drafts_from_json(cached_answer.payload_json)
+            else:
+                resolved_draft = _without_resolved_missing_answer_diagnostics(
+                    self.answers.resolve(draft, scope), was_missing=True,
+                )
+                self.repository.save_run_artifact(
+                    run.id, key, signature, _drafts_json((resolved_draft,))
+                )
+            resolved_drafts.append(resolved_draft)
+        resolved = tuple(resolved_drafts)
         if any(draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI for draft in resolved):
             self.repository.set_run_stage(run.id, StudioRunStage.ANSWER_FALLBACK)
         self.repository.save_run_artifact(run.id, "answered", signature, _drafts_json(resolved))
@@ -527,7 +543,8 @@ class QuizImportWorker:
                         if not operation.notebook_id:
                             raise ValueError("durable source operation is missing its notebook")
                         remote_ids = self.notebook.list_studio_source_ids(
-                            operation.notebook_id
+                            operation.notebook_id,
+                            baseline_ids=operation.baseline_remote_ids,
                         )
                     outcome = self.repository.reconcile_attach_operation(
                         operation.id,
@@ -961,6 +978,8 @@ def _drafts_json(drafts: tuple[QuestionDraft, ...]) -> str:
                 ],
                 "verification_required": draft.verification_required,
                 "verified_at": draft.verified_at,
+                "answer_evidence": list(draft.answer_evidence),
+                "answer_uncertainty_note": draft.answer_uncertainty_note,
             }
             for draft in drafts
         ],
@@ -995,6 +1014,8 @@ def _drafts_from_json(payload_json: str) -> tuple[QuestionDraft, ...]:
             ),
             item["verification_required"],
             item["verified_at"],
+            answer_evidence=tuple(item.get("answer_evidence", ())),
+            answer_uncertainty_note=item.get("answer_uncertainty_note"),
         )
         for item in payload
     )

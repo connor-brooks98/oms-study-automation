@@ -5,10 +5,16 @@ import pytest
 
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.ingestion.domain import UploadKind
+from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.study_generation.domain import (
     GenerationKind,
     GenerationState,
     PromptSnapshot,
+)
+from oms_hub.study_generation.notebook_connection import NotebookConnectionStatus
+from oms_hub.study_generation.notebook_errors import (
+    NotebookAuthenticationError,
+    NotebookGatewayError,
 )
 from oms_hub.study_generation.service import (
     GenerationPrerequisiteError,
@@ -259,3 +265,52 @@ def test_retrying_paused_generation_returns_progress_to_queued(tmp_path):
         V2StepName.SUMMARY_FILED,
         StepStatus.QUEUED,
     )
+
+
+@pytest.mark.parametrize("kind", ["outline", "quiz"])
+@pytest.mark.parametrize("raises", [True, False])
+@pytest.mark.parametrize(("failure", "expected"), [
+    (NotebookGatewayError("Connection check timed out. Try again.",
+                          source=DiagnosticSource.NETWORK, retryable=True), "timed out"),
+    (RuntimeError("SID=secret"), "could not be verified"),
+    (NotebookAuthenticationError(), "reconnect"),
+])
+def test_queue_only_requests_reconnect_for_authentication_errors(
+    tmp_path, kind, raises, failure, expected,
+):
+    import hashlib
+
+    revisions = []
+    for revision_id, upload_kind in enumerate((UploadKind.SLIDES, UploadKind.TRANSCRIPTS)):
+        path = tmp_path / upload_kind.value
+        path.write_bytes(b"source")
+        revisions.append(Revision(
+            revision_id, upload_kind, path, hashlib.sha256(b"source").hexdigest(),
+        ))
+
+    class FailedConnection(Google):
+        def require_live(self):
+            if raises:
+                raise failure
+            if isinstance(failure, NotebookAuthenticationError):
+                return NotebookConnectionStatus("failed")
+            return NotebookConnectionStatus("unverified")
+
+    jobs = Jobs()
+    service = GenerationService(
+        Catalog(), Ingestion(revisions), jobs, Prompts(), FailedConnection(),
+    )
+
+    with pytest.raises(GenerationPrerequisiteError) as error:
+        getattr(service, f"queue_{kind}")(4)
+
+    if raises:
+        assert expected in str(error.value).casefold()
+    elif not isinstance(failure, NotebookAuthenticationError):
+        assert "could not be verified" in str(error.value).casefold()
+    else:
+        assert "connect" in str(error.value).casefold()
+    assert "SID=" not in str(error.value)
+    if not isinstance(failure, NotebookAuthenticationError):
+        assert "reconnect" not in str(error.value).casefold()
+    assert jobs.advanced is None

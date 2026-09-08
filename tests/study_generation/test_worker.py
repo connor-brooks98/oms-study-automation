@@ -17,6 +17,7 @@ from oms_hub.study_generation.domain import (
     NotebookAnswer,
     PromptSnapshot,
 )
+from oms_hub.study_generation.native_quiz import QuizContractError
 from oms_hub.study_generation.notebook import NotebookAuthenticationError
 from oms_hub.study_generation.worker import GenerationWorker
 
@@ -189,6 +190,27 @@ def _worker(tmp_path, job, publisher, notebook=None):
         connection,
     )
     return worker, repository, connection, progress
+
+
+def test_publication_contract_failure_clears_answer_for_bounded_regeneration(tmp_path):
+    publisher = Publisher()
+    worker, repository, _, _ = _worker(
+        tmp_path, _job(notebook_answer=QUIZ_JSON), publisher,
+    )
+    failures = []
+    repository.record_attempt = lambda *args: failures.append(args)
+    repository.contract_failure_count = lambda job_id: len(failures)
+
+    def reject(*args):
+        raise QuizContractError("Lecture quiz requires an unavailable image")
+
+    publisher.publish = reject
+    assert worker.run_once()
+    assert len(failures) == 1
+    assert repository.current.notebook_answer is None
+    assert repository.current.stage is GenerationStage.NOTEBOOK_PROMPT
+    assert repository.quiz is None
+    assert repository.retried[0] == "job-1"
 
 
 def test_worker_validates_and_publishes_notebook_quiz_natively(tmp_path):

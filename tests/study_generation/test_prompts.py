@@ -48,6 +48,9 @@ def test_outline_prompt_preserves_snapshot_and_enforces_lecture_only_length():
     assert bounded.content.startswith(original.content)
     assert "only the selected lecture slides and cleaned transcript" in bounded.content
     assert "never exceed 5,500 characters" in bounded.content
+    assert "complete Markdown outline directly in your response" in bounded.content
+    assert "Do not create a separate Studio artifact or file" in bounded.content
+    assert "Do not return a status message" in bounded.content
 
 
 @pytest.mark.parametrize("content", ["", "   "])

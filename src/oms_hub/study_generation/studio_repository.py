@@ -275,6 +275,10 @@ class StudioRepository:
                     .where(
                         StudioSourceModel.purpose == StudioSourcePurpose.NOTEBOOK.value,
                         StudioSourceModel.state == StudioSourceState.PENDING.value,
+                        or_(
+                            StudioSourceModel.source_type == StudioSourceType.URL.value,
+                            StudioSourceModel.payload_path.is_not(None),
+                        ),
                         ~active_scope,
                         or_(
                             StudioSourceModel.next_attempt_at.is_(None),
@@ -878,12 +882,15 @@ class StudioRepository:
         *,
         retry: bool,
         now: datetime | None = None,
+        only_if_pending: bool = False,
     ) -> None:
         now = now or datetime.now(UTC)
         with self.database.session() as session:
             model = session.get(StudioSourceModel, source_id)
             if model is None:
                 raise KeyError(source_id)
+            if only_if_pending and model.state != StudioSourceState.PENDING.value:
+                return
             model.state = (
                 StudioSourceState.PENDING.value
                 if retry and model.attempts < 3
@@ -1487,12 +1494,15 @@ class StudioRepository:
             session.flush()
             return self._run_domain(session, model)
 
-    def save_run_response(self, run_id: str, raw_response: str) -> None:
+    def save_run_response(
+        self, run_id: str, raw_response: str, notebook_id: str | None = None
+    ) -> None:
         with self.database.session() as session:
             model = session.get(StudioRunModel, run_id)
             if model is None:
                 raise KeyError(run_id)
             model.raw_response = raw_response
+            model.notebook_id = notebook_id
 
     def await_image_review(
         self,
@@ -1913,6 +1923,8 @@ class StudioRepository:
         diagnostic_source: str,
         error: str,
         delay: timedelta,
+        *,
+        discard_response: bool = False,
     ) -> StudioRun:
         with self.database.session() as session:
             model = session.get(StudioRunModel, run_id)
@@ -1924,6 +1936,9 @@ class StudioRepository:
             model.diagnostic_source = diagnostic_source
             model.error = error[:1000]
             model.next_attempt_at = (datetime.now(UTC) + delay).isoformat()
+            if discard_response:
+                model.raw_response = None
+                model.notebook_id = None
             session.flush()
             return self._run_domain(session, model)
 

@@ -23,6 +23,7 @@ from pydantic import (
     model_validator,
 )
 
+from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.study_generation.domain import (
     LectureSourceSet,
     NotebookAnswer,
@@ -36,6 +37,7 @@ from oms_hub.study_generation.domain import (
 )
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
+    NotebookGatewayError,
     NotebookScopeBusyError,
     NotebookScopeLostError,
     translate_notebook_error,
@@ -149,86 +151,6 @@ class NotebookGateway(Protocol):
         sources: LectureSourceSet,
         prompt: PromptSnapshot,
     ) -> NotebookAnswer: ...
-
-
-class NotebookLMGateway:
-    """Strict adapter that never submits a NotebookLM prompt without source IDs."""
-
-    def __init__(self, client: Any):
-        self.client = client
-
-    def ensure_notebook(self, subject: str, exam_number: int) -> NotebookRef:
-        title = f"{subject} · Exam {exam_number}"
-        notebooks = _run(self.client.notebooks.list())
-        for notebook in notebooks:
-            if notebook.title == title:
-                return NotebookRef(str(notebook.id), title)
-        created = _run(self.client.notebooks.create(title))
-        return NotebookRef(str(created.id), title)
-
-    def ensure_sources(
-        self,
-        notebook: NotebookRef,
-        lecture_id: int,
-        pdf: RevisionSource,
-        transcript: RevisionSource,
-    ) -> LectureSourceSet:
-        _validate_revision_source(pdf, lecture_id, SourceKind.LECTURE_PDF)
-        _validate_revision_source(
-            transcript,
-            lecture_id,
-            SourceKind.CLEANED_TRANSCRIPT,
-        )
-        pdf_remote = self._upload(notebook, pdf)
-        transcript_remote = self._upload(notebook, transcript)
-        return LectureSourceSet(lecture_id, pdf_remote, transcript_remote)
-
-    def ask(
-        self,
-        notebook: NotebookRef,
-        sources: LectureSourceSet,
-        prompt: PromptSnapshot,
-    ) -> NotebookAnswer:
-        if not prompt.content.strip():
-            raise ValueError("Notebook prompt is empty")
-        result = _run(
-            self.client.chat.ask(
-                notebook.id,
-                prompt.content,
-                source_ids=sources.remote_ids,
-            )
-        )
-        text = getattr(result, "answer", None) or getattr(result, "text", None)
-        if not isinstance(text, str) or not text.strip():
-            raise RuntimeError("NotebookLM returned an empty answer")
-        return NotebookAnswer(text.strip())
-
-    def _upload(
-        self,
-        notebook: NotebookRef,
-        source: RevisionSource,
-    ) -> RemoteSource:
-        uploaded = _run(
-            self.client.sources.add_file(
-                notebook.id,
-                source.path,
-                wait=True,
-                title=source.path.stem,
-            )
-        )
-        remote_id = str(uploaded.id)
-        ready = str(getattr(uploaded, "status", "ready")).casefold() not in {
-            "error",
-            "failed",
-        }
-        return RemoteSource(
-            remote_id,
-            source.lecture_id,
-            source.revision_id,
-            source.sha256,
-            source.kind,
-            ready,
-        )
 
 
 class StoredNotebookLMGateway:
@@ -545,11 +467,16 @@ class StoredNotebookLMGateway:
                 ),
             )
 
-    def list_studio_source_ids(self, notebook_id: str) -> frozenset[str]:
+    def list_studio_source_ids(
+        self,
+        notebook_id: str,
+        *,
+        baseline_ids: frozenset[str] | None = None,
+    ) -> frozenset[str]:
         with self._remote_notebook_scope(notebook_id, "studio"):
             return cast(
                 frozenset[str],
-                _run(self._list_studio_source_ids(notebook_id)),
+                _run(self._list_studio_source_ids(notebook_id, baseline_ids=baseline_ids)),
             )
 
     def ask_studio(
@@ -704,9 +631,26 @@ class StoredNotebookLMGateway:
         notebook = await self._ensure_notebook(subject, exam_number)
         return notebook.id, await self._list_studio_source_ids(notebook.id)
 
-    async def _list_studio_source_ids(self, notebook_id: str) -> frozenset[str]:
+    async def _list_studio_source_ids(
+        self,
+        notebook_id: str,
+        *,
+        baseline_ids: frozenset[str] | None = None,
+    ) -> frozenset[str]:
         async with self._with_client() as client:
-            return frozenset(str(source.id) for source in await client.sources.list(notebook_id))
+            sources = {
+                str(source.id): source for source in await client.sources.list(notebook_id)
+            }
+            remote_ids = frozenset(sources)
+            if baseline_ids is not None:
+                added_ids = remote_ids - baseline_ids
+                if len(added_ids) == 1 and not _remote_ready(sources[next(iter(added_ids))]):
+                    raise NotebookGatewayError(
+                        "NotebookLM upload has not become ready; reconciliation will retry.",
+                        source=DiagnosticSource.SOURCE_PROCESSING,
+                        retryable=True,
+                    )
+            return remote_ids
 
     async def _add_studio_source_to_notebook(
         self,
@@ -927,7 +871,7 @@ class StoredNotebookLMGateway:
                     str(item.id)
                     for item in existing
                     if str(item.id) != remote_id
-                    and (str(item.title) == display_title or legacy.fullmatch(str(item.title)))
+                    and legacy.fullmatch(str(item.title))
                 }
                 if binding is not None and binding.remote_source_id != remote_id:
                     stale_ids.add(binding.remote_source_id)

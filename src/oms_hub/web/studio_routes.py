@@ -87,7 +87,7 @@ class QuestionEditInput(BaseModel):
 
     stem: str | None = Field(default=None, max_length=10_000)
     choices: list[str] | None = Field(default=None, min_length=2, max_length=8)
-    correct_index: int | None = Field(default=None, ge=0, le=7)
+    correct_index: int | None = Field(default=None, ge=0, le=7, strict=True)
     rationale: str | None = Field(default=None, max_length=20_000)
     topic: str | None = Field(default=None, max_length=300)
     area: str | None = Field(default=None, max_length=300)
@@ -328,6 +328,8 @@ def _review_question_payload(
         "choices": list(question.draft.choices),
         "correct_index": question.draft.correct_index,
         "rationale": question.draft.rationale,
+        "answer_evidence": list(question.draft.answer_evidence),
+        "answer_uncertainty_note": question.draft.answer_uncertainty_note,
         "provenance": question.draft.answer_provenance.value if question.draft.answer_provenance else None,  # noqa: E501
         "verification_required": question.draft.verification_required,
         "verified_at": question.draft.verified_at,

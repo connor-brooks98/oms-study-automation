@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from oms_hub.db import Database
+from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.study_generation.domain import (
     LectureSourceSet,
     NotebookMapping,
@@ -27,6 +28,7 @@ from oms_hub.study_generation.notebook import (
     StoredNotebookLMGateway,
 )
 from oms_hub.study_generation.notebook_errors import (
+    NotebookGatewayError,
     NotebookScopeBusyError,
     NotebookScopeLostError,
 )
@@ -317,6 +319,41 @@ def test_studio_saga_gateway_snapshots_then_adds_to_known_notebook(tmp_path):
     )
 
 
+@pytest.mark.parametrize("status", ["processing", "failed"])
+def test_source_reconciliation_waits_for_new_source_readiness(tmp_path, status):
+    events = []
+    pending = FakeRemote("existing", "Other upload", "processing")
+    added = FakeRemote("new", "Our upload", status)
+    client = FakeClient([pending, added], events)
+    gateway = _gateway(tmp_path, client, FakeRepository(events))
+    baseline = frozenset({"existing"})
+
+    assert gateway.list_studio_source_ids("nb-1") == frozenset({"existing", "new"})
+    with pytest.raises(NotebookGatewayError) as error:
+        gateway.list_studio_source_ids("nb-1", baseline_ids=baseline)
+    assert error.value.source is DiagnosticSource.SOURCE_PROCESSING
+    assert error.value.retryable is True
+
+    added.status = "ready"
+    assert gateway.list_studio_source_ids("nb-1", baseline_ids=baseline) == frozenset(
+        {"existing", "new"}
+    )
+    assert events == []
+
+
+@pytest.mark.parametrize("new_ids", [[], ["first", "second"]])
+def test_source_reconciliation_preserves_empty_and_ambiguous_deltas(tmp_path, new_ids):
+    events = []
+    ids = ["existing", *new_ids]
+    client = FakeClient([FakeRemote(item, item, "processing") for item in ids], events)
+    gateway = _gateway(tmp_path, client, FakeRepository(events))
+
+    assert gateway.list_studio_source_ids(
+        "nb-1", baseline_ids=frozenset({"existing"})
+    ) == frozenset(ids)
+    assert events == []
+
+
 def test_generation_notebook_creation_blocks_competing_studio_preparation(tmp_path):
     create_started = threading.Event()
     allow_create = threading.Event()
@@ -509,6 +546,7 @@ def test_studio_saga_gateway_treats_remote_not_found_delete_as_success(tmp_path)
 def test_changed_revision_binds_replacement_before_old_and_legacy_delete(tmp_path):
     events = []
     old = FakeRemote("remote-old", "Lecture 02 - Disease")
+    unrelated = FakeRemote("unrelated-upload", "Lecture 02 - Disease")
     legacy = FakeRemote(
         "legacy-old",
         "OMS-2-lecture_pdf-0123456789abcdef",
@@ -547,7 +585,7 @@ def test_changed_revision_binds_replacement_before_old_and_legacy_delete(tmp_pat
         )
     )
     client = FakeClient(
-        [old, legacy, other_lecture, transcript_remote],
+        [old, unrelated, legacy, other_lecture, transcript_remote],
         events,
     )
     gateway = _gateway(tmp_path, client, repository)
@@ -580,6 +618,8 @@ def test_changed_revision_binds_replacement_before_old_and_legacy_delete(tmp_pat
     )
     assert ("delete", "legacy-old") in events
     assert ("delete", "legacy-other") not in events
+    assert ("delete", "unrelated-upload") not in events
+    assert unrelated in client.sources.items
 
 
 def test_ask_ignores_other_lecture_sources(tmp_path):

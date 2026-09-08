@@ -68,7 +68,7 @@ class _RaisingGateway:
     ):
         raise self.error
 
-    def list_studio_source_ids(self, notebook_id):
+    def list_studio_source_ids(self, notebook_id, *, baseline_ids=None):
         raise self.error
 
     def delete_studio_source(self, notebook_id, source_id):
@@ -94,6 +94,17 @@ class _SuccessfulGateway:
         return "replacement-notebook", serialize_native_quiz(
             _quiz("Replacement response")
         )
+
+
+class _ImageGateway(_SuccessfulGateway):
+    def ask_studio(self, subject, exam_number, prompt, remote_source_ids):
+        notebook_id, answer = super().ask_studio(subject, exam_number, prompt, remote_source_ids)
+        payload = json.loads(answer)
+        payload["questions"][0]["image_ref"] = {
+            "key": "figure-1", "source_title": "Lecture notes", "locator": "p1",
+            "description": "Required figure",
+        }
+        return notebook_id, json.dumps(payload)
 
 
 class _ImportWorker:
@@ -558,6 +569,178 @@ def test_sqlite_busy_chat_failure_retries_studio_run(tmp_path: Path) -> None:
     assert run.next_attempt_at is not None
 
 
+def _make_run_retry_due(repository: StudioRepository, run_id: str) -> None:
+    with repository.database.session() as session:
+        stored = session.get(StudioRunModel, run_id)
+        assert stored is not None
+        stored.next_attempt_at = None
+
+
+def test_publication_retry_reuses_saved_notebook_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    publisher = GenerationRepository(database)
+    run = _queued_run(repository)
+    gateway = _SuccessfulGateway()
+    worker = StudioWorker(repository, gateway, object(), _FakeConnection(), publisher)
+    publish = publisher.publish_and_complete_studio_run
+
+    def busy_publish(*args, **kwargs):
+        raise _sqlite_busy_error()
+
+    monkeypatch.setattr(publisher, "publish_and_complete_studio_run", busy_publish)
+    assert worker.run_once() is True
+    assert repository.get_run(run.id).state is StudioRunState.RETRYING
+    assert repository.get_run(run.id).notebook_id == "replacement-notebook"
+
+    monkeypatch.setattr(publisher, "publish_and_complete_studio_run", publish)
+    _make_run_retry_due(repository, run.id)
+    assert worker.run_once() is True
+    assert repository.get_run(run.id).state is StudioRunState.COMPLETE
+    assert gateway.ask_calls == 1
+
+
+def test_interrupted_run_reuses_saved_notebook_response(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    publisher = GenerationRepository(database)
+    run = _queued_run(repository)
+    assert repository.claim_next_run() is not None
+    answer = serialize_native_quiz(_quiz("Durable response"))
+    repository.save_run_response(run.id, answer, "original-notebook")
+    gateway = _NeverAskGateway()
+    worker = StudioWorker(repository, gateway, object(), _FakeConnection(), publisher)
+
+    assert worker.recover_interrupted_jobs() == 1
+    assert worker.run_once() is True
+    completed = repository.get_run(run.id)
+    assert completed.state is StudioRunState.COMPLETE
+    assert completed.notebook_id == "original-notebook"
+    assert completed.raw_response == answer
+    assert gateway.ask_calls == 0
+
+
+@pytest.mark.parametrize("valid_retry", [True, False])
+def test_invalid_cached_response_gets_bounded_fresh_chat_retry(
+    tmp_path: Path, valid_retry: bool,
+) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    run = _queued_run(repository)
+    gateway = _SuccessfulGateway()
+    valid_answer = serialize_native_quiz(_quiz("Valid response"))
+
+    def answer_sequence(subject, exam_number, prompt, remote_source_ids):
+        gateway.ask_calls += 1
+        answer = valid_answer if valid_retry and gateway.ask_calls > 1 else "invalid JSON"
+        return "notebook-1", answer
+
+    gateway.ask_studio = answer_sequence
+    worker = StudioWorker(
+        repository, gateway, object(), _FakeConnection(), GenerationRepository(database)
+    )
+
+    assert worker.run_once() is True
+    assert repository.get_run(run.id).state is StudioRunState.RETRYING
+    _make_run_retry_due(repository, run.id)
+    assert worker.run_once() is True
+    expected_state = StudioRunState.COMPLETE if valid_retry else StudioRunState.FAILED
+    assert repository.get_run(run.id).state is expected_state
+    assert gateway.ask_calls == 2
+    attempts = repository.list_run_attempts(run.id)
+    assert attempts[0].raw_response == "invalid JSON"
+    assert attempts[0].diagnostic_source == "contract"
+
+
+def test_attempt_save_busy_retries_without_repeating_saved_chat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    run = _queued_run(repository)
+    gateway = _SuccessfulGateway()
+    worker = StudioWorker(
+        repository, gateway, object(), _FakeConnection(), GenerationRepository(database)
+    )
+    record_attempt = repository.record_run_attempt
+    record_calls = 0
+
+    def busy_once(*args, **kwargs):
+        nonlocal record_calls
+        record_calls += 1
+        if record_calls == 1:
+            raise _sqlite_busy_error()
+        return record_attempt(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "record_run_attempt", busy_once)
+    assert worker.run_once() is True
+    assert repository.get_run(run.id).state is StudioRunState.RETRYING
+    _make_run_retry_due(repository, run.id)
+    assert worker.run_once() is True
+    assert repository.get_run(run.id).state is StudioRunState.COMPLETE
+    assert gateway.ask_calls == 1
+
+
+@pytest.mark.parametrize("failure_point", ["set_run_stage", "await_image_review", "complete_run"])
+def test_local_generation_write_busy_retries_using_saved_chat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_point: str,
+) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    run = _queued_run(repository)
+    has_images = failure_point == "await_image_review"
+    gateway = _ImageGateway() if has_images else _SuccessfulGateway()
+    publisher = None if failure_point == "complete_run" else GenerationRepository(database)
+    worker = StudioWorker(repository, gateway, object(), _FakeConnection(), publisher)
+    original = getattr(repository, failure_point)
+
+    def busy_write(*args, **kwargs):
+        raise _sqlite_busy_error()
+
+    monkeypatch.setattr(repository, failure_point, busy_write)
+    assert worker.run_once() is True
+    assert repository.get_run(run.id).state is StudioRunState.RETRYING
+    assert repository.get_run(run.id).raw_response is not None
+
+    monkeypatch.setattr(repository, failure_point, original)
+    _make_run_retry_due(repository, run.id)
+    assert worker.run_once() is True
+    expected = StudioRunState.AWAITING_IMAGES if has_images else StudioRunState.COMPLETE
+    assert repository.get_run(run.id).state is expected
+    assert gateway.ask_calls == 1
+
+
+def test_autobind_failure_preserves_manual_image_review(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    run = _queued_run(repository)
+    gateway = _ImageGateway()
+
+    class FailingImages:
+        def auto_bind_from_sources(self, run_id, requirements, sources):
+            raise RuntimeError("private payload should not be logged")
+
+    worker = StudioWorker(
+        repository, gateway, object(), _FakeConnection(), GenerationRepository(database),
+        image_service=FailingImages(),
+    )
+
+    assert worker.run_once() is True
+    stored = repository.get_run(run.id)
+    assert stored.state is StudioRunState.AWAITING_IMAGES
+    assert stored.stage is StudioRunStage.IMAGE_REVIEW
+    review = repository.quiz_review(run.id)
+    assert review.unresolved_keys == ("figure-1",)
+    assert worker.run_once() is False
+    assert gateway.ask_calls == 1
+    assert "RuntimeError" in caplog.text
+    assert "private payload" not in caplog.text
+
+
 def test_non_busy_chat_failure_fails_studio_run(tmp_path: Path) -> None:
     database = _database(tmp_path)
     repository = StudioRepository(database)
@@ -607,8 +790,10 @@ def test_delayed_source_operation_does_not_starve_queued_studio_run(
 ) -> None:
     database = _database(tmp_path)
     repository = StudioRepository(database)
+    payload = tmp_path / "notes.txt"
+    payload.write_text("Lecture notes", encoding="utf-8")
     delayed = repository.create_source(
-        "Neuro", 1, StudioSourceType.TEXT, "Delayed source"
+        "Neuro", 1, StudioSourceType.TEXT, "Delayed source", payload_path=payload
     )
     assert repository.claim_next() is not None
     operation_claim = repository.claim_next_source_operation()

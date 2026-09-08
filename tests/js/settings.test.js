@@ -413,6 +413,28 @@ class FakeDocument extends FakeElement {
   }
 }
 
+test("Notebook checks transition through unverified without implying a reconnect", () => {
+  for (const detail of [undefined, "The connection check timed out. Try again."]) {
+    const card = new FakeElement("article");
+    const badge = new FakeElement("span").setDataset("notebook-badge");
+    const message = new FakeElement("p").setDataset("notebook-status");
+    card.append(badge, message);
+
+    for (const state of ["connected", "unverified", "connected"]) {
+      settings.renderNotebookStatus(card, { state, message: detail });
+      const connected = state === "connected";
+      assert.equal(badge.textContent, connected ? "Connected" : "Not verified");
+      assert.equal(badge.classList.contains("sh-pill--ok"), connected);
+      assert.equal(badge.classList.contains("sh-pill--info"), !connected);
+      assert.equal(badge.classList.contains("sh-pill--err"), false);
+      assert.equal(message.textContent, connected
+        ? "Gemini Notebook is connected."
+        : detail || "Notebook connection could not be verified. Use Test connection to try again.");
+      assert.doesNotMatch(message.textContent, /reconnect/i);
+    }
+  }
+});
+
 const flush = async () => {
   await new Promise((resolve) => { setImmediate(resolve); });
 };

@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 
+import pytest
+
 from oms_hub.db import Database
+from oms_hub.study_generation.notebook_auth import NotebookAuthCheck
 from oms_hub.study_generation.notebook_connection import (
     NotebookConnectionService,
     retire_google_docs_credentials,
@@ -26,6 +29,7 @@ class MemorySecrets:
 class Check:
     connected: bool
     message: str | None = None
+    requires_login: bool = False
 
 
 class Auth:
@@ -37,6 +41,7 @@ class Auth:
         return Check(
             self.connected,
             None if self.connected else "Gemini Notebook login is required.",
+            requires_login=not self.connected,
         )
 
     def login(self):
@@ -81,6 +86,48 @@ def test_require_live_rejects_expired_notebook_login(tmp_path):
         assert "login is required" in str(error)
     else:
         raise AssertionError("expected expired Notebook login to be rejected")
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_inconclusive_check_blocks_generation_without_expiring_session(tmp_path, interactive):
+    auth = Auth()
+    connection = service(tmp_path, auth)
+    connection.test()
+
+    def unavailable():
+        return NotebookAuthCheck(False, "Connection check timed out. Try again.")
+
+    auth.check = unavailable
+    if interactive:
+        def failed_login():
+            raise RuntimeError("SID=secret")
+        auth.login = failed_login
+        assert connection.start_interactive().state == "unverified"
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        connection.require_live()
+
+    assert connection.status().state == "unverified"
+    assert "reconnect" not in connection.status().message.casefold()
+
+    auth.check = lambda: NotebookAuthCheck(True)
+    assert connection.require_live().state == "connected"
+    assert connection.status().message is None
+
+
+def test_unexpected_check_error_is_sanitized_and_not_a_login_failure(tmp_path):
+    auth = Auth()
+    connection = service(tmp_path, auth)
+
+    def broken_check():
+        raise RuntimeError("SID=secret")
+
+    auth.check = broken_check
+    status = connection.test()
+
+    assert status.state == "unverified"
+    assert "SID=" not in status.message
+    assert "reconnect" not in status.message.casefold()
 
 
 def test_retirement_removes_only_docs_oauth_material(tmp_path):

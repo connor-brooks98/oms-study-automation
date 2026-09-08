@@ -1,5 +1,6 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -20,9 +21,14 @@ from oms_hub.study_generation.domain import (
     GenerationState,
     PublishedQuizLibrarySection,
     PublishedQuizOrderDirection,
+    QuizImageRef,
     SourceKind,
 )
-from oms_hub.study_generation.native_quiz import parse_native_quiz, serialize_native_quiz
+from oms_hub.study_generation.native_quiz import (
+    QuizContractError,
+    parse_native_quiz,
+    serialize_native_quiz,
+)
 from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 
@@ -201,6 +207,22 @@ def test_publish_keeps_token_and_increments_version_for_new_job(tmp_path):
         assert regenerated.version == 2
         assert regenerated.title == "Seizures"
         assert repository.published_quiz(first.token) == regenerated
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_lecture_publication_rejects_required_images_without_media(tmp_path):
+    repository, lecture_id = prepared_repository(tmp_path)
+    try:
+        job = repository.queue(lecture_id, GenerationKind.QUIZ)
+        quiz = _quiz()
+        quiz = replace(quiz, questions=(replace(
+            quiz.questions[0],
+            image_ref=QuizImageRef("image-1", "Slides", "Slide 4", "Required diagram"),
+        ),))
+        with pytest.raises(QuizContractError, match="image"):
+            repository.publish_quiz(lecture_id, job.id, quiz)
+        assert repository.published_quizzes(frozenset({QuizContentKind.LECTURE_QUIZ})) == ()
     finally:
         repository.database.engine.dispose()
 

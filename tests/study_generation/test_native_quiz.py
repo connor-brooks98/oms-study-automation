@@ -70,6 +70,7 @@ def test_quiz_prompt_preserves_obsidian_snapshot_and_appends_json_contract():
     assert enhanced.content.startswith(original.content)
     assert '"correct_index": 0' in enhanced.content
     assert "Return exactly one JSON object" in enhanced.content
+    assert "Every question must be answerable from its text alone" in enhanced.content
 
 
 @pytest.mark.parametrize(
@@ -77,6 +78,9 @@ def test_quiz_prompt_preserves_obsidian_snapshot_and_appends_json_contract():
     [
         ({"choices": ["Same", " same "]}, "distinct"),
         ({"correct_index": 4}, "correct_index"),
+        ({"correct_index": True}, "correct_index"),
+        ({"correct_index": "1"}, "correct_index"),
+        ({"correct_index": 1.0}, "correct_index"),
         ({"rationale": "  "}, "rationale"),
         ({"stem": ""}, "stem"),
     ],

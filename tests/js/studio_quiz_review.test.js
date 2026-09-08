@@ -119,6 +119,21 @@ test("publish gating follows authoritative blocker state", () => {
   assert.match(review.blockersText(["first", "second"]), /first\nsecond/);
 });
 
+test("source context renders model evidence and uncertainty as text", () => {
+  const { page, questions } = reviewPage();
+  const evidence = '<img src=x onerror="alert(1)">';
+  const uncertainty = '<script>alert("unverified")</script>';
+  review.render(documentRef, page, {
+    blockers: [], issues: [], preview_url: null,
+    questions: [{ ...question("q1", "Stem"), answer_evidence: [evidence], answer_uncertainty_note: uncertainty }],
+  });
+  const disclosure = questions.querySelectorAll("details[data-state-key]")
+    .find((item) => item.dataset.stateKey === "question:q1:sources");
+  const entries = disclosure.querySelectorAll("li");
+  assert.ok(entries.some((item) => item.textContent === `Model-provided answer evidence (not verified citations) · ${evidence}` && item.children.length === 0));
+  assert.ok(entries.some((item) => item.textContent === `Model-provided uncertainty · ${uncertainty}` && item.children.length === 0));
+});
+
 test("run diagnostics render once and only overridable blockers can be acknowledged", () => {
   const { page, blockers, publish } = reviewPage();
   review.render(documentRef, page, {

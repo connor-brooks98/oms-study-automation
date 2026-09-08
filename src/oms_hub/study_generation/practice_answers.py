@@ -99,6 +99,8 @@ class PracticeAnswerResolver:
                 correct_index=correct_index,
                 rationale=notebook_result.rationale,
                 answer_provenance=AnswerProvenance.NOTEBOOKLM,
+                answer_evidence=notebook_result.evidence,
+                answer_uncertainty_note=None,
                 verification_required=False,
                 verified_at=None,
             )
@@ -111,6 +113,8 @@ class PracticeAnswerResolver:
             correct_index=correct_index,
             rationale=generated.rationale,
             answer_provenance=AnswerProvenance.GENERATED_BY_AI,
+            answer_evidence=generated.evidence,
+            answer_uncertainty_note=generated.uncertainty_note,
             verification_required=True,
             verified_at=None,
         )

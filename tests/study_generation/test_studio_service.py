@@ -172,6 +172,93 @@ def test_import_write_failure_marks_created_source_failed(
 
 
 @pytest.mark.parametrize("source_kind", ["file", "text"])
+def test_notebook_source_waits_for_payload_before_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_kind: str
+) -> None:
+    service = _service(tmp_path)
+
+    def write_while_worker_polls(payload: bytes, destination: Path) -> str:
+        assert service.repository.claim_next() is None
+        return verified_atomic_write(payload, destination)
+
+    monkeypatch.setattr(
+        "oms_hub.study_generation.studio_service.verified_atomic_write",
+        write_while_worker_polls,
+    )
+    if source_kind == "file":
+        source = service.add_file("Neuro", 1, "Notes", "notes.txt", b"facts")
+    else:
+        source = service.add_text("Neuro", 1, "Notes", "facts")
+
+    claimed = service.repository.claim_next()
+    assert claimed is not None and claimed.id == source.id
+    assert claimed.payload_path is not None
+    assert claimed.payload_path.read_bytes() == b"facts"
+
+
+@pytest.mark.parametrize("source_kind", ["file", "text"])
+def test_notebook_write_failure_marks_created_source_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_kind: str
+) -> None:
+    service = _service(tmp_path)
+
+    def fail_write(payload: bytes, destination: Path) -> str:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(
+        "oms_hub.study_generation.studio_service.verified_atomic_write", fail_write
+    )
+    with pytest.raises(OSError, match="disk unavailable"):
+        if source_kind == "file":
+            service.add_file("Neuro", 1, "Notes", "notes.txt", b"facts")
+        else:
+            service.add_text("Neuro", 1, "Notes", "facts")
+
+    source = service.repository.list_sources("Neuro", 1)[0]
+    assert source.state is StudioSourceState.FAILED
+    assert source.diagnostic_source == "source_processing"
+    assert source.error == "Studio source could not be saved"
+    assert source.payload_path is None
+    assert service.repository.claim_next() is None
+
+
+def test_notebook_url_can_be_claimed_without_payload(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    source = service.add_url("Neuro", 1, "Source", "https://example.test/notes")
+    claimed = service.repository.claim_next()
+    assert claimed is not None and claimed.id == source.id
+
+
+@pytest.mark.parametrize("transition", ["failed", "deleted"])
+def test_notebook_write_failure_preserves_terminal_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transition: str
+) -> None:
+    service = _service(tmp_path)
+    source_ids = []
+
+    def fail_after_terminal_transition(payload: bytes, destination: Path) -> str:
+        source = service.repository.list_sources()[0]
+        source_ids.append(source.id)
+        if transition == "failed":
+            service.repository.fail(source.id, "source_processing", "superseded", retry=False)
+        else:
+            service.repository.mark_source_deleted(source.id)
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(
+        "oms_hub.study_generation.studio_service.verified_atomic_write",
+        fail_after_terminal_transition,
+    )
+    with pytest.raises(OSError, match="disk unavailable"):
+        service.add_text("Neuro", 1, "Notes", "facts")
+
+    source = service.repository.get(source_ids[0])
+    assert source is not None and source.state.value == transition
+    if transition == "failed":
+        assert source.error == "superseded"
+
+
+@pytest.mark.parametrize("source_kind", ["file", "text"])
 def test_import_readiness_verification_failure_marks_source_failed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

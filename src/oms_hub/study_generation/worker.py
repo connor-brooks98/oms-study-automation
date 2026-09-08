@@ -261,6 +261,15 @@ class GenerationWorker:
         else:
             try:
                 quiz = parse_native_quiz(answer.text)
+                job = self.repository.advance(
+                    job.id,
+                    GenerationStage.PUBLISH,
+                )
+                quiz_url = self.publisher.publish(
+                    job.lecture_id,
+                    job.id,
+                    quiz,
+                )
             except QuizContractError as error:
                 self.repository.record_attempt(
                     job.id,
@@ -276,15 +285,6 @@ class GenerationWorker:
                         notebook_answer=None,
                     )
                 raise
-            job = self.repository.advance(
-                job.id,
-                GenerationStage.PUBLISH,
-            )
-            quiz_url = self.publisher.publish(
-                job.lecture_id,
-                job.id,
-                quiz,
-            )
             job = self.repository.advance(
                 job.id,
                 GenerationStage.CATALOG,

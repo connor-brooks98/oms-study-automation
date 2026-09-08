@@ -31,6 +31,7 @@ class _SagaGateway:
         self.add_calls = 0
         self.delete_calls = 0
         self.scope_depth = 0
+        self.list_baselines: list[frozenset[str] | None] = []
 
     @contextmanager
     def mutation_scope(self, subject, exam_number, owner_kind, owner_id):
@@ -65,8 +66,9 @@ class _SagaGateway:
         self.remote_ids.add("remote-success")
         return "remote-success"
 
-    def list_studio_source_ids(self, notebook_id):
+    def list_studio_source_ids(self, notebook_id, *, baseline_ids=None):
         assert self.scope_depth == 1
+        self.list_baselines.append(baseline_ids)
         return frozenset(self.remote_ids)
 
     def delete_studio_source(self, notebook_id, source_id):
@@ -133,6 +135,7 @@ def test_interrupted_add_with_one_delta_is_adopted_without_duplicate(tmp_path: P
     assert attached.state is StudioSourceState.ATTACHED
     assert attached.remote_source_id == "remote-1"
     assert gateway.add_calls == 1
+    assert gateway.list_baselines == [frozenset({"baseline"})]
 
 
 def test_lease_loss_after_remote_add_remains_reconcilable_until_adopted(

@@ -10,6 +10,8 @@ from oms_hub.study_generation.domain import (
     GenerationState,
     PromptKind,
 )
+from oms_hub.study_generation.notebook_auth import NOTEBOOK_CHECK_UNVERIFIED
+from oms_hub.study_generation.notebook_errors import NotebookGatewayError
 
 
 class GenerationPrerequisiteError(RuntimeError):
@@ -76,13 +78,17 @@ class GenerationService:
                 if live_check is not None
                 else self.notebook_connection.status()
             )
+        except NotebookGatewayError as error:
+            raise GenerationPrerequisiteError(str(error)) from error
         except Exception as error:
             raise GenerationPrerequisiteError(
-                "Reconnect Gemini Notebook in Settings before generating"
+                NOTEBOOK_CHECK_UNVERIFIED
             ) from error
         if notebook_status.state != "connected":
             raise GenerationPrerequisiteError(
                 "Connect Gemini Notebook in Settings before generating"
+                if notebook_status.state in {"disconnected", "failed"}
+                else NOTEBOOK_CHECK_UNVERIFIED
             )
         prompt_kind = (
             PromptKind.OUTLINE

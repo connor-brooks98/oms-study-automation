@@ -300,6 +300,10 @@
       text(documentRef, "li", `Extraction confidence · ${question.confidence}`),
     );
     question.source_refs.forEach((ref) => refs.append(text(documentRef, "li", `${ref.source_id} · ${ref.segment_key} · ${ref.locator}`)));
+    (question.answer_evidence || []).forEach((evidence) => refs.append(text(documentRef, "li", `Model-provided answer evidence (not verified citations) · ${evidence}`)));
+    if (question.answer_uncertainty_note) {
+      refs.append(text(documentRef, "li", `Model-provided uncertainty · ${question.answer_uncertainty_note}`));
+    }
     sourceDetails.append(refs);
     card.append(sourceDetails);
     const form = documentRef.createElement("form");

@@ -75,6 +75,8 @@ class QuestionDraft:
     diagnostics: tuple[DraftDiagnostic, ...]
     verification_required: bool
     verified_at: str | None
+    answer_evidence: tuple[str, ...] = ()
+    answer_uncertainty_note: str | None = None
 
     @property
     def blocking_diagnostics(self) -> tuple[str, ...]:

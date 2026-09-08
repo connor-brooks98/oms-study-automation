@@ -1,3 +1,4 @@
+import json
 import subprocess
 
 import pytest
@@ -62,7 +63,14 @@ def test_login_uses_gemini_notebook_compatibility_runner(tmp_path):
 @pytest.mark.parametrize(
     ("payload", "returncode", "connected"),
     [
-        ('{"status":"ok","checks":{"token_fetch":true}}', 0, True),
+        (
+            json.dumps({"status": "ok", "checks": {
+                "storage_exists": True, "json_valid": True,
+                "cookies_present": True, "sid_cookie": True, "token_fetch": True,
+            }}),
+            0,
+            True,
+        ),
         ('{"status":"error","checks":{"token_fetch":false}}', 0, False),
         ('{"status":"ok","checks":{"token_fetch":false}}', 0, False),
         ('{"status":"ok","checks":{"token_fetch":true}}', 1, False),
@@ -108,7 +116,64 @@ def test_check_sanitizes_process_output(tmp_path):
 
     assert not result.connected
     assert secret not in (result.message or "")
-    assert result.message == "NotebookLM login is required."
+    assert "verified" in result.message
+    assert not result.requires_login
+
+
+@pytest.mark.parametrize(
+    ("checks", "returncode", "requires_login"),
+    [
+        ({"storage_exists": False, "json_valid": False, "cookies_present": False,
+          "sid_cookie": False, "token_fetch": None}, 1, True),
+        ({"storage_exists": True, "json_valid": True, "cookies_present": True,
+          "sid_cookie": True, "token_fetch": False}, 1, False),
+        ({"storage_exists": True, "json_valid": False, "cookies_present": False,
+          "sid_cookie": False, "token_fetch": None}, 1, False),
+        ({"storage_exists": True, "json_valid": True, "cookies_present": False,
+          "sid_cookie": False, "token_fetch": False}, 1, False),
+        ({"storage_exists": False, "json_valid": False, "cookies_present": False,
+          "sid_cookie": False, "token_fetch": None}, 2, False),
+        ({"storage_exists": 0, "json_valid": False, "cookies_present": False,
+          "sid_cookie": False, "token_fetch": None}, 1, False),
+        ({"token_fetch": True}, 0, False),
+        ({"storage_exists": True, "json_valid": True, "cookies_present": True,
+          "sid_cookie": True, "token_fetch": 1}, 0, False),
+        (None, 0, False),
+        ([], 0, False),
+    ],
+)
+def test_check_only_requests_login_for_confirmed_missing_session(
+    tmp_path, checks, returncode, requires_login,
+):
+    runner = RecordingRunner(returncode=returncode, stdout=json.dumps({
+        "status": "ok" if returncode == 0 else "error",
+        "checks": checks,
+        "details": {"error": "SID=secret-cookie-value"},
+    }))
+
+    result = _auth(tmp_path, runner).check()
+
+    assert not result.connected
+    assert result.requires_login is requires_login
+    assert "SID=" not in result.message
+    if not requires_login:
+        assert "login is required" not in result.message
+
+
+@pytest.mark.parametrize("error", [
+    subprocess.TimeoutExpired("notebooklm", 60, output="SID=secret"),
+    FileNotFoundError("SID=secret"),
+    PermissionError("SID=secret"),
+])
+def test_check_execution_failure_does_not_request_login(tmp_path, error):
+    runner = RecordingRunner()
+    runner.error = error
+
+    result = _auth(tmp_path, runner).check()
+
+    assert not result.connected
+    assert not result.requires_login
+    assert "SID=" not in result.message
 
 
 def test_login_timeout_raises_safe_actionable_error(tmp_path):

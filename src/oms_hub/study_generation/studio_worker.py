@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import timedelta
@@ -37,6 +38,8 @@ from oms_hub.study_generation.studio_repository import (
 
 if TYPE_CHECKING:
     from oms_hub.study_generation.quiz_import_worker import QuizImportWorker
+
+LOGGER = logging.getLogger(__name__)
 
 
 class NotebookConnection(Protocol):
@@ -130,11 +133,22 @@ class StudioWorker:
             if not remote_chat_allowed:
                 return True
         try:
-            notebook_id, answer = self.gateway.ask_studio(
-                run.subject,
-                run.exam_number,
-                run.prompt,
-                [source.remote_source_id for source in run.sources],
+            if run.notebook_id is not None and run.raw_response is not None:
+                notebook_id, answer = run.notebook_id, run.raw_response
+            else:
+                notebook_id, answer = self.gateway.ask_studio(
+                    run.subject,
+                    run.exam_number,
+                    run.prompt,
+                    [source.remote_source_id for source in run.sources],
+                )
+                self.repository.save_run_response(run.id, answer, notebook_id)
+            self.repository.record_run_attempt(
+                run.id,
+                run.attempts,
+                "notebook_chat",
+                answer,
+                None,
             )
         except NotebookGatewayError as error:
             if isinstance(error, NotebookAuthenticationError):
@@ -179,20 +193,45 @@ class StudioWorker:
                 )
             return True
 
-        self.repository.save_run_response(run.id, answer)
-        self.repository.record_run_attempt(
-            run.id,
-            run.attempts,
-            "notebook_chat",
-            answer,
-            None,
-        )
-        if self.publisher is None:
-            self.repository.complete_run(run.id, notebook_id, answer)
-            return True
-        self.repository.set_run_stage(run.id, StudioRunStage.QUIZ_VALIDATE)
         try:
+            if self.publisher is None:
+                self.repository.complete_run(run.id, notebook_id, answer)
+                return True
+            self.repository.set_run_stage(run.id, StudioRunStage.QUIZ_VALIDATE)
             quiz = replace(parse_native_quiz(answer), title=run.label)
+            if image_requirements(quiz):
+                self.repository.await_image_review(
+                    run.id,
+                    notebook_id,
+                    answer,
+                    quiz,
+                )
+                if self.image_service is not None:
+                    try:
+                        review = self.repository.quiz_review(run.id)
+                        sources = tuple(
+                            source
+                            for snapshot in run.sources
+                            if (source := self.repository.get(snapshot.source_id)) is not None
+                        )
+                        self.image_service.auto_bind_from_sources(
+                            run.id,
+                            review.requirements,
+                            sources,
+                        )
+                    except Exception as error:  # noqa: BLE001 - manual review remains available
+                        LOGGER.warning(
+                            "Studio image binding failed; manual review remains available (%s)",
+                            type(error).__name__,
+                        )
+                return True
+            self.repository.set_run_stage(run.id, StudioRunStage.PUBLISH)
+            self.publisher.publish_and_complete_studio_run(
+                run.id,
+                quiz,
+                notebook_id,
+                answer,
+            )
         except QuizContractError as error:
             self.repository.mark_run_attempt_error(
                 run.id,
@@ -206,6 +245,7 @@ class StudioWorker:
                     DiagnosticSource.CONTRACT.value,
                     str(error),
                     timedelta(seconds=5),
+                    discard_response=True,
                 )
             else:
                 self.repository.fail_run(
@@ -213,36 +253,7 @@ class StudioWorker:
                     DiagnosticSource.CONTRACT.value,
                     str(error),
                 )
-            return True
-        if image_requirements(quiz):
-            self.repository.await_image_review(
-                run.id,
-                notebook_id,
-                answer,
-                quiz,
-            )
-            if self.image_service is not None:
-                review = self.repository.quiz_review(run.id)
-                sources = tuple(
-                    source
-                    for snapshot in run.sources
-                    if (source := self.repository.get(snapshot.source_id)) is not None
-                )
-                self.image_service.auto_bind_from_sources(
-                    run.id,
-                    review.requirements,
-                    sources,
-                )
-            return True
-        try:
-            self.repository.set_run_stage(run.id, StudioRunStage.PUBLISH)
-            self.publisher.publish_and_complete_studio_run(
-                run.id,
-                quiz,
-                notebook_id,
-                answer,
-            )
-        except Exception as error:  # noqa: BLE001 - durable publication boundary
+        except Exception as error:  # noqa: BLE001 - durable local generation boundary
             self.repository.mark_run_attempt_error(
                 run.id,
                 run.attempts,
@@ -357,7 +368,9 @@ class StudioWorker:
             return
         try:
             with self._notebook_scope(operation, source):
-                remote_ids = self.gateway.list_studio_source_ids(operation.notebook_id)
+                remote_ids = self.gateway.list_studio_source_ids(
+                    operation.notebook_id, baseline_ids=operation.baseline_remote_ids
+                )
                 self.repository.reconcile_attach_operation(operation.id, set(remote_ids))
         except NotebookScopeBusyError:
             self.repository.defer_source_operation_for_scope(operation.id)

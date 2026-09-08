@@ -538,8 +538,10 @@ def _claim_add_operation(
 
 def test_delayed_source_operation_does_not_starve_later_work(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
+    payload = tmp_path / "notes.txt"
+    payload.write_text("Notes", encoding="utf-8")
     first = repository.create_source(
-        "Neuro", 1, StudioSourceType.TEXT, "First source"
+        "Neuro", 1, StudioSourceType.TEXT, "First source", payload_path=payload
     )
     operation, _ = _claim_add_operation(repository, first.id)
     repository.record_attach_baseline(operation.id, "notebook-1", set())
@@ -551,7 +553,7 @@ def test_delayed_source_operation_does_not_starve_later_work(tmp_path: Path) -> 
     assert repository.claim_next_source_operation(now=datetime.now(UTC)) is None
 
     second = repository.create_source(
-        "Cardio", 1, StudioSourceType.TEXT, "Second source"
+        "Cardio", 1, StudioSourceType.TEXT, "Second source", payload_path=payload
     )
     assert repository.claim_next() is not None
     later_operation = repository.claim_next_source_operation(now=datetime.now(UTC))
@@ -568,7 +570,11 @@ def test_persistent_add_reconciliation_needs_review_after_bounded_attempts(
     tmp_path: Path,
 ) -> None:
     repository = _repository(tmp_path)
-    source = repository.create_source("Neuro", 1, StudioSourceType.TEXT, "Source")
+    payload = tmp_path / "notes.txt"
+    payload.write_text("Notes", encoding="utf-8")
+    source = repository.create_source(
+        "Neuro", 1, StudioSourceType.TEXT, "Source", payload_path=payload
+    )
     operation, _ = _claim_add_operation(repository, source.id)
     repository.record_attach_baseline(operation.id, "notebook-1", set())
 
@@ -648,8 +654,10 @@ def test_recovery_preserves_queued_and_reconciling_operation_backoff(
     tmp_path: Path,
 ) -> None:
     repository = _repository(tmp_path)
+    payload = tmp_path / "notes.txt"
+    payload.write_text("Notes", encoding="utf-8")
     queued_source = repository.create_source(
-        "Neuro", 1, StudioSourceType.TEXT, "Queued source"
+        "Neuro", 1, StudioSourceType.TEXT, "Queued source", payload_path=payload
     )
     assert repository.claim_next() is not None
     queued_retry_at = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
@@ -659,7 +667,7 @@ def test_recovery_preserves_queued_and_reconciling_operation_backoff(
         stored.next_attempt_at = queued_retry_at
 
     reconciling_source = repository.create_source(
-        "Cardio", 1, StudioSourceType.TEXT, "Reconciling source"
+        "Cardio", 1, StudioSourceType.TEXT, "Reconciling source", payload_path=payload
     )
     assert repository.claim_next() is not None
     claimed = repository.claim_next_source_operation()

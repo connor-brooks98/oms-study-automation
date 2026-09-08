@@ -147,13 +147,15 @@
     const message = card.querySelector("[data-notebook-status]");
     const connected = status.state === "connected";
     const connecting = status.state === "connecting";
+    const unverified = status.state === "unverified";
     const failed = status.state === "failed";
 
     badge.textContent = connecting
       ? "Connecting"
-      : connected ? "Connected" : failed ? "Connection failed" : "Not connected";
+      : connected ? "Connected" : unverified ? "Not verified"
+        : failed ? "Connection failed" : "Not connected";
     badge.classList.toggle("sh-pill--ok", connected);
-    badge.classList.toggle("sh-pill--info", connecting);
+    badge.classList.toggle("sh-pill--info", connecting || unverified);
     badge.classList.toggle("sh-pill--err", failed);
 
     if (connecting) {
@@ -161,6 +163,9 @@
         || "Finish signing in using the browser window on this Study Hub device.";
     } else if (connected) {
       message.textContent = "Gemini Notebook is connected.";
+    } else if (unverified) {
+      message.textContent = status.message
+        || "Notebook connection could not be verified. Use Test connection to try again.";
     } else if (failed) {
       message.textContent = status.message || "Notebook connection failed. Try again.";
     } else if (status.message) {

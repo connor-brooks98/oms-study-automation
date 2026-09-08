@@ -441,16 +441,26 @@ def test_editing_answer_clears_verification_and_marks_manual(tmp_path: Path) -> 
     assert updated.verified_at is None
 
 
-def test_rationale_edit_reopens_generated_answer_verification(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "edit", [{"rationale": "Updated rationale."}, {"stem": "Which choice is NOT correct?"}],
+)
+def test_question_edit_reopens_generated_answer_verification(tmp_path: Path, edit) -> None:
     service = _service(tmp_path)
-    service.store("run-1", (_draft("q1", generated=True),))
+    draft = replace(
+        _draft("q1", generated=True),
+        answer_evidence=("Original model evidence",),
+        answer_uncertainty_note="Check the original answer.",
+    )
+    service.store("run-1", (draft,))
     service.verify_generated_answer("run-1", "q1")
 
-    updated = service.update_question("run-1", "q1", {"rationale": "Updated rationale."})
+    updated = service.update_question("run-1", "q1", edit)
 
     assert updated.answer_provenance is AnswerProvenance.MANUALLY_CORRECTED
     assert updated.verification_required is True
     assert updated.verified_at is None
+    assert updated.draft.answer_evidence == ()
+    assert updated.draft.answer_uncertainty_note is None
     assert service.blockers("run-1") == ("q1: AI-generated answer requires verification",)
     service.verify_generated_answer("run-1", "q1")
     assert service.blockers("run-1") == ()
@@ -458,13 +468,20 @@ def test_rationale_edit_reopens_generated_answer_verification(tmp_path: Path) ->
 
 def test_non_answer_metadata_edit_preserves_existing_verification(tmp_path: Path) -> None:
     service = _service(tmp_path)
-    service.store("run-1", (_draft("q1", generated=True),))
+    draft = replace(
+        _draft("q1", generated=True),
+        answer_evidence=("Original model evidence",),
+        answer_uncertainty_note="Check the original answer.",
+    )
+    service.store("run-1", (draft,))
     verified = service.verify_generated_answer("run-1", "q1")
 
     updated = service.update_question("run-1", "q1", {"topic": "Neuro"})
 
     assert updated.answer_provenance is AnswerProvenance.GENERATED_BY_AI
     assert updated.verified_at == verified.verified_at
+    assert updated.draft.answer_evidence == draft.answer_evidence
+    assert updated.draft.answer_uncertainty_note == draft.answer_uncertainty_note
 
 
 def test_partial_metadata_edit_preserves_whitespace_and_verification(tmp_path: Path) -> None:

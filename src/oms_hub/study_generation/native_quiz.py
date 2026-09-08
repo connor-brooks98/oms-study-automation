@@ -82,10 +82,10 @@ Use this exact shape:
   ]
 }
 `correct_index` is zero-based. Include 1 to 100 questions, 2 to 8 distinct
-choices per question, and a non-empty expert rationale for every question. If
-a question genuinely depends on a source diagram, image, graph, or table, add
-an image_ref with the source title, page or slide locator, and a short
-description; otherwise set image_ref to null. Do not invent image URLs.
+choices per question, and a non-empty expert rationale for every question.
+Every question must be answerable from its text alone. Set image_ref to null:
+include any necessary source information in the stem instead of requiring an
+unattached diagram, image, graph, or table. Do not invent image contents or URLs.
 """.strip()
 
 _STUDIO_QUIZ_OUTPUT_CONTRACT = """
@@ -169,7 +169,7 @@ class _QuestionInput(BaseModel):
 
     stem: _Text
     choices: Annotated[list[_Text], Field(min_length=2, max_length=8)]
-    correct_index: int = Field(ge=0)
+    correct_index: int = Field(ge=0, strict=True)
     rationale: _Text
     area: _Dimension | None = None
     learning_objective: _Dimension | None = Field(

@@ -1,6 +1,7 @@
 import json
 from io import BytesIO
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -127,6 +128,8 @@ def _direct_review_run(client: TestClient, *, run_id: str = "direct-run") -> str
                 (),
                 True,
                 None,
+                answer_evidence=("Model evidence from selected sources",),
+                answer_uncertainty_note="Verify the original answer.",
             ),
         ),
     )
@@ -372,6 +375,18 @@ def test_import_endpoints_require_csrf_and_reject_invalid_source_ids(tmp_path) -
     assert invalid.status_code == 422
 
 
+@pytest.mark.parametrize("index", [True, "1", 1.0])
+def test_question_edits_reject_coerced_answer_indices(tmp_path, index) -> None:
+    client = _client(tmp_path)
+    run_id = _direct_review_run(client)
+    response = client.patch(
+        f"/studio/runs/{run_id}/questions/question-1",
+        json={"correct_index": index},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 422
+
+
 def test_direct_review_data_is_safe_and_edits_and_verification_require_csrf(tmp_path) -> None:
     client = _client(tmp_path)
     run_id = _direct_review_run(client)
@@ -404,6 +419,8 @@ def test_direct_review_data_is_safe_and_edits_and_verification_require_csrf(tmp_
     assert question["source_refs"] == [
         {"source_id": "source", "segment_key": "segment", "locator": "page 1"}
     ]
+    assert question["answer_evidence"] == ["Model evidence from selected sources"]
+    assert question["answer_uncertainty_note"] == "Verify the original answer."
     assert "path" not in question
     assert "diagnostics" not in question
     assert all("path" not in candidate for candidate in question["candidates"])

@@ -202,8 +202,15 @@ class StudioService:
             title,
         )
         path = self.payload_root / source.id / "pasted.txt"
-        verified_atomic_write(text.encode("utf-8"), path)
-        return self.repository.set_payload_path(source.id, path)
+        try:
+            verified_atomic_write(text.encode("utf-8"), path)
+            return self.repository.set_payload_path(source.id, path)
+        except Exception:
+            self.repository.fail(
+                source.id, "source_processing", "Studio source could not be saved",
+                retry=False, only_if_pending=True,
+            )
+            raise
 
     def add_url(
         self,
@@ -313,30 +320,7 @@ class StudioService:
         if not title.strip():
             title = filename_path.stem or "Uploaded source"
         subject, title = self._validate_scope_and_title(subject, exam_number, title)
-        suffix = filename_path.suffix.casefold()
-        if suffix not in {
-            ".pdf",
-            ".pptx",
-            ".txt",
-            ".md",
-            ".markdown",
-            ".csv",
-            ".json",
-            ".xml",
-            ".yaml",
-            ".yml",
-            ".docx",
-            ".rtf",
-            ".html",
-            ".htm",
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".webp",
-        }:
-            raise ValueError(
-                "Studio files must be PDF, PPTX, text, DOCX, HTML, or a supported image"
-            )
+        suffix = self._validated_suffix(filename_path)
         if not payload:
             raise ValueError("Studio file is empty")
         if len(payload) > self.max_file_bytes:
@@ -349,8 +333,15 @@ class StudioService:
             original_filename=filename_path.name,
         )
         path = self.payload_root / source.id / f"original{suffix}"
-        verified_atomic_write(payload, path)
-        return self.repository.set_payload_path(source.id, path)
+        try:
+            verified_atomic_write(payload, path)
+            return self.repository.set_payload_path(source.id, path)
+        except Exception:
+            self.repository.fail(
+                source.id, "source_processing", "Studio source could not be saved",
+                retry=False, only_if_pending=True,
+            )
+            raise
 
     @staticmethod
     def _validated_suffix(filename_path: Path) -> str:

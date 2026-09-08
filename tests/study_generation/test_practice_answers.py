@@ -139,6 +139,8 @@ def test_notebook_answered_sets_notebook_provenance_without_ai_gate() -> None:
 
     assert resolved.correct_index == 0
     assert resolved.answer_provenance is AnswerProvenance.NOTEBOOKLM
+    assert resolved.answer_evidence == ("Course guide p4",)
+    assert resolved.answer_uncertainty_note is None
     assert resolved.verification_required is False
     assert resolved.source_refs == _draft().source_refs
     assert fallback.requests == []
@@ -154,6 +156,8 @@ def test_explicit_no_support_uses_configured_fallback_and_requires_verification(
 
     assert resolved.correct_index == 1
     assert resolved.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+    assert resolved.answer_evidence == ("General anatomy reference",)
+    assert resolved.answer_uncertainty_note == _generated()["uncertainty_note"]
     assert resolved.verification_required is True
     assert resolved.verified_at is None
     assert fallback.requests[0].task is LLMTask.QUIZ_ANSWER_GENERATION

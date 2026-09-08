@@ -499,7 +499,8 @@ class PracticeReviewService:
             if not 0 <= correct_index < len(choices):
                 raise ValueError("correct index is outside the available choices")
         answer_changed = (
-            ("choices" in values and choices != draft.choices)
+            ("stem" in values and stem != draft.stem)
+            or ("choices" in values and choices != draft.choices)
             or ("correct_index" in values and correct_index != draft.correct_index)
             or ("rationale" in values and rationale != draft.rationale)
         )
@@ -535,6 +536,8 @@ class PracticeReviewService:
             choices=choices,
             correct_index=cast(int | None, correct_index),
             rationale=rationale,
+            answer_evidence=() if answer_changed else draft.answer_evidence,
+            answer_uncertainty_note=None if answer_changed else draft.answer_uncertainty_note,
             answer_provenance=(AnswerProvenance.MANUALLY_CORRECTED if answer_changed or manually_resolved_answer else draft.answer_provenance),  # noqa: E501
             diagnostics=diagnostics,
             verification_required=(requires_verification if answer_changed or manually_resolved_answer else draft.verification_required),  # noqa: E501

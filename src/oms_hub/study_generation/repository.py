@@ -55,6 +55,7 @@ from oms_hub.study_generation.domain import (
     SourceKind,
 )
 from oms_hub.study_generation.native_quiz import (
+    QuizContractError,
     image_requirements,
     parse_native_quiz,
     serialize_native_quiz,
@@ -1035,6 +1036,11 @@ class GenerationRepository:
         job_id: str,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
+        if image_requirements(quiz):
+            raise QuizContractError(
+                "Lecture quiz questions must be answerable without an image. "
+                "Use Quiz Builder to review and attach required images."
+            )
         with self.database.session() as session:
             lecture = session.get(LectureModel, lecture_id)
             if lecture is None:

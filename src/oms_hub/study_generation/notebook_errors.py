@@ -79,14 +79,15 @@ def translate_notebook_error(
 ) -> NotebookGatewayError | None:
     if isinstance(error, NotebookGatewayError):
         return error
-    message = str(error).casefold()
-    if any(
-        phrase in message
-        for phrase in ("accounts.google.com", "notebooklm login", "login to notebooklm")
-    ):
+    if isinstance(error, AuthError):
         return NotebookAuthenticationError()
-    if isinstance(error, (AuthError, ConfigurationError)):
-        return NotebookAuthenticationError()
+    if isinstance(error, ConfigurationError):
+        return NotebookGatewayError(
+            "NotebookLM configuration is invalid or a required dependency is missing. "
+            "Check the NotebookLM installation and configuration.",
+            source=DiagnosticSource.VALIDATION,
+            retryable=False,
+        )
     if isinstance(error, SourceError):
         return NotebookGatewayError(
             "NotebookLM could not process a selected source.",
@@ -126,4 +127,25 @@ def translate_notebook_error(
             source=DiagnosticSource.SERVICE,
             retryable=True,
         )
+    # Older client paths raise untyped errors; match their explicit auth failures.
+    message = str(error).casefold().strip()
+    if (
+        message.startswith(
+            (
+                "authentication expired or invalid. redirected to:",
+                "authentication expired or invalid. final url:",
+            )
+        )
+        and "accounts.google.com" in message
+    ) or message in (
+        "authentication expired. run 'notebooklm login' to re-authenticate.",
+        "authentication required. run 'notebooklm login' to re-authenticate.",
+        "authentication expired or invalid; authuser=0 did not return a signed-in "
+        "account. run 'notebooklm login' to re-authenticate.",
+    ) or (
+        isinstance(error, FileNotFoundError)
+        and message.startswith("storage file not found:")
+        and message.endswith("run 'notebooklm login' to authenticate first.")
+    ):
+        return NotebookAuthenticationError()
     return None

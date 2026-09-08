@@ -180,6 +180,8 @@ class _AttachingNotebook:
     def __init__(self) -> None:
         self.calls = []
         self.remote_ids: set[str] = set()
+        self.list_calls = []
+        self.list_error = None
 
     def prepare_studio_source_add(self, subject, exam_number):
         return "notebook-1", frozenset(self.remote_ids)
@@ -193,7 +195,10 @@ class _AttachingNotebook:
         self.remote_ids.add(remote_id)
         return remote_id
 
-    def list_studio_source_ids(self, notebook_id):
+    def list_studio_source_ids(self, notebook_id, *, baseline_ids=None):
+        self.list_calls.append((notebook_id, baseline_ids))
+        if self.list_error is not None:
+            raise self.list_error
         return frozenset(self.remote_ids)
 
 
@@ -455,8 +460,9 @@ def test_supporting_binding_is_attached_once_and_reused_for_answering(tmp_path: 
     assert len(notebook.calls) == 1
 
 
+@pytest.mark.parametrize("pending_first", [False, True])
 def test_interrupted_direct_import_add_reconciles_without_duplicate_remote_source(
-    tmp_path: Path,
+    tmp_path: Path, pending_first: bool,
 ) -> None:
     repository = _repository(tmp_path)
     questions = _ready_source(repository, tmp_path, "Questions")
@@ -499,9 +505,22 @@ def test_interrupted_direct_import_add_reconciles_without_duplicate_remote_sourc
         assert json.loads(operation.baseline_remote_ids_json) == []
     assert repository.recover_interrupted_jobs() >= 2
 
+    if pending_first:
+        notebook.list_error = NotebookGatewayError(
+            "NotebookLM source is still processing.",
+            source=DiagnosticSource.SOURCE_PROCESSING,
+            retryable=True,
+        )
+        worker.run(repository.claim_next_run(datetime(2100, 1, 1, tzinfo=UTC)))
+        assert repository.get_run(run.id).state is StudioRunState.RETRYING
+        assert repository.import_sources(run.id)[1].remote_source_id is None
+        assert len(notebook.calls) == 1
+        notebook.list_error = None
+
     worker.run(repository.claim_next_run(datetime(2100, 1, 1, tzinfo=UTC)))
 
     assert repository.get_run(run.id).state is StudioRunState.AWAITING_REVIEW
+    assert notebook.list_calls == [("notebook-1", frozenset())] * (1 + pending_first)
     assert notebook.remote_ids == {"remote-1"}
     assert len(notebook.calls) == 1
     assert repository.import_sources(run.id)[1].remote_source_id == "remote-1"
@@ -1191,8 +1210,99 @@ def test_artifact_serializers_round_trip_full_provenance(tmp_path: Path) -> None
         (DraftDiagnostic("warning", "Review", DiagnosticSeverity.WARNING),),
         False,
         None,
+        answer_evidence=("Model evidence",),
+        answer_uncertainty_note="Check the source.",
     )
 
     assert _document_from_json(_document_json(document)) == document
     assert _extraction_from_json(_extraction_json(extracted)) == extracted
     assert _drafts_from_json(_drafts_json((draft,))) == (draft,)
+    legacy_payload = json.loads(_drafts_json((draft,)))
+    del legacy_payload[0]["answer_evidence"]
+    del legacy_payload[0]["answer_uncertainty_note"]
+    assert _drafts_from_json(json.dumps(legacy_payload)) == (
+        replace(draft, answer_evidence=(), answer_uncertainty_note=None),
+    )
+
+
+@pytest.mark.parametrize("change_model", [False, True])
+def test_answer_retry_reuses_completed_questions_only_for_matching_inputs(
+    tmp_path: Path, change_model: bool,
+) -> None:
+    repository = _repository(tmp_path)
+    questions = _ready_source(repository, tmp_path, "Questions")
+    supporting = _ready_source(repository, tmp_path, "Reference")
+    run = repository.queue_import_run(
+        "Neuro", 1, "Partial answers", "Neuro", 1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (
+            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(
+                supporting.id, ImportSourceRole.SUPPORTING_REFERENCE, attach_to_notebook=True
+            ),
+        ),
+    )
+
+    class ThreeQuestions(_QuestionExtractor):
+        def extract(self, documents) -> ExtractionResult:
+            result = super().extract(documents)
+            question = result.questions[0]
+            return replace(
+                result,
+                questions=(
+                    question,
+                    question.model_copy(update={
+                        "original_identifier": "2", "stem": "Question with a supplied answer?",
+                        "supplied_correct_index": 1, "rationale": "Supplied explanation.",
+                    }),
+                    question.model_copy(update={
+                        "original_identifier": "3", "stem": "Another missing answer?",
+                    }),
+                ),
+                question_source_refs=result.question_source_refs * 3,
+            )
+
+    class FailSecondMissingOnce(_CachedAnswers):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[str | None] = []
+            self.failed = False
+
+        def resolve(self, draft, scope):
+            self.calls.append(draft.original_identifier)
+            if draft.original_identifier == "3" and not self.failed:
+                self.failed = True
+                raise NotebookGatewayError(
+                    "Temporary network failure", source=DiagnosticSource.NETWORK, retryable=True
+                )
+            return super().resolve(draft, scope)
+
+    answers = FailSecondMissingOnce()
+    worker = QuizImportWorker(
+        repository, _Parser(), ThreeQuestions(), answers, _AttachingNotebook(), tmp_path / "assets"
+    )
+    worker.run(repository.claim_next_run())
+    assert repository.get_run(run.id).state is StudioRunState.RETRYING
+    assert repository.run_artifact(run.id, "answered") is None
+    pair = repository.run_artifact(run.id, "pair")
+    assert pair is not None
+    original_drafts = _drafts_from_json(pair.payload_json)
+    first_key = f"answered:{original_drafts[0].question_id}"
+    partial = repository.run_artifact(run.id, first_key)
+    assert partial is not None
+    assert _drafts_from_json(partial.payload_json)[0].correct_index == 0
+    if change_model:
+        answers.fallback.settings.model = "fallback-b"
+
+    worker.run(repository.claim_next_run(datetime(2100, 1, 1, tzinfo=UTC)))
+
+    assert repository.get_run(run.id).state is StudioRunState.AWAITING_REVIEW
+    assert answers.calls == (["1", "3", "1", "3"] if change_model else ["1", "3", "3"])
+    aggregate = repository.run_artifact(run.id, "answered")
+    assert aggregate is not None
+    resolved = _drafts_from_json(aggregate.payload_json)
+    assert [draft.original_identifier for draft in resolved] == ["1", "2", "3"]
+    assert resolved[1] == original_drafts[1]
+    refreshed = repository.run_artifact(run.id, first_key)
+    assert refreshed is not None
+    assert (refreshed.signature_sha256 != partial.signature_sha256) is change_model

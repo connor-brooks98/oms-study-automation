@@ -4,7 +4,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.security.secret_store import SecretStore
+from oms_hub.study_generation.notebook_auth import NOTEBOOK_CHECK_UNVERIFIED
+from oms_hub.study_generation.notebook_errors import (
+    NotebookAuthenticationError,
+    NotebookGatewayError,
+)
 from oms_hub.study_generation.repository import GenerationRepository
 
 OAUTH_REFRESH_TOKEN_KEY = "google-oauth-refresh-token"
@@ -41,24 +47,36 @@ class NotebookConnectionService:
         return NotebookConnectionStatus(state, stored.diagnostic)
 
     def test(self) -> NotebookConnectionStatus:
-        checked = self.auth.check()
-        connected = bool(getattr(checked, "connected", False))
-        message = None if connected else (
-            getattr(checked, "message", None)
-            or "Gemini Notebook login is required."
-        )
-        status = NotebookConnectionStatus(
-            "connected" if connected else "failed",
-            message,
-        )
+        try:
+            checked = self.auth.check()
+        except Exception:  # noqa: BLE001 - unknown checks cannot establish a login failure
+            status = NotebookConnectionStatus("unverified", NOTEBOOK_CHECK_UNVERIFIED)
+        else:
+            connected = getattr(checked, "connected", False) is True
+            requires_login = getattr(checked, "requires_login", False) is True
+            message = None if connected else (
+                getattr(checked, "message", None)
+                or (
+                    "Gemini Notebook login is required. Connect Notebook in Settings."
+                    if requires_login else NOTEBOOK_CHECK_UNVERIFIED
+                )
+            )
+            status = NotebookConnectionStatus(
+                "connected" if connected else "failed" if requires_login else "unverified",
+                message,
+            )
         self._save(status)
         return status
 
     def require_live(self) -> NotebookConnectionStatus:
         status = self.test()
+        if status.state == "failed":
+            raise NotebookAuthenticationError(status.message or "Connect Notebook in Settings.")
         if status.state != "connected":
-            raise RuntimeError(
-                status.message or "Connect Gemini Notebook in Settings"
+            raise NotebookGatewayError(
+                status.message or NOTEBOOK_CHECK_UNVERIFIED,
+                source=DiagnosticSource.SERVICE,
+                retryable=True,
             )
         return status
 
@@ -84,7 +102,7 @@ class NotebookConnectionService:
             return self.test()
         except Exception as error:  # noqa: BLE001 - external error is sanitized
             checked = self.test()
-            if checked.state == "connected":
+            if checked.state != "failed":
                 return checked
             return self.invalidate(_safe_login_error(error))
         finally:

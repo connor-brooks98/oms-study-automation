@@ -15,6 +15,9 @@ class PromptConfigurationError(ValueError):
 _OUTLINE_OUTPUT_CONTRACT = """
 
 STUDY HUB OUTLINE CONTRACT
+Return the complete Markdown outline directly in your response.
+Do not create a separate Studio artifact or file. Do not return a status message
+claiming that the outline was created elsewhere.
 Use only the selected lecture slides and cleaned transcript. Do not use prior
 conversation context or information from other lectures. Prioritize learning
 objectives, testable distinctions, mechanisms, diagnoses, and treatments over
