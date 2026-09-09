@@ -1,0 +1,45 @@
+# Cloudflare Access audit — 2026-09-08
+
+This was a read-only audit. No Cloudflare settings, credentials, application code, or production services were changed. The exact URL that showed the user's error has not yet been captured.
+
+## Verified live configuration
+
+The Cloudflare Access team domain is `hidden-dew-30be.cloudflareaccess.com`. The NUC origin uses that same value as its configured issuer.
+
+| Scope | Access application and route | Policies | Session and cookie settings | Audience |
+| --- | --- | --- | --- | --- |
+| Owner/private | `7e47acb5-6a6a-456f-bf47-4d771f4732bc`, root `studyhub.perch-bird.com` | `PersonalAccess` allows only `conbro13@gmail.com`; this matches the NUC origin's configured allowed email | App session 24 hours; policy inherits the app session; cookie path off | `231ed0435aa9d8bb59d47bf13e278df37e752d436bec85c1cb653663ab67296a`, an exact match for the NUC origin's configured audience |
+| Public/school | `30801d68-054a-4015-b7db-91479473d2c8`, path `public*` | `LMUEmailLogin` allows `@lmunet.edu` with a one-month policy; `PersonalAccess` also applies | App session one month; cookie path on | `e9b011eae2e40841c05bfcd91005ac692b474431861ce00ed8856aa0b61cdd73` |
+
+The global session duration is one month. Both applications currently have HttpOnly off and Binding off. Those settings were observed, but there is no evidence that either caused the reported error. Neither application has a Bypass or Everyone policy.
+
+At `2026-09-09T00:43:28Z`, the NUC could retrieve the team's JWKS endpoint with HTTP 200 and received two keys.
+
+Cloudflare selects the more-specific application path for matching requests. Consequently, the school email policy applies to the public application, while the owner/private root application allows the Gmail owner identity. Cloudflare documents application path precedence in [Access application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/) and the per-application authorization cookie in [Access authorization cookies](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/).
+
+## What the evidence establishes
+
+The owner application's issuer, audience, and allowed email agree with the NUC origin configuration. The public application's separate audience and school policy also agree with the intended public-only access boundary. These facts do not establish the cause of a prior `Cloudflare Access identity is invalid` response, and they do not currently justify a Cloudflare configuration or application-code change.
+
+The home page loaded, and the public quiz library loaded. A browser navigation back to the root later produced Chrome `ERR_BLOCKED_BY_CLIENT`. That browser-local failure is inconclusive and is not the origin response `Cloudflare Access identity is invalid`. The exact failing URL, timestamp, HTTP status, and response body remain the most useful optional follow-up evidence.
+
+## Origin response mapping
+
+The origin handles private-path Access checks in [`app.py`](../../../src/oms_hub/app.py#L742) and verifies signed assertions in [`access.py`](../../../src/oms_hub/security/access.py#L47).
+
+| HTTP response | Origin detail | Meaning in the current code |
+| --- | --- | --- |
+| 503 | `Cloudflare Access is not configured` | The origin has no Access verifier. |
+| 401 | `Cloudflare Access identity is required` | `Cf-Access-Jwt-Assertion` is absent. |
+| 401 | `Cloudflare Access identity is invalid` | Assertion authentication failed, including signature, issuer, audience, expiry, required claims, or JWKS retrieval. |
+| 403 | `Cloudflare Access identity is not allowed` | The assertion validated, but its email did not exactly match the configured allowed email after case folding. |
+
+The verifier accepts only RS256 and requires `exp`, `iat`, `iss`, `aud`, `sub`, and `email`. Cloudflare's corresponding requirements and JWKS endpoint are documented in [Validate JSON Web Tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/) and [Application token claims](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/).
+
+## Minimum next diagnostic
+
+This is a suggestion only and has not been implemented. First capture one reproduced failing request's exact URL, timestamp, HTTP status, and generic response body, and identify whether the route is public or owner/private.
+
+If the origin's `identity is invalid` response is reproduced, temporarily capture one bounded internal reason category for that request: `invalid_audience`, `invalid_issuer`, `expired`, `invalid_signature`, or `jwks_unavailable`. Continue returning the same generic browser response. Do not log JWTs, cookies, claims, email addresses, configured audience values, or raw exception text.
+
+Cloudflare also documents a scoped identity endpoint in [Extend Cloudflare Access with Workers](https://developers.cloudflare.com/cloudflare-one/tutorials/extend-sso-with-workers/), but it was not needed or called for this audit.
