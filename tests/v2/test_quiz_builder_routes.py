@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from io import BytesIO
 
 import pytest
@@ -756,8 +757,10 @@ def test_custom_image_can_be_uploaded_to_any_imported_question(tmp_path) -> None
     assert stored.chosen_image.source_title == "Reviewer upload"
 
 
+@pytest.mark.parametrize("question_count", [1, 132])
 def test_imported_private_question_ids_are_replaced_for_preview_and_public_grading(
     tmp_path,
+    question_count,
 ) -> None:
     client = _client(tmp_path)
     run_id = _direct_review_run(client)
@@ -765,26 +768,39 @@ def test_imported_private_question_ids_are_replaced_for_preview_and_public_gradi
         f"/studio/runs/{run_id}/questions/question-1/verify-answer",
         headers=_csrf_headers(client),
     )
+    assert verified.status_code == 200
+    review = client.app.state.practice_review
+    question = review.question(run_id, "question-1").draft
+    review.store(
+        run_id,
+        tuple(
+            replace(
+                question, question_id=f"question-{index}", original_identifier=str(index)
+            )
+            for index in range(1, question_count + 1)
+        ),
+    )
     preview_page = client.get(f"/studio/runs/{run_id}/preview")
     preview_content = client.get(f"/studio/runs/{run_id}/preview/content")
+    assert preview_content.status_code == 200, preview_content.text
     preview_answer = client.post(
         f"/studio/runs/{run_id}/preview/answer",
-        json={"question_id": "q1", "choice_id": "c1"},
+        json={"question_id": f"q{question_count}", "choice_id": "c1"},
     )
     published = client.post(
         f"/studio/runs/{run_id}/publication",
         headers=_csrf_headers(client),
     )
+    assert published.status_code == 200, published.text
     token = published.json()["token"]
     public_content = client.get(f"/public/quizzes/{token}/content")
     public_page = client.get(f"/public/quizzes/{token}")
     public_answer = client.post(
         f"/public/quizzes/{token}/answer",
-        json={"question_id": "q1", "choice_id": "c1"},
+        json={"question_id": f"q{question_count}", "choice_id": "c1"},
         headers=_csrf_headers(client),
     )
 
-    assert verified.status_code == 200
     assert preview_page.status_code == 200
     assert "/public/quizzes/assets/" not in preview_page.text
     version = _player_asset_version()
@@ -793,14 +809,16 @@ def test_imported_private_question_ids_are_replaced_for_preview_and_public_gradi
         assert client.get(f"/static/{asset}").status_code == 200
     assert f'/static/public_quiz.js?v={version}' in preview_page.text
     assert client.get("/static/public_quiz.js").status_code == 200
-    assert preview_content.status_code == 200
+    assert len(preview_content.json()["questions"]) == question_count
     assert preview_content.json()["questions"][0]["id"] == "q1"
+    assert preview_content.json()["questions"][-1]["id"] == f"q{question_count}"
     assert "question-1" not in preview_content.text
     assert preview_answer.status_code == 200
     assert preview_answer.json()["correct"] is True
-    assert published.status_code == 200
     assert public_content.status_code == 200
+    assert len(public_content.json()["questions"]) == question_count
     assert public_content.json()["questions"][0]["id"] == "q1"
+    assert public_content.json()["questions"][-1]["id"] == f"q{question_count}"
     assert "question-1" not in public_content.text
     assert public_page.status_code == 200
     assert public_answer.status_code == 200

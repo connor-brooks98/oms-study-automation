@@ -251,7 +251,7 @@ class _QuizInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: _Title
-    questions: Annotated[list[_QuestionValueInput], Field(min_length=1, max_length=100)]
+    questions: Annotated[list[_QuestionValueInput], Field(min_length=1, max_length=500)]
 
 
 def quiz_prompt(
