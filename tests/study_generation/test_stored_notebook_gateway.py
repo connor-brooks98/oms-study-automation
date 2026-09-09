@@ -2,7 +2,7 @@ import hashlib
 import threading
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -410,8 +410,24 @@ def test_generation_notebook_creation_blocks_competing_studio_preparation(tmp_pa
 def test_durable_scope_heartbeat_blocks_competitor_past_initial_expiry(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
-    first_repository = GenerationRepository(database)
-    second_repository = GenerationRepository(database)
+    initial_time = datetime(2026, 1, 1, tzinfo=UTC)
+    clock_now = initial_time
+    renewed_at = initial_time + timedelta(minutes=20)
+    renewed = threading.Event()
+
+    class ClockedRepository(GenerationRepository):
+        def acquire_notebook_scope(self, *args, **kwargs):
+            return super().acquire_notebook_scope(*args, now=clock_now, **kwargs)
+
+        def renew_notebook_scope(self, *args, **kwargs):
+            renewal_time = clock_now
+            accepted = super().renew_notebook_scope(*args, now=renewal_time, **kwargs)
+            if accepted and renewal_time >= renewed_at:
+                renewed.set()
+            return accepted
+
+    first_repository = ClockedRepository(database)
+    second_repository = ClockedRepository(database)
     first_repository.save_notebook_mapping(
         "Neuro", "neuro", 1, "nb-1", "Neuro · Exam 1"
     )
@@ -433,14 +449,12 @@ def test_durable_scope_heartbeat_blocks_competitor_past_initial_expiry(tmp_path)
         tmp_path / "first-storage.json",
         first_repository,
         client_factory=lambda: FakeClientContext(client),
-        scope_lease_duration=timedelta(milliseconds=180),
         scope_renew_interval_seconds=0.03,
     )
     second_gateway = StoredNotebookLMGateway(
         tmp_path / "second-storage.json",
         second_repository,
         client_factory=lambda: FakeClientContext(client),
-        scope_lease_duration=timedelta(milliseconds=180),
         scope_renew_interval_seconds=0.03,
     )
     payload = tmp_path / "notes.pdf"
@@ -461,22 +475,28 @@ def test_durable_scope_heartbeat_blocks_competitor_past_initial_expiry(tmp_path)
 
     thread = threading.Thread(target=upload)
     thread.start()
-    assert upload_started.wait(timeout=5)
-    time.sleep(0.35)
+    try:
+        assert upload_started.wait(timeout=5)
+        clock_now = renewed_at
+        assert renewed.wait(timeout=5), "heartbeat did not commit a renewal"
+        # Past the initial 30-minute expiry, inside the renewed lease until minute 50.
+        clock_now = initial_time + timedelta(minutes=31)
+        with pytest.raises(NotebookScopeBusyError):
+            with second_gateway.mutation_scope("Neuro", 1, "studio", "op-2"):
+                pytest.fail("competing worker entered a renewed mutation scope")
 
-    with pytest.raises(NotebookScopeBusyError):
+        allow_upload.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert failure == []
+        assert result == ["new-1"]
+
         with second_gateway.mutation_scope("Neuro", 1, "studio", "op-2"):
-            pytest.fail("competing worker entered a renewed mutation scope")
-
-    allow_upload.set()
-    thread.join(timeout=5)
-    assert not thread.is_alive()
-    assert failure == []
-    assert result == ["new-1"]
-
-    with second_gateway.mutation_scope("Neuro", 1, "studio", "op-2"):
-        pass
-    database.close()
+            pass
+    finally:
+        allow_upload.set()
+        thread.join(timeout=5)
+        database.close()
 
 
 def test_durable_scope_reports_lost_owner_after_failed_renewal(tmp_path):
