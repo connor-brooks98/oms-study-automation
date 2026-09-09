@@ -764,7 +764,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             status_code=403,
                         )
                     )
-                except AccessTokenInvalid:
+                except AccessTokenInvalid as exc:
+                    logger.warning("cloudflare_access_validation_failed reason=%s", exc.reason)
                     return harden(
                         JSONResponse(
                             {"detail": "Cloudflare Access identity is invalid"},

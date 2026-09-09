@@ -14,7 +14,7 @@ from oms_hub.anki.models import AnkiEnvelopeModel
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.models import LectureModel
-from oms_hub.security.access import AccessIdentity
+from oms_hub.security.access import AccessIdentity, AccessTokenInvalid
 
 PUBLIC_HOST = "study.example.com"
 TAILNET_HOST = "study-hub.tailnet-name.ts.net"
@@ -56,6 +56,12 @@ class AcceptingAccessVerifier:
             issued_at=now,
             expires_at=now,
         )
+
+
+class RejectingAccessVerifier:
+    def verify(self, assertion: str) -> AccessIdentity:
+        del assertion
+        raise AccessTokenInvalid("not_yet_valid")
 
 
 def _prepared_client(
@@ -127,6 +133,33 @@ def test_dashboard_access_matrix_and_agent_host_isolation(tmp_path) -> None:
         headers=_agent_headers(),
     ).status_code == 404
     assert client.get("/health", headers={"host": "unknown.example"}).status_code == 400
+
+
+def test_invalid_access_assertion_logs_only_safe_reason(tmp_path, caplog) -> None:
+    client, app = _prepared_client(tmp_path)
+    app.state.access_verifier = RejectingAccessVerifier()
+
+    with caplog.at_level("WARNING", logger="oms_hub.app"):
+        response = client.get(
+            "/anki",
+            headers={
+                "host": PUBLIC_HOST,
+                "cf-access-jwt-assertion": "sentinel-private-jwt",
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Cloudflare Access identity is invalid"}
+    messages = [record.getMessage() for record in caplog.records if record.name == "oms_hub.app"]
+    assert messages == ["cloudflare_access_validation_failed reason=not_yet_valid"]
+    logged = "\n".join(messages)
+    for sensitive in (
+        "sentinel-private-jwt",
+        "connor@example.com",
+        "audience",
+        "/anki",
+    ):
+        assert sensitive not in logged
 
 
 @pytest.mark.parametrize(

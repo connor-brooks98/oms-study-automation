@@ -1,13 +1,27 @@
 import hmac
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import jwt
+
+AccessTokenInvalidReason = Literal[
+    "not_yet_valid",
+    "expired",
+    "invalid_audience",
+    "invalid_issuer",
+    "invalid_signature",
+    "jwks_unavailable",
+    "invalid_assertion",
+]
 
 
 class AccessTokenInvalid(Exception):
     """The Cloudflare Access assertion could not be authenticated."""
+
+    def __init__(self, reason: AccessTokenInvalidReason) -> None:
+        super().__init__("Cloudflare Access assertion is invalid")
+        self.reason = reason
 
 
 class AccessIdentityForbidden(Exception):
@@ -54,11 +68,26 @@ class CloudflareAccessVerifier:
                 audience=self.audience,
                 issuer=self.issuer,
                 options={"require": ["exp", "iat", "iss", "aud", "sub", "email"]},
+                leeway=5,
             )
+        except jwt.PyJWKClientConnectionError as exc:
+            raise AccessTokenInvalid("jwks_unavailable") from exc
+        except jwt.PyJWKClientError as exc:
+            raise AccessTokenInvalid("jwks_unavailable") from exc
+        except jwt.ImmatureSignatureError as exc:
+            raise AccessTokenInvalid("not_yet_valid") from exc
+        except jwt.ExpiredSignatureError as exc:
+            raise AccessTokenInvalid("expired") from exc
+        except jwt.InvalidAudienceError as exc:
+            raise AccessTokenInvalid("invalid_audience") from exc
+        except jwt.InvalidIssuerError as exc:
+            raise AccessTokenInvalid("invalid_issuer") from exc
+        except jwt.InvalidSignatureError as exc:
+            raise AccessTokenInvalid("invalid_signature") from exc
         except jwt.PyJWTError as exc:
-            raise AccessTokenInvalid("Cloudflare Access assertion is invalid") from exc
+            raise AccessTokenInvalid("invalid_assertion") from exc
         except Exception as exc:
-            raise AccessTokenInvalid("Cloudflare Access keys are unavailable") from exc
+            raise AccessTokenInvalid("jwks_unavailable") from exc
 
         email = str(claims["email"]).strip()
         if email.casefold() != self.allowed_email:

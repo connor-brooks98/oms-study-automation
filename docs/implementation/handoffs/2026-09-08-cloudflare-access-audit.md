@@ -1,6 +1,6 @@
 # Cloudflare Access audit — 2026-09-08
 
-This was a read-only audit. No Cloudflare settings, credentials, application code, or production services were changed. The exact URL that showed the user's error has not yet been captured.
+The initial audit below was read-only. The subsequent clock diagnosis and origin fix are recorded at the end. Cloudflare dashboard policies, audiences, identity providers, and cookie settings remain unchanged. The exact URL and token behind the original error have not been captured.
 
 ## Verified live configuration
 
@@ -43,3 +43,15 @@ This is a suggestion only and has not been implemented. First capture one reprod
 If the origin's `identity is invalid` response is reproduced, temporarily capture one bounded internal reason category for that request: `invalid_audience`, `invalid_issuer`, `expired`, `invalid_signature`, or `jwks_unavailable`. Continue returning the same generic browser response. Do not log JWTs, cookies, claims, email addresses, configured audience values, or raw exception text.
 
 Cloudflare also documents a scoped identity endpoint in [Extend Cloudflare Access with Workers](https://developers.cloudflare.com/cloudflare-one/tutorials/extend-sso-with-workers/), but it was not needed or called for this audit.
+
+## Follow-up: reload-dependent identity failures
+
+The user subsequently reported that reloading usually resolves the error and authorized deployment, NUC cleanup, and investigation. The NUC's Windows Time service reported no successful synchronization, leap indicator 3, stratum 0, and the local CMOS clock. Seventeen Cloudflare HTTP Date samples had a median server-date minus NUC midpoint of +1.107 seconds; the corresponding synchronized Mac measurement was -0.484 seconds. Accounting for HTTP Date's one-second resolution, these measurements imply the NUC was approximately 1.59 seconds behind.
+
+The origin previously used PyJWT with zero clock tolerance. A newly issued signed assertion can therefore fail its `iat` check until the NUC clock catches up. That mechanism fits the reload-dependent symptom, but remains an inferred cause: no original failing assertion was collected. PyJWT documents this check and its bounded `leeway` option in its [API reference](https://pyjwt.readthedocs.io/en/stable/api.html).
+
+Windows Time stopped during the first resynchronization attempt. Its startup type was changed from Manual to Automatic, the service was started, and `w32tm /resync /rediscover` succeeded. At 2026-09-09T01:22:39Z the service remained Running/Automatic, with leap indicator 0, stratum 5, and a successful sync at 2026-09-09T01:18:45Z. The existing `time.windows.com,0x9` peer was retained. The running quiz release remained healthy. Nonsecret before/after receipts are under `C:\ProgramData\OMSStudyHub-V2\backups\quiz-20260908-921b2ef4`.
+
+The follow-up origin change allows five seconds of JWT clock tolerance using the existing PyJWT decoder. RS256 signature validation, issuer, audience, required claims, and exact owner-email checks remain enabled. The tolerance applies to PyJWT time checks, including expiry. Invalid assertions retain the generic browser 401 response; the server logs only one fixed reason code (`not_yet_valid`, `expired`, `invalid_audience`, `invalid_issuer`, `invalid_signature`, `jwks_unavailable`, or `invalid_assertion`). No raw exceptions, tokens, cookies, claims, emails, or paths are added to this log. There is no automatic page reload or answer-submission retry.
+
+Signed-RS256 regression tests cover small positive clock skew, rejection beyond the tolerance, expiry, incorrect audience/issuer/signature, and JWKS connection failure. Middleware coverage checks the unchanged response and sanitized log. Focused verification passed 21 tests; related public/auth boundary coverage passed 41 tests, with Ruff and MyPy clean. Deployment identity and postflight results belong in the release receipt, rather than being inferred from these offline checks.
