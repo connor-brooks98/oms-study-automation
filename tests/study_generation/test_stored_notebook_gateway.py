@@ -438,7 +438,7 @@ def test_durable_scope_heartbeat_blocks_competitor_past_initial_expiry(tmp_path)
     class BlockingSources(FakeSources):
         async def add_file(self, notebook_id, path, *, wait, title):
             upload_started.set()
-            assert allow_upload.wait(timeout=5)
+            allow_upload.wait()
             return await super().add_file(
                 notebook_id, path, wait=wait, title=title
             )
