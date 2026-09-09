@@ -247,5 +247,3 @@ Root owns templates/anki.html, uploads.html, quarantine.html, base.html, static/
 **Evidence:** `review-console-full.txt`, `review-console.png`. Earlier `preflight-console.txt` is an empty diff and must not be treated as proof. **Suspected location:** `src/oms_hub/app.py:622` defines the restrictive CSP; beacon injection likely occurs at the deployment layer and was not verified there.
 
 **Smallest possible patch:** Inspect the site's Cloudflare analytics injection setting and disable the beacon if it is unused. Do not weaken CSP merely to silence an optional script. Recheck the native console. Diagnose the extension error separately without changing the Hub's security policy or the user's extensions in this audit.
-
-
