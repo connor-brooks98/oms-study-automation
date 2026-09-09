@@ -1,6 +1,7 @@
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -14,7 +15,7 @@ from oms_hub.domain import (
 )
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
-from oms_hub.models import LecturePassModel
+from oms_hub.models import LectureModel, LecturePassModel
 from oms_hub.naming import display_title
 from oms_hub.progress import overall_status
 from oms_hub.repositories import CatalogRepository, LectureInput
@@ -115,7 +116,7 @@ def _dashboard_context(request: Request) -> dict[str, object]:
     review_count += len(repository.list_import_issues())
     return {
             "recent_lectures": [
-                {"id": row["lecture"].id, "title": row["title"]}
+                {"id": cast(LectureModel, row["lecture"]).id, "title": row["title"]}
                 for exams in grouped.values()
                 for lectures in exams.values()
                 for row in lectures
