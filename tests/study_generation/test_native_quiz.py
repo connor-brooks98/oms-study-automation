@@ -82,6 +82,27 @@ def test_legacy_multiple_choice_serialization_does_not_gain_a_kind_field() -> No
     assert "kind" not in serialized["questions"][0]
 
 
+@pytest.mark.parametrize("question_count", [132, 500])
+def test_large_native_quiz_round_trips_without_losing_questions(question_count):
+    payload = _payload()
+    payload["questions"] *= question_count
+
+    quiz = parse_native_quiz(json.dumps(payload))
+
+    assert len(quiz.questions) == question_count
+    assert quiz.questions[-1].id == f"q{question_count}"
+    assert parse_native_quiz(serialize_native_quiz(quiz)) == quiz
+
+
+@pytest.mark.parametrize("question_count", [0, 501])
+def test_native_quiz_rejects_question_counts_outside_supported_range(question_count):
+    payload = _payload()
+    payload["questions"] *= question_count
+
+    with pytest.raises(QuizContractError, match="questions"):
+        parse_native_quiz(json.dumps(payload))
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
