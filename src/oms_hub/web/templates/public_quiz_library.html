@@ -8,10 +8,17 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  {% if management_mode %}
+  <link rel="stylesheet" href="/static/reset.css?v={{ library_asset_version }}">
+  <link rel="stylesheet" href="/static/tokens.css?v={{ library_asset_version }}">
+  <link rel="stylesheet" href="/static/study-hub.css?v={{ library_asset_version }}">
+  <link rel="stylesheet" href="/static/public_quiz_library.css?v={{ library_asset_version }}">
+  {% else %}
   <link rel="stylesheet" href="/public/quizzes/assets/reset.css?v={{ library_asset_version }}">
   <link rel="stylesheet" href="/public/quizzes/assets/tokens.css?v={{ library_asset_version }}">
   <link rel="stylesheet" href="/public/quizzes/assets/study-hub.css?v={{ library_asset_version }}">
   <link rel="stylesheet" href="/public/quizzes/assets/library.css?v={{ library_asset_version }}">
+  {% endif %}
 </head>
 <body class="sh-app">
   <a class="skip-link" href="#main-content">Skip to main content</a>

@@ -578,7 +578,12 @@ def test_local_owner_library_keeps_private_navigation_without_management_control
 def test_managed_practice_library_shows_practice_rows_and_page_switcher(tmp_path):
     app, lecture_quiz, practice = _published_mixed_app(tmp_path)
 
-    managed = TestClient(app).get("/studio/library/practice-questions")
+    with TestClient(app) as client:
+        managed = client.get("/studio/library/practice-questions")
+        styles = [
+            client.get(f"/static/{asset}")
+            for asset in ("reset.css", "tokens.css", "study-hub.css", "public_quiz_library.css")
+        ]
 
     assert managed.status_code == 200
     assert practice.token in managed.text
@@ -594,6 +599,11 @@ def test_managed_practice_library_shows_practice_rows_and_page_switcher(tmp_path
     assert public_link in managed.text
     assert 'aria-current="page">Manage practice questions</a>' in managed.text
     assert "/static/vendor/sortable-1.15.7.min.js" in managed.text
+    for asset in ("reset.css", "tokens.css", "study-hub.css", "public_quiz_library.css"):
+        assert f'href="/static/{asset}?v=' in managed.text
+    assert 'href="/public/quizzes/assets/' not in managed.text
+    assert all(response.status_code == 200 for response in styles)
+    assert all(response.headers["content-type"].startswith("text/css") for response in styles)
     for private_hook in (
         "data-quiz-drag-handle",
         "data-title-form",
