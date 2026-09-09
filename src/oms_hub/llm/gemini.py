@@ -1,3 +1,4 @@
+import copy
 from urllib.parse import quote
 
 import httpx
@@ -24,6 +25,45 @@ from oms_hub.llm.provider import (
     transcript_input,
 )
 from oms_hub.transcripts.prompt import ApprovedPrompt
+
+
+def _gemini_output_schema(schema: dict[str, object]) -> dict[str, object]:
+    copied = copy.deepcopy(schema)
+
+    def omit_array_limits(node: object) -> None:
+        if not isinstance(node, dict):
+            return
+        # Gemini rejects the full extraction grammar with these bounds;
+        # callers still validate the response against the original schema.
+        node.pop("maxItems", None)
+
+        for key in (
+            "additionalItems",
+            "additionalProperties",
+            "contains",
+            "else",
+            "if",
+            "items",
+            "not",
+            "propertyNames",
+            "then",
+            "unevaluatedItems",
+            "unevaluatedProperties",
+        ):
+            omit_array_limits(node.get(key))
+        for key in ("allOf", "anyOf", "oneOf", "prefixItems"):
+            children = node.get(key)
+            if isinstance(children, list):
+                for child in children:
+                    omit_array_limits(child)
+        for key in ("$defs", "definitions", "dependentSchemas", "patternProperties", "properties"):
+            children = node.get(key)
+            if isinstance(children, dict):
+                for child in children.values():
+                    omit_array_limits(child)
+
+    omit_array_limits(copied)
+    return copied
 
 
 class GeminiProvider:
@@ -164,7 +204,7 @@ class GeminiProvider:
             generation_config["responseFormat"] = {
                 "text": {
                     "mimeType": "APPLICATION_JSON",
-                    "schema": output_schema,
+                    "schema": _gemini_output_schema(output_schema),
                 }
             }
         if generation_config:

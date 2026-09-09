@@ -1,9 +1,11 @@
 import copy
 import json
+from collections.abc import Iterator
 
 import httpx
 import pytest
 import respx
+from pydantic import ValidationError
 
 from oms_hub.llm.domain import (
     DiagnosticSource,
@@ -13,8 +15,31 @@ from oms_hub.llm.domain import (
     ThinkingMode,
 )
 from oms_hub.llm.gemini import GeminiProvider
-from oms_hub.study_generation.practice_contracts import ExtractionPayload
+from oms_hub.study_generation.practice_contracts import (
+    ExtractedQuestion,
+    ExtractionPayload,
+)
 from oms_hub.transcripts.prompt import ApprovedPrompt
+
+
+def _schema_nodes(schema: dict[str, object]) -> Iterator[dict[str, object]]:
+    yield schema
+    for container_name in ("$defs", "properties"):
+        container = schema.get(container_name)
+        if isinstance(container, dict):
+            for child in container.values():
+                if isinstance(child, dict):
+                    yield from _schema_nodes(child)
+    for child_name in ("items", "additionalProperties"):
+        child = schema.get(child_name)
+        if isinstance(child, dict):
+            yield from _schema_nodes(child)
+    for children_name in ("anyOf", "allOf", "oneOf", "prefixItems"):
+        children = schema.get(children_name)
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, dict):
+                    yield from _schema_nodes(child)
 
 
 @respx.mock
@@ -78,6 +103,7 @@ def test_gemini_provider_sends_generate_content_request_and_parses_usage():
 
     request = route.calls.last.request
     assert request.headers["x-goog-api-key"] == "secret"
+    assert "generationConfig" not in json.loads(request.content)
     assert result.provider is ProviderName.GEMINI
     assert result.text == "Cleaned Gemini lecture."
     assert result.model == "gemini-3.6-flash"
@@ -115,8 +141,23 @@ def test_gemini_structured_generation_sends_response_format() -> None:
     )
     schema: dict[str, object] = {
         "type": "object",
-        "properties": {"answer": {"type": "string"}},
-        "required": ["answer"],
+        "default": {"maxItems": "literal default"},
+        "properties": {
+            "answer": {"type": "string"},
+            "maxItems": {"type": "integer"},
+            "constant": {"const": {"maxItems": "literal const"}},
+            "mode": {"enum": [{"maxItems": "literal enum"}]},
+            "evidence": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 3,
+            },
+            "untyped_evidence": {
+                "items": {"type": "string"},
+                "maxItems": 2,
+            },
+        },
+        "required": ["answer", "maxItems", "evidence"],
     }
     original_schema = json.loads(json.dumps(schema))
 
@@ -129,18 +170,26 @@ def test_gemini_structured_generation_sends_response_format() -> None:
     )
 
     payload = json.loads(route.calls.last.request.content)
-    assert payload["generationConfig"]["responseFormat"] == {
-        "text": {
-            "mimeType": "APPLICATION_JSON",
-            "schema": schema,
-        }
+    sent_schema = payload["generationConfig"]["responseFormat"]["text"]["schema"]
+    assert payload["generationConfig"]["responseFormat"]["text"]["mimeType"] == (
+        "APPLICATION_JSON"
+    )
+    assert sent_schema["properties"]["maxItems"] == {"type": "integer"}
+    assert sent_schema["default"] == {"maxItems": "literal default"}
+    assert sent_schema["properties"]["constant"] == {
+        "const": {"maxItems": "literal const"}
     }
+    assert sent_schema["properties"]["mode"] == {
+        "enum": [{"maxItems": "literal enum"}]
+    }
+    assert "maxItems" not in sent_schema["properties"]["evidence"]
+    assert "maxItems" not in sent_schema["properties"]["untyped_evidence"]
     assert schema == original_schema
     assert result.text == '{"answer":"iron"}'
 
 
 @respx.mock
-def test_gemini_sends_expanded_extraction_schema_without_mutating_source() -> None:
+def test_gemini_omits_extraction_array_limits_without_mutating_source() -> None:
     model = "gemini-schema-model"
     route = respx.post(
         "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -169,10 +218,34 @@ def test_gemini_sends_expanded_extraction_schema_without_mutating_source() -> No
     )
 
     payload = json.loads(route.calls.last.request.content)
-    assert payload["generationConfig"]["responseFormat"] == {
-        "text": {"mimeType": "APPLICATION_JSON", "schema": original}
+    sent_schema = payload["generationConfig"]["responseFormat"]["text"]["schema"]
+    assert all("maxItems" not in node for node in _schema_nodes(sent_schema))
+    assert sent_schema["$defs"]["ExtractedMatchingQuestion"]["properties"]["kind"] == {
+        "const": "matching",
+        "title": "Kind",
+        "type": "string",
     }
+    assert sent_schema["$defs"]["ExtractedQuestion"]["properties"][
+        "original_identifier"
+    ]["anyOf"] == [{"maxLength": 100, "type": "string"}, {"type": "null"}]
+    assert sent_schema["$defs"]["ExtractedQuestion"]["properties"]["confidence"][
+        "maximum"
+    ] == 1.0
     assert schema == original
+
+
+def test_extraction_contract_still_rejects_more_than_eight_choices() -> None:
+    with pytest.raises(ValidationError, match="at most 8 items"):
+        ExtractedQuestion.model_validate(
+            {
+                "stem": "Which option is correct?",
+                "choices": [f"Choice {index}" for index in range(9)],
+                "source_segments": [
+                    {"source_id": "source-1", "segment_key": "question-1"}
+                ],
+                "confidence": 0.9,
+            }
+        )
 
 
 @respx.mock

@@ -22,14 +22,16 @@
         promptIds: question.prompts.map((prompt) => prompt.id),
         choiceIds: question.choices.map((choice) => choice.id),
         selectedChoiceIds: Object.fromEntries(question.prompts.map((prompt) => [prompt.id, null])),
-        highlights: [], submitted: false, feedback: null, flagReason: null,
+        highlights: [], submitted: false, submitting: false,
+        submissionError: null, feedback: null, flagReason: null,
       };
     }
     return {
       choiceIds: question.choices.map((choice) => choice.id),
       selectedChoiceId: null,
       eliminatedChoiceIds: [],
-      highlights: [], submitted: false, feedback: null, flagReason: null,
+      highlights: [], submitted: false, submitting: false,
+      submissionError: null, feedback: null, flagReason: null,
     };
   };
 
@@ -67,6 +69,7 @@
       }
       if (
         question.submitted
+        || question.submitting
         || question.eliminatedChoiceIds.includes(choiceId)
       ) {
         return question;
@@ -81,7 +84,7 @@
         throw new Error(`Unknown prompt: ${promptId}`);
       }
       if (!question.choiceIds.includes(choiceId)) throw new Error(`Unknown choice: ${choiceId}`);
-      if (question.submitted) return question;
+      if (question.submitted || question.submitting) return question;
       return {
         ...question,
         selectedChoiceIds: { ...question.selectedChoiceIds, [promptId]: choiceId },
@@ -94,7 +97,7 @@
       if (!question.choiceIds.includes(choiceId)) {
         throw new Error(`Unknown choice: ${choiceId}`);
       }
-      if (question.submitted) return question;
+      if (question.submitted || question.submitting) return question;
       const eliminated = question.eliminatedChoiceIds.includes(choiceId);
       return {
         ...question,
@@ -238,18 +241,81 @@
     };
   };
 
-  const recordFeedback = (state, questionId, feedback) => {
+  const beginSubmission = (state, questionId) => (
+    updateQuestion(state, questionId, (question) => {
+      if (question.submitted || question.submitting) return question;
+      const complete = question.kind === "matching"
+        ? question.promptIds.every((id) => question.selectedChoiceIds[id])
+        : Boolean(question.selectedChoiceId);
+      if (!complete) throw new Error("Choose an answer before submitting.");
+      return { ...question, submitting: true, submissionError: null };
+    })
+  );
+
+  const cancelSubmission = (state, questionId, error) => (
+    updateQuestion(state, questionId, (question) => ({
+      ...question,
+      submitting: false,
+      submissionError: {
+        message: error.message || "Your answer could not be submitted.",
+        refreshAvailable: error.refreshAvailable === true,
+      },
+    }))
+  );
+
+  const exactKeys = (value, expected) => (
+    value && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).sort().join("\0") === [...expected].sort().join("\0")
+  );
+
+  const validFeedback = (question, feedback) => {
+    if (!question || !feedback || typeof feedback !== "object" || Array.isArray(feedback)) {
+      return false;
+    }
+    if (question.kind === "matching") {
+      return feedback.kind === "matching"
+        && typeof feedback.correct === "boolean"
+        && exactKeys(feedback.correct_matches, question.promptIds)
+        && exactKeys(feedback.row_results, question.promptIds)
+        && Object.values(feedback.correct_matches).every((id) => question.choiceIds.includes(id))
+        && Object.values(feedback.row_results).every((value) => typeof value === "boolean")
+        && typeof feedback.rationale === "string" && feedback.rationale.length > 0;
+    }
+    return feedback.kind === undefined
+      && typeof feedback.correct === "boolean"
+      && question.choiceIds.includes(feedback.correct_choice_id)
+      && typeof feedback.rationale === "string" && feedback.rationale.length > 0;
+  };
+
+  const invalidFeedbackError = () => {
+    const error = new Error("Study Hub returned an invalid response.");
+    error.refreshAvailable = true;
+    return error;
+  };
+
+  const recordFeedback = (state, questionId, feedback, submittedAnswer = null) => {
     const current = state.questions[questionId];
     if (!current) throw new Error(`Unknown question: ${questionId}`);
     if (current.submitted) return state;
+    if (!validFeedback(current, feedback)) throw invalidFeedbackError();
+    const answer = submittedAnswer ?? (
+      current.kind === "matching" ? current.selectedChoiceIds : current.selectedChoiceId
+    );
     if (current.kind === "matching") {
-      if (!current.promptIds.every((id) => current.selectedChoiceIds[id])) {
+      if (!answer || !current.promptIds.every((id) => current.choiceIds.includes(answer[id]))) {
         throw new Error("Choose an answer for every prompt before submitting.");
       }
-    } else if (!current.selectedChoiceId) throw new Error("Choose an answer before submitting.");
+    } else if (!current.choiceIds.includes(answer)) {
+      throw new Error("Choose an answer before submitting.");
+    }
     const next = updateQuestion(state, questionId, (question) => ({
       ...question,
+      ...(question.kind === "matching"
+        ? { selectedChoiceIds: { ...answer } }
+        : { selectedChoiceId: answer }),
       submitted: true,
+      submitting: false,
+      submissionError: null,
       feedback,
     }));
     return {
@@ -281,10 +347,6 @@
         if (!candidate) return fresh;
         const validChoices = new Set(baseline.choiceIds);
         if (baseline.kind === "matching") {
-          const exactKeys = (value, expected) => (
-            value && typeof value === "object" && !Array.isArray(value)
-            && Object.keys(value).sort().join("\0") === [...expected].sort().join("\0")
-          );
           const sameIdSet = (value, expected) => (
             Array.isArray(value)
             && value.length === expected.length
@@ -294,13 +356,7 @@
           const selected = candidate.selectedChoiceIds;
           const submitted = candidate.submitted === true;
           const feedback = candidate.feedback;
-          const feedbackValid = feedback?.kind === "matching"
-            && typeof feedback.correct === "boolean"
-            && exactKeys(feedback.correct_matches, baseline.promptIds)
-            && exactKeys(feedback.row_results, baseline.promptIds)
-            && Object.values(feedback.correct_matches).every((id) => validChoices.has(id))
-            && Object.values(feedback.row_results).every((value) => typeof value === "boolean")
-            && typeof feedback.rationale === "string" && feedback.rationale.length > 0;
+          const feedbackValid = validFeedback(baseline, feedback);
           if (
             candidate.kind !== "matching"
             || !sameIdSet(candidate.promptIds, baseline.promptIds)
@@ -330,13 +386,7 @@
           ? candidate.eliminatedChoiceIds.filter((id) => validChoices.has(id))
           : [];
         const submitted = candidate.submitted === true;
-        const feedbackValid = (
-          candidate.feedback
-          && typeof candidate.feedback.correct === "boolean"
-          && validChoices.has(candidate.feedback.correct_choice_id)
-          && typeof candidate.feedback.rationale === "string"
-          && candidate.feedback.rationale.length > 0
-        );
+        const feedbackValid = validFeedback(baseline, candidate.feedback);
         if (
           submitted
           && (!candidate.selectedChoiceId || !feedbackValid)
@@ -387,22 +437,39 @@
     questionId,
     answer,
     csrf,
+    expectedQuestion,
   ) => {
-    const response = await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRF-Token": csrf,
-      },
-      body: JSON.stringify(typeof answer === "string"
-        ? { question_id: questionId, choice_id: answer }
-        : { kind: "matching", question_id: questionId, matches: answer }),
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.detail || "Your answer could not be submitted.");
+    let response;
+    try {
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf,
+        },
+        body: JSON.stringify(typeof answer === "string"
+          ? { question_id: questionId, choice_id: answer }
+          : { kind: "matching", question_id: questionId, matches: answer }),
+        cache: "no-store",
+      });
+    } catch (_) {
+      const error = new Error("Study Hub could not be reached.");
+      error.refreshAvailable = true;
+      throw error;
     }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (_) {
+      const error = new Error("Study Hub returned an unreadable response.");
+      error.refreshAvailable = true;
+      throw error;
+    }
+    if (!response.ok) {
+      const detail = typeof payload?.detail === "string" ? payload.detail.trim() : "";
+      throw new Error(detail || "Your answer could not be submitted.");
+    }
+    if (!validFeedback(expectedQuestion, payload)) throw invalidFeedbackError();
     return payload;
   };
 
@@ -533,10 +600,13 @@
       },
       setItem(key, value) {
         memory.set(key, value);
+        if (!persistent) return false;
         try {
-          persistent?.setItem(key, value);
+          persistent.setItem(key, value);
+          return true;
         } catch (_) {
           // The in-memory copy keeps this quiz playable for the session.
+          return false;
         }
       },
     };
@@ -563,12 +633,13 @@
       const storage = safeStorage(() => documentRef.defaultView);
       const key = storageKey(content);
       let state = restoreProgress(content, storage.getItem(key));
+      let lastPersistSucceeded = true;
       const informationOpen = new Map();
       let pendingFocusKey;
       let renderedViewKey = null;
 
       const persist = () => {
-        storage.setItem(key, serializeProgress(state));
+        lastPersistSucceeded = storage.setItem(key, serializeProgress(state));
       };
 
       const render = () => {
@@ -846,7 +917,7 @@
             select.className = "sh-select";
             select.dataset.focusKey = `match-${prompt.id}`;
             select.setAttribute("aria-label", `Choice for prompt ${prompt.label}`);
-            select.disabled = questionProgress.submitted;
+            select.disabled = questionProgress.submitted || questionProgress.submitting;
             const placeholder = element(documentRef, "option", "", "Choose a term");
             placeholder.value = "";
             placeholder.disabled = true;
@@ -912,7 +983,7 @@
             `answer-${choice.id}`,
           );
           answer.type = "button";
-          answer.disabled = questionProgress.submitted;
+          answer.disabled = questionProgress.submitted || questionProgress.submitting;
           answer.setAttribute("aria-pressed", String(selected));
           answer.append(
             element(
@@ -937,7 +1008,7 @@
             `strike-${choice.id}`,
           );
           strike.type = "button";
-          strike.disabled = questionProgress.submitted;
+          strike.disabled = questionProgress.submitted || questionProgress.submitting;
           strike.setAttribute("aria-pressed", String(eliminated));
           strike.setAttribute(
             "aria-label",
@@ -989,6 +1060,26 @@
         body.append(feedback);
 
         if (!questionProgress.submitted) {
+          if (questionProgress.submissionError) {
+            const message = element(documentRef, "p", "quiz-error");
+            message.setAttribute("role", "alert");
+            message.append(documentRef.createTextNode(
+              `${questionProgress.submissionError.message} ${lastPersistSucceeded
+                ? "Your selection is saved. "
+                : "Your selection could not be saved; refreshing may lose progress. "}`,
+            ));
+            if (questionProgress.submissionError.refreshAvailable) {
+              const refresh = element(
+                documentRef,
+                "a",
+                "quiz-error-refresh",
+                "Refresh to reconnect or sign in",
+              );
+              refresh.href = "";
+              message.append(refresh);
+            }
+            body.append(message);
+          }
           body.append(
             element(
               documentRef,
@@ -1001,50 +1092,53 @@
             documentRef,
             "button",
             "quiz-primary quiz-submit sh-btn sh-btn--primary sh-btn--block sh-btn--stateful",
-            "Submit Answer",
+            questionProgress.submitting ? "Checking…" : "Submit Answer",
             "submit",
           );
           submit.type = "button";
-          submit.dataset.state = "idle";
+          submit.dataset.state = questionProgress.submitting
+            ? "loading"
+            : questionProgress.submissionError ? "error" : "idle";
+          if (questionProgress.submitting) submit.setAttribute("aria-busy", "true");
           const selectedAnswer = question.kind === "matching"
             ? questionProgress.selectedChoiceIds
             : questionProgress.selectedChoiceId;
           const answerComplete = question.kind === "matching"
             ? questionProgress.promptIds.every((id) => selectedAnswer[id])
             : Boolean(selectedAnswer);
-          submit.disabled = !answerComplete;
+          submit.disabled = !answerComplete || questionProgress.submitting;
           submit.addEventListener("click", async () => {
-            pendingFocusKey = "forward";
-            submit.disabled = true;
-            submit.dataset.state = "loading";
-            submit.setAttribute("aria-busy", "true");
-            submit.textContent = "Checking…";
+            const submittedAnswer = typeof selectedAnswer === "string"
+              ? selectedAnswer
+              : { ...selectedAnswer };
+            const next = beginSubmission(state, question.id);
+            if (next === state) return;
+            state = next;
+            persist();
+            render();
             try {
               const feedbackResult = await answerRequest(
                 fetchImpl,
                 app.dataset.answerUrl,
                 question.id,
-                selectedAnswer,
+                submittedAnswer,
                 csrfToken(documentRef),
+                questionProgress,
               );
-              state = recordFeedback(state, question.id, feedbackResult);
-              submit.dataset.state = "success";
+              state = recordFeedback(
+                state,
+                question.id,
+                feedbackResult,
+                submittedAnswer,
+              );
+              pendingFocusKey = "forward";
               persist();
               render();
             } catch (error) {
               pendingFocusKey = undefined;
-              submit.disabled = false;
-              submit.dataset.state = "error";
-              submit.removeAttribute("aria-busy");
-              submit.textContent = "Submit Answer";
-              const message = element(
-                documentRef,
-                "p",
-                "quiz-error",
-                error.message,
-              );
-              message.setAttribute("role", "alert");
-              submit.before(message);
+              state = cancelSubmission(state, question.id, error);
+              persist();
+              render();
             }
           });
           body.append(submit);
@@ -1132,6 +1226,8 @@
     FLAG_REASONS,
     addHighlight,
     answerRequest,
+    beginSubmission,
+    cancelSubmission,
     flagRequest,
     captureFocusKey,
     clearHighlights,

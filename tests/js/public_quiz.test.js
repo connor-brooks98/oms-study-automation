@@ -103,12 +103,51 @@ test("matching state requires every prompt and scores the group once", () => {
   assert.equal(repeated.score, 1);
 });
 
+test("submission state blocks repeat activation and answer changes", () => {
+  let choiceState = quiz.selectChoice(quiz.createQuizState(content), "q1", "c1");
+  choiceState = quiz.beginSubmission(choiceState, "q1");
+
+  assert.equal(quiz.beginSubmission(choiceState, "q1"), choiceState);
+  assert.equal(quiz.selectChoice(choiceState, "q1", "c2"), choiceState);
+  assert.equal(quiz.toggleEliminated(choiceState, "q1", "c2"), choiceState);
+
+  let matchingState = quiz.createQuizState(mixedContent());
+  matchingState = quiz.selectMatch(matchingState, "q2", "p1", "c2");
+  matchingState = quiz.selectMatch(matchingState, "q2", "p2", "c1");
+  matchingState = quiz.beginSubmission(matchingState, "q2");
+
+  assert.equal(quiz.beginSubmission(matchingState, "q2"), matchingState);
+  assert.equal(quiz.selectMatch(matchingState, "q2", "p1", "c1"), matchingState);
+});
+
+test("feedback is pinned to the exact submitted answer", () => {
+  let state = quiz.selectChoice(quiz.createQuizState(content), "q1", "c1");
+  state = quiz.beginSubmission(state, "q1");
+  state = {
+    ...state,
+    questions: {
+      ...state.questions,
+      q1: { ...state.questions.q1, selectedChoiceId: "c2" },
+    },
+  };
+
+  state = quiz.recordFeedback(state, "q1", {
+    correct: true,
+    correct_choice_id: "c1",
+    rationale: "First is correct.",
+  }, "c1");
+
+  assert.equal(state.questions.q1.selectedChoiceId, "c1");
+  assert.equal(state.questions.q1.submitting, false);
+});
+
 test("matching answer request sends one group body", async () => {
   let sent;
   await quiz.answerRequest(async (_url, options) => {
     sent = JSON.parse(options.body);
     return { ok: true, async json() { return matchingFeedback(true); } };
-  }, "/answer", "q2", { p1: "c2", p2: "c1" }, "csrf");
+  }, "/answer", "q2", { p1: "c2", p2: "c1" }, "csrf",
+  quiz.createQuizState(mixedContent()).questions.q2);
   assert.deepEqual(sent, {
     kind: "matching", question_id: "q2", matches: { p1: "c2", p2: "c1" },
   });
@@ -210,6 +249,7 @@ test("answer request sends CSRF protection and keeps answers out of URL", async 
     "q1",
     "c2",
     "csrf-token",
+    quiz.createQuizState(content).questions.q1,
   );
 
   assert.equal(captured.url, "/public/quizzes/token/answer");
@@ -221,6 +261,78 @@ test("answer request sends CSRF protection and keeps answers out of URL", async 
     choice_id: "c2",
   });
   assert.equal(feedback.correct, false);
+});
+
+test("answer request classifies unreadable responses without exposing parser errors", async () => {
+  await assert.rejects(
+    quiz.answerRequest(
+      async () => ({
+        ok: false,
+        async json() { throw new SyntaxError("Unexpected token '<'"); },
+      }),
+      "/answer",
+      "q1",
+      "c1",
+      "csrf",
+    ),
+    (error) => (
+      error.message === "Study Hub returned an unreadable response."
+      && error.refreshAvailable === true
+    ),
+  );
+});
+
+test("answer request rejects malformed success feedback for the actual question kind", async () => {
+  const state = quiz.createQuizState(mixedContent());
+  const invalidCases = [
+    [state.questions.q1, null],
+    [state.questions.q1, {}],
+    [state.questions.q1, []],
+    [state.questions.q1, "not feedback"],
+    [state.questions.q1, {
+      kind: "multiple_choice", correct: true, correct_choice_id: "c1", rationale: "No.",
+    }],
+    [state.questions.q1, { correct: true, correct_choice_id: "stale", rationale: "No." }],
+    [state.questions.q2, { ...matchingFeedback(true), kind: "multiple_choice" }],
+    [state.questions.q2, {
+      ...matchingFeedback(true),
+      correct_matches: { p1: "stale", p2: "c1" },
+    }],
+    [state.questions.q2, {
+      ...matchingFeedback(true),
+      row_results: { p1: "yes", p2: true },
+    }],
+  ];
+
+  for (const [question, payload] of invalidCases) {
+    await assert.rejects(
+      quiz.answerRequest(
+        async () => ({ ok: true, async json() { return payload; } }),
+        "/answer",
+        "q1",
+        "c1",
+        "csrf",
+        question,
+      ),
+      /invalid response/i,
+    );
+  }
+});
+
+test("answer request safely falls back when an error payload has no text detail", async () => {
+  for (const payload of [null, { detail: { unsafe: true } }]) {
+    await assert.rejects(
+      quiz.answerRequest(
+        async () => ({ ok: false, async json() { return payload; } }),
+        "/answer",
+        "q1",
+        "c1",
+        "csrf",
+        quiz.createQuizState(content).questions.q1,
+      ),
+      { message: "Your answer could not be submitted." },
+    );
+  }
 });
 
 test("flag request sends CSRF protection and the current quiz identity", async () => {
@@ -474,6 +586,131 @@ test("matching uses a disabled placeholder and native choice selection", async (
   assert.equal(selected.value, "c2");
 });
 
+test("a failed submit preserves selection and renders one same-page reconnect action", async () => {
+  const rendered = { ...mixedContent(), questions: [mixedContent().questions[0]] };
+  const { documentRef, app } = buildQuizApp();
+  const storage = makeQuizStorage();
+  documentRef.defaultView = { localStorage: storage };
+  let answerCalls = 0;
+  const fetchImpl = async (url) => {
+    if (url === "/mock/answer") {
+      answerCalls += 1;
+      throw new TypeError("Failed to fetch");
+    }
+    return { ok: true, async json() { return rendered; } };
+  };
+  await quiz.initialize(documentRef, fetchImpl);
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+  assert.equal(answerCalls, 1);
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+
+  const alerts = findAllByClass(app, "quiz-error");
+  const refresh = findByClass(alerts[0], "quiz-error-refresh");
+  const restored = quiz.restoreProgress(
+    rendered,
+    storage.getItem(`oms-study-hub-quiz:${rendered.token}:v${rendered.version}`),
+  );
+  assert.equal(answerCalls, 2);
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0].textContent, /selection is saved/i);
+  assert.match(alerts[0].textContent, /reconnect or sign in/i);
+  assert.equal(refresh.tagName, "a");
+  assert.equal(refresh.href, "");
+  assert.equal(restored.questions.q1.selectedChoiceId, "c1");
+  assert.equal(restored.questions.q1.submitting, false);
+});
+
+test("a failed submit warns when browser storage could not save the selection", async () => {
+  const rendered = { ...mixedContent(), questions: [mixedContent().questions[0]] };
+  const { documentRef, app } = buildQuizApp();
+  documentRef.defaultView = {
+    localStorage: {
+      getItem() { return null; },
+      setItem() { throw new Error("denied"); },
+    },
+  };
+  const fetchImpl = async (url) => {
+    if (url === "/mock/answer") throw new TypeError("Failed to fetch");
+    return { ok: true, async json() { return rendered; } };
+  };
+  await quiz.initialize(documentRef, fetchImpl);
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+
+  const alert = findByClass(app, "quiz-error");
+  assert.match(alert.textContent, /selection could not be saved/i);
+  assert.match(alert.textContent, /refreshing may lose progress/i);
+  assert.doesNotMatch(alert.textContent, /selection is saved/i);
+  assert.equal(findByClass(alert, "quiz-error-refresh").href, "");
+});
+
+test("invalid success feedback leaves the selected question unsubmitted", async () => {
+  const rendered = { ...mixedContent(), questions: [mixedContent().questions[0]] };
+  const { documentRef, app } = buildQuizApp();
+  const storage = makeQuizStorage();
+  documentRef.defaultView = { localStorage: storage };
+  const fetchImpl = async (url) => {
+    if (url === "/mock/answer") {
+      return { ok: true, async json() { return { correct: true }; } };
+    }
+    return { ok: true, async json() { return rendered; } };
+  };
+  await quiz.initialize(documentRef, fetchImpl);
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+
+  const restored = quiz.restoreProgress(
+    rendered,
+    storage.getItem(`oms-study-hub-quiz:${rendered.token}:v${rendered.version}`),
+  );
+  assert.equal(restored.questions.q1.selectedChoiceId, "c1");
+  assert.equal(restored.questions.q1.submitted, false);
+  assert.equal(restored.score, 0);
+  assert.match(findByClass(app, "quiz-error").textContent, /invalid response/i);
+});
+
+test("an in-flight submit cannot be replaced by a different answer request", async () => {
+  const rendered = { ...mixedContent(), questions: [mixedContent().questions[0]] };
+  const { documentRef, app } = buildQuizApp();
+  let answerCalls = 0;
+  let resolveAnswer;
+  const answerResponse = new Promise((resolve) => { resolveAnswer = resolve; });
+  const fetchImpl = async (url) => {
+    if (url === "/mock/answer") {
+      answerCalls += 1;
+      return answerResponse;
+    }
+    return { ok: true, async json() { return rendered; } };
+  };
+  await quiz.initialize(documentRef, fetchImpl);
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+
+  const first = app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+  await Promise.resolve();
+  const secondAnswer = app.querySelector('[data-focus-key="answer-c2"]');
+  assert.equal(secondAnswer.disabled, true);
+  secondAnswer._listeners.click[0]();
+  const repeatedSubmit = app.querySelector('[data-focus-key="submit"]');
+  assert.equal(repeatedSubmit.disabled, true);
+  assert.equal(repeatedSubmit["aria-busy"], "true");
+  const repeated = repeatedSubmit._listeners.click[0]();
+  await Promise.resolve();
+  assert.equal(answerCalls, 1);
+
+  resolveAnswer({
+    ok: true,
+    async json() {
+      return { correct: true, correct_choice_id: "c1", rationale: "Because." };
+    },
+  });
+  await Promise.all([first, repeated]);
+  assert.equal(app.querySelector('[data-focus-key="answer-c1"]')["aria-pressed"], "true");
+});
+
 test("initialize renders the could-not-load state when the fetch rejects", async () => {
   const { documentRef, app } = buildQuizApp();
   const fetchImpl = async () => {
@@ -640,15 +877,18 @@ test("safe storage falls back to memory when getter, reads, or writes are denied
   const getterDenied = {};
   Object.defineProperty(getterDenied, "localStorage", { get() { throw new Error("denied"); } });
   const getterStorage = quiz.safeStorage(getterDenied);
-  getterStorage.setItem("key", "value");
+  assert.equal(getterStorage.setItem("key", "value"), false);
   assert.equal(getterStorage.getItem("key"), "value");
 
   const readDenied = quiz.safeStorage({ localStorage: { getItem() { throw new Error("denied"); }, setItem() {} } });
   assert.equal(readDenied.getItem("key"), null);
 
   const writeDenied = quiz.safeStorage({ localStorage: { getItem() { return null; }, setItem() { throw new Error("denied"); } } });
-  writeDenied.setItem("key", "value");
+  assert.equal(writeDenied.setItem("key", "value"), false);
   assert.equal(writeDenied.getItem("key"), "value");
+
+  const writable = quiz.safeStorage({ localStorage: { getItem() { return null; }, setItem() {} } });
+  assert.equal(writable.setItem("key", "value"), true);
 
   const { documentRef, app } = buildQuizApp();
   Object.defineProperty(documentRef, "defaultView", { get() { throw new Error("denied"); } });
