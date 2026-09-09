@@ -200,6 +200,29 @@ test("run diagnostics render once and only overridable blockers can be acknowled
   );
 });
 
+test("same-code run diagnostics share one truthful category-wide action", () => {
+  const { page, blockers } = reviewPage();
+  review.render(documentRef, page, {
+    blockers: ["unmatched supplied answer: 12", "unmatched supplied answer: 17"],
+    issues: [],
+    run_diagnostics: [
+      { code: "unmatched-supplied-answer", message: "unmatched supplied answer: 12", severity: "blocker", overridable: true, acknowledged: false },
+      { code: "unmatched-supplied-answer", message: "unmatched supplied answer: 17", severity: "blocker", overridable: true, acknowledged: true },
+    ],
+    preview_url: null,
+    questions: [],
+  });
+
+  const actions = blockers.querySelectorAll("[data-acknowledge-run-diagnostic]");
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].dataset.acknowledgeRunDiagnostic, "unmatched-supplied-answer");
+  assert.equal(actions[0].textContent, "Acknowledge all 2 checks");
+  const group = actions[0].parentElement;
+  assert.ok(group.children.some((item) => item.textContent === "unmatched supplied answer: 12"));
+  assert.ok(group.children.some((item) => item.textContent === "unmatched supplied answer: 17"));
+  assert.ok(group.children.some((item) => item.textContent.includes("applies to every check")));
+});
+
 test("run-wide diagnostics are omitted from question-local notes", () => {
   const { page, questions } = reviewPage();
   review.render(documentRef, page, {

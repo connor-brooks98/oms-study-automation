@@ -601,22 +601,34 @@
 
   const renderRunDiagnostics = (documentRef, page, payload) => {
     const target = page.querySelector("[data-review-blockers]");
+    const groups = new Map();
     (payload.run_diagnostics || []).forEach((diagnostic) => {
+      if (!groups.has(diagnostic.code)) groups.set(diagnostic.code, []);
+      groups.get(diagnostic.code).push(diagnostic);
+    });
+    groups.forEach((diagnostics, code) => {
       const item = documentRef.createElement("section");
       item.className = "studio-review-issue-group sh-card";
-      item.append(text(documentRef, "p", diagnostic.message, "sh-section-label"));
-      if (diagnostic.overridable && !diagnostic.acknowledged) {
+      diagnostics.forEach((diagnostic) => {
+        item.append(text(documentRef, "p", diagnostic.message, "sh-section-label"));
+      });
+      const canAcknowledge = diagnostics.every((diagnostic) => diagnostic.overridable);
+      const needsAcknowledgement = diagnostics.some((diagnostic) => !diagnostic.acknowledged);
+      if (canAcknowledge && needsAcknowledgement) {
         const acknowledge = documentRef.createElement("button");
         acknowledge.type = "button";
         acknowledge.className = "sh-btn sh-btn--secondary";
-        acknowledge.dataset.acknowledgeRunDiagnostic = diagnostic.code;
-        acknowledge.textContent = "Acknowledge";
+        acknowledge.dataset.acknowledgeRunDiagnostic = code;
+        acknowledge.textContent = diagnostics.length > 1
+          ? `Acknowledge all ${diagnostics.length} checks`
+          : "Acknowledge";
         item.append(acknowledge);
-        item.append(text(documentRef, "p", "Next: reconcile the source material, then acknowledge this run-wide check."));
-      } else if (!diagnostic.overridable) {
-        item.append(text(documentRef, "p", "Next: reconcile the source material. This check cannot be acknowledged."));
+        const scope = diagnostics.length > 1 ? " This action applies to every check listed above." : "";
+        item.append(text(documentRef, "p", `Next: reconcile the source material, then acknowledge this run-wide check.${scope}`));
+      } else if (!canAcknowledge) {
+        item.append(text(documentRef, "p", "Next: reconcile the source material. These checks cannot be acknowledged."));
       } else {
-        item.append(text(documentRef, "p", "Run-wide check acknowledged."));
+        item.append(text(documentRef, "p", "Run-wide checks acknowledged."));
       }
       target.append(item);
     });
