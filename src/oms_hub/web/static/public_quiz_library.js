@@ -2,6 +2,42 @@
   "use strict";
 
   const progressKey = (token, version) => `oms-study-hub-quiz:${token}:v${version}`;
+  const viewStateKey = (pathname) => `oms-study-hub-quiz-library:${pathname}`;
+
+  const readViewState = (storage, pathname) => {
+    try {
+      const value = JSON.parse(storage?.getItem(viewStateKey(pathname)) || "null");
+      return value && Array.isArray(value.expanded) ? value : null;
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const saveViewState = (documentRef, storage) => {
+    try {
+      const expanded = [...documentRef.querySelectorAll(".disclosure[aria-expanded='true']")]
+        .map((button) => button.dataset.focusKey).filter(Boolean);
+      storage?.setItem(viewStateKey(documentRef.location?.pathname || root.location?.pathname || ""), JSON.stringify({
+        expanded,
+        scrollY: documentRef.defaultView?.scrollY || 0,
+      }));
+    } catch (_error) {
+      // Browser storage is optional; the library remains usable without it.
+    }
+  };
+
+  const restoreViewState = (documentRef, storage) => {
+    const state = readViewState(storage, documentRef.location?.pathname || root.location?.pathname || "");
+    if (!state) return;
+    for (const key of state.expanded) {
+      const button = [...documentRef.querySelectorAll(".disclosure")]
+        .find((candidate) => candidate.dataset.focusKey === key);
+      if (button) setExpanded(button, true);
+    }
+    documentRef.defaultView?.requestAnimationFrame?.(() => {
+      documentRef.defaultView?.scrollTo?.(0, Number(state.scrollY) || 0);
+    });
+  };
 
   const progressLabel = (value, version) => {
     if (!value || Number(value.version) !== Number(version)) return "Not started";
@@ -440,8 +476,13 @@
     if (surface?.dataset.libraryInitialized) return;
     if (surface) surface.dataset.libraryInitialized = "true";
     documentRef.querySelectorAll(".disclosure").forEach((button) => {
-      button.addEventListener("click", () => setExpanded(button, button.getAttribute("aria-expanded") !== "true"));
+      button.addEventListener("click", () => {
+        setExpanded(button, button.getAttribute("aria-expanded") !== "true");
+        saveViewState(documentRef, storage);
+      });
     });
+    restoreViewState(documentRef, storage);
+    documentRef.defaultView?.addEventListener?.("pagehide", () => saveViewState(documentRef, storage));
     const refresh = () => {
       documentRef.querySelectorAll("[data-quiz-row]").forEach((row) => {
         setProgressPill(row, readProgress(storage, row.dataset.quizToken, row.dataset.quizVersion));
@@ -610,6 +651,7 @@
 
   const api = {
     initialize, bootstrap, progressKey, progressLabel, progressClass, readProgress, resetProgress,
+    viewStateKey, readViewState, saveViewState, restoreViewState,
     tryResetProgress,
     cookieValue, managementRequest, setExpanded, keyboardReorderDirection,
     tokenOrder, applyTokenOrder, saveQuizOrder, bindSortableReorder, bindKeyboardReorder,

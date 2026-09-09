@@ -42,13 +42,13 @@
         link.target = "_blank";
         link.rel = "noopener noreferrer";
       } else {
-        link.className = "button secondary sh-btn sh-btn--secondary";
+        link.className = "button primary sh-btn sh-btn--primary";
         link.textContent = "Open Lecture Outline";
         actions.classList.remove("lecture-card-actions--single");
         let download = card.querySelector("[data-generation-download]");
         if (!download) {
           download = card.ownerDocument.createElement("a");
-          download.className = "button primary sh-btn sh-btn--primary";
+          download.className = "button secondary sh-btn sh-btn--secondary";
           download.dataset.generationDownload = "";
           actions.append(download);
         }
@@ -312,6 +312,12 @@
     const match = root.location.pathname.match(/^\/lectures\/(\d+)/);
     if (!match) return;
     const lectureId = match[1];
+    try {
+      const context = documentRef.querySelector("[data-lecture-context]");
+      if (context) root.localStorage?.setItem("study-hub:recent-lecture", context.dataset.lectureContext);
+    } catch (_) {
+      // Lecture study controls remain usable when storage is unavailable.
+    }
     initializePassTracker(documentRef, fetchImpl, lectureId);
     let pollTimer;
     const basePollDelayMs = 2500;

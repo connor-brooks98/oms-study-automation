@@ -5,11 +5,11 @@
 <section class="page-shell sh-container--narrow upload-page">
   <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow sh-eyebrow">Manual ingestion</p>
+      <p class="eyebrow sh-eyebrow">Upload files</p>
       <h1 class="sh-title">Upload {{ "lecture slides" if is_slides else "lecture transcripts" }}</h1>
       <p class="page-summary sh-subtitle">
-        {% if is_slides %}Add downloaded PowerPoint files. The NUC will match, preserve, convert, and file them.
-        {% else %}Add downloaded text transcripts. The NUC will match, clean, validate, and file them.{% endif %}
+        {% if is_slides %}Add downloaded PowerPoint files. Study Hub will match, preserve, convert, and file them.
+        {% else %}Add downloaded text transcripts. Study Hub will match, clean, validate, and file them.{% endif %}
       </p>
       {% if selected_lecture %}
       <p class="field-help">For {{ selected_lecture.subject }} Lecture {{ "%02d"|format(selected_lecture.lecture_number) }} · {{ selected_lecture.topic }}</p>
@@ -42,7 +42,7 @@
 
   <aside class="info-card sh-panel">
     <strong>What happens next</strong>
-    <p>Confident matches enter processing automatically. Anything ambiguous stays in <a href="/quarantine">Quarantine</a> until you choose its lecture.</p>
+    <p>Confident matches enter processing automatically. Anything ambiguous stays in <a href="/quarantine">Unmatched uploads</a> until you choose its lecture.</p>
   </aside>
 
   {% if not is_slides %}

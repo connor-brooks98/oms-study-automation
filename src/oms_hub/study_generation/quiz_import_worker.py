@@ -380,7 +380,7 @@ class QuizImportWorker:
             source_hashes=tuple(source.snapshot_sha256 or "" for source in sources),
             parser_versions=(),
             provider_model="deterministic",
-            prompt_version="supplied-answer-pairing-v4",
+            prompt_version="supplied-answer-pairing-v5",
             artifact_hashes=(_artifact_hash(self.repository, run.id, "extract"),),
             roles=tuple(role.value for role in roles),
         )
@@ -418,6 +418,7 @@ class QuizImportWorker:
                             "conflicting-question-identifier",
                             "conflicting-question-source-reference",
                             "incomplete-sequential-question-extraction",
+                            "unmatched-supplied-answer",
                             "unmatched-matching-answer-group",
                             "unknown-matching-prompt-answer",
                             "duplicate-matching-question-identifier",

@@ -390,6 +390,25 @@ test("model dropdown repopulates from the settings models endpoint when the prov
   assert.equal(select.value, "gemini-3.6-flash");
 });
 
+test("unavailable models reveal Advanced guidance without losing the saved model", async () => {
+  const select = new FakeSelect();
+  const status = { textContent: "" };
+  const advanced = { open: false };
+  const documentRef = {
+    cookie: "study_hub_csrf=test-token",
+    createElement: () => new FakeOption(),
+    querySelector: (selector) => ({
+      "[data-anki-model-status]": status,
+      "[data-anki-advanced]": advanced,
+    })[selector] || null,
+  };
+  await anki.loadModelOptions(documentRef, async () => { throw new Error("offline"); },
+    select, "openai", "saved-model");
+  assert.equal(advanced.open, true);
+  assert.match(status.textContent, /Check the provider credential in Settings/);
+  assert.equal(select.value, "saved-model");
+});
+
 test("OpenRouter model loading reports populated availability", async () => {
   const select = new FakeSelect();
   const status = { textContent: "" };

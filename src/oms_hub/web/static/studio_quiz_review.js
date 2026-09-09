@@ -556,9 +556,10 @@
     const checks = target.closest?.(".studio-review-checks");
     const checkSummary = checks?.querySelector?.("[data-review-check-summary]");
     target.replaceChildren();
-    const issues = payload.issues || payload.blockers.map((message) => ({
+    const runDiagnosticCodes = new Set((payload.run_diagnostics || []).map((item) => item.code));
+    const issues = (payload.issues || payload.blockers.map((message) => ({
       question_id: message.split(":", 1)[0], display_label: message.split(":", 1)[0], type: "review", message, role: "err",
-    }));
+    }))).filter((issue) => !runDiagnosticCodes.has(issue.code));
     const hasBlockingRunDiagnostic = (payload.run_diagnostics || []).some((diagnostic) => (
       diagnostic.severity === "blocker"
       && !(diagnostic.overridable && diagnostic.acknowledged)
@@ -569,13 +570,12 @@
       target.append(text(documentRef, "p", "Ready for preview and publication.", "studio-review-ready"));
       return;
     }
-    if (checkSummary) {
-      const diagnosticCount = (payload.run_diagnostics || []).length;
-      checkSummary.textContent = issues.length
-        ? issueSummary(issues)
-        : `${diagnosticCount} publication ${diagnosticCount === 1 ? "check" : "checks"}`;
-    }
-    target.append(text(documentRef, "p", issueSummary(issues), "sh-pill sh-pill--bare"));
+    const diagnosticCount = (payload.run_diagnostics || []).length;
+    if (checkSummary) checkSummary.textContent = [
+      issues.length ? issueSummary(issues) : "",
+      diagnosticCount ? `${diagnosticCount} run-wide ${diagnosticCount === 1 ? "check" : "checks"}` : "",
+    ].filter(Boolean).join(" · ");
+    if (issues.length) target.append(text(documentRef, "p", issueSummary(issues), "sh-pill sh-pill--bare"));
     groupIssues(issues).forEach((group) => {
       const details = documentRef.createElement("details");
       details.className = "studio-review-issue-group sh-card t-accordion";
@@ -612,8 +612,11 @@
         acknowledge.dataset.acknowledgeRunDiagnostic = diagnostic.code;
         acknowledge.textContent = "Acknowledge";
         item.append(acknowledge);
+        item.append(text(documentRef, "p", "Next: reconcile the source material, then acknowledge this run-wide check."));
       } else if (!diagnostic.overridable) {
-        item.append(text(documentRef, "p", "Blocking diagnostic; acknowledgement is unavailable."));
+        item.append(text(documentRef, "p", "Next: reconcile the source material. This check cannot be acknowledged."));
+      } else {
+        item.append(text(documentRef, "p", "Run-wide check acknowledged."));
       }
       target.append(item);
     });
@@ -633,8 +636,10 @@
       questions.querySelectorAll?.("[data-question-id]") || [],
       (card) => [card.dataset.questionId, card],
     ));
+    const runDiagnosticCodes = new Set((payload.run_diagnostics || []).map((item) => item.code));
+    const localIssues = (payload.issues || []).filter((issue) => !runDiagnosticCodes.has(issue.code));
     const blockingQuestionIds = new Set(
-      (payload.issues || []).filter((issue) => issue.role === "err").map((issue) => issue.question_id),
+      localIssues.filter((issue) => issue.role === "err").map((issue) => issue.question_id),
     );
     const needsReview = [];
     const ready = [];
@@ -645,7 +650,7 @@
         : renderQuestion(
           documentRef,
           question,
-          (payload.issues || []).filter((issue) => issue.question_id === question.id),
+          localIssues.filter((issue) => issue.question_id === question.id),
         );
       (blockingQuestionIds.has(question.id) ? needsReview : ready).push(card);
       existing.delete(question.id);

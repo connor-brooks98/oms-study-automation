@@ -27,14 +27,14 @@
       <a class="sh-nav__link" href="/lectures">Lectures</a>
       <a class="sh-nav__link" href="/anki">Anki</a>
       <a class="sh-nav__link" href="/studio">Quiz Builder</a>
-      <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
-      <a class="sh-nav__link {% if library_path == practice_library_path %}sh-nav__link--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Practice Questions</a>
+      <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>{{ 'Manage quizzes' if management_mode else 'Quizzes' }}</a>
+      <a class="sh-nav__link {% if library_path == practice_library_path %}sh-nav__link--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>{{ 'Manage practice questions' if management_mode else 'Practice Questions' }}</a>
       <details class="sh-more">
         <summary class="sh-nav__link sh-more__trigger" aria-expanded="false">More <span class="sh-more__chevron" aria-hidden="true">▾</span></summary>
         <div class="sh-more__menu t-dropdown" data-origin="top-right">
           <a href="/uploads/slides">Upload slides</a>
           <a href="/uploads/transcripts">Upload transcript</a>
-          <a href="/quarantine">Quarantine</a>
+          <a href="/quarantine">Unmatched uploads</a>
           <a href="/review">Review</a>
           <a href="/settings">Settings</a>
         </div>
@@ -49,6 +49,7 @@
     <nav class="utility-nav sh-nav" aria-label="Quiz library navigation">
       <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
       <a class="sh-nav__link {% if library_path == practice_library_path %}sh-nav__link--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Practice Questions</a>
+      {% if owner_return %}<a class="sh-nav__link" href="{{ owner_return }}">{{ owner_return_label }}</a>{% endif %}
     </nav>
     {% endif %}
     </div>
@@ -61,9 +62,9 @@
     </div>
     <nav aria-label="Mobile navigation">
       <a href="/" data-dialog-initial-focus>Home</a><a href="/lectures">Lectures</a><a href="/anki">Anki</a><a href="/studio">Quiz Builder</a>
-      <a href="{{ quiz_library_path }}">Quizzes</a><a href="{{ practice_library_path }}">Practice Questions</a>
+      <a href="{{ quiz_library_path }}">{{ 'Manage quizzes' if management_mode else 'Quizzes' }}</a><a href="{{ practice_library_path }}">{{ 'Manage practice questions' if management_mode else 'Practice Questions' }}</a>
       <a href="/uploads/slides">Upload slides</a><a href="/uploads/transcripts">Upload transcript</a>
-      <a href="/quarantine">Quarantine</a><a href="/review">Review</a><a href="/settings">Settings</a>
+      <a href="/quarantine">Unmatched uploads</a><a href="/review">Review</a><a href="/settings">Settings</a>
     </nav>
   </dialog>
   {% endif %}
@@ -75,8 +76,9 @@
         <p class="sh-subtitle">{{ library_summary }}</p>
         {% if management_mode %}
         <nav class="sh-nav" aria-label="Released library management">
-          <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
-          <a class="sh-nav__link {% if library_path == practice_library_path %}sh-nav__link--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Practice Questions</a>
+          <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Manage quizzes</a>
+          <a class="sh-nav__link {% if library_path == practice_library_path %}sh-nav__link--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Manage practice questions</a>
+          <a class="sh-nav__link" href="{{ ('/public/quizzes?return_to=%2Fstudio%2Flibrary%2Fquizzes') if library_path == quiz_library_path else ('/public/practice-questions?return_to=%2Fstudio%2Flibrary%2Fpractice-questions') }}">View public library</a>
         </nav>
         {% endif %}
       </div>
@@ -115,7 +117,7 @@
                 <a class="quiz-link sh-row__title" href="{{ row.url }}">
                   <span>
                     <strong>{% if not row.is_studio %}{{ row.primary_label }} · {% endif %}<span data-quiz-title-for="{{ row.token }}">{{ row.title }}</span></strong>
-                    {% if row.secondary_label %}<small>{{ row.secondary_label }}</small>{% endif %}
+                    {% if row.secondary_label and row.secondary_label != row.title and row.secondary_label != row.primary_label %}<small>{{ row.secondary_label }}</small>{% endif %}
                   </span>
                   <span class="progress-pill sh-pill" data-quiz-progress>Not started</span>
                 </a>

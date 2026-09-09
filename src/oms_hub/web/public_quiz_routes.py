@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal, cast
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -203,6 +204,21 @@ def _owner_library_navigation(request: Request, management_mode: bool) -> bool:
     }
 
 
+_OWNER_LIBRARY_RETURNS = {
+    "/studio/library/quizzes": "Back to Manage quizzes",
+    "/studio/library/practice-questions": "Back to Manage practice questions",
+}
+
+
+def _owner_library_return(request: Request) -> tuple[str | None, str | None]:
+    path = request.query_params.get("return_to")
+    return (path, _OWNER_LIBRARY_RETURNS[path]) if path in _OWNER_LIBRARY_RETURNS else (None, None)
+
+
+def _public_url(path: str, owner_return: str | None) -> str:
+    return f"{path}?{urlencode({'return_to': owner_return})}" if owner_return else path
+
+
 def _quiz_library(
     request: Request,
     content_kinds: frozenset[QuizContentKind],
@@ -214,6 +230,7 @@ def _quiz_library(
     library_path: str,
     management_mode: bool = False,
 ) -> HTMLResponse:
+    owner_return, owner_return_label = _owner_library_return(request)
     courses: dict[str, dict[int, list[dict[str, object]]]] = {}
     course_names: dict[str, str] = {}
     repository = _repository(request)
@@ -257,7 +274,7 @@ def _quiz_library(
                     else published.title
                 ),
                 "secondary_label": lecture.topic if lecture is not None else None,
-                "url": f"/public/quizzes/{published.token}",
+                "url": _public_url(f"/public/quizzes/{published.token}", owner_return),
                 "open_flag_count": (
                     repository.open_published_quiz_flag_count(published.token)
                     if management_mode
@@ -302,6 +319,8 @@ def _quiz_library(
             "library_path": library_path,
             "management_mode": management_mode,
             "owner_navigation": _owner_library_navigation(request, management_mode),
+            "owner_return": owner_return,
+            "owner_return_label": owner_return_label,
             "quiz_library_path": (
                 "/studio/library/quizzes" if management_mode else "/public/quizzes"
             ),
@@ -369,6 +388,7 @@ def practice_question_library(request: Request) -> HTMLResponse:
 @router.get("/quizzes/{token}", response_class=HTMLResponse)
 def quiz_page(request: Request, token: str) -> HTMLResponse:
     published = _published(request, token)
+    owner_return, _ = _owner_library_return(request)
     is_practice_questions = (
         published.content_kind == QuizContentKind.PRACTICE_QUESTIONS
     )
@@ -399,11 +419,11 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
             },
             "content_url": f"/public/quizzes/{token}/content",
             "answer_url": f"/public/quizzes/{token}/answer",
-            "library_url": (
+            "library_url": _public_url((
                 "/public/practice-questions"
                 if is_practice_questions
                 else "/public/quizzes"
-            ),
+            ), owner_return),
             "library_label": (
                 "Back to practice questions"
                 if is_practice_questions

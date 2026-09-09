@@ -492,6 +492,38 @@ def test_overridable_run_diagnostic_is_stored_once_and_acknowledgement_persists(
     assert len(reloaded.to_native_quiz("run-1").questions) == 2
 
 
+def test_legacy_unmatched_answer_projects_globally_without_get_write(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    legacy = replace(
+        _draft("q1", generated=False),
+        diagnostics=(DraftDiagnostic(
+            "unmatched-supplied-answer",
+            "unmatched supplied answer: 12",
+            DiagnosticSeverity.BLOCKER,
+        ),),
+    )
+    service.store("run-1", (legacy,))
+
+    assert service.issues("run-1") == ()
+    assert service.run_diagnostics("run-1") == ({
+        "code": "unmatched-supplied-answer",
+        "message": "unmatched supplied answer: 12",
+        "severity": "blocker",
+        "overridable": True,
+        "acknowledged": False,
+    },)
+    assert service.blockers("run-1") == ("unmatched supplied answer: 12",)
+    assert service.repository.run_artifact("run-1", "review:run-diagnostics") is None
+
+    service.acknowledge_run_diagnostic("run-1", "unmatched-supplied-answer")
+
+    assert service.blockers("run-1") == ()
+    assert service.run_diagnostics("run-1")[0]["acknowledged"] is True
+    assert service.review("run-1")[0].draft.diagnostics == ()
+
+
 def test_hard_run_diagnostic_cannot_be_acknowledged(tmp_path: Path) -> None:
     service = _service(tmp_path)
     service.store("run-1", (_draft("q1", generated=False),))

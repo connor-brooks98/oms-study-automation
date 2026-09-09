@@ -280,9 +280,24 @@ test("direct run history labels review stages and links to question review", () 
   }]);
 
   const card = container.children[0];
-  assert.match(card.children[1].textContent, /review ready/);
+  assert.equal(card.children[1].textContent, "Ready for review");
   assert.equal(card.children[2].textContent, "Review questions");
   assert.equal(card.children[2].href, "/studio/runs/run-1/review");
+});
+
+test("repeated run labels include time and a short identifier", () => {
+  const container = new Element("div");
+  const shared = {
+    label: "Lymphoid IV", state: "awaiting_review", stage: "review", attempts: 1,
+    error: null, workflow_kind: "direct_import", review_url: null,
+    image_review_url: null, published_url: null,
+    created_at: "2026-09-09T14:00:00Z", attempt_history: [],
+  };
+  studio.renderRuns(documentRef, container, [
+    { ...shared, id: "run-abcdef" }, { ...shared, id: "run-123456" },
+  ]);
+  assert.match(container.children[0].children[1].textContent, /Ready for review.*abcdef/);
+  assert.match(container.children[0].children[1].textContent, /2026/);
 });
 
 test("terminal runs expose compact rerun and history-only remove actions", () => {
@@ -418,10 +433,11 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
     "[data-destination-course]": select([[""]]),
     "[data-destination-exam]": select([[""]]),
     "[data-import-run-form]": new Element("form"),
-    "[data-import-destination-course]": select([[""]]),
+    "[data-import-destination-course]": select([[""], ["Neuro", "1,2"], ["Cardio", "1"]]),
     "[data-import-destination-exam]": select([[""]]),
     "[data-import-source-list]": new Element("ul"),
     "[data-import-selection-toggle]": importSelectionToggle,
+    "[data-import-source-filter]": new Element("input"),
     "[data-poll-status]": new Element("p"),
   };
   const page = new Element("section");
@@ -475,6 +491,8 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
   assert.equal(course.value, "Neuro");
   assert.equal(exam.value, "1");
   assert.equal(exam.disabled, false);
+  assert.equal(elements["[data-import-destination-course]"].value, "Neuro");
+  assert.equal(elements["[data-import-destination-exam]"].value, "1");
   assert.equal(workflowPanels.find((panel) => panel.dataset.workflowPanel === "import").hidden, false);
   assert.deepEqual(requests, [
     "/studio/sources?subject_key=neuro&exam_number=1",
@@ -506,13 +524,21 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
   assert.equal(changedScope.searchParams.get("subject"), "cardio");
   assert.equal(changedScope.searchParams.get("exam"), "1");
   assert.equal(changedScope.searchParams.get("workflow"), "import");
+  assert.equal(elements["[data-import-destination-course]"].value, "Cardio");
+  assert.equal(elements["[data-import-destination-exam]"].value, "1");
   assert.equal(elements["[data-import-source-list]"].querySelectorAll(
     "[data-import-source-row]",
   ).length, 0);
 
+  elements["[data-import-destination-course]"].value = "Neuro";
+  await elements["[data-import-destination-course]"].dispatch("change");
+  assert.equal(elements["[data-import-destination-exam]"].value, "");
+
   course.value = "Neuro";
   await course.dispatch("change");
-  exam.value = "1";
+  exam.value = "2";
+  assert.equal(elements["[data-import-destination-course]"].value, "Neuro");
+  assert.equal(elements["[data-import-destination-exam]"].value, "");
   delayNextNeuroSources = true;
   const staleNeuroRefresh = exam.dispatch("change");
   assert.equal(typeof resolveDelayedNeuroSources, "function");
@@ -521,6 +547,8 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
   await course.dispatch("change");
   exam.value = "1";
   await exam.dispatch("change");
+  assert.equal(elements["[data-import-destination-course]"].value, "Neuro");
+  assert.equal(elements["[data-import-destination-exam]"].value, "");
   resolveDelayedNeuroSources({
     ok: true,
     json: async () => ({

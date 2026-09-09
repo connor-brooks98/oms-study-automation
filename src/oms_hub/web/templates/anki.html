@@ -107,6 +107,26 @@
           <input class="sh-input" name="target_tag" required>
           <span class="field-help">Selected existing cards and approved generated cards receive this tag.</span>
         </label>
+        <section class="anki-field-wide anki-workbench-panel" data-curation-models>
+          <label>Curation profile
+            <select class="sh-select" name="curation_profile" data-curation-profile>
+              <option value="balanced" selected>Balanced</option>
+              <option value="max_quality">Max quality</option>
+              <option value="fast_cheap">Fast / cheap</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </label>
+          <p class="field-help" data-curation-estimate>Finds existing cards, checks remaining gaps, and prepares source-backed additions for review.</p>
+        </section>
+        <label class="anki-field-wide">
+          Focus for this lecture
+          <textarea class="sh-textarea" name="instruction_text" rows="3" placeholder="Optional: prioritize lecturer comparisons, red-highlighted facts, or exam framing."></textarea>
+        </label>
+      </div>
+
+      <details class="anki-advanced" data-anki-advanced>
+        <summary><span class="sh-disclose" aria-hidden="true">▸</span> Advanced</summary>
+        <div class="anki-form-grid">
         <label>
           AI provider
           <select class="sh-select" name="provider">
@@ -123,17 +143,7 @@
           </select>
           <span class="field-help" id="anki-model-status" data-anki-model-status aria-live="polite"></span>
         </label>
-        <section class="anki-field-wide anki-workbench-panel" data-curation-models>
-          <p class="sh-section-label">Models</p>
-          <label>Curation profile
-            <select class="sh-select" name="curation_profile" data-curation-profile>
-              <option value="balanced" selected>Balanced</option>
-              <option value="max_quality">Max quality</option>
-              <option value="fast_cheap">Fast / cheap</option>
-              <option value="custom">Custom…</option>
-            </select>
-          </label>
-          <p class="field-help" data-curation-estimate>Balanced profile. S6 matches classify; S4/S6 use non-thinking mode.</p>
+          <section class="anki-field-wide">
           <div class="anki-form-grid" data-curation-stage-models hidden>
             <label>Concept ledger (S2)<input class="sh-input" name="s2_model" readonly></label>
             <label>Classify (S4)<input class="sh-input" name="s4_model" readonly></label>
@@ -148,16 +158,7 @@
           {% endif %}
           <span class="field-help" data-fixture-result aria-live="polite"></span>
           <p class="field-help" data-s7-warning hidden>Gap cards enter your permanent deck; a weaker S7 model risks subtle errors.</p>
-        </section>
-        <label class="anki-field-wide">
-          Focus for this lecture
-          <textarea class="sh-textarea" name="instruction_text" rows="3" placeholder="Optional: prioritize lecturer comparisons, red-highlighted facts, or exam framing."></textarea>
-        </label>
-      </div>
-
-      <details class="anki-advanced">
-          <summary><span class="sh-disclose" aria-hidden="true">▸</span> Run details</summary>
-        <div class="anki-form-grid">
+          </section>
           <label>LCL prompt version
             <select class="sh-select" name="lcl_prompt_version" required>
               {% for prompt in prompt_catalog.choices.lcl %}<option value="{{ prompt.id }}" {% if prompt.id == defaults.lcl_prompt_version %}selected{% endif %}>{{ prompt.label }}</option>{% endfor %}
@@ -175,6 +176,8 @@
           </label>
           <label>Current Anki snapshot <input class="sh-input" name="index_snapshot_id" value="{{ defaults.index_snapshot_id or '' }}" readonly required></label>
         </div>
+      </details>
+
         {% if prompt_catalog.issues %}
         <div class="anki-notice anki-notice-warning" role="status">
           <div>
@@ -183,7 +186,6 @@
           </div>
         </div>
         {% endif %}
-      </details>
 
       <div class="anki-form-actions">
         <p id="anki-create-message" class="anki-action-message" role="status" aria-live="polite"></p>
@@ -236,5 +238,5 @@
 <script id="anki-profile-default" type="application/json">{{ defaults.card_centric_profile|tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="/static/anki.js?v=20260826.1" defer></script>
+<script src="/static/anki.js?v={{ shell_asset_version }}" defer></script>
 {% endblock %}

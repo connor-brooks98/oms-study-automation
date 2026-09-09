@@ -722,7 +722,7 @@ test("initialize renders the could-not-load state when the fetch rejects", async
   assert.equal(app.textContent, "This quiz could not be loaded.");
 });
 
-test("player puts navigation above the shell and question metadata in a disclosure", async () => {
+test("player hides answer-bearing metadata until submission", async () => {
   const { documentRef, app } = buildQuizApp();
   const rendered = {
     token: "tok",
@@ -741,14 +741,22 @@ test("player puts navigation above the shell and question metadata in a disclosu
     }],
   };
 
-  await quiz.initialize(documentRef, async () => ({
+  await quiz.initialize(documentRef, async (url) => ({
     ok: true,
-    async json() { return rendered; },
+    async json() {
+      return url === "/mock/answer"
+        ? { correct: true, correct_choice_id: "c1", rationale: "Because." }
+        : rendered;
+    },
   }));
 
   assert.equal(app.children[0].className, "quiz-navigation quiz-navigation-card");
   assert.equal(app.children[1].className, "quiz-shell t-page-enter");
-  assert.match(app.textContent, /Heme\/Lymph Lecture 12 · Exam 2 · Platelet Disorders/);
+  assert.match(app.textContent, /Heme\/Lymph Lecture 12 · Exam 2/);
+  assert.doesNotMatch(app.textContent, /Identify the mechanism|Thrombocytopenia/);
+  assert.equal(findByClass(app, "quiz-information"), null);
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
   const information = findByClass(app, "quiz-information");
   assert.ok(information, "expected a Question Information disclosure");
   assert.equal(information.tagName, "details");
@@ -756,7 +764,7 @@ test("player puts navigation above the shell and question metadata in a disclosu
   assert.match(information.textContent, /Area: Hematology/);
 });
 
-test("Question Information remains open through same-question interactions", async () => {
+test("Question Information remains open through submitted study-tool interactions", async () => {
   const { documentRef, app } = buildQuizApp();
   const fetchImpl = async (url) => ({
     ok: true,
@@ -778,20 +786,12 @@ test("Question Information remains open through same-question interactions", asy
   });
 
   await quiz.initialize(documentRef, fetchImpl);
+  assert.equal(app.querySelector("[data-question-information]"), null);
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
   let information = app.querySelector("[data-question-information]");
   information.open = true;
   information._listeners.toggle[0]();
-  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
-  information = app.querySelector("[data-question-information]");
-  assert.equal(information.open, true, "selection preserves disclosure state");
-  assert.equal(
-    findByClass(app, "quiz-shell").className.includes("t-page-enter"),
-    false,
-    "selection does not replay the whole-page transition",
-  );
-  app.querySelector('[data-focus-key="strike-c2"]'). _listeners.click[0]();
-  information = app.querySelector("[data-question-information]");
-  assert.equal(information.open, true, "elimination preserves disclosure state");
   const stem = findByClass(app, "quiz-question");
   documentRef.getSelection = () => ({
     rangeCount: 1,
@@ -816,14 +816,7 @@ test("Question Information remains open through same-question interactions", asy
   flag.value = "want_to_review";
   flag._listeners.change[0]();
   assert.equal(app.querySelector("[data-question-information]").open, true, "flagging does not recreate disclosure");
-  information = app.querySelector("[data-question-information]");
-  information.open = false;
-  information._listeners.toggle[0]();
-  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
-  assert.equal(app.querySelector("[data-question-information]").open, false, "a user-closed disclosure remains closed");
-  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
-  assert.equal(app.querySelector("[data-question-information]").open, false, "submission preserves a closed disclosure state");
-  assert.equal(documentRef.activeElement?.dataset?.focusKey, "forward", "submission moves focus to the next available action");
+  assert.equal(app.querySelector("[data-question-information]").open, true);
 });
 
 test("Question Information stays open after submission and navigation by stable question ID", async () => {
@@ -856,17 +849,16 @@ test("Question Information stays open after submission and navigation by stable 
   });
 
   await quiz.initialize(documentRef, fetchImpl);
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
   let information = app.querySelector("[data-question-information]");
   information.open = true;
   information._listeners.toggle[0]();
-  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
-  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
-  information = app.querySelector("[data-question-information]");
   assert.equal(information.dataset.questionInformation, "q1");
   assert.equal(information.open, true, "submission preserves an open disclosure");
 
   app.querySelector('[data-focus-key="forward"]')._listeners.click[0]();
-  assert.equal(app.querySelector("[data-question-information]").dataset.questionInformation, "q2");
+  assert.equal(app.querySelector("[data-question-information]"), null);
   app.querySelector('[data-focus-key="back"]')._listeners.click[0]();
   information = app.querySelector("[data-question-information]");
   assert.equal(information.dataset.questionInformation, "q1");

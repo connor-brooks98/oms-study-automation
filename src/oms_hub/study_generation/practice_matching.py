@@ -67,7 +67,7 @@ def pair_supplied_answers(
         for index, item in enumerate(questions)
         if isinstance(item, ExtractedMatchingQuestion)
     )
-    mcq_drafts = _pair_multiple_choice_answers(
+    multiple_choice = _pair_multiple_choice_answers(
         tuple(cast(ExtractedQuestion, questions[index]) for index in mcq_positions),
         tuple(item for item in answers if isinstance(item, ExtractedAnswer)),
         question_source_refs=tuple(question_refs[index] for index in mcq_positions),
@@ -86,11 +86,12 @@ def pair_supplied_answers(
         ),
     )
     by_position: dict[int, QuestionDraftValue] = dict(
-        zip(mcq_positions, mcq_drafts, strict=True)
+        zip(mcq_positions, multiple_choice.drafts, strict=True)
     )
     by_position.update(dict(zip(matching_positions, matching.drafts, strict=True)))
     return PairingResult(
-        tuple(by_position[index] for index in range(len(questions))), matching.diagnostics
+        tuple(by_position[index] for index in range(len(questions))),
+        (*multiple_choice.diagnostics, *matching.diagnostics),
     )
 
 
@@ -99,7 +100,7 @@ def _pair_multiple_choice_answers(
     answers: tuple[ExtractedAnswer, ...],
     *,
     question_source_refs: tuple[tuple[QuestionSourceRef, ...], ...] | None = None,
-) -> tuple[QuestionDraft, ...]:
+) -> PairingResult:
     """Pair only unambiguous supplied answers, retaining every ambiguity as review work."""
 
     if question_source_refs is not None and len(question_source_refs) != len(questions):
@@ -121,6 +122,7 @@ def _pair_multiple_choice_answers(
     matched_answer_indexes: set[int] = set()
     matched_answers: dict[int, ExtractedAnswer] = {}
     diagnostics: list[list[DraftDiagnostic]] = [[] for _ in questions]
+    run_diagnostics: list[DraftDiagnostic] = []
 
     for question_index, identifier in enumerate(question_ids):
         if identifier is None:
@@ -179,7 +181,13 @@ def _pair_multiple_choice_answers(
 
     for answer_index, answer in enumerate(answers):
         if answer_index not in matched_answer_indexes:
-            _append_unmatched_answer_diagnostic(diagnostics, answer)
+            identifier = answer.original_identifier or "without an identifier"
+            run_diagnostics.append(
+                _blocker(
+                    "unmatched-supplied-answer",
+                    f"unmatched supplied answer: {identifier}",
+                )
+            )
 
     drafts: list[QuestionDraft] = []
     for index, question in enumerate(questions):
@@ -215,7 +223,7 @@ def _pair_multiple_choice_answers(
                 verified_at=None,
             )
         )
-    return tuple(drafts)
+    return PairingResult(tuple(drafts), tuple(run_diagnostics))
 
 
 def _pair_matching_answers(
@@ -488,17 +496,6 @@ def _rationale(
     if correct_index is not None and supplied:
         return f"Source-marked correct answer: {question.choices[correct_index]}"
     return None
-
-
-def _append_unmatched_answer_diagnostic(
-    diagnostics: list[list[DraftDiagnostic]], answer: ExtractedAnswer
-) -> None:
-    if not diagnostics:
-        return
-    identifier = answer.original_identifier or "without an identifier"
-    diagnostics[0].append(
-        _blocker("unmatched-supplied-answer", f"unmatched supplied answer: {identifier}")
-    )
 
 
 def _question_id(

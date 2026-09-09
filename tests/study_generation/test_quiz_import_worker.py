@@ -51,6 +51,7 @@ from oms_hub.study_generation.practice_extraction import (
 from oms_hub.study_generation.practice_review import PracticeReviewService
 from oms_hub.study_generation.quiz_import_worker import (
     QuizImportWorker,
+    _artifact_hash,
     _document_from_json,
     _document_json,
     _drafts_from_json,
@@ -506,6 +507,110 @@ def test_extraction_ambiguity_is_stored_once_as_overridable_run_diagnostic(
     assert "Question count needs review" not in service.blockers(run.id)
 
 
+def test_unmatched_mcq_answer_is_only_an_overridable_run_diagnostic(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    run = _queued_import(repository, tmp_path)
+
+    class UnmatchedAnswerExtractor(_QuestionExtractor):
+        def extract(self, documents) -> ExtractionResult:
+            result = super().extract(documents)
+            return replace(
+                result,
+                answers=(
+                    ExtractedAnswer(
+                        original_identifier="12",
+                        correct_index=0,
+                        rationale=None,
+                        source_segments=(
+                            SegmentCitation(
+                                source_id=documents[0].document.source_id,
+                                segment_key="block-1",
+                            ),
+                        ),
+                    ),
+                ),
+                answer_source_refs=((QuestionSourceRef(
+                    documents[0].document.source_id, "block-1", "block 1"
+                ),),),
+            )
+
+    worker = QuizImportWorker(
+        repository,
+        _Parser(),
+        UnmatchedAnswerExtractor(),
+        _ResolvedAnswers(),
+        object(),
+        tmp_path / "assets",
+    )
+    worker.run(repository.claim_next_run())
+
+    service = PracticeReviewService(repository)
+    assert service.run_diagnostics(run.id) == ({
+        "acknowledged": False,
+        "code": "unmatched-supplied-answer",
+        "message": "unmatched supplied answer: 12",
+        "overridable": True,
+        "severity": "blocker",
+    },)
+    assert all(issue.code != "unmatched-supplied-answer" for issue in service.issues(run.id))
+    service.acknowledge_run_diagnostic(run.id, "unmatched-supplied-answer")
+    assert "unmatched supplied answer: 12" not in service.blockers(run.id)
+
+
+def test_v4_pair_cache_is_rebuilt_with_run_scoped_unmatched_answers(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    run = _queued_import(repository, tmp_path)
+    source = repository.get(repository.import_sources(run.id)[0].source_id)
+    assert source is not None
+    extraction = ExtractionResult(
+        (ExtractedQuestion(
+            original_identifier="1", stem="Which answer is correct?", choices=("Yes", "No"),
+            source_segments=(SegmentCitation(source_id=source.id, segment_key="block-1"),),
+            confidence=0.9,
+        ),),
+        (ExtractedAnswer(
+            original_identifier="12", correct_index=0, rationale=None,
+            source_segments=(SegmentCitation(source_id=source.id, segment_key="block-1"),),
+        ),),
+        ((QuestionSourceRef(source.id, "block-1", "block 1"),),),
+        ((QuestionSourceRef(source.id, "block-1", "block 1"),),),
+        (),
+        (),
+    )
+    repository.save_run_artifact(
+        run.id, "extract", "extract-signature", _extraction_json(extraction)
+    )
+    old_signature = stage_signature(
+        "pair",
+        source_hashes=(source.snapshot_sha256 or "",),
+        parser_versions=(),
+        provider_model="deterministic",
+        prompt_version="supplied-answer-pairing-v4",
+        artifact_hashes=(_artifact_hash(repository, run.id, "extract"),),
+        roles=(ImportSourceRole.QUESTIONS.value,),
+    )
+    repository.save_run_artifact(run.id, "pair", old_signature, "[]")
+    worker = QuizImportWorker(
+        repository, _Parser(), _StaticExtractor(extraction), _ResolvedAnswers(), object(),
+        tmp_path / "assets",
+    )
+
+    drafts = worker._pair(run, extraction, (source,), (ImportSourceRole.QUESTIONS,))
+
+    assert all(
+        diagnostic.code != "unmatched-supplied-answer"
+        for draft in drafts
+        for diagnostic in draft.diagnostics
+    )
+    assert PracticeReviewService(repository).run_diagnostics(run.id)[0]["code"] == (
+        "unmatched-supplied-answer"
+    )
+
+
 def test_extraction_signature_changes_with_model_or_source() -> None:
     first = stage_signature(
         "extract",
@@ -550,8 +655,8 @@ def test_extraction_signature_changes_with_model_or_source() -> None:
         ),
         (
             "pair",
-            "supplied-answer-pairing-v3",
             "supplied-answer-pairing-v4",
+            "supplied-answer-pairing-v5",
             ("answered", "normalized"),
         ),
         (

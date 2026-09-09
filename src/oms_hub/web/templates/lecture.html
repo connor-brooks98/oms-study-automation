@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ title }} · Study Hub{% endblock %}
 {% block content %}
-<article class="page-shell sh-container lecture-page" style="--course-hue: {{ course_hue }}; --sh-hue: {{ course_hue }}">
+<article class="page-shell sh-container lecture-page" data-lecture-context='{{ {"id": lecture.id, "title": title}|tojson }}' style="--course-hue: {{ course_hue }}; --sh-hue: {{ course_hue }}">
   <nav class="breadcrumbs" aria-label="Breadcrumb">
     <a href="/lectures">Lectures</a><span aria-hidden="true">/</span>
     <span>{{ lecture.subject }}</span><span aria-hidden="true">/</span>
@@ -20,9 +20,22 @@
     </div>
   </header>
 
+  {% set completed_passes = lecture.passes|selectattr('completed_on')|list|length %}
+  {% set pass_total = lecture.passes|length %}
+  <nav class="lecture-study-actions sh-card" aria-label="Study this lecture">
+    <div><span class="mono-label">Study progress</span><strong>{{ completed_passes }}/{{ pass_total }} configured passes complete</strong></div>
+    {% if slide_revision and not slide_problem %}<a class="sh-btn sh-btn--primary" href="/artifacts/{{ slide_revision.id }}/pdf">Open lecture PDF</a>{% endif %}
+    {% if transcript_revision and not transcript_problem %}<a class="sh-btn sh-btn--primary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open transcript</a>{% endif %}
+    {% if outline_output %}<a class="sh-btn sh-btn--primary" href="/artifacts/outlines/{{ outline_output.id }}">Open outline</a>{% endif %}
+    {% if quiz_output %}<a class="sh-btn sh-btn--primary" href="{{ quiz_output.url }}" target="_blank" rel="noopener noreferrer">Take quiz</a>{% endif %}
+    <a class="sh-btn sh-btn--secondary" href="/studio?subject={{ lecture.subject|urlencode }}&amp;exam={{ lecture.exam_number }}&amp;workflow=import">Open question builder</a>
+    <a class="sh-btn sh-btn--secondary" href="#pass-tracker">Record a pass</a>
+  </nav>
+
   <div class="lecture-workbench">
-  <section class="pipeline-card sh-panel" aria-labelledby="pipeline-heading">
-    <p class="mono-label" id="pipeline-heading">Pipeline status</p>
+  <details class="pipeline-card sh-panel" aria-labelledby="pipeline-heading" {% if status in ('failed', 'quarantined', 'needs_review') %}open{% endif %}>
+    <summary><span class="mono-label" id="pipeline-heading">Materials processing</span><strong>{{ status_label }} · {{ progress_percent }}%</strong></summary>
+    <div class="pipeline-card__body">
     <div class="pipeline-status">
       {% set status_tone = "sh-pill--ok" if status in ("complete", "completed", "ready", "configured", "connected", "skipped") else "sh-pill--info" if status in ("processing", "queued", "running", "pending", "in_progress") else "sh-pill--warn" if status in ("needs_review", "review") else "sh-pill--err" if status in ("failed", "quarantined") else "sh-pill--bare" %}
       <strong class="status-text status-{{ status }} sh-pill {{ status_tone }}">{{ status_label }}</strong>
@@ -38,7 +51,8 @@
       {% elif status == "processing" %}The NUC is working through the available files.
       {% else %}Waiting for lecture files to be uploaded.{% endif %}
     </p>
-  </section>
+    </div>
+  </details>
 
   <div class="file-card-grid">
     <section class="file-card sh-card {{ 'ready' if slide_revision and not slide_problem else 'missing' }}">
@@ -49,12 +63,12 @@
       <p class="file-caption">{% if slide_revision and slide_problem %}Lecture PDF {{ slide_problem }}.{% elif slide_revision %}{{ slide_revision.canonical_derived_path.name }}{% else %}Not yet uploaded{% endif %}</p>
       <div class="file-actions lecture-card-actions">
         {% if slide_revision and not slide_problem %}
-        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ slide_revision.id }}/pdf">Open Lecture PDF</a>
+        <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ slide_revision.id }}/pdf">Open Lecture PDF</a>
         {% elif not slide_revision %}
         <span class="button disabled sh-btn is-disabled" aria-disabled="true">Lecture PDF unavailable</span>
         {% endif %}
         {% if slide_revision %}
-        <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ slide_revision.id }}/pptx">Download PPTX</a>
+        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ slide_revision.id }}/pptx">Download PPTX</a>
         {% endif %}
       </div>
     </section>
@@ -66,12 +80,12 @@
       <p class="file-caption">{% if transcript_revision and transcript_problem %}Cleaned transcript {{ transcript_problem }}.{% elif transcript_revision %}{{ transcript_revision.canonical_derived_path.name }}{% else %}Not yet uploaded{% endif %}</p>
       <div class="file-actions lecture-card-actions">
         {% if transcript_revision and not transcript_problem %}
-        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open Transcript</a>
+        <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open Transcript</a>
         {% elif not transcript_revision %}
         <span class="button disabled sh-btn is-disabled" aria-disabled="true">Cleaned transcript unavailable</span>
         {% endif %}
         {% if transcript_revision %}
-        <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ transcript_revision.id }}/cleaned/download">Download Transcript</a>
+        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ transcript_revision.id }}/cleaned/download">Download Transcript</a>
         {% endif %}
       </div>
     </section>
@@ -87,8 +101,8 @@
       </p>
       <div class="file-actions lecture-card-actions{% if not outline_output %} lecture-card-actions--single{% endif %}">
         {% if outline_output %}
-        <a class="button secondary sh-btn sh-btn--secondary" data-generation-link href="/artifacts/outlines/{{ outline_output.id }}">Open Lecture Outline</a>
-        <a class="button primary sh-btn sh-btn--primary" data-generation-download href="/artifacts/outlines/{{ outline_output.id }}/download">Download Lecture Outline</a>
+        <a class="button primary sh-btn sh-btn--primary" data-generation-link href="/artifacts/outlines/{{ outline_output.id }}">Open Lecture Outline</a>
+        <a class="button secondary sh-btn sh-btn--secondary" data-generation-download href="/artifacts/outlines/{{ outline_output.id }}/download">Download Lecture Outline</a>
         {% else %}
         <button class="button primary sh-btn sh-btn--primary" type="button" data-generate>Generate Lecture Outline</button>
         {% endif %}
@@ -139,15 +153,13 @@
     </ol>
   </details>
 
-  {% set completed_passes = lecture.passes|selectattr('completed_on')|list|length %}
-  {% set pass_total = lecture.passes|length %}
-  <details class="pass-tracker sh-card t-accordion" data-pass-tracker open>
+  <details class="pass-tracker sh-card t-accordion" id="pass-tracker" data-pass-tracker open>
     <summary class="lecture-panel-summary pass-tracker-summary">
       <span class="lecture-panel-summary__copy">
         <span class="mono-label">Study progress</span>
         <strong>Pass tracker</strong>
       </span>
-      <span class="sh-pill {% if completed_passes == pass_total %}sh-pill--ok{% else %}sh-pill--info{% endif %}" data-pass-count>{{ completed_passes }}/{{ pass_total }}</span>
+      <span><span class="sh-pill {% if completed_passes == pass_total %}sh-pill--ok{% else %}sh-pill--info{% endif %}" data-pass-count>{{ completed_passes }}/{{ pass_total }}</span> <span class="pass-count-label">completed / configured</span></span>
     </summary>
     <div class="pass-tracker-body lecture-panel-body">
       <div class="pass-ledger-head" aria-hidden="true">
@@ -205,5 +217,5 @@
 </article>
 {% endblock %}
 {% block scripts %}
-<script src="/static/lecture.js?v=20260831.1" defer></script>
+<script src="/static/lecture.js?v={{ shell_asset_version }}" defer></script>
 {% endblock %}

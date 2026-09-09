@@ -509,6 +509,10 @@
       models = [];
     }
     populateModelOptions(documentRef, select, models, currentModel);
+    if (!models.length) {
+      const advanced = documentRef.querySelector?.("[data-anki-advanced]");
+      if (advanced) advanced.open = true;
+    }
     select.disabled = false;
     if (status) {
       status.textContent = models.length
@@ -695,6 +699,10 @@
   const initializeHome = (documentRef, fetchImpl) => {
     const form = documentRef.querySelector("#anki-create-form");
     if (!form) return;
+    form.addEventListener("invalid", (event) => {
+      const details = event.target.closest?.("details");
+      if (details) details.open = true;
+    }, true);
     const lectureId = form.elements.lecture_id;
     const targetTag = form.elements.target_tag;
     const targetDeck = form.elements.target_deck;
@@ -897,14 +905,18 @@
         if (input && !input.value) input.value = current;
       });
       if (stagePanel) stagePanel.hidden = selected !== "custom";
+      if (selected === "custom") {
+        const advanced = form.querySelector("[data-anki-advanced]");
+        if (advanced) advanced.open = true;
+      }
       const estimate = form.querySelector("[data-curation-estimate]");
       if (estimate) estimate.textContent = selected === "max_quality"
-        ? "Max quality: strong model at every LLM stage."
+        ? "Uses the quality profile to assess existing cards and remaining gaps."
         : selected === "fast_cheap"
-          ? "Fast / cheap: only fixture-passing S4/S6 models may be used as defaults."
+          ? "Uses validated faster models to reduce curation time and cost."
           : selected === "custom"
-            ? "Custom: S6 follows S4 unless explicitly unlocked by a validated configuration."
-            : "Balanced profile. S6 matches classify; S4/S6 use non-thinking mode.";
+            ? "Uses your saved model choices. Inspect them under Advanced."
+            : "Finds existing cards, checks remaining gaps, and prepares source-backed additions for review.";
     };
     try {
       const saved = JSON.parse(

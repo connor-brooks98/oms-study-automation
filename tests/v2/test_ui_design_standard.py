@@ -23,7 +23,7 @@ def test_shared_stylesheet_is_the_approved_blue_workbench_source() -> None:
 
     assert installed.exists()
     assert (
-        "800228b5637d8c5d96e45df95635500318ec3fad34089cbf6713c85f9890e3e2"
+        "ad80ef66f6d1365a0f4cb9fa563de282309c2ddc98f2f00ae63c91b4b8267c65"
         == sha256(installed.read_bytes()).hexdigest()
     )
 
@@ -58,7 +58,7 @@ def test_stylesheet_order_and_system_font_contract() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260831.1" %}' in base
+    assert '{% set shell_asset_version = "20260909.2" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
@@ -236,19 +236,19 @@ def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
     assert "Upload Lecture PPTX" not in lecture
     assert "Upload Lecture Transcript" not in lecture
     assert (
-        'secondary sh-btn sh-btn--secondary" href="/artifacts/'
+        'primary sh-btn sh-btn--primary" href="/artifacts/'
         '{{ slide_revision.id }}/pdf">Open Lecture PDF'
     ) in lecture
     assert (
-        'primary sh-btn sh-btn--primary" href="/artifacts/'
+        'secondary sh-btn sh-btn--secondary" href="/artifacts/'
         '{{ slide_revision.id }}/pptx">Download PPTX'
     ) in lecture
     assert (
-        'secondary sh-btn sh-btn--secondary" href="/artifacts/'
+        'primary sh-btn sh-btn--primary" href="/artifacts/'
         '{{ transcript_revision.id }}/cleaned">Open Transcript'
     ) in lecture
     assert (
-        'primary sh-btn sh-btn--primary" href="/artifacts/'
+        'secondary sh-btn sh-btn--secondary" href="/artifacts/'
         '{{ transcript_revision.id }}/cleaned/download">Download Transcript'
     ) in lecture
     assert "Regenerate lecture outline" in lecture
@@ -290,7 +290,7 @@ def test_quiz_builder_import_forms_use_locked_controls_without_losing_hooks() ->
         assert all(required in line for line in studio.splitlines() if f"<{tag}" in line)
     assert "data-import-destination-course" in studio
     assert "data-import-destination-exam" in studio
-    assert "Add one source at a time" in studio
+    assert "Add source" in studio and "data-import-source-filter" in studio
     assert "Add related files in separate passes" in studio
 
 
@@ -365,7 +365,10 @@ def test_status_and_focus_player_paths_use_locked_semantic_components() -> None:
     ):
         assert token in player_js
 
-    assert 'class="nuc-state__dot" aria-hidden="true"></span>NUC online' in source("base.html")
+    assert (
+        'class="nuc-state__dot" aria-hidden="true"></span>Study Hub online'
+        in source("base.html")
+    )
 
 
 def test_visual_followups_keep_layout_and_restart_controls_in_their_owners() -> None:

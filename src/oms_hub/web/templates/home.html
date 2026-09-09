@@ -21,11 +21,12 @@
       <h2>Resolve stopped study work</h2>
       <p>{{ review_count }} item{{ '' if review_count == 1 else 's' }} need a decision before processing can continue.</p>
       <a class="sh-btn sh-btn--primary" href="/review">Open review</a>
-      {% elif courses and courses[0].exams and courses[0].exams[0].lectures %}
-      {% set next_lecture = courses[0].exams[0].lectures[0] %}
-      <h2>Continue {{ next_lecture.title }}</h2>
-      <p>Open the lecture workspace to review sources, processing, and study outputs.</p>
-      <a class="sh-btn sh-btn--primary" href="/lectures/{{ next_lecture.lecture.id }}">Open lecture</a>
+      {% elif courses %}
+      <div data-recent-lecture data-lectures='{{ recent_lectures|tojson }}'>
+        <h2 data-recent-title>Choose a lecture</h2>
+        <p data-recent-copy>Browse the library by course, exam, topic, or lecture number.</p>
+        <a class="sh-btn sh-btn--primary" data-recent-link href="/lectures">Open lecture library</a>
+      </div>
       {% else %}
       <h2>Set up the study library</h2>
       <p>Import the lecture tracker to create courses, exams, and lecture workflows.</p>
@@ -42,3 +43,4 @@
   </section>
 </section>
 {% endblock %}
+{% block scripts %}<script src="/static/dashboard.js?v={{ shell_asset_version }}" defer></script>{% endblock %}

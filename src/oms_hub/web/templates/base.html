@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  {% set shell_asset_version = "20260831.1" %}
+  {% set shell_asset_version = "20260909.2" %}
   <link rel="stylesheet" href="/static/reset.css?v={{ shell_asset_version }}">
   <link rel="stylesheet" href="/static/tokens.css?v={{ shell_asset_version }}">
   <link rel="stylesheet" href="/static/study-hub.css?v={{ shell_asset_version }}">
@@ -37,17 +37,17 @@
           <div class="sh-more__menu t-dropdown" data-origin="top-right">
             <a href="/uploads/slides">Upload slides</a>
             <a href="/uploads/transcripts">Upload transcript</a>
-            <a href="/quarantine">Quarantine</a>
+            <a href="/quarantine">Unmatched uploads</a>
             <a href="/review">Review</a>
             <a href="/settings">Settings</a>
           </div>
         </details>
       </nav>
       <div class="sh-topbar__actions">
-        <span class="nuc-state sh-pill sh-pill--ok sh-pill--compact"><span class="nuc-state__dot" aria-hidden="true"></span>NUC online</span>
+        <span class="nuc-state sh-pill sh-pill--ok sh-pill--compact"><span class="nuc-state__dot" aria-hidden="true"></span>Study Hub online</span>
         <button class="sh-command-trigger" type="button" data-open-dialog="command-palette" aria-keyshortcuts="Meta+K Control+K">
           <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 4 4"></path></svg>
-          <span>Find</span><kbd>⌘K</kbd>
+          <span>Go to…</span><kbd>⌘K</kbd>
         </button>
         <button class="sh-mobile-trigger sh-iconbtn" type="button" data-open-dialog="mobile-navigation" aria-label="Open navigation">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
@@ -57,7 +57,7 @@
   </header>
   <dialog class="sh-dialog sh-command t-modal" id="command-palette" aria-labelledby="command-title">
     <div class="sh-dialog__header">
-      <div><p class="sh-dialog__kicker">Navigate</p><h2 id="command-title">Find a Study Hub page</h2></div>
+      <div><p class="sh-dialog__kicker">Navigate</p><h2 id="command-title">Go to a Study Hub page</h2></div>
       <button class="sh-iconbtn" type="button" data-close-dialog aria-label="Close command palette">×</button>
     </div>
     <label class="sh-field-label" for="command-query">Search destinations</label>
@@ -71,7 +71,7 @@
       <a href="/public/practice-questions" data-command-item>Practice Questions <span>Open released question sets</span></a>
       <a href="/uploads/slides" data-command-item>Upload slides <span>Convert PowerPoint files to PDF</span></a>
       <a href="/uploads/transcripts" data-command-item>Upload transcript <span>Clean lecture transcripts</span></a>
-      <a href="/quarantine" data-command-item>Quarantine <span>Resolve unmatched uploads</span></a>
+      <a href="/quarantine" data-command-item>Unmatched uploads <span>Choose the matching lecture</span></a>
       <a href="/review" data-command-item>Review <span>Resolve stopped workflows</span></a>
       <a href="/settings" data-command-item>Settings <span>Providers, models, and runtime</span></a>
     </nav>
@@ -86,7 +86,7 @@
       <a href="/" data-dialog-initial-focus>Home</a><a href="/lectures">Lectures</a><a href="/anki">Anki</a><a href="/studio">Quiz Builder</a>
       <a href="/public/quizzes">Quizzes</a><a href="/public/practice-questions">Practice Questions</a>
       <a href="/uploads/slides">Upload slides</a><a href="/uploads/transcripts">Upload transcript</a>
-      <a href="/quarantine">Quarantine</a><a href="/review">Review</a><a href="/settings">Settings</a>
+      <a href="/quarantine">Unmatched uploads</a><a href="/review">Review</a><a href="/settings">Settings</a>
     </nav>
   </dialog>
   <dialog class="sh-dialog sh-confirm t-modal" id="action-confirmation" aria-labelledby="action-confirmation-title" data-confirm-dialog>

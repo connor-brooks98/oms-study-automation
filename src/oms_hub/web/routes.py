@@ -93,7 +93,11 @@ def _dashboard_context(request: Request) -> dict[str, object]:
             "lecture": lecture,
             "title": display_title(key),
             "status": status.value,
-            "status_label": status.value.replace("_", " ").title(),
+            "status_label": (
+                "Materials ready"
+                if status.value == "complete"
+                else status.value.replace("_", " ").title()
+            ),
             "completed": release_completed,
             "total": len(release_steps),
             "percent": round(
@@ -101,6 +105,8 @@ def _dashboard_context(request: Request) -> dict[str, object]:
             ),
             "has_slides": UploadKind.SLIDES in current_kinds,
             "has_transcript": UploadKind.TRANSCRIPTS in current_kinds,
+            "passes_completed": sum(bool(item.completed_on) for item in lecture.passes),
+            "passes_total": len(lecture.passes),
         }
         grouped.setdefault(lecture.subject, OrderedDict()).setdefault(
             lecture.exam_number,
@@ -108,6 +114,12 @@ def _dashboard_context(request: Request) -> dict[str, object]:
         ).append(v2_row)
     review_count += len(repository.list_import_issues())
     return {
+            "recent_lectures": [
+                {"id": row["lecture"].id, "title": row["title"]}
+                for exams in grouped.values()
+                for lectures in exams.values()
+                for row in lectures
+            ],
             "courses": [
                 {
                     "name": subject,

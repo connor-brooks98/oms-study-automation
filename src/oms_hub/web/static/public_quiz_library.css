@@ -56,11 +56,11 @@
   cursor: pointer;
   text-align: left;
 }
-.course-button { padding: var(--sp-5) var(--sp-6); font-size: var(--fs-h3); }
+.course-button { min-height: 48px; padding: var(--sp-3) var(--sp-5); font-size: var(--fs-h3); }
 .count { font: var(--fs-xs) var(--font-mono); color: var(--text-3-strong); }
 .course-content { padding: 0 var(--sp-4) var(--sp-4); }
 .exam-card { margin-top: var(--sp-2); padding: 0; overflow: visible; border-top: 1px solid var(--border); }
-.exam-button { padding: var(--sp-5) var(--sp-6); }
+.exam-button { min-height: 48px; padding: var(--sp-3) var(--sp-5); }
 .chevron {
   width: .75rem;
   color: var(--text-3-strong);
@@ -79,7 +79,7 @@
   align-items: center;
 }
 .lecture-row[data-quiz-order-row] {
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
   column-gap: var(--sp-2);
 }
 .quiz-link {
@@ -100,6 +100,9 @@
   white-space: nowrap;
 }
 .progress-pill { flex: none; white-space: nowrap; }
+.quiz-drag-handle,
+.reset-quiz-button,
+.quiz-overflow > summary { width: 48px; height: 48px; }
 .quiz-drag-handle { align-self: center; padding: 0; color: var(--text-2); cursor: grab; font-size: 1.1rem; }
 .quiz-drag-handle:active, .lecture-row.is-dragging .quiz-drag-handle { cursor: grabbing; }
 .quiz-drag-handle { touch-action: none; }

@@ -2,6 +2,7 @@ import hashlib
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Annotated, Literal, cast
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -233,6 +234,7 @@ def runs(
                     "content_kind": item.content_kind.value,
                     "destination_subject": item.destination_subject,
                     "destination_exam_number": item.destination_exam_number,
+                    "created_at": item.created_at,
                     "published_url": (
                         f"/public/quizzes/{item.published_token}" if item.published_token else None
                     ),
@@ -513,10 +515,17 @@ def practice_review_page(request: Request, run_id: str) -> Response:
         _practice_review(request).review(run_id)
     except ReviewArtifactUnavailable as error:
         return _review_artifact_unavailable_response(error)
+    builder_query = urlencode(
+        {"subject": run.subject_key, "exam": run.exam_number, "workflow": "import"}
+    )
     return templates.TemplateResponse(
         request=request,
         name="studio_quiz_review.html",
-        context={"run": run, "review_data_url": f"/studio/runs/{run_id}/review/data"},
+        context={
+            "run": run,
+            "review_data_url": f"/studio/runs/{run_id}/review/data",
+            "builder_url": f"/studio?{builder_query}",
+        },
         headers={"Cache-Control": "no-store"},
     )
 

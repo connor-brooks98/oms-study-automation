@@ -91,6 +91,8 @@ def test_run_history_exposes_safe_direct_import_review_metadata(tmp_path) -> Non
     assert run["workflow_kind"] == "direct_import"
     assert run["content_kind"] == "practice_questions"
     assert run["review_url"] == f"/studio/runs/{run_id}/review"
+    assert run["created_at"]
+    assert run["attempt_history"] == []
     assert "raw_response" not in run
 
 
@@ -523,6 +525,7 @@ def test_direct_review_data_is_safe_and_edits_and_verification_require_csrf(tmp_
     assert page.status_code == 200
     assert "Review imported questions" in page.text
     assert "Back to Quiz Builder" in page.text
+    assert 'href="/studio?subject=neuro&amp;exam=1&amp;workflow=import"' in page.text
     assert data.status_code == 200
     question = data.json()["questions"][0]
     assert question["source_refs"] == [

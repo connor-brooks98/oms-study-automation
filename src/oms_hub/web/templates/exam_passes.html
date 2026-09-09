@@ -14,7 +14,7 @@
       <h1 class="sh-title">Exam {{ exam_number }} passes</h1>
       <p class="sh-subtitle">{{ subject }} · {{ lectures|length }} lecture{{ '' if lectures|length == 1 else 's' }}</p>
     </div>
-    <span class="sh-pill sh-pill--info">Goal · 7 passes</span>
+    <div class="heading-actions"><span class="sh-pill sh-pill--info">Study target · 7 passes</span><a class="sh-btn sh-btn--secondary" href="/studio?subject={{ subject|urlencode }}&amp;exam={{ exam_number }}&amp;workflow=import">Open question builder</a></div>
   </header>
 
   <section class="exam-countdown sh-card" data-exam-countdown aria-labelledby="countdown-heading">
@@ -45,7 +45,7 @@
         <p class="mono-label">Exam overview</p>
         <h2 id="exam-progress-heading">Lecture progress</h2>
       </div>
-      <p>One row per lecture, ordered by lecture number.</p>
+      <p>Counts show completed / configured passes. Finish the configured passes to add another toward the seven-pass target.</p>
     </div>
     <div class="exam-pass-table-wrap">
       <table class="exam-pass-table">

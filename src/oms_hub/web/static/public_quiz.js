@@ -753,7 +753,6 @@
         const context = [
           lectureLabel,
           content.exam_number != null ? `Exam ${content.exam_number}` : null,
-          content.topic,
         ].filter(Boolean).join(" · ");
         meta.append(
           element(
@@ -787,9 +786,6 @@
         );
 
         const body = element(documentRef, "div", "quiz-body");
-        body.append(
-          element(documentRef, "p", "quiz-label", content.topic),
-        );
         const stem = element(documentRef, "h2", "quiz-question");
         renderHighlightedText(
           documentRef,
@@ -813,6 +809,9 @@
           body.append(figure);
         }
 
+        const studyTools = element(documentRef, "div", "quiz-study-tools");
+        studyTools.setAttribute("role", "toolbar");
+        studyTools.setAttribute("aria-label", "Question study tools");
         const tools = element(documentRef, "div", "quiz-tools");
         const highlight = element(
           documentRef,
@@ -852,8 +851,6 @@
           render();
         });
         tools.append(highlight, clear);
-        body.append(tools);
-
         const flag = element(documentRef, "div", "quiz-flag");
         const flagLabel = element(documentRef, "label", "quiz-flag-label", "Flag this question");
         const flagSelect = documentRef.createElement("select");
@@ -896,7 +893,8 @@
         });
         flagLabel.append(flagSelect);
         flag.append(flagLabel);
-        body.append(flag);
+        studyTools.append(tools, flag);
+        body.append(studyTools);
 
         const answers = element(documentRef, "div", "quiz-answers");
         if (question.kind === "matching") {
@@ -1187,7 +1185,7 @@
           ["Objective", question.learning_objective || question.objective],
           ["Topic", question.topic],
         ].filter(([, value]) => value);
-        if (dimensions.length > 0) {
+        if (questionProgress.submitted && dimensions.length > 0) {
           const information = element(
             documentRef,
             "details",

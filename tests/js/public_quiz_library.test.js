@@ -65,6 +65,36 @@ test("corrupt browser progress is treated as not started", () => {
   assert.equal(library.readProgress(storage, "token", 1), "Not started");
 });
 
+test("library view state is isolated by pathname and restores disclosures and scroll", () => {
+  const storage = makeMemoryStorage();
+  storage.setItem(library.viewStateKey("/public/quizzes"), JSON.stringify({
+    expanded: ["course:heme", "exam:heme:3"], scrollY: 420,
+  }));
+  const expanded = [];
+  const buttons = ["course:heme", "exam:heme:3"].map((focusKey) => ({
+    dataset: { focusKey },
+    attributes: { "aria-controls": focusKey },
+    setAttribute(name, value) { this.attributes[name] = value; },
+    getAttribute(name) { return this.attributes[name]; },
+    querySelector() { return null; },
+    ownerDocument: { getElementById() { return { hidden: true, classList: { remove() {}, add() {} }, addEventListener() {}, offsetWidth: 0 }; } },
+  }));
+  const documentRef = {
+    location: { pathname: "/public/quizzes" },
+    querySelectorAll(selector) { return selector === ".disclosure" ? buttons : []; },
+    defaultView: {
+      requestAnimationFrame(callback) { callback(); },
+      scrollTo(x, y) { expanded.push([x, y]); },
+    },
+  };
+
+  library.restoreViewState(documentRef, storage);
+
+  assert.deepEqual(buttons.map((button) => button.attributes["aria-expanded"]), ["true", "true"]);
+  assert.deepEqual(expanded, [[0, 420]]);
+  assert.equal(library.readViewState(storage, "/public/practice-questions"), null);
+});
+
 test("course disclosures keep aria and the shared glyph state in sync", () => {
   const glyph = {
     states: [],

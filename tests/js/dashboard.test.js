@@ -127,3 +127,91 @@ test("the exam overview link stays navigation while its adjacent disclosure butt
   assert.equal(fixture.firstExam.getAttribute("aria-expanded"), "false");
   assert.equal(fixture.panels.get("exam-1").hidden, true);
 });
+
+test("recent lecture is validated against the server-provided catalog", () => {
+  const title = { textContent: "Choose a lecture" };
+  const copy = { textContent: "Browse" };
+  const link = { href: "/lectures", textContent: "Open lecture library" };
+  const container = {
+    dataset: { lectures: JSON.stringify([{ id: 28, title: "Lecture 28: Lymphoma" }]) },
+    querySelector(selector) {
+      return ({ "[data-recent-title]": title, "[data-recent-copy]": copy, "[data-recent-link]": link })[selector];
+    },
+  };
+  const documentRef = { querySelector() { return container; } };
+
+  dashboard.initializeRecentLecture(documentRef, {
+    getItem() { return JSON.stringify({ id: 28, title: "untrusted stale title" }); },
+  });
+
+  assert.equal(title.textContent, "Continue Lecture 28: Lymphoma");
+  assert.equal(link.href, "/lectures/28");
+});
+
+test("missing and denied recent lecture state preserve the neutral library shortcut", () => {
+  const title = { textContent: "Choose a lecture" };
+  const container = {
+    dataset: { lectures: JSON.stringify([{ id: 28, title: "Lecture 28" }]) },
+    querySelector() { return title; },
+  };
+  const documentRef = { querySelector() { return container; } };
+
+  dashboard.initializeRecentLecture(documentRef, { getItem() { throw new Error("denied"); } });
+  assert.equal(title.textContent, "Choose a lecture");
+});
+
+test("lecture filtering matches normalized course, exam, number, and title text", () => {
+  const visible = { dataset: { searchText: "Heme Lymph exam 3 lecture 28 Lymphoma" }, hidden: false, closest() { return null; } };
+  const hidden = { dataset: { searchText: "MSK exam 1 lecture 1 Bone" }, hidden: false, closest() { return null; } };
+  const documentRef = {
+    querySelectorAll(selector) { return selector === "[data-lecture-row]" ? [visible, hidden] : []; },
+  };
+
+  assert.deepEqual(dashboard.filterLectures(documentRef, "  LYMPH  "), { matches: 1, total: 2 });
+  assert.equal(visible.hidden, false);
+  assert.equal(hidden.hidden, true);
+});
+
+test("clearing lecture search restores mixed disclosure state without persisting search expansion", () => {
+  const fixture = dashboardFixture({ firstCourseOpen: true, firstExamOpen: false });
+  const search = { value: "", listeners: {}, addEventListener(type, callback) { this.listeners[type] = callback; } };
+  const status = { textContent: "" };
+  const firstRow = { dataset: { searchText: "MSK exam 1 lecture 1 Bone" }, hidden: false };
+  const secondRow = { dataset: { searchText: "Neuro exam 1 lecture 2 Brain" }, hidden: false };
+  const firstExamGroup = { hidden: false, querySelector(selector) { return selector === ".exam-toggle" ? fixture.firstExam : !firstRow.hidden ? firstRow : null; } };
+  const secondExamGroup = { hidden: false, querySelector(selector) { return selector === ".exam-toggle" ? fixture.secondExam : !secondRow.hidden ? secondRow : null; } };
+  const firstCourseGroup = { hidden: false, querySelector(selector) { return selector === ".course-toggle" ? fixture.firstCourse : !firstRow.hidden ? firstRow : null; } };
+  const secondCourseGroup = { hidden: false, querySelector(selector) { return selector === ".course-toggle" ? fixture.secondCourse : !secondRow.hidden ? secondRow : null; } };
+  firstRow.closest = (selector) => selector === ".exam-group" ? firstExamGroup : firstCourseGroup;
+  secondRow.closest = (selector) => selector === ".exam-group" ? secondExamGroup : secondCourseGroup;
+  fixture.firstExam.closest = () => firstCourseGroup;
+  fixture.secondExam.closest = () => secondCourseGroup;
+  fixture.documentRef.querySelector = (selector) => ({
+    "[data-lecture-search]": search,
+    "[data-lecture-search-status]": status,
+  })[selector] ?? null;
+  fixture.documentRef.querySelectorAll = (selector) => ({
+    "[data-disclosure]": [fixture.firstCourse, fixture.firstExam, fixture.secondCourse, fixture.secondExam],
+    "[data-lecture-row]": [firstRow, secondRow],
+    ".exam-group": [firstExamGroup, secondExamGroup],
+    ".course-group": [firstCourseGroup, secondCourseGroup],
+  })[selector] ?? [];
+  const writes = [];
+
+  dashboard.initialize(fixture.documentRef, {
+    getItem() { return null; },
+    setItem(...args) { writes.push(args); },
+  });
+  search.value = "brain";
+  search.listeners.input();
+  assert.equal(fixture.secondCourse.getAttribute("aria-expanded"), "true");
+  assert.equal(fixture.secondExam.getAttribute("aria-expanded"), "true");
+
+  search.value = "";
+  search.listeners.input();
+  assert.equal(fixture.firstCourse.getAttribute("aria-expanded"), "true");
+  assert.equal(fixture.firstExam.getAttribute("aria-expanded"), "false");
+  assert.equal(fixture.secondCourse.getAttribute("aria-expanded"), "false");
+  assert.equal(fixture.secondExam.getAttribute("aria-expanded"), "false");
+  assert.deepEqual(writes, []);
+});

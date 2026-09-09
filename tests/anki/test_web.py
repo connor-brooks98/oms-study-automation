@@ -1026,6 +1026,26 @@ def test_anki_page_renders_openrouter_provider_option(
     assert values == {"anthropic", "openai", "gemini", "openrouter"}
 
 
+def test_anki_setup_keeps_profile_visible_and_model_diagnostics_in_advanced(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, _, _, _ = prepared_app
+    document = HTMLParser(client.get("/anki").text)
+    advanced = document.css_first("details[data-anki-advanced]")
+    assert advanced is not None
+    assert "open" not in advanced.attributes
+    assert advanced.css_first("[data-curation-profile]") is None
+    assert document.css_first("[data-curation-profile]") is not None
+    for selector in (
+        '[name="provider"]', '[name="model"]',
+        '[data-curation-stage-models]', '[data-s4-fixture]',
+    ):
+        assert advanced.css_first(selector) is not None
+    assert advanced.css_first('[name="target_deck"]') is None
+    assert advanced.css_first('[name="target_tag"]') is None
+    assert "S4" not in document.css_first("[data-curation-estimate]").text()
+
+
 def test_anki_page_hides_private_fixture_action_when_artifact_is_unavailable(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:

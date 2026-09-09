@@ -200,6 +200,23 @@ test("run diagnostics render once and only overridable blockers can be acknowled
   );
 });
 
+test("run-wide diagnostics are omitted from question-local notes", () => {
+  const { page, questions } = reviewPage();
+  review.render(documentRef, page, {
+    blockers: ["unmatched supplied answer: 12"],
+    issues: [
+      { question_id: "q1", display_label: "Question 1", type: "draft_diagnostic", code: "unmatched-supplied-answer", message: "unmatched supplied answer: 12", role: "err" },
+      { question_id: "q1", display_label: "Question 1", type: "image", code: "required_image_unresolved", message: "required image is unresolved", role: "err" },
+    ],
+    run_diagnostics: [{ code: "unmatched-supplied-answer", message: "unmatched supplied answer: 12", severity: "blocker", overridable: true, acknowledged: false }],
+    preview_url: null,
+    questions: [question("q1", "Stem")],
+  });
+  const card = questions.querySelector("[data-question-id]");
+  assert.match(card.children[1].textContent, /required image is unresolved/);
+  assert.doesNotMatch(card.children[1].textContent, /unmatched supplied answer/);
+});
+
 test("acknowledged run diagnostic has no acknowledgement control", () => {
   const { page, blockers, publish } = reviewPage();
   review.render(documentRef, page, {
@@ -582,7 +599,7 @@ test("review UI uses DOM text nodes rather than untrusted HTML injection", () =>
   assert.match(source, /X-CSRF-Token/);
   assert.match(source, /"PATCH"/);
   assert.match(source, /Provide an answer rationale before saving\./);
-  assert.match(template, /studio_quiz_review\.js\?v=[0-9.]+/);
+  assert.match(template, /studio_quiz_review\.js\?v=\{\{ shell_asset_version \}\}/);
 });
 
 test("issue disclosures and keyed focus survive a clean review refresh", () => {

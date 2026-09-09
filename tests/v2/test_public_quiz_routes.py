@@ -560,6 +560,15 @@ def test_local_owner_library_keeps_private_navigation_without_management_control
         assert private_hook not in public.text
         assert private_hook in managed.text
     assert "Quiz Builder management" in managed.text
+    assert managed.text.count('href="/quarantine">Unmatched uploads</a>') == 2
+    assert ">Manage quizzes</a>" in managed.text
+    assert managed.text.count(">Manage quizzes</a>") >= 2
+    assert ">Manage practice questions</a>" in managed.text
+    public_link = (
+        'href="/public/quizzes?return_to=%2Fstudio%2Flibrary%2Fquizzes"'
+        ">View public library</a>"
+    )
+    assert public_link in managed.text
     assert "/studio/library/practice-questions" in managed.text
     assert "/static/vendor/sortable-1.15.7.min.js" in managed.text
     assert "/static/vendor/sortable-1.15.7.min.js" not in public.text
@@ -577,7 +586,13 @@ def test_managed_practice_library_shows_practice_rows_and_page_switcher(tmp_path
     assert 'aria-label="Released library management"' in managed.text
     assert 'href="/studio/library/quizzes"' in managed.text
     assert 'href="/studio/library/practice-questions"' in managed.text
-    assert 'aria-current="page">Practice Questions</a>' in managed.text
+    assert ">Manage practice questions</a>" in managed.text
+    public_link = (
+        'href="/public/practice-questions?return_to='
+        '%2Fstudio%2Flibrary%2Fpractice-questions">View public library</a>'
+    )
+    assert public_link in managed.text
+    assert 'aria-current="page">Manage practice questions</a>' in managed.text
     assert "/static/vendor/sortable-1.15.7.min.js" in managed.text
     for private_hook in (
         "data-quiz-drag-handle",
@@ -602,6 +617,39 @@ def test_public_host_library_hides_private_owner_navigation(tmp_path):
     assert 'href="/">Dashboard</a>' not in response.text
     assert 'href="/anki">Anki</a>' not in response.text
     assert 'href="/settings">Settings</a>' not in response.text
+
+
+def test_public_host_preserves_only_allowlisted_owner_return_context(tmp_path):
+    app, published = _published_app(tmp_path, public=True)
+    headers = {"host": "study.example.com"}
+    return_path = "/studio/library/quizzes"
+
+    with TestClient(app, base_url="https://study.example.com") as client:
+        library = client.get(
+            "/public/quizzes",
+            params={"return_to": return_path},
+            headers=headers,
+        )
+        player = client.get(
+            f"/public/quizzes/{published.token}",
+            params={"return_to": return_path},
+            headers=headers,
+        )
+        rejected = client.get(
+            "/public/quizzes",
+            params={"return_to": "https://example.com/steal"},
+            headers=headers,
+        )
+
+    assert 'href="/studio/library/quizzes">Back to Manage quizzes</a>' in library.text
+    player_link = (
+        f'href="/public/quizzes/{published.token}?return_to='
+        '%2Fstudio%2Flibrary%2Fquizzes"'
+    )
+    assert player_link in library.text
+    assert 'href="/public/quizzes?return_to=%2Fstudio%2Flibrary%2Fquizzes"' in player.text
+    assert "example.com/steal" not in rejected.text
+    assert "Back to Manage" not in rejected.text
 
 
 def test_public_library_uses_current_lecture_scope_and_repository_order(tmp_path):

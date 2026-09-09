@@ -16,7 +16,7 @@
       <p class="page-summary sh-subtitle">{{ run.label }} · confirm answers, source context, and images before publishing.</p>
     </div>
     <div class="heading-actions">
-      <a class="button secondary sh-btn sh-btn--secondary" href="/studio">Back to Quiz Builder</a>
+      <a class="button secondary sh-btn sh-btn--secondary" href="{{ builder_url }}">Back to Quiz Builder</a>
       <a class="button primary sh-btn sh-btn--primary sh-btn--continue" data-preview-link hidden>Preview and publish</a>
     </div>
   </div>
@@ -34,4 +34,4 @@
   </section>
 </section>
 {% endblock %}
-{% block scripts %}<script type="module" src="/static/studio_quiz_review.js?v=20260902.1"></script>{% endblock %}
+{% block scripts %}<script type="module" src="/static/studio_quiz_review.js?v={{ shell_asset_version }}"></script>{% endblock %}

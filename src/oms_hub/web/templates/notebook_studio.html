@@ -71,8 +71,14 @@
 
   <section id="workflow-panel-import" role="tabpanel" aria-labelledby="workflow-tab-import" data-workflow-panel="import" hidden>
     <section class="card sh-card studio-import-intake">
-      <p class="eyebrow">Local immutable snapshots</p><h2>Import Practice Questions</h2><p>Add one source at a time. Repeat for a question file, answer key, combined set, or supporting reference. Check the sources to include in this run; unchecked sources remain available for later runs.</p>
-      <div class="studio-source-grid">
+      <p class="eyebrow">Local immutable snapshots</p><h2>Import Practice Questions</h2><p>Select existing material for this run. Unchecked sources remain available for later runs.</p>
+      <label class="sh-field-label">Filter existing sources<input class="sh-input" type="search" data-import-source-filter placeholder="Type a source label"></label>
+      <div class="studio-import-source-actions"><span data-import-selection-summary role="status" aria-live="polite">0 selected</span><button class="button secondary compact sh-btn sh-btn--secondary" type="button" data-import-selection-toggle disabled>Select all</button></div>
+      <ul class="sh-validation" data-import-source-list><li data-import-empty="true">Add at least one local source.</li></ul>
+      <details class="studio-import-add-source t-accordion">
+        <summary class="sh-section-label">Add source</summary>
+        <p>Add one question file, answer key, combined set, or supporting reference at a time.</p>
+        <div class="studio-source-grid">
         <form class="studio-intake-form" data-import-source-form data-import-source-type="file">
           <h3>File source</h3>
           <label class="sh-field-label">Label<input class="sh-input" name="title" required></label>
@@ -98,13 +104,12 @@
           <label class="sh-check studio-intake-notebook"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Use in NotebookLM for missing answers</label>
           <button class="button primary sh-btn sh-btn--primary" type="submit">Add URL</button><p data-form-message data-toast-source aria-live="polite"></p>
         </form>
-      </div>
-      <div class="studio-import-source-actions"><button class="button secondary compact sh-btn sh-btn--secondary" type="button" data-import-selection-toggle disabled>Select all</button></div>
-      <ul class="sh-validation" data-import-source-list><li data-import-empty="true">Add at least one local source.</li></ul>
+        </div>
+      </details>
     </section>
     <section class="card sh-card studio-runner"><h2>Queue imported questions</h2><form data-import-run-form><label class="sh-field-label">Quiz label<input class="sh-input" name="label" maxlength="300" required></label><div class="studio-scope-fields"><label class="sh-field-label">Publish under course<select class="sh-select" data-import-destination-course required><option value="">Select course</option>{% for course in courses %}<option value="{{ course.subject }}" data-exams="{{ course.exams|join(',') }}">{{ course.subject }}</option>{% endfor %}</select></label><label class="sh-field-label">Publish under exam<select class="sh-select" data-import-destination-exam disabled required><option value="">Select exam</option></select></label></div><button class="button primary sh-btn sh-btn--primary" type="submit">Queue practice-question review</button><p data-import-run-message data-toast-source aria-live="polite"></p></form></section>
   </section>
   <section class="card sh-card studio-runs"><h2>Run history</h2><div data-run-list tabindex="-1"><p>Select a source course and exam to view runs.</p></div></section>
 </section>
 {% endblock %}
-{% block scripts %}<script src="/static/notebook_studio.js?v=20260901.1" defer></script>{% endblock %}
+{% block scripts %}<script src="/static/notebook_studio.js?v={{ shell_asset_version }}" defer></script>{% endblock %}

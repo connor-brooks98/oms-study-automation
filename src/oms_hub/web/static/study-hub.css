@@ -609,6 +609,18 @@ body { overflow-x: clip; }
 .sh-command__empty { color: var(--text-2); font-size: var(--fs-sm); }
 .sh-mobile-nav nav { display: grid; gap: var(--sp-1); }
 
+.lecture-search { margin-block-end: var(--sp-4); padding: var(--sp-4); }
+.lecture-search .sh-field-label { display: block; margin-block-end: var(--sp-2); }
+.lecture-search .sh-input { width: min(100%, 36rem); }
+.lecture-search .field-message { min-height: 1.4em; margin: var(--sp-2) 0 0; color: var(--text-2); }
+.lecture-title small { display: block; margin-block-start: 2px; color: var(--text-2); font-size: var(--fs-xs); font-weight: 400; }
+.lecture-study-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-block-end: var(--sp-4); padding: var(--sp-3); }
+.lecture-study-actions > div { display: grid; gap: var(--sp-1); margin-inline-end: auto; }
+.pipeline-card > summary { cursor: pointer; display: flex; justify-content: space-between; gap: var(--sp-3); list-style: none; }
+.pipeline-card > summary::-webkit-details-marker { display: none; }
+.pipeline-card__body { margin-block-start: var(--sp-3); }
+.lecture-study-count { color: var(--text-2); font-size: var(--fs-xs); }
+
 .t-tabs {
   position: relative;
   isolation: isolate;

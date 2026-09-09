@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Quarantine · Study Hub{% endblock %}
+{% block title %}Unmatched uploads · Study Hub{% endblock %}
 {% block content %}
 <section class="page-shell narrow-page sh-container--narrow">
   <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow sh-eyebrow">Manual assignment</p>
-      <h1 class="sh-title">Quarantine</h1>
+      <p class="eyebrow sh-eyebrow">Match uploaded files</p>
+      <h1 class="sh-title">Unmatched uploads</h1>
       <p class="page-summary sh-subtitle">Choose a lecture for files the Hub could not match confidently.</p>
     </div>
     <span class="status-pill sh-pill {{ 'sh-pill--err' if items|length else 'sh-pill--bare' }} status-quarantined">{{ items|length }} waiting</span>
@@ -31,7 +31,7 @@
   </section>
   {% else %}
   <section class="empty-state sh-empty">
-    <h2 class="sh-empty__title">Nothing is quarantined</h2>
+    <h2 class="sh-empty__title">No unmatched uploads</h2>
     <p class="sh-empty__text">Ambiguous uploads will appear here with their matching evidence.</p>
   </section>
   {% endfor %}

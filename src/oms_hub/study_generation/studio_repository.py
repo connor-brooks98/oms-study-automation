@@ -2073,6 +2073,7 @@ class StudioRepository:
             ),
             QuizWorkflowKind(model.workflow_kind),
             QuizContentKind(model.content_kind),
+            model.created_at,
         )
 
     @classmethod

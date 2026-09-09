@@ -610,10 +610,32 @@ class PracticeReviewService:
 
     def run_diagnostics(self, run_id: str) -> tuple[dict[str, object], ...]:
         artifact = self.repository.run_artifact(run_id, _RUN_DIAGNOSTICS_ARTIFACT_KEY)
-        if artifact is None:
+        payload = json.loads(artifact.payload_json) if artifact is not None else []
+        stored = tuple(item for item in payload if isinstance(item, dict))
+        stored_messages = {str(item.get("message")) for item in stored}
+        legacy = tuple(
+            item for item in self._legacy_run_diagnostics(run_id)
+            if str(item["message"]) not in stored_messages
+        )
+        return (*stored, *legacy)
+
+    def _legacy_run_diagnostics(self, run_id: str) -> tuple[dict[str, object], ...]:
+        try:
+            questions = self.review(run_id)
+        except ReviewArtifactUnavailable:
             return ()
-        payload = json.loads(artifact.payload_json)
-        return tuple(item for item in payload if isinstance(item, dict))
+        return tuple(
+            {
+                "code": diagnostic.code,
+                "message": diagnostic.message,
+                "severity": diagnostic.severity.value,
+                "overridable": True,
+                "acknowledged": False,
+            }
+            for question in questions
+            for diagnostic in question.draft.diagnostics
+            if diagnostic.code == "unmatched-supplied-answer"
+        )
 
     def run_diagnostic_blockers(self, run_id: str) -> tuple[str, ...]:
         return tuple(
@@ -625,9 +647,12 @@ class PracticeReviewService:
 
     def acknowledge_run_diagnostic(self, run_id: str, code: str) -> None:
         artifact = self.repository.run_artifact(run_id, _RUN_DIAGNOSTICS_ARTIFACT_KEY)
-        if artifact is None:
-            raise KeyError(code)
-        payload = json.loads(artifact.payload_json)
+        payload = json.loads(artifact.payload_json) if artifact is not None else []
+        legacy = self._legacy_run_diagnostics(run_id)
+        existing_messages = {str(item.get("message")) for item in payload}
+        payload.extend(
+            item for item in legacy if str(item["message"]) not in existing_messages
+        )
         updated = False
         for item in payload:
             if item.get("code") == code:
@@ -653,9 +678,29 @@ class PracticeReviewService:
             hashlib.sha256(serialized.encode()).hexdigest(),
             serialized,
         )
+        if any(item["code"] == code for item in legacy):
+            self._save(
+                run_id,
+                tuple(
+                    replace(
+                        question,
+                        draft=replace(
+                            question.draft,
+                            diagnostics=tuple(
+                                item for item in question.draft.diagnostics
+                                if item.code != code
+                            ),
+                        ),
+                    )
+                    for question in self.review(run_id)
+                ),
+            )
 
     def issues(self, run_id: str) -> tuple[ReviewIssue, ...]:
-        return _issues(self.review(run_id))
+        return tuple(
+            issue for issue in _issues(self.review(run_id))
+            if issue.code != "unmatched-supplied-answer"
+        )
 
     def to_native_quiz_in_session(
         self, session: Session, run_id: str, *, title: str

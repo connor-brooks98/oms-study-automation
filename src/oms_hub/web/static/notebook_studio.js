@@ -230,6 +230,17 @@
     return `retrying in ${seconds}s`;
   };
 
+  const readableRunStatus = (run) => ({
+    awaiting_review: "Ready for review",
+    awaiting_images: "Images needed",
+    complete: run.published_url ? "Published" : "Complete",
+    failed: "Failed",
+  }[run.state] || retryStatus(run));
+
+  const runTimestamp = (run) => run.created_at
+    ? new Date(run.created_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
+    : "";
+
   const renderRuns = (documentRef, container, runs) => {
     const state = captureRenderState(documentRef, container);
     container.replaceChildren();
@@ -240,6 +251,9 @@
       restoreRenderState(container, state);
       return false;
     }
+    const repeatedLabels = new Set(runs.filter((run, index) => (
+      runs.findIndex((candidate) => candidate.label === run.label) !== index
+    )).map((run) => run.label));
     runs.forEach((run) => {
       const card = documentRef.createElement("article");
       card.className = "sh-card studio-run";
@@ -250,16 +264,11 @@
       card.append(heading);
       const status = documentRef.createElement("p");
       const error = run.error ? ` · ${run.error}` : "";
-      const state = run.state === "awaiting_images" ? "Images needed" : retryStatus(run);
-      const directStages = {
-        acquire: "acquiring snapshots", parse: "parsing", extract: "extracting questions",
-        pair: "pairing answers", answer_notebook: "resolving answers with NotebookLM",
-        answer_fallback: "resolving answers", normalize: "preparing review", review: "review ready",
-      };
-      const stage = run.workflow_kind === "direct_import"
-        ? (directStages[run.stage] || run.stage)
-        : run.stage;
-      status.textContent = `${state} · ${stage} · attempt ${run.attempts}${error}`;
+      const state = readableRunStatus(run);
+      const identifier = repeatedLabels.has(run.label) ? ` · ${run.id.slice(-6)}` : "";
+      const timestamp = runTimestamp(run);
+      const detail = run.attempts > 1 ? ` · attempt ${run.attempts}` : "";
+      status.textContent = `${state}${timestamp ? ` · ${timestamp}` : ""}${identifier}${detail}${error}`;
       card.append(status);
       if (run.image_review_url) {
         const images = documentRef.createElement("a");
@@ -362,6 +371,26 @@
     }
     button.disabled = inputs.length === 0;
     button.textContent = allSelected ? "Deselect all" : "Select all";
+    const summary = list.ownerDocument?.querySelector?.("[data-import-selection-summary]");
+    if (summary) summary.textContent = `${inputs.filter((input) => input.checked).length} selected`;
+  };
+
+  const filterImportSources = (list, query) => {
+    const normalized = query.trim().toLowerCase();
+    list.querySelectorAll("[data-import-source-row]").forEach((row) => {
+      row.hidden = normalized !== "" && !row.textContent.toLowerCase().includes(normalized);
+    });
+  };
+
+  const syncDestinationFromScope = (
+    documentRef, course, exam, destinationCourse, destinationExam, explicitlySelected,
+  ) => {
+    if (explicitlySelected || !course.value) return;
+    destinationCourse.value = course.value;
+    populateExams(documentRef, destinationCourse, destinationExam);
+    if (Array.from(destinationExam.options || []).some((option) => option.value === exam.value)) {
+      destinationExam.value = exam.value;
+    }
   };
 
   const buildImportRunPayload = (
@@ -572,12 +601,14 @@
     const importDestinationExam = page.querySelector("[data-import-destination-exam]");
     const importSourceList = page.querySelector("[data-import-source-list]");
     const importSelectionToggle = page.querySelector("[data-import-selection-toggle]");
+    const importSourceFilter = page.querySelector("[data-import-source-filter]");
     const pollStatus = page.querySelector("[data-poll-status]");
     let pollHandle = null;
     const basePollDelayMs = 2000;
     const maxPollDelayMs = 30000;
     let pollDelayMs = basePollDelayMs;
     let refreshGeneration = 0;
+    let importDestinationExplicit = false;
 
     let selectedWorkflow = "generate";
     const workflowTabs = Array.from(page.querySelectorAll("[data-workflow-tab]"));
@@ -602,6 +633,11 @@
     selectedWorkflow = restoredScope.workflow;
     setWorkflowState(page, selectedWorkflow);
     updateScopeUrl(course, exam, selectedWorkflow, navigation);
+    if (restoredScope.scopeValid) {
+      syncDestinationFromScope(
+        documentRef, course, exam, importDestinationCourse, importDestinationExam, false,
+      );
+    }
     root.addEventListener?.("resize", () => {
       const active = workflowTabs.find((tab) => tab.getAttribute("aria-selected") === "true");
       if (active) setWorkflowState(page, active.dataset.workflowTab);
@@ -644,6 +680,7 @@
         filterSourcePicker(picker, sourceFilter.value);
         hydrateImportSources(documentRef, importSourceList, sourcePayload.sources || []);
         updateImportSourceSelection(importSourceList, importSelectionToggle);
+        filterImportSources(importSourceList, importSourceFilter?.value || "");
         const activeRuns = renderRuns(documentRef, runList, runPayload.runs || []);
         if (activeSources || activeRuns) scheduleRefresh(pollDelayMs);
       } catch (error) {
@@ -667,6 +704,10 @@
       picker.textContent = "Select a source course and exam first.";
       runList.textContent = "Select a source course and exam to view runs.";
       updateScopeUrl(course, exam, selectedWorkflow, navigation);
+      syncDestinationFromScope(
+        documentRef, course, exam, importDestinationCourse, importDestinationExam,
+        importDestinationExplicit,
+      );
     });
     exam.addEventListener("change", () => {
       refreshGeneration += 1;
@@ -674,6 +715,10 @@
       pollHandle = null;
       clearImportSources(documentRef, importSourceList);
       updateScopeUrl(course, exam, selectedWorkflow, navigation);
+      syncDestinationFromScope(
+        documentRef, course, exam, importDestinationCourse, importDestinationExam,
+        importDestinationExplicit,
+      );
       if (exam.value) {
         list.textContent = "";
         const loading = documentRef.createElement("li");
@@ -687,7 +732,11 @@
       populateExams(documentRef, destinationCourse, destinationExam);
     });
     importDestinationCourse?.addEventListener("change", () => {
+      importDestinationExplicit = true;
       populateExams(documentRef, importDestinationCourse, importDestinationExam);
+    });
+    importDestinationExam?.addEventListener("change", () => {
+      importDestinationExplicit = true;
     });
     sourceFilter.addEventListener("input", () => {
       filterSourcePicker(picker, sourceFilter.value);
@@ -697,6 +746,9 @@
     });
     importSelectionToggle?.addEventListener("click", () => {
       updateImportSourceSelection(importSourceList, importSelectionToggle, true);
+    });
+    importSourceFilter?.addEventListener("input", () => {
+      filterImportSources(importSourceList, importSourceFilter.value);
     });
     importSourceList.addEventListener("change", () => {
       updateImportSourceSelection(importSourceList, importSelectionToggle);
@@ -1031,6 +1083,7 @@
     buildImportSourceFormData,
     applyImportRoleState,
     filterSourcePicker,
+    filterImportSources,
     hasActiveRuns,
     hasActiveSources,
     hydrateImportSources,
@@ -1040,6 +1093,9 @@
     renderRuns,
     renderSources,
     retryStatus,
+    readableRunStatus,
+    runTimestamp,
+    syncDestinationFromScope,
     restoreFailedAction,
     restoreScopeFromUrl,
     selectAllAttachedSources,

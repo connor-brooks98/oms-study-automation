@@ -140,6 +140,7 @@ class StudioRun:
     sources: tuple[StudioRunSource, ...]
     workflow_kind: QuizWorkflowKind = QuizWorkflowKind.NOTEBOOK_GENERATION
     content_kind: QuizContentKind = QuizContentKind.EXAM_REVIEW
+    created_at: str = ""
 
 
 @dataclass(frozen=True, slots=True)

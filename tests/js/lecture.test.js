@@ -202,9 +202,9 @@ test("completed outline adds white open, blue download, and regenerate controls"
 
   lecture.render(card, { state: "complete", url: "/artifacts/outlines/7" });
 
-  assert.equal(actions.node.className, "button secondary sh-btn sh-btn--secondary");
+  assert.equal(actions.node.className, "button primary sh-btn sh-btn--primary");
   assert.equal(actions.node.textContent, "Open Lecture Outline");
-  assert.equal(actions.appended.className, "button primary sh-btn sh-btn--primary");
+  assert.equal(actions.appended.className, "button secondary sh-btn sh-btn--secondary");
   assert.equal(actions.appended.href, "/artifacts/outlines/7/download");
   assert.equal(actions.classList.removed, "lecture-card-actions--single");
   assert.equal(card.appended.attributes["aria-label"], "Regenerate lecture outline");
@@ -501,7 +501,7 @@ test("overlapping pass responses update only their owned fields", async () => {
 
     assert.equal(pass.checkbox.checked, true);
     assert.equal(pass.date.value, "2026-08-30");
-    assert.equal(passCount.textContent, "1/1");
+  assert.equal(passCount.textContent, "1/1");
     assert.equal(pass.select.value, "Pathoma");
   } finally {
     if (originalLocation === undefined) delete global.location;
