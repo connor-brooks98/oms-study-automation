@@ -1291,6 +1291,38 @@ class GenerationRepository:
             session.flush()
             return self._published_quiz(model)
 
+    def set_published_quiz_order(
+        self,
+        token: str,
+        ordered_tokens: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Replace one canonical library scope's complete order atomically."""
+        with self.database.session() as session:
+            if session.bind is not None and session.bind.dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+            model = self._active_published_quiz_in_session(session, token)
+            scoped = self._normalize_scope_order(
+                session,
+                self._published_quiz_scope(session, model),
+                self._library_section(model),
+            )
+            scoped_tokens = {row.token for row in scoped}
+            if (
+                not ordered_tokens
+                or len(ordered_tokens) != len(scoped)
+                or len(set(ordered_tokens)) != len(ordered_tokens)
+                or set(ordered_tokens) != scoped_tokens
+            ):
+                raise ValueError("published quiz order is stale")
+            scoped_by_token = {row.token: row for row in scoped}
+            for display_order, ordered_token in enumerate(ordered_tokens, start=1):
+                scoped_by_token[ordered_token].display_order = display_order
+            session.flush()
+            return tuple(
+                row.token
+                for row in sorted(scoped, key=lambda row: row.display_order)
+            )
+
     def publish_studio_quiz(
         self,
         run_id: str,

@@ -73,6 +73,12 @@
         <p class="eyebrow">{{ 'Quiz Builder management' if management_mode else 'Study Hub' }}</p>
         <h1 class="sh-title">{{ library_title }}</h1>
         <p class="sh-subtitle">{{ library_summary }}</p>
+        {% if management_mode %}
+        <nav class="sh-nav" aria-label="Released library management">
+          <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
+          <a class="sh-nav__link {% if library_path == practice_library_path %}sh-nav__link--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Practice Questions</a>
+        </nav>
+        {% endif %}
       </div>
     </header>
 
@@ -196,6 +202,7 @@
   {% if owner_navigation %}<div class="t-toast-region" data-toast-region aria-label="Notifications"></div>{% endif %}
   <script src="/static/study_hub_shell.js?v=20260828.5" defer></script>
   {% if management_mode %}
+  <script src="/static/vendor/sortable-1.15.7.min.js" defer></script>
   <script src="/static/public_quiz_library.js?v={{ library_asset_version }}" defer></script>
   {% else %}
   <script src="/public/quizzes/assets/{{ library_asset_version }}/library.js" defer></script>

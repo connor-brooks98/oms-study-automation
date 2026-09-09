@@ -3,7 +3,7 @@ from typing import Annotated, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from oms_hub.study_generation.domain import (
     PublishedQuizLibrarySection,
@@ -41,7 +41,22 @@ class PublishedQuizLibraryMove(BaseModel):
 
 
 class PublishedQuizOrderMove(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     direction: PublishedQuizOrderDirection
+
+
+class PublishedQuizOrderSet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ordered_tokens: Annotated[list[_PublishedQuizToken], Field(min_length=1)]
+
+    @field_validator("ordered_tokens")
+    @classmethod
+    def require_unique_tokens(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("ordered_tokens must not contain duplicates")
+        return value
 
 
 class PublishedQuizPayloadUpdate(BaseModel):
@@ -220,9 +235,20 @@ def move_quiz_to_library(
 def reorder_quiz(
     request: Request,
     token: _PublishedQuizToken,
-    payload: PublishedQuizOrderMove,
+    payload: PublishedQuizOrderMove | PublishedQuizOrderSet,
 ) -> JSONResponse:
     require_form_csrf(request, None)
+    if isinstance(payload, PublishedQuizOrderSet):
+        try:
+            ordered_tokens = _repository(request).set_published_quiz_order(
+                token,
+                tuple(payload.ordered_tokens),
+            )
+        except KeyError as error:
+            raise HTTPException(404, "published quiz was not found") from error
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        return JSONResponse({"token": token, "ordered_tokens": ordered_tokens})
     try:
         published = _repository(request).reorder_published_quiz(token, payload.direction)
     except KeyError as error:

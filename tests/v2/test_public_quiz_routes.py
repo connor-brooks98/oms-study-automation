@@ -561,7 +561,31 @@ def test_local_owner_library_keeps_private_navigation_without_management_control
         assert private_hook in managed.text
     assert "Quiz Builder management" in managed.text
     assert "/studio/library/practice-questions" in managed.text
+    assert "/static/vendor/sortable-1.15.7.min.js" in managed.text
+    assert "/static/vendor/sortable-1.15.7.min.js" not in public.text
     assert "Reset quiz progress" not in public.text
+
+
+def test_managed_practice_library_shows_practice_rows_and_page_switcher(tmp_path):
+    app, lecture_quiz, practice = _published_mixed_app(tmp_path)
+
+    managed = TestClient(app).get("/studio/library/practice-questions")
+
+    assert managed.status_code == 200
+    assert practice.token in managed.text
+    assert lecture_quiz.token not in managed.text
+    assert 'aria-label="Released library management"' in managed.text
+    assert 'href="/studio/library/quizzes"' in managed.text
+    assert 'href="/studio/library/practice-questions"' in managed.text
+    assert 'aria-current="page">Practice Questions</a>' in managed.text
+    assert "/static/vendor/sortable-1.15.7.min.js" in managed.text
+    for private_hook in (
+        "data-quiz-drag-handle",
+        "data-title-form",
+        "data-move-quiz-library",
+        "data-remove-quiz",
+    ):
+        assert private_hook in managed.text
 
 
 def test_public_host_library_hides_private_owner_navigation(tmp_path):
@@ -1051,6 +1075,136 @@ def test_published_quiz_patch_management_validates_csrf_payload_and_token(tmp_pa
     assert invalid_direction.status_code == 422
     assert unknown.status_code == 404
     assert inactive.status_code == 404
+
+
+def test_published_quiz_order_route_sets_complete_order_and_preserves_legacy_response(tmp_path):
+    app, first = _published_app(tmp_path)
+    second_lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 2, "Stroke", "", None)
+    )
+    second = app.state.generation_repository.publish_quiz(
+        second_lecture_id,
+        app.state.generation_repository.queue(second_lecture_id, GenerationKind.QUIZ).id,
+        _quiz("Second"),
+    )
+    third_lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 3, "Tumors", "", None)
+    )
+    third = app.state.generation_repository.publish_quiz(
+        third_lecture_id,
+        app.state.generation_repository.queue(third_lecture_id, GenerationKind.QUIZ).id,
+        _quiz("Third"),
+    )
+
+    with TestClient(app) as client:
+        client.get("/public/quizzes")
+        csrf = client.cookies.get("study_hub_csrf")
+        legacy = client.patch(
+            f"/api/published-quizzes/{first.token}/order",
+            json={"direction": "down"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        requested = [third.token, first.token, second.token]
+        atomic = client.patch(
+            f"/api/published-quizzes/{first.token}/order",
+            json={"ordered_tokens": requested},
+            headers={"X-CSRF-Token": csrf},
+        )
+
+    assert legacy.json() == {
+        "token": first.token,
+        "direction": "down",
+        "display_order": 2,
+    }
+    assert atomic.status_code == 200
+    assert atomic.json() == {"token": first.token, "ordered_tokens": requested}
+
+
+def test_published_quiz_order_route_requires_csrf_and_strict_payload(tmp_path):
+    app, published = _published_app(tmp_path)
+    path = f"/api/published-quizzes/{published.token}/order"
+
+    with TestClient(app) as client:
+        missing_csrf = client.patch(path, json={"ordered_tokens": [published.token]})
+        client.get("/public/quizzes")
+        csrf = client.cookies.get("study_hub_csrf")
+        invalid_payloads = [
+            {},
+            {"ordered_tokens": []},
+            {"ordered_tokens": [published.token, published.token]},
+            {"ordered_tokens": ["not-a-token"]},
+            {"ordered_tokens": [published.token], "direction": "up"},
+            {"ordered_tokens": [published.token], "subject": "Neuro"},
+            {"direction": "up", "subject": "Neuro"},
+        ]
+        invalid = [
+            client.patch(path, json=payload, headers={"X-CSRF-Token": csrf})
+            for payload in invalid_payloads
+        ]
+
+    assert missing_csrf.status_code == 403
+    assert all(response.status_code == 422 for response in invalid)
+
+
+def test_published_quiz_order_route_rejects_stale_scope_without_changes(tmp_path):
+    app, first = _published_app(tmp_path)
+    second_lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 2, "Stroke", "", None)
+    )
+    second = app.state.generation_repository.publish_quiz(
+        second_lecture_id,
+        app.state.generation_repository.queue(second_lecture_id, GenerationKind.QUIZ).id,
+        _quiz("Second"),
+    )
+    foreign_lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 2, 1, "Other exam", "", None)
+    )
+    foreign = app.state.generation_repository.publish_quiz(
+        foreign_lecture_id,
+        app.state.generation_repository.queue(foreign_lecture_id, GenerationKind.QUIZ).id,
+        _quiz("Foreign"),
+    )
+    inactive_lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 3, "Inactive", "", None)
+    )
+    inactive = app.state.generation_repository.publish_quiz(
+        inactive_lecture_id,
+        app.state.generation_repository.queue(inactive_lecture_id, GenerationKind.QUIZ).id,
+        _quiz("Inactive"),
+    )
+    app.state.generation_repository.unpublish_quiz(inactive.token)
+    path = f"/api/published-quizzes/{first.token}/order"
+
+    with TestClient(app) as client:
+        client.get("/public/quizzes")
+        csrf = client.cookies.get("study_hub_csrf")
+        invalid_orders = [
+            [second.token],
+            [first.token, foreign.token],
+            [first.token, inactive.token],
+            [first.token, "f" * 64],
+        ]
+        rejected = [
+            client.patch(
+                path,
+                json={"ordered_tokens": ordered_tokens},
+                headers={"X-CSRF-Token": csrf},
+            )
+            for ordered_tokens in invalid_orders
+        ]
+        unknown = client.patch(
+            f"/api/published-quizzes/{'e' * 64}/order",
+            json={"ordered_tokens": ["e" * 64]},
+            headers={"X-CSRF-Token": csrf},
+        )
+
+    stored = app.state.generation_repository.published_quizzes(
+        frozenset({QuizContentKind.LECTURE_QUIZ})
+    )
+    assert all(response.status_code == 409 for response in rejected)
+    assert unknown.status_code == 404
+    assert tuple(row.token for row in stored) == (first.token, second.token, foreign.token)
+    assert [row.display_order for row in stored] == [1, 2, 1]
 
 
 def test_published_quiz_patch_management_is_not_in_public_access_bypass(tmp_path):

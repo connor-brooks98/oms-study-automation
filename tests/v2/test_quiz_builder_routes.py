@@ -75,6 +75,7 @@ def test_quiz_builder_keeps_generate_and_import_workflows(tmp_path) -> None:
     assert "Generate Quiz" in response.text
     assert "Import Practice Questions" in response.text
     assert 'href="/studio/library/quizzes"' in response.text
+    assert 'href="/studio/library/practice-questions"' in response.text
     assert "Manage released libraries" in response.text
     assert "NotebookLM Studio" not in response.text
 

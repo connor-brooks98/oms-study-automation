@@ -798,6 +798,169 @@ def test_reordering_uses_current_lecture_subject_and_exam_scope(tmp_path):
         repository.database.engine.dispose()
 
 
+def test_setting_published_quiz_order_uses_current_scope_and_persists_permutation(tmp_path):
+    repository, moved_lecture_id = prepared_repository(tmp_path)
+    catalog = CatalogRepository(repository.database)
+    try:
+        moved = repository.publish_quiz(
+            moved_lecture_id,
+            repository.queue(moved_lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Moved lecture"),
+        )
+        catalog.update_lecture(
+            moved_lecture_id,
+            LectureInput("Cardio", 2, 1, "Arrhythmias", "", None),
+        )
+        peer_lecture_id = catalog.upsert_lecture(
+            LectureInput("Cardio", 2, 2, "Heart failure", "", None)
+        )
+        peer = repository.publish_quiz(
+            peer_lecture_id,
+            repository.queue(peer_lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Peer lecture"),
+        )
+        foreign_lecture_id = catalog.upsert_lecture(
+            LectureInput("Cardio", 3, 1, "Congenital disease", "", None)
+        )
+        foreign = repository.publish_quiz(
+            foreign_lecture_id,
+            repository.queue(foreign_lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Other exam"),
+        )
+        with repository.database.session() as session:
+            session.add_all(
+                [
+                    StudioRunModel(
+                        id="atomic-exam-review",
+                        subject="Cardio",
+                        subject_key="cardio",
+                        exam_number=2,
+                        destination_subject="Cardio",
+                        destination_subject_key="cardio",
+                        destination_exam_number=2,
+                        label="Exam review",
+                        label_key="exam review",
+                        prompt="",
+                        content_kind=QuizContentKind.EXAM_REVIEW.value,
+                        state="awaiting_images",
+                        stage="image_review",
+                    ),
+                    StudioRunModel(
+                        id="atomic-practice",
+                        subject="Cardio",
+                        subject_key="cardio",
+                        exam_number=2,
+                        destination_subject="Cardio",
+                        destination_subject_key="cardio",
+                        destination_exam_number=2,
+                        label="Practice",
+                        label_key="practice",
+                        prompt="",
+                        workflow_kind="direct_import",
+                        content_kind=QuizContentKind.PRACTICE_QUESTIONS.value,
+                        state="awaiting_review",
+                        stage="review",
+                    ),
+                ]
+            )
+        review = repository.publish_studio_quiz(
+            "atomic-exam-review", _quiz("Exam review")
+        )
+        practice = repository.publish_studio_quiz("atomic-practice", _quiz("Practice"))
+        requested = (review.token, moved.token, peer.token)
+
+        first_result = repository.set_published_quiz_order(moved.token, requested)
+        second_result = repository.set_published_quiz_order(moved.token, requested)
+        stored = GenerationRepository(repository.database).published_quizzes(
+            frozenset({QuizContentKind.LECTURE_QUIZ, QuizContentKind.EXAM_REVIEW})
+        )
+        stored_practice = repository.published_quiz(practice.token)
+        stored_foreign = repository.published_quiz(foreign.token)
+
+        assert first_result == requested
+        assert second_result == requested
+        assert tuple(row.token for row in stored) == requested + (foreign.token,)
+        assert [row.display_order for row in stored[:3]] == [1, 2, 3]
+        assert stored_practice is not None and stored_practice.display_order == 1
+        assert stored_foreign is not None and stored_foreign.display_order == 1
+    finally:
+        repository.database.engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "invalid_kind",
+    ["empty", "missing_path", "duplicate", "foreign", "inactive", "stale", "extra"],
+)
+def test_setting_invalid_published_quiz_order_rolls_back_all_changes(
+    tmp_path,
+    invalid_kind: str,
+) -> None:
+    repository, first_lecture_id = prepared_repository(tmp_path)
+    catalog = CatalogRepository(repository.database)
+    try:
+        lecture_ids = [
+            first_lecture_id,
+            catalog.upsert_lecture(LectureInput("Neuro", 1, 2, "Stroke", "", None)),
+            catalog.upsert_lecture(LectureInput("Neuro", 1, 3, "Tumors", "", None)),
+        ]
+        scoped = [
+            repository.publish_quiz(
+                lecture_id,
+                repository.queue(lecture_id, GenerationKind.QUIZ).id,
+                _quiz(f"Scoped {index}"),
+            )
+            for index, lecture_id in enumerate(lecture_ids, start=1)
+        ]
+        foreign_lecture_id = catalog.upsert_lecture(
+            LectureInput("Neuro", 2, 1, "Other exam", "", None)
+        )
+        foreign = repository.publish_quiz(
+            foreign_lecture_id,
+            repository.queue(foreign_lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Foreign"),
+        )
+        inactive_lecture_id = catalog.upsert_lecture(
+            LectureInput("Neuro", 1, 4, "Inactive", "", None)
+        )
+        inactive = repository.publish_quiz(
+            inactive_lecture_id,
+            repository.queue(inactive_lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Inactive"),
+        )
+        repository.unpublish_quiz(inactive.token)
+        original_orders = {
+            row.token: order for row, order in zip(scoped, (10, 20, 30), strict=True)
+        }
+        with repository.database.session() as session:
+            for token, order in original_orders.items():
+                model = session.get(PublishedQuizModel, token)
+                assert model is not None
+                model.display_order = order
+        first, second, third = (row.token for row in scoped)
+        invalid_orders = {
+            "empty": (),
+            "missing_path": (second, third),
+            "duplicate": (first, second, second),
+            "foreign": (first, second, foreign.token),
+            "inactive": (first, second, inactive.token),
+            "stale": (first, second, "f" * 64),
+            "extra": (first, second, third, foreign.token),
+        }
+
+        with pytest.raises(ValueError, match="published quiz order is stale"):
+            repository.set_published_quiz_order(first, invalid_orders[invalid_kind])
+
+        with repository.database.session() as session:
+            stored_orders = {}
+            for token in original_orders:
+                model = session.get(PublishedQuizModel, token)
+                assert model is not None
+                stored_orders[token] = model.display_order
+        assert stored_orders == original_orders
+    finally:
+        repository.database.engine.dispose()
+
+
 def test_unpublish_lecture_preserves_publication_history_and_can_republish(tmp_path):
     repository, lecture_id = prepared_repository(tmp_path)
     try:

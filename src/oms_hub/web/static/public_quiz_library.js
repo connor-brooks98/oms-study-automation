@@ -86,7 +86,9 @@
   const errorMessage = async (response, fallback) => {
     try {
       const payload = await response.json();
-      return payload.detail || fallback;
+      return typeof payload?.detail === "string" && payload.detail.trim()
+        ? payload.detail
+        : fallback;
     } catch (_error) {
       return fallback;
     }
@@ -94,26 +96,6 @@
 
   const messageNode = (documentRef) => documentRef.querySelector("[data-reset-message]");
   const report = (documentRef, message) => { messageNode(documentRef).textContent = message; };
-  const reorderFailureStorageKey = "oms-study-hub-quiz-reorder-failure";
-
-  const storeReorderFailure = (storage, message) => {
-    try {
-      storage?.setItem(reorderFailureStorageKey, message);
-    } catch (_error) {
-      // Reload remains safer than a stale order even if session storage is unavailable.
-    }
-  };
-
-  const consumeReorderFailure = (documentRef, storage) => {
-    try {
-      const message = storage?.getItem(reorderFailureStorageKey);
-      if (!message) return;
-      storage.removeItem(reorderFailureStorageKey);
-      report(documentRef, message);
-    } catch (_error) {
-      // A storage failure must not prevent the library from loading.
-    }
-  };
 
   const managementRequest = async (documentRef, button, url, body) => {
     button.disabled = true;
@@ -187,79 +169,119 @@
     fallback?.focus?.();
   };
 
-  // A direction endpoint moves one position. A longer pointer drop is therefore
-  // deliberately represented as sequential, server-authoritative moves.
-  const directionSequence = (fromIndex, toIndex) => {
-    if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex)) return [];
-    const direction = toIndex > fromIndex ? "down" : "up";
-    return Array(Math.abs(toIndex - fromIndex)).fill(direction);
-  };
+  const reorderStates = new WeakMap();
+  const activeReorders = new WeakMap();
 
-  const orderRows = (row) => {
-    const parent = row.parentElement;
-    return parent?.querySelectorAll
-      ? [...parent.querySelectorAll("[data-quiz-order-row]")]
-      : [];
-  };
+  const orderRows = (list) => (
+    list?.querySelectorAll ? [...list.querySelectorAll("[data-quiz-order-row]")] : []
+  );
 
-  const applyReorder = (row, directions) => {
-    const parent = row?.parentElement;
-    if (!parent || typeof parent.insertBefore !== "function") return false;
-    for (const direction of directions) {
-      if (direction === "up") {
-        const previous = row.previousElementSibling;
-        if (previous) parent.insertBefore(row, previous);
-      } else if (direction === "down") {
-        const next = row.nextElementSibling;
-        if (next) parent.insertBefore(next, row);
-      }
-    }
-    row.classList?.remove("t-list-settle");
-    void row.offsetWidth;
-    row.classList?.add("t-list-settle");
-    row.addEventListener?.("animationend", () => row.classList?.remove("t-list-settle"), { once: true });
+  const tokenOrder = (list) => orderRows(list).map((row) => row.dataset.quizToken);
+
+  const sameOrder = (left, right) => (
+    left.length === right.length && left.every((token, index) => token === right[index])
+  );
+
+  const sameTokens = (left, right) => (
+    left.length === right.length
+    && new Set(left).size === left.length
+    && new Set(right).size === right.length
+    && left.every((token) => right.includes(token))
+  );
+
+  const applyTokenOrder = (list, tokens) => {
+    const rows = orderRows(list);
+    const currentTokens = rows.map((row) => row.dataset.quizToken);
+    if (!sameTokens(currentTokens, tokens) || typeof list?.appendChild !== "function") return false;
+    const rowsByToken = new Map(rows.map((row) => [row.dataset.quizToken, row]));
+    tokens.forEach((token) => list.appendChild(rowsByToken.get(token)));
     return true;
   };
 
-  const reorderRequest = async (
+  const reorderState = (list) => {
+    if (!reorderStates.has(list)) {
+      reorderStates.set(list, {
+        pending: false,
+        sortable: null,
+        disabledControls: [],
+        originalOrder: null,
+        cancelled: false,
+      });
+    }
+    return reorderStates.get(list);
+  };
+
+  const setReorderPending = (list, pending) => {
+    const state = reorderState(list);
+    state.pending = pending;
+    if (pending) {
+      state.disabledControls = [...list.querySelectorAll("button, input, select, textarea")]
+        .map((control) => ({ control, disabled: control.disabled }));
+      state.disabledControls.forEach(({ control }) => { control.disabled = true; });
+      list.classList?.add("is-order-saving");
+    } else {
+      state.disabledControls.forEach(({ control, disabled }) => { control.disabled = disabled; });
+      state.disabledControls = [];
+      list.classList?.remove("is-order-saving");
+    }
+    state.sortable?.option?.("disabled", pending);
+  };
+
+  const unconfirmedOrderMessage = (detail, restored) => {
+    const prefix = detail && detail !== "Quiz order could not be saved." ? `${detail} ` : "";
+    const view = restored ? " The previous order is shown." : "";
+    return `${prefix}The quiz order could not be confirmed.${view} Refresh this page to verify the saved order.`;
+  };
+
+  const saveQuizOrder = async (
     documentRef,
-    control,
+    list,
     row,
-    directions,
+    originalOrder,
+    requestedOrder,
     fetchImpl = root.fetch,
-    sessionStorageRef = browserStorage("sessionStorage"),
   ) => {
-    if (!directions.length) return false;
-    control.disabled = true;
-    let completedSteps = 0;
+    const state = reorderState(list);
+    if (state.pending || sameOrder(originalOrder, requestedOrder)) return false;
+    if (!sameTokens(originalOrder, requestedOrder)) {
+      const restored = applyTokenOrder(list, originalOrder);
+      report(documentRef, unconfirmedOrderMessage(null, restored));
+      return false;
+    }
+    setReorderPending(list, true);
     try {
-      for (const direction of directions) {
-        const response = await fetchImpl(row.dataset.orderUrl, {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "",
-          },
-          body: JSON.stringify({ direction }),
-        });
-        if (!response.ok) throw new Error(await errorMessage(response, "Quiz order could not be updated."));
-        completedSteps += 1;
+      const response = await fetchImpl(row.dataset.orderUrl, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "",
+        },
+        body: JSON.stringify({ ordered_tokens: requestedOrder }),
+      });
+      if (!response.ok) {
+        throw new Error(await errorMessage(response, "Quiz order could not be saved."));
       }
-      applyReorder(row, directions);
-      control.disabled = false;
-      control.focus?.({ preventScroll: true });
-      report(documentRef, "Quiz order updated.");
+      const payload = await response.json();
+      if (
+        payload?.token !== row.dataset.quizToken
+        || !Array.isArray(payload?.ordered_tokens)
+        || !sameTokens(originalOrder, payload.ordered_tokens)
+      ) {
+        throw new Error("Quiz order could not be saved.");
+      }
+      if (!applyTokenOrder(list, payload.ordered_tokens)) {
+        throw new Error("Quiz order could not be saved.");
+      }
+      report(documentRef, "Quiz order saved.");
       return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Quiz order could not be updated.";
-      if (completedSteps > 0) {
-        storeReorderFailure(sessionStorageRef, message);
-        root.location?.reload?.();
-        return false;
-      }
-      control.disabled = false;
-      report(documentRef, message);
+      const restored = applyTokenOrder(list, originalOrder);
+      const detail = error instanceof Error ? error.message : "Quiz order could not be saved.";
+      report(documentRef, unconfirmedOrderMessage(detail, restored));
       return false;
+    } finally {
+      setReorderPending(list, false);
+      row.querySelector?.("[data-quiz-drag-handle]")?.focus?.({ preventScroll: true });
     }
   };
 
@@ -297,55 +319,126 @@
     }
   };
 
-  const bindPointerReorder = (documentRef, handle) => {
-    let dragging = null;
-    const clearTarget = () => documentRef.querySelectorAll?.(".is-drop-target")
-      .forEach((row) => row.classList?.remove("is-drop-target"));
-    const finish = async (event) => {
-      if (!dragging || (event.pointerId !== undefined && event.pointerId !== dragging.pointerId)) return;
-      const source = dragging.row;
-      source.classList?.remove("is-dragging");
-      clearTarget();
-      const target = documentRef.elementFromPoint?.(event.clientX, event.clientY)
-        ?.closest?.("[data-quiz-order-row]");
-      const rows = orderRows(source);
-      const directions = target && target.parentElement === source.parentElement
-        ? directionSequence(rows.indexOf(source), rows.indexOf(target))
-        : [];
-      dragging = null;
-      await reorderRequest(documentRef, handle, source, directions);
-    };
-    handle.addEventListener("pointerdown", (event) => {
+  const prefersReducedMotion = (documentRef) => Boolean(
+    documentRef.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches,
+  );
+
+  const bindSortableReorder = (
+    documentRef,
+    list,
+    SortableImpl = root.Sortable,
+    fetchImpl = root.fetch,
+  ) => {
+    if (!SortableImpl?.create || orderRows(list).length < 2) return null;
+    const state = reorderState(list);
+    const sortable = SortableImpl.create(list, {
+      group: { pull: false, put: false },
+      direction: "vertical",
+      draggable: "[data-quiz-order-row]",
+      handle: "[data-quiz-drag-handle]",
+      dataIdAttr: "data-quiz-token",
+      animation: prefersReducedMotion(documentRef) ? 0 : 200,
+      easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+      forceFallback: true,
+      fallbackOnBody: true,
+      fallbackTolerance: 6,
+      touchStartThreshold: 4,
+      scroll: true,
+      bubbleScroll: true,
+      scrollSensitivity: 64,
+      scrollSpeed: 12,
+      ghostClass: "quiz-order-ghost",
+      chosenClass: "quiz-order-chosen",
+      dragClass: "quiz-order-dragging",
+      fallbackClass: "quiz-order-fallback",
+      onStart(event) {
+        state.originalOrder = tokenOrder(list);
+        state.cancelled = false;
+        activeReorders.set(documentRef, list);
+        event.item?.classList?.add("is-dragging");
+      },
+      async onEnd(event) {
+        event.item?.classList?.remove("is-dragging");
+        activeReorders.delete(documentRef);
+        const originalOrder = state.originalOrder || tokenOrder(list);
+        state.originalOrder = null;
+        const cancelled = state.cancelled
+          || ["pointercancel", "touchcancel"].includes(event.originalEvent?.type);
+        state.cancelled = false;
+        if (cancelled) {
+          applyTokenOrder(list, originalOrder);
+          return false;
+        }
+        const requestedOrder = tokenOrder(list);
+        if (sameOrder(originalOrder, requestedOrder)) return false;
+        return saveQuizOrder(
+          documentRef,
+          list,
+          event.item,
+          originalOrder,
+          requestedOrder,
+          fetchImpl,
+        );
+      },
+    });
+    state.sortable = sortable;
+    return sortable;
+  };
+
+  const moveRow = (row, direction) => {
+    const list = row?.parentElement;
+    const rows = orderRows(list);
+    const index = rows.indexOf(row);
+    if (direction === "up" && index > 0) {
+      list.insertBefore(row, rows[index - 1]);
+      return true;
+    }
+    if (direction === "down" && index >= 0 && index < rows.length - 1) {
+      list.insertBefore(rows[index + 1], row);
+      return true;
+    }
+    return false;
+  };
+
+  const bindKeyboardReorder = (documentRef, handle, fetchImpl = root.fetch) => {
+    handle.addEventListener("keydown", async (event) => {
       const row = handle.closest?.("[data-quiz-order-row]");
-      if (!row || event.button > 0) return;
-      dragging = { row, pointerId: event.pointerId };
-      handle.setPointerCapture?.(event.pointerId);
-      row.classList?.add("is-dragging");
+      const list = row?.parentElement;
+      const rows = orderRows(list);
+      const direction = keyboardReorderDirection(event.key, rows.indexOf(row), rows.length);
+      if (!direction) return;
+      event.preventDefault();
+      const state = reorderState(list);
+      if (state.pending || state.originalOrder) return;
+      const originalOrder = tokenOrder(list);
+      if (!moveRow(row, direction)) return;
+      await saveQuizOrder(
+        documentRef,
+        list,
+        row,
+        originalOrder,
+        tokenOrder(list),
+        fetchImpl,
+      );
     });
-    handle.addEventListener("pointermove", (event) => {
-      if (!dragging || event.pointerId !== dragging.pointerId) return;
-      clearTarget();
-      const target = documentRef.elementFromPoint?.(event.clientX, event.clientY)
-        ?.closest?.("[data-quiz-order-row]");
-      if (target && target !== dragging.row && target.parentElement === dragging.row.parentElement) {
-        target.classList?.add("is-drop-target");
-      }
-    });
-    handle.addEventListener("pointerup", finish);
-    handle.addEventListener("pointercancel", (event) => {
-      if (dragging?.pointerId === event.pointerId) {
-        dragging.row.classList?.remove("is-dragging");
-        clearTarget();
-        dragging = null;
-      }
-    });
+  };
+
+  const cancelActiveReorder = (documentRef) => {
+    const list = activeReorders.get(documentRef);
+    if (!list) return false;
+    const state = reorderState(list);
+    state.cancelled = true;
+    if (state.originalOrder) {
+      state.sortable?.sort?.(state.originalOrder);
+      applyTokenOrder(list, state.originalOrder);
+    }
+    return true;
   };
 
   const initialize = (documentRef, storage) => {
     const surface = documentRef.querySelector("[data-quiz-library]");
     if (surface?.dataset.libraryInitialized) return;
     if (surface) surface.dataset.libraryInitialized = "true";
-    consumeReorderFailure(documentRef, browserStorage("sessionStorage"));
     documentRef.querySelectorAll(".disclosure").forEach((button) => {
       button.addEventListener("click", () => setExpanded(button, button.getAttribute("aria-expanded") !== "true"));
     });
@@ -490,19 +583,15 @@
         await managementRequest(documentRef, button, button.dataset.libraryUrl, { section: button.dataset.targetSection });
       });
     });
+    const reorderLists = new Set();
     documentRef.querySelectorAll("[data-quiz-drag-handle]").forEach((handle) => {
-      bindPointerReorder(documentRef, handle);
-      handle.addEventListener("keydown", async (event) => {
-        const row = handle.closest?.("[data-quiz-order-row]");
-        const rows = row ? orderRows(row) : [];
-        const index = rows.indexOf(row);
-        const direction = keyboardReorderDirection(event.key, index, rows.length);
-        if (!direction) return;
-        event.preventDefault();
-        await reorderRequest(documentRef, handle, row, [direction]);
-      });
+      const list = handle.closest?.("[data-quiz-order-row]")?.parentElement;
+      if (list) reorderLists.add(list);
+      bindKeyboardReorder(documentRef, handle);
     });
+    reorderLists.forEach((list) => bindSortableReorder(documentRef, list));
     documentRef.addEventListener?.("keydown", (event) => {
+      if (event.key === "Escape" && cancelActiveReorder(documentRef)) event.preventDefault?.();
       if (event.key === "Escape") documentRef.querySelectorAll("[data-quiz-overflow][open]").forEach((menu) => {
         menu.open = false;
         menu.querySelector("summary")?.focus?.();
@@ -522,11 +611,11 @@
   const api = {
     initialize, bootstrap, progressKey, progressLabel, progressClass, readProgress, resetProgress,
     tryResetProgress,
-    cookieValue, managementRequest, setExpanded, directionSequence, reorderRequest,
-    bindPointerReorder,
-    reorderFailureStorageKey, storeReorderFailure, consumeReorderFailure, keyboardReorderDirection,
+    cookieValue, managementRequest, setExpanded, keyboardReorderDirection,
+    tokenOrder, applyTokenOrder, saveQuizOrder, bindSortableReorder, bindKeyboardReorder,
+    cancelActiveReorder,
     applyRenamedTitle, applyUnpublish, connectedFocusable, quizCountLabel,
-    openContextMenu, applyReorder,
+    openContextMenu,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) bootstrap(root.document);

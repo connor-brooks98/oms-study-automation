@@ -103,8 +103,26 @@
 .quiz-drag-handle { align-self: center; padding: 0; color: var(--text-2); cursor: grab; font-size: 1.1rem; }
 .quiz-drag-handle:active, .lecture-row.is-dragging .quiz-drag-handle { cursor: grabbing; }
 .quiz-drag-handle { touch-action: none; }
-.lecture-row.is-drop-target { outline: 2px dashed var(--brand); outline-offset: 2px; }
-.lecture-row.is-dragging { opacity: .62; }
+.lecture-row[data-quiz-order-row] {
+  position: relative;
+  transition: box-shadow 200ms var(--ease-out), opacity 200ms var(--ease-out);
+}
+.lecture-row.quiz-order-ghost {
+  opacity: .28;
+  outline: 2px dashed var(--brand);
+  outline-offset: 2px;
+  background: var(--brand-tint);
+}
+.lecture-row.quiz-order-chosen {
+  z-index: 2;
+  box-shadow: 0 12px 28px oklch(0.24 0.014 255 / .16);
+}
+.lecture-row.quiz-order-dragging, .lecture-row.quiz-order-fallback {
+  opacity: .96;
+  cursor: grabbing;
+  box-shadow: 0 16px 36px oklch(0.24 0.014 255 / .2);
+}
+.lecture-list.is-order-saving .quiz-drag-handle { cursor: wait; }
 .quiz-row-actions { display: flex; align-items: center; gap: var(--sp-2); }
 .quiz-row-actions, .quiz-overflow { position: relative; }
 .reset-quiz-button { color: var(--brand); font-size: 1.1rem; }

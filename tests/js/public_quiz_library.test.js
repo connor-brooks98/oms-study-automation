@@ -65,28 +65,6 @@ test("corrupt browser progress is treated as not started", () => {
   assert.equal(library.readProgress(storage, "token", 1), "Not started");
 });
 
-test("successful reorder settles the existing row in its new position", () => {
-  const rows = [{ id: "a" }, { id: "b" }, { id: "c" }];
-  const parent = {
-    children: rows,
-    insertBefore(item, before) {
-      this.children = this.children.filter((candidate) => candidate !== item);
-      this.children.splice(this.children.indexOf(before), 0, item);
-    },
-  };
-  rows.forEach((row) => {
-    row.parentElement = parent;
-    row.classList = { add() {}, remove() {} };
-    row.addEventListener = () => {};
-    Object.defineProperties(row, {
-      previousElementSibling: { get: () => parent.children[parent.children.indexOf(row) - 1] || null },
-      nextElementSibling: { get: () => parent.children[parent.children.indexOf(row) + 1] || null },
-    });
-  });
-  assert.equal(library.applyReorder(rows[0], ["down", "down"]), true);
-  assert.deepEqual(parent.children.map((row) => row.id), ["b", "c", "a"]);
-});
-
 test("course disclosures keep aria and the shared glyph state in sync", () => {
   const glyph = {
     states: [],
@@ -694,7 +672,7 @@ test("unpublish of the final row ignores pruned controls and focuses the library
   assert.equal(main.focused, true);
 });
 
-test("library controls and direction sequences preserve management payloads", async () => {
+test("library controls preserve management payloads", async () => {
   const libraryButton = new FakeLibraryElement();
   libraryButton.dataset = {
     libraryUrl: "/api/published-quizzes/tok1/library",
@@ -726,159 +704,368 @@ test("library controls and direction sequences preserve management payloads", as
       body: JSON.stringify({ section: "practice_questions" }),
     },
   ]);
-  assert.deepEqual(library.directionSequence(0, 3), ["down", "down", "down"]);
-  assert.deepEqual(library.directionSequence(3, 1), ["up", "up"]);
-  assert.deepEqual(library.directionSequence(2, 2), []);
 });
 
-test("pointer drag marks its target and submits the required direction", async () => {
-  const classes = () => {
-    const values = new Set();
+const makeOrderList = (tokens, { reducedMotion = false, extraControls = [] } = {}) => {
+  const list = {
+    children: [],
+    extraControls,
+    classList: { add() {}, remove() {} },
+    querySelectorAll(selector) {
+      if (selector === "[data-quiz-order-row]") return this.children;
+      if (selector === "[data-quiz-drag-handle]") {
+        return this.children.map((row) => row.handle);
+      }
+      if (selector === "button, input, select, textarea") {
+        return [...this.children.map((row) => row.handle), ...this.extraControls];
+      }
+      return [];
+    },
+    appendChild(row) {
+      this.children = this.children.filter((candidate) => candidate !== row);
+      this.children.push(row);
+      row.parentElement = this;
+    },
+    insertBefore(row, before) {
+      this.children = this.children.filter((candidate) => candidate !== row);
+      const index = this.children.indexOf(before);
+      this.children.splice(index < 0 ? this.children.length : index, 0, row);
+      row.parentElement = this;
+    },
+  };
+  for (const token of tokens) {
+    const handle = new FakeLibraryElement();
+    handle.focus = () => { handle.focused = true; };
+    const row = {
+      dataset: {
+        quizToken: token,
+        orderUrl: `/api/published-quizzes/${token}/order`,
+      },
+      handle,
+      parentElement: list,
+      querySelector(selector) {
+        return selector === "[data-quiz-drag-handle]" ? handle : null;
+      },
+    };
+    handle.closest = (selector) => selector === "[data-quiz-order-row]" ? row : null;
+    list.children.push(row);
+  }
+  const documentRef = new FakeLibraryDocument({});
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  documentRef.defaultView = {
+    matchMedia: () => ({ matches: reducedMotion }),
+  };
+  return { list, documentRef };
+};
+
+const fakeSortable = () => {
+  const created = [];
+  return {
+    created,
+    create(list, options) {
+      const instance = {
+        list,
+        options,
+        optionCalls: [],
+        option(name, value) { this.optionCalls.push([name, value]); },
+        sort(tokens) { library.applyTokenOrder(list, tokens); },
+      };
+      created.push(instance);
+      return instance;
+    },
+  };
+};
+
+test("a long drag saves the full order in one request and keeps the server order", async () => {
+  const { list, documentRef } = makeOrderList(["a", "b", "c", "d"]);
+  const Sortable = fakeSortable();
+  const requests = [];
+  const binding = library.bindSortableReorder(
+    documentRef,
+    list,
+    Sortable,
+    async (url, options) => {
+      requests.push({ url, options });
+      return {
+        ok: true,
+        async json() { return { token: "a", ordered_tokens: ["b", "d", "c", "a"] }; },
+      };
+    },
+  );
+
+  binding.options.onStart({ item: list.children[0] });
+  list.appendChild(list.children[0]);
+  await binding.options.onEnd({ item: list.children[3], oldIndex: 0, newIndex: 3 });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/api/published-quizzes/a/order");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    ordered_tokens: ["b", "c", "d", "a"],
+  });
+  assert.deepEqual(library.tokenOrder(list), ["b", "d", "c", "a"]);
+  assert.equal(documentRef.resetMessage.textContent, "Quiz order saved.");
+});
+
+test("a no-op drag sends no request", async () => {
+  const { list, documentRef } = makeOrderList(["a", "b"]);
+  const Sortable = fakeSortable();
+  let requests = 0;
+  const binding = library.bindSortableReorder(
+    documentRef,
+    list,
+    Sortable,
+    async () => { requests += 1; },
+  );
+
+  binding.options.onStart({ item: list.children[0] });
+  await binding.options.onEnd({ item: list.children[0], oldIndex: 0, newIndex: 0 });
+
+  assert.equal(requests, 0);
+});
+
+test("a cancelled pointer drag restores its snapshot without saving", async () => {
+  const { list, documentRef } = makeOrderList(["a", "b", "c"]);
+  const Sortable = fakeSortable();
+  let requests = 0;
+  const binding = library.bindSortableReorder(
+    documentRef,
+    list,
+    Sortable,
+    async () => { requests += 1; },
+  );
+
+  binding.options.onStart({ item: list.children[0] });
+  list.appendChild(list.children[0]);
+  await binding.options.onEnd({
+    item: list.children[2],
+    oldIndex: 0,
+    newIndex: 2,
+    originalEvent: { type: "pointercancel" },
+  });
+
+  assert.equal(requests, 0);
+  assert.deepEqual(library.tokenOrder(list), ["a", "b", "c"]);
+});
+
+test("a cancelled legacy touch drag restores its snapshot without saving", async () => {
+  const { list, documentRef } = makeOrderList(["a", "b", "c"]);
+  const Sortable = fakeSortable();
+  let requests = 0;
+  const binding = library.bindSortableReorder(
+    documentRef,
+    list,
+    Sortable,
+    async () => { requests += 1; },
+  );
+
+  binding.options.onStart({ item: list.children[0] });
+  list.appendChild(list.children[0]);
+  await binding.options.onEnd({
+    item: list.children[2],
+    oldIndex: 0,
+    newIndex: 2,
+    originalEvent: { type: "touchcancel" },
+  });
+
+  assert.equal(requests, 0);
+  assert.deepEqual(library.tokenOrder(list), ["a", "b", "c"]);
+});
+
+test("Escape cancels an active Sortable drag without saving on release", async () => {
+  const { list, documentRef } = makeOrderList(["a", "b", "c"]);
+  const Sortable = fakeSortable();
+  let requests = 0;
+  const binding = library.bindSortableReorder(
+    documentRef,
+    list,
+    Sortable,
+    async () => { requests += 1; },
+  );
+
+  binding.options.onStart({ item: list.children[0] });
+  list.appendChild(list.children[0]);
+  assert.equal(library.cancelActiveReorder(documentRef), true);
+  await binding.options.onEnd({ item: list.children[0], oldIndex: 0, newIndex: 0 });
+
+  assert.equal(requests, 0);
+  assert.deepEqual(library.tokenOrder(list), ["a", "b", "c"]);
+});
+
+test("a pending save locks every reorder handle and prevents another save", async () => {
+  const mutationControl = new FakeLibraryElement();
+  const alreadyDisabled = new FakeLibraryElement();
+  alreadyDisabled.disabled = true;
+  const { list, documentRef } = makeOrderList(
+    ["a", "b", "c"],
+    { extraControls: [mutationControl, alreadyDisabled] },
+  );
+  list.children[2].handle.disabled = true;
+  const Sortable = fakeSortable();
+  let release;
+  let requests = 0;
+  const response = new Promise((resolve) => { release = resolve; });
+  const binding = library.bindSortableReorder(
+    documentRef,
+    list,
+    Sortable,
+    async () => { requests += 1; return response; },
+  );
+  const original = library.tokenOrder(list);
+  list.appendChild(list.children[0]);
+
+  const first = library.saveQuizOrder(
+    documentRef,
+    list,
+    list.children[2],
+    original,
+    library.tokenOrder(list),
+    async () => { requests += 1; return response; },
+  );
+  const second = library.saveQuizOrder(
+    documentRef,
+    list,
+    list.children[0],
+    original,
+    library.tokenOrder(list),
+    async () => { requests += 1; return response; },
+  );
+
+  assert.equal(requests, 1);
+  assert.deepEqual(list.children.map((row) => row.handle.disabled), [true, true, true]);
+  assert.equal(mutationControl.disabled, true);
+  assert.equal(alreadyDisabled.disabled, true);
+  release({
+    ok: true,
+    async json() { return { token: "a", ordered_tokens: ["b", "c", "a"] }; },
+  });
+  assert.equal(await first, true);
+  assert.equal(await second, false);
+  assert.deepEqual(list.children.map((row) => row.handle.disabled), [false, true, false]);
+  assert.equal(mutationControl.disabled, false);
+  assert.equal(alreadyDisabled.disabled, true);
+  assert.deepEqual(binding.optionCalls, [["disabled", true], ["disabled", false]]);
+});
+
+test("Arrow Down uses the same atomic save path and retains focus", async () => {
+  const { list, documentRef } = makeOrderList(["a", "b", "c"]);
+  const handle = list.children[0].handle;
+  const requests = [];
+  library.bindKeyboardReorder(documentRef, handle, async (_url, options) => {
+    requests.push(JSON.parse(options.body));
     return {
-      add: (...names) => names.forEach((name) => values.add(name)),
-      remove: (...names) => names.forEach((name) => values.delete(name)),
-      contains: (name) => values.has(name),
+      ok: true,
+      async json() { return { token: "a", ordered_tokens: ["b", "a", "c"] }; },
+    };
+  });
+  let prevented = false;
+
+  await handle._listeners.keydown[0]({
+    key: "ArrowDown",
+    preventDefault() { prevented = true; },
+  });
+
+  assert.equal(prevented, true);
+  assert.deepEqual(requests, [{ ordered_tokens: ["b", "a", "c"] }]);
+  assert.deepEqual(library.tokenOrder(list), ["b", "a", "c"]);
+  assert.equal(handle.focused, true);
+});
+
+test("keyboard input during an active pointer drag waits for the final drop save", async () => {
+  const { list, documentRef } = makeOrderList(["a", "b", "c"]);
+  const Sortable = fakeSortable();
+  const requests = [];
+  const fetchImpl = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    return {
+      ok: true,
+      async json() { return { token: "a", ordered_tokens: ["b", "c", "a"] }; },
     };
   };
-  const parent = { querySelectorAll: () => [source, target] };
-  const source = {
-    dataset: { orderUrl: "/api/published-quizzes/tok1/order" },
-    parentElement: parent,
-    classList: classes(),
-  };
-  const target = { parentElement: parent, classList: classes() };
-  const handle = new FakeLibraryElement();
-  handle.closest = () => source;
-  handle.setPointerCapture = () => {};
-  const documentRef = new FakeLibraryDocument({});
-  documentRef.cookie = "study_hub_csrf=csrf-token";
-  documentRef.elementFromPoint = () => ({ closest: () => target });
-  documentRef.querySelectorAll = (selector) => (
-    selector === ".is-drop-target" ? [source, target] : []
+  const binding = library.bindSortableReorder(documentRef, list, Sortable, fetchImpl);
+  const handle = list.children[0].handle;
+  library.bindKeyboardReorder(documentRef, handle, fetchImpl);
+  let prevented = false;
+
+  binding.options.onStart({ item: list.children[0] });
+  await handle._listeners.keydown[0]({
+    key: "ArrowDown",
+    preventDefault() { prevented = true; },
+  });
+  assert.deepEqual(library.tokenOrder(list), ["a", "b", "c"]);
+  list.appendChild(list.children[0]);
+  await binding.options.onEnd({ item: list.children[2], oldIndex: 0, newIndex: 2 });
+
+  assert.equal(prevented, true);
+  assert.deepEqual(requests, [{ ordered_tokens: ["b", "c", "a"] }]);
+});
+
+test("an unconfirmed save restores the snapshot and tells the user to refresh", async () => {
+  const { list, documentRef } = makeOrderList(["a", "b", "c"]);
+  const original = library.tokenOrder(list);
+  const row = list.children[0];
+  list.appendChild(row);
+
+  const saved = await library.saveQuizOrder(
+    documentRef,
+    list,
+    row,
+    original,
+    library.tokenOrder(list),
+    async () => ({
+      ok: true,
+      async json() { return { token: "a", ordered_tokens: ["a", "not-in-this-list", "c"] }; },
+    }),
   );
-  const originalFetch = global.fetch;
-  const originalLocation = global.location;
-  const requests = [];
-  let reloads = 0;
-  global.fetch = async (_url, options) => {
-    requests.push(JSON.parse(options.body).direction);
-    return { ok: true, async json() { return {}; } };
-  };
-  global.location = { reload: () => { reloads += 1; } };
-  try {
-    library.bindPointerReorder(documentRef, handle);
-    handle._listeners.pointerdown[0]({ button: 0, pointerId: 7 });
-    handle._listeners.pointermove[0]({ pointerId: 7, clientX: 10, clientY: 20 });
-    assert.equal(source.classList.contains("is-dragging"), true);
-    assert.equal(target.classList.contains("is-drop-target"), true);
-    await handle._listeners.pointerup[0]({ pointerId: 7, clientX: 10, clientY: 20 });
-  } finally {
-    global.fetch = originalFetch;
-    global.location = originalLocation;
-  }
 
-  assert.deepEqual(requests, ["down"]);
-  assert.equal(reloads, 0);
-  assert.equal(documentRef.resetMessage.textContent, "Quiz order updated.");
-  assert.equal(source.classList.contains("is-dragging"), false);
-  assert.equal(target.classList.contains("is-drop-target"), false);
+  assert.equal(saved, false);
+  assert.deepEqual(library.tokenOrder(list), original);
+  assert.match(documentRef.resetMessage.textContent, /could not be confirmed/i);
+  assert.match(documentRef.resetMessage.textContent, /refresh/i);
 });
 
-test("failed drag reorder keeps the control usable and reports the server detail", async () => {
-  const control = new FakeLibraryElement();
-  const row = { dataset: { orderUrl: "/api/published-quizzes/tok1/order" } };
-  const documentRef = new FakeLibraryDocument({});
-  documentRef.cookie = "study_hub_csrf=csrf-token";
-  const originalLocation = global.location;
-  let reloads = 0;
-  global.location = { reload: () => { reloads += 1; } };
-  let result;
-  try {
-    result = await library.reorderRequest(
-      documentRef,
-      control,
-      row,
-      ["down", "down"],
-      async () => ({ ok: false, async json() { return { detail: "Order is no longer available" }; } }),
-    );
-  } finally {
-    global.location = originalLocation;
-  }
+test("a changed list cannot report saved when the authoritative order cannot be applied", async () => {
+  const { list, documentRef } = makeOrderList(["a", "b", "c"]);
+  const original = library.tokenOrder(list);
+  const row = list.children[0];
+  list.appendChild(row);
 
-  assert.equal(result, false);
-  assert.equal(reloads, 0);
-  assert.equal(control.disabled, false);
-  assert.equal(documentRef.resetMessage.textContent, "Order is no longer available");
+  const saved = await library.saveQuizOrder(
+    documentRef,
+    list,
+    row,
+    original,
+    library.tokenOrder(list),
+    async () => {
+      list.children = list.children.filter((candidate) => candidate.dataset.quizToken !== "c");
+      return {
+        ok: true,
+        async json() { return { token: "a", ordered_tokens: ["b", "c", "a"] }; },
+      };
+    },
+  );
+
+  assert.equal(saved, false);
+  assert.notEqual(documentRef.resetMessage.textContent, "Quiz order saved.");
+  assert.match(documentRef.resetMessage.textContent, /could not be confirmed/i);
+  assert.match(documentRef.resetMessage.textContent, /refresh/i);
+  assert.doesNotMatch(documentRef.resetMessage.textContent, /previous order is shown/i);
 });
 
-test("successful multi-step reorder sends every direction without reloading", async () => {
-  const control = new FakeLibraryElement();
-  const row = { dataset: { orderUrl: "/api/published-quizzes/tok1/order" } };
-  const documentRef = new FakeLibraryDocument({});
-  const originalLocation = global.location;
-  const requests = [];
-  let reloads = 0;
-  global.location = { reload: () => { reloads += 1; } };
-  try {
-    const result = await library.reorderRequest(
-      documentRef,
-      control,
-      row,
-      ["down", "down"],
-      async (_url, options) => {
-        requests.push(JSON.parse(options.body).direction);
-        return { ok: true, async json() { return {}; } };
-      },
-    );
-    assert.equal(result, true);
-  } finally {
-    global.location = originalLocation;
-  }
-  assert.deepEqual(requests, ["down", "down"]);
-  assert.equal(reloads, 0);
-  assert.equal(documentRef.resetMessage.textContent, "Quiz order updated.");
-});
+test("Sortable is vertical, list-local, fluid, touch-friendly, and honors reduced motion", () => {
+  const { list, documentRef } = makeOrderList(["a", "b"], { reducedMotion: true });
+  const Sortable = fakeSortable();
 
-test("partial reorder failure reloads authoritative state and restores its message", async () => {
-  const control = new FakeLibraryElement();
-  const row = { dataset: { orderUrl: "/api/published-quizzes/tok1/order" } };
-  const documentRef = new FakeLibraryDocument({});
-  const storage = makeMemoryStorage();
-  const originalLocation = global.location;
-  let reloads = 0;
-  let requests = 0;
-  global.location = { reload: () => { reloads += 1; } };
-  try {
-    const result = await library.reorderRequest(
-      documentRef,
-      control,
-      row,
-      ["down", "down"],
-      async () => {
-        requests += 1;
-        return requests === 1
-          ? { ok: true, async json() { return {}; } }
-          : { ok: false, async json() { return { detail: "Order changed elsewhere" }; } };
-      },
-      storage,
-    );
-    assert.equal(result, false);
-  } finally {
-    global.location = originalLocation;
-  }
-  assert.equal(reloads, 1);
-  assert.equal(storage.getItem(library.reorderFailureStorageKey), "Order changed elsewhere");
-  library.consumeReorderFailure(documentRef, storage);
-  assert.equal(documentRef.resetMessage.textContent, "Order changed elsewhere");
-  assert.equal(storage.getItem(library.reorderFailureStorageKey), null);
-});
+  const binding = library.bindSortableReorder(documentRef, list, Sortable, async () => {});
 
-test("keyboard reorder only permits an in-bounds arrow direction", () => {
-  assert.equal(library.keyboardReorderDirection("ArrowUp", 0, 3), null);
-  assert.equal(library.keyboardReorderDirection("ArrowDown", 0, 3), "down");
-  assert.equal(library.keyboardReorderDirection("ArrowUp", 2, 3), "up");
-  assert.equal(library.keyboardReorderDirection("ArrowDown", 2, 3), null);
-  assert.equal(library.keyboardReorderDirection("Enter", 1, 3), null);
+  assert.equal(binding.options.direction, "vertical");
+  assert.deepEqual(binding.options.group, { pull: false, put: false });
+  assert.equal(binding.options.handle, "[data-quiz-drag-handle]");
+  assert.equal(binding.options.draggable, "[data-quiz-order-row]");
+  assert.equal(binding.options.animation, 0);
+  assert.equal(binding.options.forceFallback, true);
+  assert.equal(binding.options.fallbackOnBody, true);
+  assert.ok(binding.options.fallbackTolerance >= 4);
+  assert.equal(binding.options.scroll, true);
 });
 
 test("failed management updates keep the button enabled and do not reload", async () => {

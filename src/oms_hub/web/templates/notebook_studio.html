@@ -10,7 +10,13 @@
       <p data-poll-status class="field-message" role="alert" aria-live="polite"></p>
     </div>
     <div class="heading-actions">
-      <a class="button secondary sh-btn sh-btn--secondary" href="/studio/library/quizzes">Manage released libraries</a>
+      <details class="sh-more">
+        <summary class="button secondary sh-btn sh-btn--secondary sh-more__trigger" aria-expanded="false">Manage released libraries <span class="sh-more__chevron" aria-hidden="true">▾</span></summary>
+        <div class="sh-more__menu t-dropdown" data-origin="top-right">
+          <a href="/studio/library/quizzes">Quizzes</a>
+          <a href="/studio/library/practice-questions">Practice Questions</a>
+        </div>
+      </details>
     </div>
   </div>
   <section class="card sh-card studio-scope">
