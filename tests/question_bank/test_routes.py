@@ -181,3 +181,18 @@ def test_conflicting_import_rolls_back_and_empty_export_is_not_all_notes(setup):
     value = json.dumps(data).encode()
     response = upload(client, "confirm", value, digest=preview_import(value).digest)
     assert client.get(response.url.path + "/anki-export").status_code == 409
+
+
+def test_valid_utf8_upload_can_confirm_and_reload_without_escaped_json_limit(setup):
+    client, _, _ = setup
+    data = json.loads(raw())
+    data["rows"] = [{"question_id": str(i), "user_note": "é" * 20000} for i in range(90)]
+    source = json.dumps(data, ensure_ascii=False).encode()
+    preview = preview_import(source)
+    assert len(source) < 10 * 1024 * 1024
+    assert len(json.dumps(preview.envelope.model_dump(mode="json")).encode()) > 10 * 1024 * 1024
+    response = client.post("/question-bank/imports/confirm", files={
+        "file": ("normalized.json", source, "application/json")}, data={"digest": preview.digest},
+        follow_redirects=False)
+    assert response.status_code == 303
+    assert client.get(response.headers["location"]).status_code == 200

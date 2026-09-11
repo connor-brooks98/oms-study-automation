@@ -15,7 +15,12 @@ def parse_import(raw: bytes) -> ImportEnvelope:
 
 
 def preview_import(raw: bytes) -> ImportPreview:
-    envelope = parse_import(raw)
+    return preview_envelope(parse_import(raw))
+
+
+def preview_envelope(envelope: ImportEnvelope) -> ImportPreview:
+    """Revalidate normalized data without reapplying the wire byte limit to escaped JSON."""
+    envelope = ImportEnvelope.model_validate(envelope.model_dump(mode="python"))
     canonical = json.dumps(
         envelope.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), allow_nan=False
     )

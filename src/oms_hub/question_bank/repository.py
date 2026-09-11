@@ -32,7 +32,7 @@ from oms_hub.question_bank.contracts import (
     RowIssue,
     TopicLabel,
 )
-from oms_hub.question_bank.imports import preview_import
+from oms_hub.question_bank.imports import preview_envelope, preview_import
 
 _TOPICS = TypeAdapter(tuple[TopicLabel, ...])
 
@@ -144,7 +144,7 @@ class BankRepository:
         _owner(learner_id)
         # Re-parse even frozen models: nested raw bodies and model_copy are not trusted.
         envelope = ImportEnvelope.model_validate(preview.envelope.model_dump(mode="python"))
-        checked = preview_import(_json(envelope.model_dump(mode="json")).encode())
+        checked = preview_envelope(envelope)
         if checked.digest != expected_digest or checked.digest != preview.digest:
             raise ValueError("Import digest changed; preview again")
         return self._commit(checked, learner_id, _json(checked.envelope.provenance.model_dump()))
@@ -495,8 +495,8 @@ class BankRepository:
                 .where(BankImportRowModel.import_id == import_id)
                 .order_by(BankImportRowModel.row_number)
             )
-            preview = preview_import(
-                _json(
+            preview = preview_envelope(
+                ImportEnvelope.model_validate_json(_json(
                     {
                         "schema_version": 1,
                         "source": record.source,
@@ -505,7 +505,7 @@ class BankRepository:
                         "provenance": json.loads(record.provenance_json),
                         "rows": [json.loads(row.row_json) for row in rows],
                     }
-                ).encode()
+                ))
             )
             stored = json.loads(record.receipt_json)
             receipt = ImportReceipt(

@@ -153,7 +153,10 @@ def create_question_bank_router(
             return page(
                 request, checked, error="File changed. Preview the selected file again.", status=409
             )
-        receipt = repository.commit_import(checked, learner_id=owner, expected_digest=digest)
+        try:
+            receipt = repository.commit_import(checked, learner_id=owner, expected_digest=digest)
+        except ValueError as error:
+            return page(request, checked, error=str(error)[:1000], status=409)
         if receipt.conflicts:
             return page(
                 request,
