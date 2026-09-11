@@ -24,6 +24,14 @@
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/f0c7/oms-study-automation",
       "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2"
+    },
+    "C": {
+      "thread_id": "01a0927c-62a2-7921-b25b-273680846e3e",
+      "client_thread_id": "client-new-thread:818cf5e4-4603-405d-b495-cfdf3b3babe7",
+      "host_id": "local",
+      "cwd": "/Users/connor/.codex/worktrees/5b09/oms-study-automation",
+      "base_commit": "30f3890888eb79d5f78b72bca5ebe7a935e4a7e9",
+      "state": "idle_waiting_B2"
     }
   },
   "tasks": {
@@ -41,15 +49,15 @@
     "O1": {
       "state": "running",
       "worker": "O",
-      "commit": "86bf3e2583614b0e52a80a998cd6f05fc67c538e",
+      "commit": "c09c44e75f9ad405823f2a5134265036745dcbfb",
       "tests": [
         "21 migration tests passed",
         "scoped Ruff passed",
         "mypy models/migrations passed"
       ],
-      "review": null,
+      "review": "schema32/33, owner boundary, lifecycle fixes independently PASS",
       "blocker": null,
-      "next_action": "independent schema review; owner and GPT lifecycle wiring"
+      "next_action": "source queue/application and bank review integration"
     },
     "O2": {
       "state": "ready",
@@ -70,22 +78,24 @@
       "next_action": "follow approved dependency table"
     },
     "B1": {
+      "state": "accepted_local",
+      "worker": "B",
+      "commit": "cffa82005057016e6fb5ff8f57d3402535174691",
+      "tests": [
+        "17 offline contract checks independently reproduced"
+      ],
+      "review": "PASS independent review",
+      "blocker": null,
+      "next_action": "consumer implementation dispatched"
+    },
+    "B2": {
       "state": "running",
       "worker": "B",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "await scoped receipt and independent review"
-    },
-    "B2": {
-      "state": "ready",
-      "worker": "B",
-      "commit": null,
-      "tests": [],
-      "review": null,
-      "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "implement and return scoped receipt"
     },
     "B3": {
       "state": "ready",
@@ -133,31 +143,33 @@
       "next_action": "follow approved dependency table"
     },
     "Q1": {
+      "state": "accepted_local",
+      "worker": "Q",
+      "commit": "ae9ed1b94954f863973517b7054dbf50c0be8d37",
+      "tests": [
+        "124 parser/native tests independently reproduced"
+      ],
+      "review": "PASS independent review",
+      "blocker": null,
+      "next_action": "consumer implementation dispatched"
+    },
+    "Q2": {
+      "state": "blocked_external",
+      "worker": "Q",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": "Separate real UWorld/TrueLearn export samples unavailable",
+      "next_action": "inspect supported results/QID/notes sample, no proprietary parser guessing"
+    },
+    "Q3": {
       "state": "running",
       "worker": "Q",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "await scoped receipt and independent review"
-    },
-    "Q2": {
-      "state": "ready",
-      "worker": "Q",
-      "commit": null,
-      "tests": [],
-      "review": null,
-      "blocker": null,
-      "next_action": "follow approved dependency table"
-    },
-    "Q3": {
-      "state": "ready",
-      "worker": "Q",
-      "commit": null,
-      "tests": [],
-      "review": null,
-      "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "implement and return scoped receipt"
     },
     "Q4": {
       "state": "ready",
@@ -252,5 +264,11 @@
     "?? tmp/",
     "?? uv.lock",
     "?? worktrees/"
-  ]
+  ],
+  "helper": {
+    "owner": "B",
+    "task": "B3",
+    "state": "token_granted",
+    "no_grandchildren": true
+  }
 }
