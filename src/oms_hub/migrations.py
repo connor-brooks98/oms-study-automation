@@ -41,7 +41,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 32
+LATEST_SCHEMA_VERSION = 33
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -2661,6 +2661,18 @@ def _validate_gpt_platform_v32(database: "Database") -> None:
         raise RuntimeError("schema v32 attempt identity constraint is missing")
 
 
+def _validate_study_chat_v33(database: "Database") -> None:
+    inspector = inspect(database.engine)
+    required = {"study_chat_conversations", "study_chat_requests", "study_sessions",
+                "study_session_questions"}
+    if not required <= set(inspector.get_table_names()):
+        raise RuntimeError("schema v33 chat/progress tables are missing")
+    indexes = inspector.get_indexes("study_chat_requests")
+    if not any(index["name"] == "uq_chat_conversation_active" and index["unique"]
+               for index in indexes):
+        raise RuntimeError("schema v33 active conversation constraint is missing")
+
+
 def migrate_database(database: "Database") -> None:
     # A populated current schema is an integrity check, not an opportunity to
     # rewrite persisted identities.  Keep this branch read-only.
@@ -2688,14 +2700,19 @@ def migrate_database(database: "Database") -> None:
             _validate_v3_durable_reservations_v29(database)
             _validate_lecture_passes_v30(database)
             _validate_lecture_pass_resources_v31(database)
-            if version == 31:
+            if version < LATEST_SCHEMA_VERSION:
                 # Only the new delta: historical backfills can rewrite retained quizzes.
                 database.create_schema()
                 _upgrade_gpt_platform_v32(database)
                 _validate_gpt_platform_v32(database)
                 with database.engine.begin() as connection:
-                    connection.execute(text("UPDATE schema_version SET version=32 WHERE id=1"))
+                    _validate_study_chat_v33(database)
+                    connection.execute(
+                        text("UPDATE schema_version SET version=:version WHERE id=1"),
+                        {"version": LATEST_SCHEMA_VERSION},
+                    )
             _validate_gpt_platform_v32(database)
+            _validate_study_chat_v33(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -2746,6 +2763,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_lecture_pass_resources_v31(database)
     _upgrade_gpt_platform_v32(database)
     _validate_gpt_platform_v32(database)
+    _validate_study_chat_v33(database)
     _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
     _validate_complete_existing_artifact_graph(database)
     _validate_current_artifact_indexes(database)

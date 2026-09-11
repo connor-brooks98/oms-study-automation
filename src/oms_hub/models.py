@@ -1037,3 +1037,82 @@ class BankTopicReviewModel(Base):
     new_topics_json: Mapped[str] = mapped_column(Text)
     reviewer_context_json: Mapped[str] = mapped_column(Text)
     reviewed_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class ChatConversationModel(Base):
+    __tablename__ = "study_chat_conversations"
+    __table_args__ = (
+        CheckConstraint("mode IN ('lecture','medical_reference','general')"),
+        Index("ix_chat_conversations_owner", "owner_id", "updated_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(320))
+    mode: Mapped[str] = mapped_column(String(30))
+    source_snapshot_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+    cleared_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class ChatRequestModel(Base):
+    __tablename__ = "study_chat_requests"
+    __table_args__ = (
+        CheckConstraint("state IN ('pending','running','completed','failed','interrupted')"),
+        CheckConstraint("answer_status IS NULL OR answer_status IN "
+                        "('answered','no_support','unavailable')"),
+        Index("ix_chat_requests_conversation", "conversation_id", "created_at", "request_id"),
+        Index("uq_chat_conversation_active", "conversation_id", unique=True,
+              sqlite_where=text("state IN ('pending','running')")),
+    )
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("study_chat_conversations.id"))
+    request_sha256: Mapped[str] = mapped_column(String(64))
+    question: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(200))
+    evidence_json: Mapped[str] = mapped_column(Text, default="[]")
+    history_request_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    state: Mapped[str] = mapped_column(String(30), default="pending")
+    provider_phase: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    thread_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    turn_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    lifecycle_json: Mapped[str] = mapped_column(Text, default="[]")
+    answer_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    answer_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    citation_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class StudySessionModel(Base):
+    __tablename__ = "study_sessions"
+    __table_args__ = (Index("ix_study_sessions_owner", "owner_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(320))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    closed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class StudySessionQuestionModel(Base):
+    __tablename__ = "study_session_questions"
+    __table_args__ = (
+        UniqueConstraint("session_id", "position"),
+        UniqueConstraint("session_id", "quiz_token", "quiz_version", "question_id"),
+        CheckConstraint("position >= 0"),
+        CheckConstraint("quiz_version > 0"),
+        CheckConstraint("elapsed_ms IS NULL OR elapsed_ms >= 0"),
+    )
+    attempt_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("study_sessions.id"))
+    position: Mapped[int]
+    quiz_token: Mapped[str] = mapped_column(ForeignKey("published_quizzes.token"))
+    quiz_version: Mapped[int]
+    quiz_content_sha256: Mapped[str] = mapped_column(String(64))
+    question_id: Mapped[str] = mapped_column(String(200))
+    issued_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    selected_answer_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submitted_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    elapsed_ms: Mapped[int | None] = mapped_column(nullable=True)
+    bank_attempt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("bank_attempts.id"), nullable=True, unique=True
+    )
