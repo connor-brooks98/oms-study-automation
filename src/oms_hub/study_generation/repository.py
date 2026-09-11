@@ -1155,6 +1155,9 @@ class GenerationRepository:
         quiz = parse_native_quiz(payload_json)
         with self.database.session() as session:
             model = self._active_published_quiz_in_session(session, token)
+            from oms_hub.study_generation.studio_repository import StudioRepository
+
+            StudioRepository.require_legacy_predecessor(session, model.studio_run_id)
             _validate_question_kinds(quiz, model.content_kind)
             available_image_keys = set(
                 session.scalars(
@@ -1571,6 +1574,9 @@ class GenerationRepository:
         session: Session,
         run: StudioRunModel,
     ) -> None:
+        from oms_hub.study_generation.studio_repository import StudioRepository
+
+        StudioRepository.require_legacy_predecessor(session, run.supersedes_run_id)
         competing_active_run = session.scalar(
             select(StudioRunModel).where(
                 StudioRunModel.destination_subject_key
@@ -1600,6 +1606,8 @@ class GenerationRepository:
         run = session.get(StudioRunModel, run_id)
         if run is None:
             raise ValueError("Studio run was removed")
+        if run.backend == "codex_subscription":
+            raise ValueError("GPT publication requires the lecture review workflow")
         _validate_question_kinds(quiz, run.content_kind)
         self._require_unreserved_studio_publication_scope(session, run)
         model = None

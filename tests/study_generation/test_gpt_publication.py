@@ -29,3 +29,15 @@ def test_gpt_publication_requires_review_keeps_media_and_never_calls_paid_gate(g
     quiz = published.quiz
     question = quiz.questions[0]
     assert grade_answer(quiz, question.id, question.correct_choice_id).correct
+
+    from oms_hub.study_generation.native_quiz import serialize_native_quiz
+    with pytest.raises(ValueError, match="new lecture quiz"):
+        publisher.replace_published_quiz_payload(published.token, serialize_native_quiz(quiz))
+    with pytest.raises(ValueError, match="new lecture quiz"):
+        repository.create_published_quiz_edit_run(published.token)
+    with pytest.raises(ValueError, match="explicit resume"):
+        repository.rerun(run.id)
+    with repository.database.session() as session:
+        with pytest.raises(ValueError, match="review workflow"):
+            publisher._publish_studio_quiz_in_session(session, run.id, quiz)
+    assert publisher.published_quiz(published.token).version == published.version

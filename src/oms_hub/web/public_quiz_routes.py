@@ -268,6 +268,13 @@ def _quiz_library(
                     lecture.lecture_number if lecture is not None else None
                 ),
                 "is_studio": lecture is None,
+                "gpt_lecture_url": (
+                    f"/lectures/{published.lecture_id}#gpt-quiz-heading"
+                    if management_mode and published.studio_run_id
+                    and request.app.state.studio_repository.get_run(
+                        published.studio_run_id).backend == "codex_subscription"
+                    else None
+                ),
                 "primary_label": (
                     lecture_label(lecture.subject, lecture.lecture_number)
                     if lecture is not None

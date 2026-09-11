@@ -964,6 +964,16 @@ class StudioRepository:
                 self._acknowledge_gpt_stop(session, run_id)
             return len(source_models) + len(interrupted_operations) + len(run_models)
 
+    @staticmethod
+    def require_legacy_predecessor(session: Session, run_id: str | None) -> None:
+        if run_id is None:
+            return
+        previous = session.get(StudioRunModel, run_id)
+        if previous is None:
+            raise ValueError("previous Studio run no longer exists")
+        if previous.backend == "codex_subscription":
+            raise ValueError("Create a new lecture quiz to revise published GPT content.")
+
     def queue_run(
         self,
         subject: str,
@@ -982,6 +992,7 @@ class StudioRepository:
         destination_key = normalize_subject(destination_subject)
         label_key = normalize_subject(label)
         with self.database.session() as session:
+            self.require_legacy_predecessor(session, supersedes_run_id)
             sources = list(
                 session.scalars(
                     select(StudioSourceModel).where(StudioSourceModel.id.in_(source_ids))
@@ -1104,6 +1115,7 @@ class StudioRepository:
         destination_key = normalize_subject(destination_subject)
         label_key = normalize_subject(label)
         with self.database.session() as session:
+            self.require_legacy_predecessor(session, supersedes_run_id)
             stored_sources = list(
                 session.scalars(
                     select(StudioSourceModel).where(
@@ -2170,6 +2182,8 @@ class StudioRepository:
 
     def rerun(self, run_id: str) -> StudioRun:
         previous = self.get_run(run_id)
+        if previous.backend == "codex_subscription":
+            raise ValueError("Use explicit resume or create a new lecture quiz.")
         if previous.state not in {
             StudioRunState.AWAITING_IMAGES,
             StudioRunState.AWAITING_REVIEW,
@@ -2213,6 +2227,7 @@ class StudioRepository:
             published = session.get(PublishedQuizModel, token)
             if published is None or not published.active:
                 raise KeyError(token)
+            self.require_legacy_predecessor(session, published.studio_run_id)
             previous = (
                 session.get(StudioRunModel, published.studio_run_id)
                 if published.studio_run_id

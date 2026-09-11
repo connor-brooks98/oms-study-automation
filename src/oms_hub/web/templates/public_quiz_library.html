@@ -166,7 +166,11 @@
                     data-target-section="{{ 'practice_questions' if library_path == quiz_library_path else 'quizzes' }}"
                   >Move to {{ 'Practice Questions' if library_path == quiz_library_path else 'Quizzes' }}</button>
                   <button class="button management-button sh-btn sh-btn--secondary" type="button" data-view-flags data-flags-url="/api/published-quizzes/{{ row.token }}/flags">Open flags</button>
+                  {% if row.gpt_lecture_url %}
+                  <a class="button management-button sh-btn sh-btn--secondary" href="{{ row.gpt_lecture_url }}">Create revised lecture quiz</a>
+                  {% else %}
                   <button class="button management-button sh-btn sh-btn--secondary sh-btn--continue" type="button" data-edit-questions data-edit-url="/api/published-quizzes/{{ row.token }}/edit-run">Edit questions</button>
+                  {% endif %}
                   <button
                     class="button remove-quiz-button sh-btn sh-btn--danger"
                     type="button"
