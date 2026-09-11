@@ -530,3 +530,16 @@ def test_gpt_backend_selection_preserves_existing_queued_ingestion(tmp_path: Pat
     assert second is not None and second.upload_item_id == "gpt"
     assert second.backend == "codex_subscription"
     database.close()
+
+
+def test_gpt_restart_requires_explicit_resume(tmp_path):
+    database, repository, lecture_id = _prepared(tmp_path)
+    repository.transcript_backend = "codex_subscription"
+    _add(repository, tmp_path, "gpt-restart")
+    repository.set_manual_assignment("gpt-restart", lecture_id)
+    job = repository.claim_next_job(datetime.now(UTC))
+    assert job is not None and job.backend == "codex_subscription"
+    repository.recover_interrupted_jobs()
+    assert repository.claim_next_job(datetime.now(UTC)) is None
+    assert repository.require_item("gpt-restart").state is UploadState.NEEDS_REVIEW
+    database.close()

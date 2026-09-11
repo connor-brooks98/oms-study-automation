@@ -647,12 +647,17 @@ class IngestionRepository:
                 )
             ).all()
             for job in jobs:
-                job.state = UploadState.QUEUED.value
+                gpt = job.backend == "codex_subscription"
+                job.state = (UploadState.NEEDS_REVIEW if gpt else UploadState.QUEUED).value
                 job.next_attempt_at = None
-                job.error = "requeued after an interrupted Hub process"
+                job.error = (
+                    "GPT processing interrupted; inspect the retained attempt "
+                    "before explicit resume"
+                    if gpt else "requeued after an interrupted Hub process"
+                )
                 item = session.get(UploadItemModel, job.upload_item_id)
                 if item is not None and item.state == UploadState.PROCESSING.value:
-                    item.state = UploadState.QUEUED.value
+                    item.state = job.state
                     item.error = job.error
                     self._sync_batch_state(session, item.batch_id)
             recovered = len(jobs)

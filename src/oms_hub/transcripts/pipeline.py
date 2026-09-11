@@ -145,7 +145,7 @@ class TranscriptPipeline:
             if model_result is not None:
                 self.repository.record_study_usage(
                     revision.id,
-                    provider=model_result.provider.value,
+                    provider=str(model_result.provider),
                     model=model_result.model,
                     request_id=model_result.request_id,
                     input_tokens=model_result.input_tokens,
@@ -291,7 +291,12 @@ class TranscriptPipeline:
             raise TranscriptValidationError(
                 "immutable cleaned transcript does not match this prompt"
             )
-        result = self.cleaner.clean(raw_text, approved_prompt)
+        result: CleanResult
+        revision_cleaner = getattr(self.cleaner, "clean_revision", None)
+        if revision_cleaner is not None:
+            result = revision_cleaner(raw_text, approved_prompt, revision)
+        else:
+            result = self.cleaner.clean(raw_text, approved_prompt)
         self._validate_cleaned(raw_text, result.text)
         try:
             cleaned_payload = result.text.encode("utf-8")

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 
 class ProviderName(StrEnum):
@@ -133,7 +134,7 @@ class LLMRequestError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class CleanResult:
     text: str
-    provider: ProviderName
+    provider: ProviderName | Literal["codex_subscription"]
     model: str
     request_id: str
     input_tokens: int
