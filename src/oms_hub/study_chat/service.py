@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pydantic import TypeAdapter
 
 from oms_hub.llm.codex_session import CodexSessionClient, SessionError, SessionRequest
+from oms_hub.study_chat.amboss import AmbossReference, AmbossUnavailable
 from oms_hub.study_chat.contracts import ChatAnswer, ChatRequest, StoredRequest
 from oms_hub.study_chat.contracts import validate_answer as validate_answer
 from oms_hub.study_chat.repository import ChatRepository
@@ -63,11 +64,14 @@ class ChatService:
             ):
                 raise SessionError("interrupted")
             if request.mode == "medical_reference":
-                answer = ChatAnswer(
-                    "unavailable",
-                    "AMBOSS access has not been configured. This conversation has not used AMBOSS.",
-                    (),
-                )
+                try:
+                    AmbossReference().search(request.question)
+                except AmbossUnavailable as error:
+                    answer = ChatAnswer(
+                        "unavailable", f"{error}. This conversation has not used AMBOSS.", ()
+                    )
+                else:
+                    raise ValueError("reference access has not been approved")
             elif request.mode == "lecture" and not begun.record.evidence:
                 answer = ChatAnswer(
                     "no_support",
