@@ -1,0 +1,242 @@
+{
+  "schema_version": 1,
+  "program": "gpt-study-platform-2026-09-11",
+  "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2",
+  "integration_branch": "codex/gpt-study-platform",
+  "integration_worktree": "/Users/connor/Developer/worktrees/oms-gpt-study-platform",
+  "orchestrator": {
+    "thread_id": "01a09271-e627-7712-a2fc-ff675db23a8b",
+    "host_id": "local"
+  },
+  "workers": {
+    "B": {
+      "client_thread_id": "client-new-thread:f0c101c3-7b75-4c64-8aa6-60e6188860cb",
+      "state": "setup_pending"
+    },
+    "Q": {
+      "client_thread_id": "client-new-thread:ff914d7d-00ef-4079-8b4b-bdff39cf34b3",
+      "state": "setup_pending"
+    }
+  },
+  "tasks": {
+    "O0": {
+      "state": "running",
+      "worker": "O",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "O1": {
+      "state": "ready",
+      "worker": "O",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "O2": {
+      "state": "ready",
+      "worker": "O",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "O3": {
+      "state": "ready",
+      "worker": "O",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "B1": {
+      "state": "ready",
+      "worker": "B",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "B2": {
+      "state": "ready",
+      "worker": "B",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "B3": {
+      "state": "ready",
+      "worker": "B",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "B4": {
+      "state": "ready",
+      "worker": "B",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "B5": {
+      "state": "ready",
+      "worker": "B",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "B6": {
+      "state": "ready",
+      "worker": "B",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "B7": {
+      "state": "ready",
+      "worker": "B",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "Q1": {
+      "state": "ready",
+      "worker": "Q",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "Q2": {
+      "state": "ready",
+      "worker": "Q",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "Q3": {
+      "state": "ready",
+      "worker": "Q",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "Q4": {
+      "state": "ready",
+      "worker": "Q",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "Q5": {
+      "state": "ready",
+      "worker": "Q",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "Q6": {
+      "state": "ready",
+      "worker": "Q",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "C1": {
+      "state": "ready",
+      "worker": "C",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "C2": {
+      "state": "ready",
+      "worker": "C",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "C3": {
+      "state": "ready",
+      "worker": "C",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    },
+    "C4": {
+      "state": "ready",
+      "worker": "C",
+      "commit": null,
+      "tests": [],
+      "review": null,
+      "blocker": null,
+      "next_action": "follow approved dependency table"
+    }
+  },
+  "external": {
+    "amboss": "automatic_acknowledgment_only; developer_reply_pending",
+    "amboss_thread_id": "1a0924aab334e5da",
+    "uworld_sample": "not_supplied",
+    "truelearn_sample": "not_supplied"
+  },
+  "release": {
+    "candidate": null,
+    "live_authorized": false
+  },
+  "provider_verified": false,
+  "windows_verified": false,
+  "original_dirty_files": [
+    " M src/oms_hub/web/static/public_quiz.css",
+    " M src/oms_hub/web/static/study-hub.css",
+    " M src/oms_hub/web/templates/lecture.html",
+    " M tests/v2/test_daily_study_ux.py",
+    "?? AGENTS.md",
+    "?? docs/codemap/",
+    "?? docs/implementation/handoffs/2026-09-06-astra-sol-orchestrator-handoff.md",
+    "?? docs/implementation/handoffs/2026-09-06-astra-sol-orchestrator-prompt.md",
+    "?? docs/implementation/handoffs/2026-09-08-notebooklm-deployment.md",
+    "?? docs/implementation/study-hub-ux-audit-2026-09-08.md",
+    "?? docs/implementation/ux-audit-2026-09-08-evidence/",
+    "?? docs/superpowers/plans/2026-08-29-gate-2b-root-cause-corrections.md",
+    "?? output/",
+    "?? tmp/",
+    "?? uv.lock",
+    "?? worktrees/"
+  ]
+}
