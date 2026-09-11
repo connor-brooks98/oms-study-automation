@@ -1,12 +1,21 @@
-"""Offline B1 compatibility probe. Never launches Codex or reads managed auth."""
+"""Default-offline contract probe; explicit managed login and proof-gated synthetic smoke."""
 
 import argparse
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any
 
-from oms_hub.llm.codex_session import PINNED_SCHEMA_SHA256, PINNED_VERSION, model_ready
+from oms_hub.llm.codex_session import (
+    INSPECTED_MACOS_BINARY_SHA256,
+    PINNED_SCHEMA_SHA256,
+    PINNED_VERSION,
+    CodexSessionClient,
+    SessionError,
+    SessionRequest,
+    model_ready,
+)
 
 # Synthetic payloads only. These are protocol-member fixtures, not a live session.
 # B2 adds response correlation, output reduction, and subprocess lifecycle replay.
@@ -226,19 +235,30 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--offline", action="store_true", help="default; inspect existing schema only"
     )
+    mode.add_argument("--login", action="store_true", help="start managed login; coordinate with O")
     mode.add_argument(
-        "--login", action="store_true", help="reserved; requires B2 and O coordination"
-    )
-    mode.add_argument(
-        "--smoke", action="store_true", help="reserved; requires live proof authorization"
+        "--smoke", action="store_true", help="synthetic turn; requires verified execution policy"
     )
     parser.add_argument(
         "--schema", type=Path, help="exported codex_app_server_protocol.schemas.json"
     )
     parser.add_argument("--version", default=PINNED_VERSION, help="recorded codex --version output")
+    parser.add_argument("--executable", type=Path)
+    parser.add_argument("--session-home", type=Path)
+    parser.add_argument("--work-root", type=Path)
+    parser.add_argument("--binary-sha256", default=INSPECTED_MACOS_BINARY_SHA256)
+    parser.add_argument("--model", help="exact model slug for an authorized synthetic smoke")
+    parser.add_argument("--browser-login", action="store_true")
+    parser.add_argument("--login-timeout", type=float, default=180)
     args = parser.parse_args(argv)
     if args.login or args.smoke:
-        parser.exit(2, "Live modes unavailable in B1; coordinate B2/Windows proof with O.\n")
+        if not all((args.executable, args.session_home, args.work_root)):
+            parser.error("live modes require --executable, --session-home and --work-root")
+        if args.smoke and not args.model:
+            parser.error("--smoke requires --model")
+        if not 0 < args.login_timeout <= 600:
+            parser.error("--login-timeout must be between 0 and 600 seconds")
+        return live_probe(args)
     if args.schema is None:
         parser.error("--schema is required in offline mode; no executable is launched")
     try:
@@ -249,6 +269,88 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(json.dumps(report, sort_keys=True))
     return 0
+
+
+def live_probe(args: argparse.Namespace) -> int:
+    """Only called by an explicit CLI mode; no credential files are opened by Hub."""
+    client = CodexSessionClient(
+        args.executable, args.session_home, args.work_root, binary_sha256=args.binary_sha256
+    )
+    challenge = None
+    try:
+        if args.login:
+            challenge = client.start_login(device_code=not args.browser_login)
+            print(
+                json.dumps(
+                    {
+                        "login_id": challenge.login_id,
+                        "url": challenge.url,
+                        "user_code": challenge.user_code,
+                    }
+                ),
+                flush=True,
+            )
+            deadline = time.monotonic() + args.login_timeout
+            while time.monotonic() < deadline:
+                status = client.status()
+                if status.account_connected and status.state != "connecting":
+                    print(json.dumps({"managed_login": "connected", "live_ready": False}))
+                    challenge = None
+                    return 0
+                if status.state not in ("connecting", "disconnected"):
+                    raise SessionError(status.error_code or "protocol_error")
+                time.sleep(0.25)
+            raise SessionError("timeout")
+        result = client.generate(
+            SessionRequest(
+                "synthetic-probe",
+                args.model,
+                "Return a JSON object with ok=true.",
+                "Synthetic transport check; no source material.",
+                output_schema={
+                    "type": "object",
+                    "properties": {"ok": {"const": True}},
+                    "required": ["ok"],
+                    "additionalProperties": False,
+                },
+            ),
+            cancelled=lambda: False,
+            on_lifecycle=lambda event: print(
+                json.dumps(
+                    {"phase": event.phase, "thread_id": event.thread_id, "turn_id": event.turn_id}
+                ),
+                flush=True,
+            ),
+        )
+        if json.loads(result.text) != {"ok": True}:
+            raise SessionError("invalid_output")
+        print(
+            json.dumps(
+                {
+                    "synthetic_smoke": "passed",
+                    "thread_id": result.thread_id,
+                    "turn_id": result.turn_id,
+                }
+            )
+        )
+        return 0
+    except (SessionError, KeyboardInterrupt) as error:
+        print(
+            json.dumps(
+                {
+                    "error_code": error.code if isinstance(error, SessionError) else "interrupted",
+                    "live_ready": False,
+                }
+            )
+        )
+        return 1
+    finally:
+        if challenge is not None:
+            try:
+                client.cancel_login(challenge.login_id)
+            except SessionError:
+                pass
+        client.close()
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# Codex subscription session contract — B1
+# Codex subscription session contract — B1/B2
 
 Inspected 2026-09-11. **Offline contract only; Windows, account, image/schema,
 tool restrictions and live generation are unverified. Activation is blocked.**
@@ -34,12 +34,16 @@ PYTHONPATH=src python scripts/probe-codex-session.py \
 ```
 
 The export path above is an operator-selected empty directory. This is schema
-generation, not an app-server session. The probe only reads the existing bundle;
-omitting `--offline` has the same behavior. It rejects a different version or
+generation, not an app-server session. The offline probe only reads the existing bundle;
+omitting all mode flags has the same behavior. It rejects a different version or
 bundle hash. `--version` is a supplied inspection receipt, not a runtime check.
-No binary is executed by the probe, including its import or error paths.
-`--login` and `--smoke` are mutually exclusive reserved modes that exit 2 without
-starting anything. B2 must implement their transport under the separate proof scope.
+No binary is executed on import or in offline mode. `--login` and `--smoke`
+are mutually exclusive explicit modes. Both require `--executable`, `--session-home`
+and `--work-root`; `--smoke` also requires `--model`. Managed login uses the actual
+stdio client and keeps the owned process alive while waiting for completion, then
+closes it; timeout/interruption cancels the owned challenge. Smoke is implemented
+but fails closed before process launch while universal tool restrictions remain
+unverified. No actual login challenge or provider turn was run during B2.
 
 The actual Windows executable path/hash and scheduled-task principal are **not
 observed**, so no exact runnable Windows deployment command can honestly be frozen.
@@ -94,10 +98,14 @@ No automatic API fallback, reset consumption, account rotation, or generation re
 
 `src/oms_hub/llm/codex_session.py` now contains frozen `SessionRequest`,
 `SessionResult`, `SessionLifecycle`, `SessionStatus`, and `LoginChallenge`
-dataclasses exactly matching B1. No session client exists yet. No integration
-uses this module to enable generation. The API-key `LLMProvider` remains untouched.
+dataclasses and the B2 `CodexSessionClient`, `SessionError`, and production event
+reducer. O approved two appended default fields: `SessionRequest.image_sha256:
+tuple[str, ...] = ()` and `SessionStatus.account_connected: bool = False`.
+The account flag is true only after a managed ChatGPT `account/read` response,
+independent of model enumeration or generation readiness. The API-key
+`LLMProvider` remains untouched.
 
-Implement in B2, without changing these consumer signatures silently:
+Implemented B2 consumer signatures:
 
 ```python
 CodexSessionClient(executable: Path, session_home: Path, work_root: Path)
@@ -116,8 +124,10 @@ SessionError(code: str, *, retryable: bool = False, reset_at: str | None = None)
 `SessionError.code` is one of `auth_required,rate_limited,model_unavailable,
 capability_unverified,context_limit,invalid_output,timeout,interrupted,
 tool_request_denied,protocol_error`; expose an allowlisted message only.
-`reset_at` is ISO-8601 UTC or `None`. Constructor timeout keywords may be added
-for deterministic tests. O owns the single client shared across chat/generation.
+`reset_at` is ISO-8601 UTC or `None`. Constructor keywords `startup_timeout=30`, `turn_timeout=180`,
+`shutdown_timeout=2`, and `binary_sha256=INSPECTED_MACOS_BINARY_SHA256` are available.
+All timeout values must be finite and positive. New process startup hashes the
+executable against the configured inspection pin before launching it. O owns the single client shared across chat/generation.
 
 Lifecycle callbacks are synchronous durable-write boundaries: `dispatching`
 before remote work, `thread_created` before `turn/start`, `turn_started` immediately
@@ -134,7 +144,8 @@ and JSONL-round-trips 30 synthetic payload fixtures against top-level required,
 known and discriminator members. It is deliberately **not** a general JSON Schema
 validator or a subprocess/event-reducer test. Nested semantics, response-id
 correlation, timeouts, EOF, cancellation, durable callbacks and tool-request
-interception require B2's production reducer and fake transport tests.
+interception are covered separately by B2's production reducer and owned fake
+subprocess tests (65 focused checks including the optional local schema export).
 
 The schema exposes read-only sandbox and approval choices, but this inspection
 does not establish a universal pre-execution tool denial policy. Read-only does
@@ -155,3 +166,55 @@ coordinated with O, same-identity session persistence after restart, model/effor
 enumeration, bounded synthetic text/image/schema results, and cancellation/limit
 proof. No private source or provider turn was sent. B2/B3 offline work may proceed
 independently of these live blockers.
+
+## B2 transport and source contract
+
+The client implements initialize, account/status and model pagination, managed
+browser/device login and cancellation, thread/turn dispatch, final event reduction,
+interruption and close over the actual stdio protocol. One client lock serializes
+all turns and account operations. Cancellation polls at 50 ms; a waiting cancelled
+caller cannot dispatch. The stdout reader caps a frame at 4 MiB, aggregate stdout
+per owned process at 8 MiB and its queue at 128 frames. Stderr is separately drained
+into a private 64 KiB tail, never included in public exceptions. A pipe writer
+thread allows blocked writes to time out on Windows as well as Unix. Shutdown
+terminates/reaps only the owned child, escalating to kill after the configured bound.
+
+Each generation gets a fresh staging directory and owned process cwd. The process
+is reaped before its temporary staging directory is removed, including failures.
+Only allowlisted platform environment variables plus the dedicated `CODEX_HOME`
+are passed; API keys and provider overrides are omitted. Importing or constructing
+the client does not create a process. Status can start an account-inspection process
+but never starts login or generation. Close is terminal for the client.
+
+For image requests, B3/B4 must supply sanitized PNG bytes already staged under
+the client's dedicated work root, with one recorded SHA-256 per `image_paths`
+entry in `image_sha256`. The client resolves symlinks, rejects roots outside its
+staging area, checks bytes against the record, reuses `sanitize_quiz_image`, requires
+its canonical sanitized hash to match, copies only those assets into the new
+request directory and verifies the copy. Source library paths cannot be passed
+directly. Original caller staging is retained; request copies are temporary.
+
+The reducer excludes other thread/turn output, ignores commentary and deltas,
+deduplicates completed items by id, and accepts the last final-answer item only
+after matching successful completion. Older phase-less completed assistant items
+are used only when there is no explicit final-answer item. Failed/interrupted/EOF
+attempts cannot return text. When an output schema was requested, the client also
+requires parseable JSON; the caller's Pydantic/schema and source validators remain
+authoritative for full output semantics.
+
+Every unsolicited server request is denied before the client accepts more output;
+command/file approvals receive `decision:decline`, other requests get a fixed RPC
+error. Any tool-start/completion item violates the restriction invariant. This is
+interception/detection coverage, **not proof that the runtime asks before every
+possible tool**. `_require_generation_ready` therefore rejects all production
+generation with `capability_unverified`; there is no configuration boolean to
+bypass it. Only tests replace this boundary for their owned synthetic peer, then
+exercise the same production client/reader/writer/reducer. Actual runtime policy
+and matching model/account capability evidence remain separate activation work.
+
+Lifecycle callbacks receive request ids unchanged (`run_id` or `run_id:batch...`).
+Failures after dispatch preserve learned thread/turn ids in terminal callbacks;
+early `turn/started` notifications are persisted even before their RPC response.
+A persistence exception never returns output and never retries generation. Failed
+terminal persistence is left to O's durable recovery state; it cannot be made
+successful by swallowing the error or replaying the remote request.

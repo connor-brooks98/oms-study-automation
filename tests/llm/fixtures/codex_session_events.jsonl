@@ -1,0 +1,5 @@
+{"id":999,"result":{"unrelated":true}}
+{"method":"item/completed","params":{"threadId":"other-thread","turnId":"other-turn","completedAtMs":0,"item":{"type":"agentMessage","id":"other-item","phase":"final_answer","text":"DO NOT RETURN"}}}
+{"method":"item/completed","params":{"threadId":"thread-fixture","turnId":"turn-fixture","completedAtMs":0,"item":{"type":"agentMessage","id":"commentary-item","phase":"commentary","text":"Thinking about the fixture."}}}
+{"method":"item/completed","params":{"threadId":"thread-fixture","turnId":"turn-fixture","completedAtMs":0,"item":{"type":"agentMessage","id":"final-item","phase":"final_answer","text":"{\"synthetic\":true}"}}}
+{"method":"turn/completed","params":{"threadId":"thread-fixture","turn":{"id":"turn-fixture","items":[],"status":"completed"}}}
