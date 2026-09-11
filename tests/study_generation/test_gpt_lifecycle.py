@@ -124,6 +124,9 @@ def test_explicit_cancel_resume_and_stopped_review_are_owner_bound(tmp_path):
     with pytest.raises(ValueError, match="unfinished"):
         repo.control_gpt_run("run", owner_id="owner", action="resume")
     repo.record_gpt_lifecycle("run", SessionLifecycle("run:b", "interrupted"))
+    with pytest.raises(ValueError, match="still stopping"):
+        repo.control_gpt_run("run", owner_id="owner", action="resume")
+    repo.stop_gpt_run("run", SessionError("interrupted"))
     repo.control_gpt_run("run", owner_id="owner", action="resume")
     assert repo.gpt_resume_requested("run") and not repo.gpt_cancelled("run")
     run = repo.claim_next_run()
@@ -131,4 +134,28 @@ def test_explicit_cancel_resume_and_stopped_review_are_owner_bound(tmp_path):
     repo.stop_gpt_run("run", SessionError("rate_limited", reset_at="2026-09-12T00:00:00+00:00"))
     assert repo.get_run("run").state.value == "paused"
     assert repo.claim_next_run() is None
+    database.close()
+
+
+def test_cancel_preflight_waits_for_worker_stop_and_restart_clears_wait(tmp_path):
+    from oms_hub.llm.codex_session import SessionError
+
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.session() as session:
+        session.add(StudioRunModel(id="run", subject="Heme", subject_key="heme", exam_number=3,
+            destination_subject="Heme", destination_subject_key="heme", destination_exam_number=3,
+            label="Lecture", prompt="", state="running", backend="codex_subscription"))
+    repo = StudioRepository(database)
+    repo.save_run_artifact("run", "gpt:settings", "hash", '{"owner_id":"owner"}')
+    repo.control_gpt_run("run", owner_id="owner", action="cancel")
+    with pytest.raises(ValueError, match="still stopping"):
+        repo.control_gpt_run("run", owner_id="owner", action="resume")
+    repo.stop_gpt_run("run", SessionError("interrupted"))
+    repo.control_gpt_run("run", owner_id="owner", action="resume")
+    assert repo.claim_next_run().id == "run"
+    repo.control_gpt_run("run", owner_id="owner", action="cancel")
+    repo.recover_interrupted_jobs()
+    repo.control_gpt_run("run", owner_id="owner", action="resume")
+    assert repo.claim_next_run().id == "run"
     database.close()

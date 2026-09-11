@@ -956,6 +956,12 @@ class StudioRepository:
                     run_model.state = StudioRunState.QUEUED.value
                     run_model.error = "requeued after an interrupted Hub process"
                 run_model.next_attempt_at = None
+            # Recovery runs before workers start; a cancelled old worker cannot unwind here.
+            for run_id in session.scalars(select(StudioRunModel.id).where(
+                StudioRunModel.backend == "codex_subscription",
+                StudioRunModel.state == "interrupted",
+            )):
+                self._acknowledge_gpt_stop(session, run_id)
             return len(source_models) + len(interrupted_operations) + len(run_models)
 
     def queue_run(
@@ -1406,7 +1412,11 @@ class StudioRepository:
                 StudioRunArtifactModel.run_id == run_id,
                 StudioRunArtifactModel.artifact_key == "gpt:control"))
             previous = json.loads(stored.payload_json) if stored else {}
+            if action == "resume" and previous.get("worker_stopping"):
+                raise ValueError("Cancelled worker is still stopping; resume after it stops.")
             payload = json.dumps({"cancelled": action == "cancel", "resume": action == "resume",
+                "worker_stopping": action == "cancel" and (
+                    run.state == "running" or bool(previous.get("worker_stopping"))),
                 "events": previous.get("events", []) + [
                     {"action": action, "at": datetime.now(UTC).isoformat()}]})
             if stored is None:
@@ -1441,6 +1451,7 @@ class StudioRepository:
                 raise ValueError("GPT run is missing")
             if run.state not in {"queued", "running", "paused", "interrupted", "failed"}:
                 raise ValueError("GPT run already finished")
+            self._acknowledge_gpt_stop(session, run_id)
             run.state = ("interrupted" if error.code in {"timeout", "interrupted"}
                 or run.state == "interrupted" else "paused"
                 if error.code in {"auth_required", "rate_limited", "capability_unverified",
@@ -1452,6 +1463,49 @@ class StudioRepository:
             run.next_attempt_at = None
             session.flush()
             return self._run_domain(session, run)
+
+    @staticmethod
+    def _acknowledge_gpt_stop(session: Session, run_id: str) -> None:
+        stored = session.scalar(select(StudioRunArtifactModel).where(
+            StudioRunArtifactModel.run_id == run_id,
+            StudioRunArtifactModel.artifact_key == "gpt:control"))
+        if stored is not None:
+            control = json.loads(stored.payload_json)
+            control["worker_stopping"] = False
+            stored.payload_json = json.dumps(control)
+            stored.signature_sha256 = hashlib.sha256(stored.payload_json.encode()).hexdigest()
+
+    @staticmethod
+    def validate_gpt_manifest_in_session(session: Session, run_id: str) -> None:
+        from oms_hub.study_generation.gpt_lecture import lecture_inputs_from_manifest
+
+        manifest = session.scalar(select(StudioRunArtifactModel).where(
+            StudioRunArtifactModel.run_id == run_id,
+            StudioRunArtifactModel.artifact_key == "gpt:manifest"))
+        if manifest is None:
+            raise ValueError("GPT manifest is missing")
+        inputs = lecture_inputs_from_manifest(json.loads(manifest.payload_json))
+        lecture = session.get(LectureModel, inputs.lecture_id)
+        if lecture is None or (lecture.subject, lecture.exam_number) != (
+            inputs.subject, inputs.exam_number
+        ):
+            raise ValueError("GPT lecture scope changed")
+        for binding in inputs.bindings:
+            revision = session.get(StudyRevisionModel, binding.revision_id)
+            if (revision is None or revision.lecture_id != inputs.lecture_id
+                or not revision.current or revision.state != "current"):
+                raise ValueError("GPT source is no longer current and approved")
+            expected_kind = "slides" if binding.role == "slides" else "transcripts"
+            path, digest = (
+                (revision.immutable_source_path, revision.source_sha256)
+                if binding.role == "slides" else
+                (revision.immutable_derived_path, revision.derived_sha256)
+            )
+            if (revision.kind != expected_kind or path is None
+                or (Path(path), digest) != (
+                    binding.snapshot.path, binding.snapshot.sha256
+                )):
+                raise ValueError("GPT source binding changed before dispatch")
 
     def record_gpt_lifecycle(self, run_id: str, event: SessionLifecycle) -> None:
         """Commit remote identity before the shared client can advance the turn."""
@@ -1477,35 +1531,7 @@ class StudioRepository:
                 if run.state != "running":
                     raise ValueError("GPT dispatch requires an active run")
                 if run.workflow_kind == "lecture_generation":
-                    from oms_hub.study_generation.gpt_lecture import lecture_inputs_from_manifest
-
-                    manifest = session.scalar(select(StudioRunArtifactModel).where(
-                        StudioRunArtifactModel.run_id == run_id,
-                        StudioRunArtifactModel.artifact_key == "gpt:manifest"))
-                    if manifest is None:
-                        raise ValueError("GPT manifest is missing")
-                    inputs = lecture_inputs_from_manifest(json.loads(manifest.payload_json))
-                    lecture = session.get(LectureModel, inputs.lecture_id)
-                    if lecture is None or (lecture.subject, lecture.exam_number) != (
-                        inputs.subject, inputs.exam_number
-                    ):
-                        raise ValueError("GPT lecture scope changed")
-                    for binding in inputs.bindings:
-                        revision = session.get(StudyRevisionModel, binding.revision_id)
-                        if (revision is None or revision.lecture_id != inputs.lecture_id
-                            or not revision.current or revision.state != "current"):
-                            raise ValueError("GPT source is no longer current and approved")
-                        expected_kind = "slides" if binding.role == "slides" else "transcripts"
-                        path, digest = (
-                            (revision.immutable_source_path, revision.source_sha256)
-                            if binding.role == "slides" else
-                            (revision.immutable_derived_path, revision.derived_sha256)
-                        )
-                        if (revision.kind != expected_kind or path is None
-                            or (Path(path), digest) != (
-                                binding.snapshot.path, binding.snapshot.sha256
-                            )):
-                            raise ValueError("GPT source binding changed before dispatch")
+                    self.validate_gpt_manifest_in_session(session, run_id)
             key = "gpt:attempt:" + event.request_id
             stored = session.scalar(select(StudioRunArtifactModel).where(
                 StudioRunArtifactModel.run_id == run_id,
@@ -1982,13 +2008,17 @@ class StudioRepository:
     ) -> None:
         """Persist sanitized candidate media for a direct-import review run."""
         with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
             run = session.get(StudioRunModel, run_id)
             if run is None:
                 raise KeyError(run_id)
-            if (
-                run.workflow_kind != QuizWorkflowKind.DIRECT_IMPORT.value
-                or run.state != StudioRunState.AWAITING_REVIEW.value
-            ):
+            allowed_states = ({"running", "awaiting_review"}
+                if run.workflow_kind == QuizWorkflowKind.LECTURE_GENERATION.value
+                else {"awaiting_review"})
+            if (run.workflow_kind not in {QuizWorkflowKind.DIRECT_IMPORT.value,
+                                         QuizWorkflowKind.LECTURE_GENERATION.value}
+                or run.state not in allowed_states):
                 raise ValueError("imported quiz is not awaiting question review")
             requirement = session.scalar(
                 select(StudioQuizImageRequirementModel).where(
@@ -2018,7 +2048,8 @@ class StudioRepository:
             run = session.get(StudioRunModel, run_id)
             if (
                 run is None
-                or run.workflow_kind != QuizWorkflowKind.DIRECT_IMPORT.value
+                or run.workflow_kind not in {QuizWorkflowKind.DIRECT_IMPORT.value,
+                                             QuizWorkflowKind.LECTURE_GENERATION.value}
                 or run.state != StudioRunState.AWAITING_REVIEW.value
             ):
                 raise KeyError(run_id)
