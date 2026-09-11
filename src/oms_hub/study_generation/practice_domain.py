@@ -7,6 +7,7 @@ from oms_hub.study_generation.domain import QuizImageRef
 class QuizWorkflowKind(StrEnum):
     NOTEBOOK_GENERATION = "notebook_generation"
     DIRECT_IMPORT = "direct_import"
+    LECTURE_GENERATION = "lecture_generation"
 
 
 class QuizContentKind(StrEnum):

@@ -36,6 +36,8 @@ class StudioRunState(StrEnum):
     AWAITING_REVIEW = "awaiting_review"
     COMPLETE = "complete"
     FAILED = "failed"
+    PAUSED = "paused"
+    INTERRUPTED = "interrupted"
 
 
 class StudioRunStage(StrEnum):
@@ -141,6 +143,7 @@ class StudioRun:
     workflow_kind: QuizWorkflowKind = QuizWorkflowKind.NOTEBOOK_GENERATION
     content_kind: QuizContentKind = QuizContentKind.EXAM_REVIEW
     created_at: str = ""
+    backend: str = "notebooklm"
 
 
 @dataclass(frozen=True, slots=True)

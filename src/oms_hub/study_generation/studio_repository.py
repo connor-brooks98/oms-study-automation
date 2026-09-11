@@ -1,3 +1,4 @@
+import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import asdict, replace
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
 from oms_hub.files.atomic import sha256_file
+from oms_hub.llm.codex_session import SessionLifecycle
 from oms_hub.models import (
     PublishedQuizMediaModel,
     PublishedQuizModel,
@@ -941,8 +943,12 @@ class StudioRepository:
                 select(StudioRunModel).where(StudioRunModel.state == StudioRunState.RUNNING.value)
             ).all()
             for run_model in run_models:
-                run_model.state = StudioRunState.QUEUED.value
-                run_model.error = "requeued after an interrupted Hub process"
+                if run_model.backend == "codex_subscription":
+                    run_model.state = StudioRunState.INTERRUPTED.value
+                    run_model.error = "GPT operation interrupted; explicit recovery required"
+                else:
+                    run_model.state = StudioRunState.QUEUED.value
+                    run_model.error = "requeued after an interrupted Hub process"
                 run_model.next_attempt_at = None
             return len(source_models) + len(interrupted_operations) + len(run_models)
 
@@ -1190,6 +1196,56 @@ class StudioRepository:
                 )
                 for model in models
             )
+
+    def record_gpt_lifecycle(self, run_id: str, event: SessionLifecycle) -> None:
+        """Commit remote identity before the shared client can advance the turn."""
+        if event.request_id != run_id and not event.request_id.startswith(run_id + ":"):
+            raise ValueError("GPT request/run ownership mismatch")
+        if len(event.request_id) > 200:
+            raise ValueError("GPT request identity is too long")
+        transitions = {
+            None: {"dispatching"},
+            "dispatching": {"thread_created", "failed", "interrupted"},
+            "thread_created": {"turn_started", "failed", "interrupted"},
+            "turn_started": {"completed", "failed", "interrupted"},
+        }
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None or run.backend != "codex_subscription":
+                raise ValueError("GPT request/run ownership mismatch")
+            key = "gpt:attempt:" + event.request_id
+            stored = session.scalar(select(StudioRunArtifactModel).where(
+                StudioRunArtifactModel.run_id == run_id,
+                StudioRunArtifactModel.artifact_key == key,
+            ))
+            previous = json.loads(stored.payload_json) if stored is not None else {}
+            payload = asdict(event)
+            same_event = all(previous.get(k) == v for k, v in payload.items())
+            if same_event and event.phase != "dispatching":
+                return
+            if event.phase not in transitions.get(previous.get("phase"), set()):
+                raise ValueError("invalid GPT lifecycle transition; explicit recovery required")
+            if event.phase == "dispatching" and (event.thread_id or event.turn_id):
+                raise ValueError("dispatching cannot contain remote identity")
+            if event.phase in {"thread_created", "turn_started", "completed"}:
+                if not event.thread_id:
+                    raise ValueError("GPT thread identity is required")
+            if event.phase in {"turn_started", "completed"} and not event.turn_id:
+                raise ValueError("GPT turn identity is required")
+            for field in ("thread_id", "turn_id"):
+                if previous.get(field) is not None and previous[field] != payload[field]:
+                    raise ValueError("GPT remote identity cannot change")
+            timestamp = datetime.now(UTC).isoformat()
+            payload["events"] = previous.get("events", []) + [dict(payload, at=timestamp)]
+            payload["updated_at"] = timestamp
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            if stored is None:
+                stored = StudioRunArtifactModel(run_id=run_id, artifact_key=key)
+                session.add(stored)
+            stored.signature_sha256 = hashlib.sha256(encoded.encode()).hexdigest()
+            stored.payload_json = encoded
+            stored.request_id = event.request_id
+            stored.provider = "codex_subscription"
 
     def save_run_artifact(
         self,
@@ -2074,6 +2130,7 @@ class StudioRepository:
             QuizWorkflowKind(model.workflow_kind),
             QuizContentKind(model.content_kind),
             model.created_at,
+            model.backend,
         )
 
     @classmethod
