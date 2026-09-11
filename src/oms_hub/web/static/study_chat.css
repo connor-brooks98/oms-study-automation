@@ -1,0 +1,7 @@
+[data-study-chat] { max-width: 56rem; }
+[data-study-chat] label { display: block; margin-bottom: .4rem; font-weight: 600; }
+[data-study-chat] .sh-input { width: 100%; max-width: 100%; }
+[data-chat-source-field] span { display: block; margin-top: .5rem; }
+[data-chat-messages] { display: grid; gap: 1rem; margin-top: 1rem; }
+.chat-message h2 { font-size: 1rem; overflow-wrap: anywhere; }
+.chat-answer { white-space: pre-wrap; overflow-wrap: anywhere; }

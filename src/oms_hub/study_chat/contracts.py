@@ -77,7 +77,9 @@ class SourceSnapshot(BaseModel):
     derived_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
-def validate_answer(answer: ChatAnswer, allowed_ids: set[str], *, mode: ChatMode) -> None:
+def validate_answer(
+    answer: ChatAnswer, allowed_ids: set[str], *, mode: ChatMode = "lecture"
+) -> None:
     citations = set(answer.citation_ids)
     if len(citations) != len(answer.citation_ids) or not citations <= allowed_ids:
         raise ValueError("invalid citation membership")

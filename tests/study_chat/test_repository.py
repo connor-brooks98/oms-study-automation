@@ -1,77 +1,16 @@
-import hashlib
 import json
 from dataclasses import replace
 from uuid import uuid4
 
 import pytest
 
-from oms_hub.anki.sources import LectureSourceExtractor
-from oms_hub.db import Database
-from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.codex_session import SessionLifecycle
 from oms_hub.models import (
     ChatRequestModel,
-    LectureModel,
     StudyRevisionModel,
-    UploadBatchModel,
-    UploadItemModel,
 )
 from oms_hub.study_chat.contracts import ChatAnswer, ChatRequest
 from oms_hub.study_chat.repository import ChatRepository
-from oms_hub.study_chat.sources import ChatSources
-
-
-@pytest.fixture
-def setup(tmp_path):
-    with Database(f"sqlite:///{tmp_path / 'chat.db'}") as database:
-        database.migrate()
-        source = tmp_path / "source.txt"
-        source.write_text("Iron stores are low in iron deficiency.")
-        sha = hashlib.sha256(source.read_bytes()).hexdigest()
-        with database.session() as session:
-            session.add(
-                LectureModel(id=1, subject="Heme", exam_number=3, lecture_number=1, topic="Iron")
-            )
-            session.add(UploadBatchModel(id="batch", kind="transcripts"))
-            session.flush()
-            session.add(
-                UploadItemModel(
-                    id="upload",
-                    batch_id="batch",
-                    kind="transcripts",
-                    original_filename="source.txt",
-                    staged_path=str(source),
-                    sha256=sha,
-                    size_bytes=source.stat().st_size,
-                )
-            )
-            session.flush()
-            session.add(
-                StudyRevisionModel(
-                    id=1,
-                    upload_item_id="upload",
-                    lecture_id=1,
-                    kind="transcripts",
-                    source_sha256=sha,
-                    immutable_source_path=str(source),
-                    derived_sha256=sha,
-                    immutable_derived_path=str(source),
-                    state="current",
-                    current=True,
-                )
-            )
-
-        def authorize(owner_id, revision_id):
-            if owner_id != "owner" or revision_id != 1:
-                raise PermissionError("source unavailable")
-
-        sources = ChatSources(
-            database.session,
-            LectureSourceExtractor(IngestionRepository(database)),
-            authorize_revision=authorize,
-        )
-        repo = ChatRepository(database.session, sources=sources)
-        yield repo, database, source
 
 
 def request(repo, mode="lecture"):
@@ -169,7 +108,8 @@ def test_lifecycle_is_owner_bound_ordered_and_synchronous(setup):
     with pytest.raises(ValueError):
         repo.record_lifecycle(req.request_id, replace(event, phase="completed"), owner_id="owner")
     repo.record_lifecycle(req.request_id, event, owner_id="owner")
-    repo.record_lifecycle(req.request_id, event, owner_id="owner")
+    with pytest.raises(ValueError, match="dispatch"):
+        repo.record_lifecycle(req.request_id, event, owner_id="owner")
     with database.session() as session:
         row = session.get(ChatRequestModel, req.request_id)
         assert row.provider_phase == "dispatching"
@@ -293,3 +233,27 @@ def test_source_loader_rejects_wrong_lecture_and_file_changes_during_extraction(
     monkeypatch.setattr(repo.sources.extractor, "extract", modified)
     with pytest.raises(ValueError, match="source"):
         repo.sources.passages("owner", snapshots)
+
+
+@pytest.mark.parametrize("terminal", ["interrupted", "failed"])
+def test_dispatch_and_later_notifications_cannot_replay_after_terminal_state(setup, terminal):
+    repo, _, _ = setup
+    for phase in ("dispatching", "thread_created"):
+        req = request(repo, "general")
+        repo.begin(req, model="chosen")
+        dispatch = SessionLifecycle(req.request_id, "dispatching")
+        repo.record_lifecycle(req.request_id, dispatch, owner_id="owner")
+        last = dispatch
+        if phase == "thread_created":
+            last = SessionLifecycle(req.request_id, "thread_created", "thread")
+            repo.record_lifecycle(req.request_id, last, owner_id="owner")
+            # Harmless notification replay is allowed only while this request is active.
+            repo.record_lifecycle(req.request_id, last, owner_id="owner")
+        if terminal == "interrupted":
+            repo.interrupt_pending(owner_id="owner")
+        else:
+            repo.fail(req.request_id, owner_id="owner", error_code="protocol_error")
+        with pytest.raises(ValueError):
+            repo.record_lifecycle(req.request_id, last, owner_id="owner")
+        with pytest.raises(ValueError):
+            repo.record_lifecycle(req.request_id, dispatch, owner_id="owner")

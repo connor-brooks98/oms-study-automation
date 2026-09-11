@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Study chat · Study Hub{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/study_chat.css?v=20260911.1">
+<section class="page-shell sh-container" {% if configured %}data-study-chat{% endif %} data-conversation-id="{{ conversation.id if conversation else '' }}">
+  <header class="sh-header"><h1 class="sh-title">Study chat</h1>
+    <p>Ask about selected lecture sources or start a general conversation.</p>
+  </header>
+  {% if not configured %}
+  <section class="sh-card"><p>Chat is unavailable until the managed GPT backend is configured.</p>
+    <a href="/settings">Open settings</a>
+  </section>
+  {% else %}
+  <form class="sh-card" data-chat-form>
+    <p><label for="chat-mode">Answer from</label>
+      <select class="sh-input" id="chat-mode" data-chat-mode>
+        {% for value, label in [('lecture', 'Lecture sources'), ('medical_reference', 'Medical reference'), ('general', 'General')] %}
+        <option value="{{ value }}" {% if conversation and conversation.mode == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </p>
+    <p data-chat-source-field><label for="chat-sources">Selected lecture sources</label>
+      <select class="sh-input" id="chat-sources" data-chat-sources multiple size="6" aria-describedby="chat-source-help">
+        {% for source in sources %}<option value="{{ source.revision_id }}" {% if source.revision_id in selected_ids %}selected{% endif %}>{{ source.label }}</option>{% endfor %}
+      </select>
+      <span id="chat-source-help">Select the slides and transcripts to use. Changing sources starts a new conversation.</span>
+      {% if not sources %}<span>No current lecture sources are available.</span>{% endif %}
+    </p>
+    <p data-chat-reference hidden>AMBOSS access has not been configured. This chat has not used AMBOSS.
+      <a href="https://www.amboss.com/" target="_blank" rel="noopener noreferrer">Open AMBOSS</a>
+    </p>
+    <label for="chat-question">Your question</label>
+    <textarea class="sh-input" id="chat-question" data-chat-question rows="4" maxlength="20000" required aria-describedby="chat-keyboard"></textarea>
+    <p id="chat-keyboard">Ctrl+Enter or Command+Enter to send. Escape to cancel a pending answer.</p>
+    <div class="file-actions">
+      <button class="sh-btn sh-btn--primary" type="submit" data-chat-send>Send</button>
+      <button class="sh-btn sh-btn--secondary" type="button" data-chat-cancel disabled>Cancel answer</button>
+      <button class="sh-btn sh-btn--secondary" type="button" data-chat-clear>Clear conversation</button>
+    </div>
+    <p role="status" aria-live="polite" data-chat-status>Ready. ChatGPT connection and capability are checked when you ask.</p>
+  </form>
+  <div data-chat-messages aria-live="polite" aria-label="Conversation"></div>
+  <noscript>Enable JavaScript to send questions.</noscript>
+  {% endif %}
+</section>
+<script src="/static/study_chat.js?v=20260911.1" defer></script>
+{% endblock %}

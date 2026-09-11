@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from pydantic import TypeAdapter
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from oms_hub.anki.sources import LectureSourceExtractor, SourcePassage
@@ -58,6 +59,42 @@ class ChatSources:
         self.sessions = session_factory
         self.extractor = extractor
         self.authorize_revision = authorize_revision
+
+    def options(self, owner_id: str) -> tuple[dict[str, object], ...]:
+        TypeAdapter(OwnerId).validate_python(owner_id)
+        options = []
+        with self.sessions() as session:
+            rows = session.execute(
+                select(StudyRevisionModel, LectureModel)
+                .join(
+                    LectureModel,
+                    StudyRevisionModel.lecture_id == LectureModel.id,
+                )
+                .where(
+                    StudyRevisionModel.current.is_(True),
+                    StudyRevisionModel.state == "current",
+                    StudyRevisionModel.kind.in_(("slides", "transcripts")),
+                )
+                .order_by(
+                    LectureModel.subject,
+                    LectureModel.exam_number,
+                    LectureModel.lecture_number,
+                    StudyRevisionModel.kind,
+                )
+            )
+            for revision, lecture in rows:
+                try:
+                    self.authorize_revision(owner_id, revision.id)
+                except (PermissionError, KeyError, ValueError):
+                    continue
+                options.append(
+                    {
+                        "revision_id": revision.id,
+                        "label": f"{lecture.subject} · Exam {lecture.exam_number} · "
+                        f"Lecture {lecture.lecture_number}: {lecture.topic} · {revision.kind}",
+                    }
+                )
+        return tuple(options)
 
     def snapshot(self, owner_id: str, revision_ids: tuple[int, ...]) -> tuple[SourceSnapshot, ...]:
         TypeAdapter(OwnerId).validate_python(owner_id)

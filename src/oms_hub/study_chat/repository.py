@@ -75,6 +75,21 @@ class ChatRepository:
             row, conversation = self._owned_request(session, request_id, owner_id)
             return self._record(row, conversation)
 
+    def recent_requests(self, conversation_id: str, *, owner_id: str) -> tuple[StoredRequest, ...]:
+        with self.sessions() as session:
+            conversation = self._owned(session, conversation_id, owner_id)
+            if conversation.cleared_at:
+                return ()
+            rows = session.scalars(
+                select(ChatRequestModel)
+                .where(
+                    ChatRequestModel.conversation_id == conversation_id,
+                )
+                .order_by(ChatRequestModel.created_at.desc(), ChatRequestModel.request_id.desc())
+                .limit(20)
+            ).all()
+            return tuple(self._record(row, conversation) for row in reversed(rows))
+
     def begin(self, request: ChatRequest, *, model: str) -> BeginResult:
         if not model.strip() or model != model.strip() or len(model) > 200:
             raise ValueError("invalid model")
@@ -149,6 +164,10 @@ class ChatRepository:
             session.execute(text("BEGIN IMMEDIATE"))
             row, conversation = self._owned_request(session, request_id, owner_id)
             self._open(conversation)
+            if row.state not in _ACTIVE:
+                raise ValueError("request is terminal")
+            if event.phase == "dispatching" and row.provider_phase is not None:
+                raise ValueError("dispatch cannot be replayed")
             history = json.loads(row.lifecycle_json)
             event_data = asdict(event)
             if (
@@ -156,7 +175,7 @@ class ChatRepository:
                 and {k: v for k, v in history[-1].items() if k != "recorded_at"} == event_data
             ):
                 return
-            if row.state not in _ACTIVE or event.phase not in _NEXT_PHASES.get(
+            if event.phase not in _NEXT_PHASES.get(
                 row.provider_phase,
                 set(),
             ):
