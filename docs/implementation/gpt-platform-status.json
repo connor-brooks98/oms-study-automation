@@ -11,7 +11,7 @@
   "workers": {
     "B": {
       "client_thread_id": "client-new-thread:f0c101c3-7b75-4c64-8aa6-60e6188860cb",
-      "state": "running",
+      "state": "running_B4",
       "thread_id": "01a09273-0ad0-7ae1-902e-d24a1556741a",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/ca93/oms-study-automation",
@@ -19,7 +19,7 @@
     },
     "Q": {
       "client_thread_id": "client-new-thread:ff914d7d-00ef-4079-8b4b-bdff39cf34b3",
-      "state": "running",
+      "state": "idle_waiting_Q5_slot",
       "thread_id": "01a09273-0ad0-7ae1-902e-d21c0e15d9c8",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/f0c7/oms-study-automation",
@@ -30,8 +30,8 @@
       "client_thread_id": "client-new-thread:818cf5e4-4603-405d-b495-cfdf3b3babe7",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/5b09/oms-study-automation",
-      "base_commit": "30f3890888eb79d5f78b72bca5ebe7a935e4a7e9",
-      "state": "idle_waiting_B2"
+      "base_commit": "c09c44e75f9ad405823f2a5134265036745dcbfb",
+      "state": "running_C1"
     }
   },
   "tasks": {
@@ -49,15 +49,15 @@
     "O1": {
       "state": "running",
       "worker": "O",
-      "commit": "89c0cbd237fa6cddb2dc33393df9effc2b31c70b",
+      "commit": "8de567845e4ba53be558f876aa3dffb1fd195cf8",
       "tests": [
         "21 migration tests passed",
         "scoped Ruff passed",
         "mypy models/migrations passed"
       ],
-      "review": "schema32/33, owner boundary, lifecycle fixes independently PASS",
+      "review": "schema36, cleaner/restart, queue/load PASS; app/schema38/UI inreview",
       "blocker": null,
-      "next_action": "review bank bridge/ingestion discriminator; GPT cleaner/application wiring"
+      "next_action": "wireB5andC1 afteraccepted"
     },
     "O2": {
       "state": "ready",
@@ -89,31 +89,35 @@
       "next_action": "consumer implementation dispatched"
     },
     "B2": {
-      "state": "running",
+      "state": "accepted_local",
       "worker": "B",
-      "commit": null,
-      "tests": [],
-      "review": null,
+      "commit": "2495da680fb3372109d20eb8c2f3484f81e760aa",
+      "tests": [
+        "66 independently reproduced"
+      ],
+      "review": "PASS independent review with corrections",
       "blocker": null,
-      "next_action": "implement and return scoped receipt"
+      "next_action": "dependent tasks ready"
     },
     "B3": {
-      "state": "running",
-      "worker": "B/helper",
-      "commit": null,
-      "tests": [],
-      "review": null,
+      "state": "accepted_local",
+      "worker": "B",
+      "commit": "d57a1e8823bc01fa248a2d52ba119b654e46d0fd",
+      "tests": [
+        "134 independently reproduced;1Windows skip"
+      ],
+      "review": "PASS independent review with corrections",
       "blocker": null,
-      "next_action": "bounded source manifest/PDF/serialization tests and receipt"
+      "next_action": "dependent tasks ready"
     },
     "B4": {
-      "state": "ready",
+      "state": "running",
       "worker": "B",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "structured generation semantic validation and durable batch capture"
     },
     "B5": {
       "state": "ready",
@@ -163,24 +167,26 @@
       "next_action": "inspect supported results/QID/notes sample, no proprietary parser guessing"
     },
     "Q3": {
-      "state": "review",
+      "state": "accepted_local",
       "worker": "Q",
-      "commit": "8d448a543362048d3cd98a2863679527acb855b0",
+      "commit": "9efd23c6122318c85a49bf465190de6f50910d83",
       "tests": [
-        "129 worker repository/import/migration tests passed"
+        "131 independently reproduced"
       ],
-      "review": "queued for independent review; B3 holds helper token",
+      "review": "PASS independent review with corrections",
       "blocker": null,
-      "next_action": "independent review"
+      "next_action": "dependent tasks ready"
     },
     "Q4": {
-      "state": "running",
+      "state": "accepted_local",
       "worker": "Q",
-      "commit": null,
-      "tests": [],
-      "review": null,
+      "commit": "0a01af83dd4ae1d7b5b8f569273fc2087a5bf638",
+      "tests": [
+        "56 independently reproduced"
+      ],
+      "review": "PASS independent review with corrections",
       "blocker": null,
-      "next_action": "fixture-only exact Anki matching and candidate query parser"
+      "next_action": "dependent tasks ready"
     },
     "Q5": {
       "state": "ready",
@@ -189,7 +195,7 @@
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "ready afterCleaderfreesslot; Obridgeaccepted"
     },
     "Q6": {
       "state": "ready",
@@ -201,13 +207,13 @@
       "next_action": "follow approved dependency table"
     },
     "C1": {
-      "state": "ready",
+      "state": "running",
       "worker": "C",
       "commit": null,
       "tests": [],
-      "review": null,
+      "review": "foundation dispatch replay BLOCK corrected; fullslice reviewpending",
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "consume accepted rawresponse column and final receipt"
     },
     "C2": {
       "state": "ready",
@@ -242,7 +248,9 @@
     "amboss_thread_id": "1a0924aab334e5da",
     "uworld_sample": "not_supplied",
     "truelearn_sample": "not_supplied",
-    "vendor_request": "Asked once for product and official per-question results/QID/notes export controls; answer pending."
+    "vendor_request": "Asked once for product and official per-question results/QID/notes export controls; answer pending.",
+    "managed_login": "isolated device challenge prepared; waiting user completion; no generation",
+    "runtime_restrictions": "capability_unverified: universal pre-execution tool restriction not proven; generation remains disabled"
   },
   "release": {
     "candidate": null,
@@ -269,11 +277,10 @@
     "?? worktrees/"
   ],
   "helper": {
-    "owner": "B",
-    "task": "B3",
-    "state": "token_granted",
-    "no_grandchildren": true,
-    "agent": "/root/b3_sources",
-    "worktree": "/Users/connor/.codex/worktrees/gpt-b3-helper/oms-study-automation"
+    "owner": "O",
+    "task": "review Oapp/schema38 andB2rawamendment",
+    "state": "active_reviewer",
+    "agent": "/root/review_o1_schema",
+    "no_grandchildren": true
   }
 }
