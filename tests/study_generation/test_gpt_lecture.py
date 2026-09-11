@@ -258,7 +258,7 @@ class _NoOffice:
         raise AssertionError("PDF must never invoke Office")
 
 
-def _vector_pdf_inputs(tmp_path, pages=2, width=500, height=300):
+def _vector_pdf_inputs(tmp_path, pages=2, width=500, height=300, logo=False):
     import fitz
 
     inputs = _inputs(tmp_path)
@@ -268,6 +268,14 @@ def _vector_pdf_inputs(tmp_path, pages=2, width=500, height=300):
             page = document.new_page(width=width, height=height)
             page.insert_text((30, 30), f"Synthetic mechanism on page {number + 1}")
             page.draw_rect((50, 50, 100, 100), color=(1, 0, 0), fill=(1, 0, 0))
+            if logo:
+                page.insert_text(
+                    (30, 150), "Synthetic source text explains the red vector diagram."
+                )
+                page.insert_text((30, 170), "The tiny blue corner logo is not the teaching figure.")
+                raster = BytesIO()
+                Image.new("RGB", (10, 10), "blue").save(raster, format="PNG")
+                page.insert_image((200, 50, 210, 60), stream=raster.getvalue())
         document.save(path)
     snapshot = replace(
         inputs.bindings[0].snapshot,
@@ -317,6 +325,53 @@ def test_unavailable_vector_render_remains_blocked(tmp_path, request):
     inputs = _vector_pdf_inputs(tmp_path)
     with pytest.raises(ValueError, match="image"):
         parse_lecture_sources(inputs, _router(), tmp_path / "parsed")
+
+
+def test_mixed_vector_pdf_and_tiny_logo_retains_full_page_evidence(tmp_path, request, monkeypatch):
+    if _isolated_native_check(request):
+        return
+    from oms_hub.files.pdf import PdfInspection
+
+    # Isolate visual retention from optional OCR heuristics; text/images/rendering are real.
+    monkeypatch.setattr(
+        "oms_hub.document_processing.pdf_adapter.inspect_pdf",
+        lambda path: PdfInspection("text_based", 1.0, 1, (), False),
+    )
+    inputs = _vector_pdf_inputs(tmp_path, pages=1, logo=True)
+    parsed = parse_lecture_sources(
+        inputs, _router(), tmp_path / "parsed", renderer=PresentationRenderer(_NoOffice())
+    )
+    assets = parsed.documents[0].assets
+    assert any((asset.width, asset.height) == (10, 10) for asset in assets)
+    full_page = [asset for asset in assets if asset.origin == "full-page-render"]
+    assert len(full_page) == 1
+    assert (full_page[0].width, full_page[0].height) == (500, 300)
+    assert full_page[0].locator.page_number == 1
+    with Image.open(full_page[0].path) as raster:
+        assert raster.getpixel((75, 75)) == (255, 0, 0)
+    manifest = source_manifest(parsed)
+    assert len(manifest["sources"][0]["assets"]) == 2
+
+
+def test_embedded_image_does_not_suppress_render_with_same_slide_locator(tmp_path):
+    from oms_hub.document_processing.presentation_render import PresentationRenderResult
+
+    inputs = _inputs(tmp_path)
+    embedded = inputs.documents[0].assets[0]
+    rendered = replace(embedded, key="slide-2-render", origin="full-slide-render")
+
+    class Router:
+        def parse(self, snapshot, root):
+            return next(
+                document for document in inputs.documents if document.source_id == snapshot.id
+            )
+
+    class Renderer:
+        def render(self, snapshot, root, **kwargs):
+            return PresentationRenderResult((rendered,), ())
+
+    parsed = parse_lecture_sources(inputs, Router(), tmp_path / "parsed", renderer=Renderer())
+    assert parsed.documents[0].assets == (embedded, rendered)
 
 
 @pytest.mark.parametrize(

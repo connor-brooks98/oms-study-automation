@@ -258,19 +258,9 @@ def parse_lecture_sources(
                 )
             if renderer is not None:
                 rendered = renderer.render(snapshot, root, max_pages=500, max_pixels=4_000_000)
-                represented = {
-                    (asset.locator.page_number, asset.locator.slide_number)
-                    for asset in document.assets
-                    if asset.path is not None
-                }
-                additions = tuple(
-                    asset
-                    for asset in rendered.assets
-                    if (asset.locator.page_number, asset.locator.slide_number) not in represented
-                )
                 document = replace(
                     document,
-                    assets=(*document.assets, *additions),
+                    assets=tuple(dict.fromkeys((*document.assets, *rendered.assets))),
                     warnings=(*document.warnings, *rendered.warnings),
                 )
         documents.append(document)
