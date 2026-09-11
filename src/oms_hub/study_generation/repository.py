@@ -150,6 +150,8 @@ class GenerationRepository:
                 )
                 .order_by(GenerationJobModel.created_at.desc())
             )
+            if predecessor is not None and predecessor.backend == "codex_subscription":
+                raise ValueError("Resolve the retained GPT outline replacement review first.")
             model = GenerationJobModel(
                 id=str(uuid4()),
                 lecture_id=lecture_id,
@@ -689,6 +691,8 @@ class GenerationRepository:
         replacement_review: ImportedOutlineReplacementReview | None = None,
     ) -> OutlineRecord:
         with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
             self._assert_outline_replacement_allowed(
                 session,
                 lecture_id,
@@ -743,6 +747,21 @@ class GenerationRepository:
         *,
         replacement_review: ImportedOutlineReplacementReview | None,
     ) -> None:
+        job = session.get(GenerationJobModel, job_id)
+        if job is not None and job.backend == "codex_subscription":
+            if (job.lecture_id != lecture_id or job.kind != GenerationKind.OUTLINE.value
+                or job.state != GenerationState.RUNNING.value):
+                raise ValueError("GPT outline job is not active for this lecture")
+            for revision_id, kind in ((job.pdf_revision_id, "slides"),
+                                       (job.transcript_revision_id, "transcripts")):
+                revision = session.get(StudyRevisionModel, revision_id)
+                if (revision is None or revision.lecture_id != lecture_id
+                    or revision.kind != kind or not revision.current or revision.state != "current"
+                    or revision.immutable_derived_path is None or revision.derived_sha256 is None
+                    or not Path(revision.immutable_derived_path).is_file()
+                    or sha256_file(Path(revision.immutable_derived_path))
+                    != revision.derived_sha256):
+                    raise ValueError("GPT outline source is no longer current and intact")
         current = session.scalar(
             select(OutlineOutputModel).where(
                 OutlineOutputModel.lecture_id == lecture_id,

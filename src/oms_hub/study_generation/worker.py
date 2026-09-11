@@ -31,6 +31,7 @@ from oms_hub.study_generation.notebook_errors import (
     NotebookGatewayError,
 )
 from oms_hub.study_generation.prompts import outline_prompt
+from oms_hub.study_generation.repository import ImportedOutlineReplacementRequired
 
 
 class GenerationWorker:
@@ -77,9 +78,11 @@ class GenerationWorker:
                 self._run(job)
         except Exception as error:  # noqa: BLE001 - durable boundary sanitizes content
             if getattr(job, "backend", "notebooklm") == "codex_subscription":
-                safe = str(error) if isinstance(error, SessionError) else (
+                replacement = isinstance(error, ImportedOutlineReplacementRequired)
+                safe = str(error) if isinstance(error, (SessionError,
+                    ImportedOutlineReplacementRequired)) else (
                     "GPT outline stopped; retained attempt requires review.")
-                self.repository.fail(job.id, safe, paused=True)
+                self.repository.fail(job.id, safe, paused=not replacement)
                 self.catalog.set_step_status(job.lecture_id, progress_step,
                                              StepStatus.NEEDS_REVIEW, safe)
                 return True
@@ -166,6 +169,7 @@ class GenerationWorker:
         # Existing filer owns the replacement fence, backup and rollback behavior.
         key = LectureKey(lecture.subject, lecture.exam_number,
                          lecture.lecture_number, lecture.topic)
+        job = self.repository.advance(job.id, GenerationStage.PDF)
         review = self.repository.imported_outline_replacement_review(job.lecture_id, job.id)
         self.outline.file(job, key, answer, replacement_review=review)
         self.repository.complete(job.id)

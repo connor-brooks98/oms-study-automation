@@ -106,7 +106,11 @@ class GenerationService:
             if not self.model.strip():
                 raise GenerationPrerequisiteError(
                     "Select a GPT model in Settings before generating.")
-            job = self.jobs.queue(lecture_id, kind, backend=self.backend, codex_model=self.model)
+            try:
+                job = self.jobs.queue(lecture_id, kind,
+                                      backend=self.backend, codex_model=self.model)
+            except ValueError as error:
+                raise GenerationPrerequisiteError(str(error)) from error
             if job.backend != self.backend:
                 raise GenerationPrerequisiteError("An existing outline operation is still active.")
         else:

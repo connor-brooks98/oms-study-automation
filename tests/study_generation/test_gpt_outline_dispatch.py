@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import text
 
 from oms_hub.ingestion.repository import IngestionRepository
@@ -62,3 +63,63 @@ def test_outline_uses_frozen_backend_model_and_pauses_without_google(gpt_review_
     repository.recover_interrupted()
     assert repository.get(next_job.id).state.value == 'paused'
     assert repository.claim_next(datetime.now(UTC)) is None
+    from oms_hub.study_generation.repository import ImportedOutlineReplacementRequired
+    from oms_hub.study_generation.service import GenerationPrerequisiteError
+
+    def blocked_file(*args, **kwargs):
+        raise ImportedOutlineReplacementRequired("durable replacement review required")
+
+    worker.outline.file = blocked_file
+    service.queue_outline(1)
+    assert worker.run_once()
+    stopped = repository.get(next_job.id)
+    assert stopped.state.value == "failed" and stopped.stage.value == "pdf"
+    with pytest.raises(GenerationPrerequisiteError, match="retained GPT outline replacement"):
+        service.queue_outline(1)
+
+
+@pytest.mark.parametrize("change_at", ["render", "commit"])
+def test_outline_filing_rechecks_sources_and_preserves_prior_bytes(
+    gpt_review_run, tmp_path, monkeypatch, change_at
+):
+    from oms_hub.config import Settings
+    from oms_hub.domain import LectureKey
+    from oms_hub.models import StudyRevisionModel
+    from oms_hub.routing import build_outline_destination
+    from oms_hub.study_generation.domain import GenerationStage
+    from oms_hub.study_generation.outline import OutlinePdfRenderer, OutlineService
+
+    studio, _, _, _, inputs = gpt_review_run
+    repository = GenerationRepository(studio.database)
+    job = repository.queue(1, GenerationKind.OUTLINE, backend="codex_subscription", codex_model="x")
+    repository.advance(job.id, GenerationStage.PDF,
+                       pdf_revision_id=inputs.slide_revision_id,
+                       transcript_revision_id=inputs.transcript_revision_id)
+    job = repository.claim_next(datetime.now(UTC))
+    settings = Settings(_env_file=None, data_dir=tmp_path, study_root=tmp_path / "study")
+    key = LectureKey("Heme", 3, 1, "Fixture")
+    destination = build_outline_destination(settings, key)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"retained prior outline")
+
+    def promote():
+        with studio.database.session() as session:
+            session.get(StudyRevisionModel, inputs.transcript_revision_id).current = False
+
+    class Renderer(OutlinePdfRenderer):
+        def render(self, title, content):
+            payload = super().render(title, content)
+            if change_at == "render":
+                promote()
+            return payload
+
+    original = repository.record_outline
+    if change_at == "commit":
+        def record(*args, **kwargs):
+            promote()
+            return original(*args, **kwargs)
+        monkeypatch.setattr(repository, "record_outline", record)
+    with pytest.raises(ValueError, match="source is no longer current"):
+        OutlineService(settings, repository, Renderer()).file(job, key, NotebookAnswer("Outline"))
+    assert destination.read_bytes() == b"retained prior outline"
+    assert repository.current_outline(1) is None
