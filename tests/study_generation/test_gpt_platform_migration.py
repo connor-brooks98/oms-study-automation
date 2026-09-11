@@ -42,3 +42,33 @@ def test_upgrade_preserves_legacy_run_and_enforces_bank_attempt_identity(tmp_pat
             "external_attempt_id,result,imported_at,import_row_id) VALUES "
             "('owner',1,'attempt','correct','2026-09-11',1)"))
     database.close()
+
+
+def test_v31_upgrade_preserves_published_quiz_and_media_rows(tmp_path):
+    from oms_hub.models import PublishedQuizMediaModel, PublishedQuizModel, StudioRunModel
+
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.session() as session:
+        session.add(StudioRunModel(id="run", subject="Heme", subject_key="heme", exam_number=3,
+            destination_subject="Heme", destination_subject_key="heme", destination_exam_number=3,
+            label="Lecture", prompt="", state="complete"))
+        session.flush()
+        session.add(PublishedQuizModel(token="quiz", studio_run_id="run", title="Lecture",
+            destination_subject="Heme", destination_subject_key="heme", destination_exam_number=3,
+            label="Lecture", label_key="lecture",
+            payload_json='{"immutable": true}', content_kind="lecture_quiz"))
+        session.flush()
+        session.add(PublishedQuizMediaModel(
+            quiz_token="quiz", image_key="figure", path="retained.png",
+            sha256="a" * 64, media_type="image/png", width=10, height=10, alt_text="Figure"))
+    with database.engine.begin() as connection:
+        connection.execute(text("UPDATE schema_version SET version=31 WHERE id=1"))
+        before_quiz = connection.execute(text("SELECT * FROM published_quizzes")).all()
+        before_media = connection.execute(text("SELECT * FROM published_quiz_media")).all()
+    database.migrate()
+    database.migrate()
+    with database.engine.connect() as connection:
+        assert connection.execute(text("SELECT * FROM published_quizzes")).all() == before_quiz
+        assert connection.execute(text("SELECT * FROM published_quiz_media")).all() == before_media
+    database.close()

@@ -2675,7 +2675,7 @@ def migrate_database(database: "Database") -> None:
         )
         if version is not None and version >= 20 and not deployed_study_hub_v23:
             _validate_required_import_tables(database, version=version)
-        if version is not None and version >= LATEST_SCHEMA_VERSION:
+        if version is not None and version >= 31:
             _validate_reconciled_v29_schema(database)
             _validate_import_schema_structure(database, version=version)
             _validate_complete_existing_artifact_graph(database)
@@ -2688,6 +2688,13 @@ def migrate_database(database: "Database") -> None:
             _validate_v3_durable_reservations_v29(database)
             _validate_lecture_passes_v30(database)
             _validate_lecture_pass_resources_v31(database)
+            if version == 31:
+                # Only the new delta: historical backfills can rewrite retained quizzes.
+                database.create_schema()
+                _upgrade_gpt_platform_v32(database)
+                _validate_gpt_platform_v32(database)
+                with database.engine.begin() as connection:
+                    connection.execute(text("UPDATE schema_version SET version=32 WHERE id=1"))
             _validate_gpt_platform_v32(database)
             return
         if version == 20:
