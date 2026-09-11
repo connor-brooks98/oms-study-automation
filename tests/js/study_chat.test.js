@@ -106,3 +106,58 @@ test('reload waits for durable history and never resends an active request', asy
   assert.equal(calls, 1);
   controller.dispose();
 });
+
+for (const outcome of ['success', 'rejected', 'network error']) {
+  test(`delayed A POST ${outcome} cannot disturb B after polling completes A`, async t => {
+    const timers = new Map();
+    let timerId = 0;
+    t.mock.method(globalThis, 'setInterval', callback => {
+      timers.set(++timerId, callback);
+      return timerId;
+    });
+    t.mock.method(globalThis, 'clearInterval', id => timers.delete(id));
+    const { documentRef, controls } = page();
+    const posts = [], cancelled = [];
+    const response = body => ({ ok: true, json: async () => body });
+    const fetchImpl = async (url, options) => {
+      if (url.endsWith('/conversations')) return response({ conversation_id: 'cid' });
+      if (url.endsWith('/answer')) {
+        return new Promise((resolve, reject) => posts.push({ body: JSON.parse(options.body), resolve, reject }));
+      }
+      if (url.endsWith('/cancel')) { cancelled.push(url); return response({ state: 'interrupted' }); }
+      return response({ ...posts[0].body, state: 'completed', answer: { text: 'Answer A' }, citations: [] });
+    };
+    const controller = chat.initialize(documentRef, fetchImpl);
+    try {
+      const submit = controls['[data-chat-form]'].listeners.submit;
+      controls['[data-chat-question]'].value = 'Question A';
+      const sendingA = submit({ preventDefault() {} });
+      await new Promise(resolve => setImmediate(resolve));
+      await [...timers.values()][0]();
+      assert.equal(controls['[data-chat-send]'].disabled, false);
+
+      controls['[data-chat-question]'].value = 'Question B';
+      const sendingB = submit({ preventDefault() {} });
+      await new Promise(resolve => setImmediate(resolve));
+      const bStatus = controls['[data-chat-status]'].textContent;
+      const bTimer = [...timers.keys()][0];
+      if (outcome === 'success') posts[0].resolve(response({ ...posts[0].body, state: 'completed', answer: { text: 'Late A' } }));
+      else if (outcome === 'rejected') posts[0].resolve({ ok: false, status: 409 });
+      else posts[0].reject(new Error('delayed connection failure'));
+      await sendingA;
+
+      assert.equal(controls['[data-chat-send]'].disabled, true);
+      assert.equal(controls['[data-chat-cancel]'].disabled, false);
+      assert.equal(controls['[data-chat-question]'].value, 'Question B');
+      assert.equal(controls['[data-chat-status]'].textContent, bStatus);
+      assert.deepEqual([...timers.keys()], [bTimer]);
+      assert.equal(controls['[data-chat-messages]'].children[0].children[1].textContent, 'Answer A');
+      await controls['[data-chat-cancel]'].listeners.click();
+      assert.deepEqual(cancelled, [`/study/chat/requests/${posts[1].body.request_id}/cancel`]);
+
+      posts[1].resolve(response({ ...posts[1].body, state: 'interrupted', answer: { text: 'Stopped B' } }));
+      await sendingB;
+      assert.equal(posts.length, 2);
+    } finally { controller.dispose(); }
+  });
+}

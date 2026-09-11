@@ -116,20 +116,25 @@
       }
       setBusy(true);
       status.textContent = 'Preparing the question…';
+      let identity = null;
       try {
         if (!conversationId) {
           conversationId = (await api('/conversations', { mode: mode.value, revision_ids: selected })).conversation_id;
           remember();
         }
-        activeRequest = globalThis.crypto.randomUUID();
+        identity = globalThis.crypto.randomUUID();
+        activeRequest = identity;
         field('cancel').disabled = false;
         const body = { request_id: activeRequest, conversation_id: conversationId, question: question.value };
         renderRequest(documentRef, messages, { ...body, state: 'pending', answer: null });
         startPolling();
-        display(await api('/answer', body));
+        const row = await api('/answer', body);
+        if (activeRequest !== identity) return;
+        display(row);
         question.value = '';
         question.focus();
       } catch (error) {
+        if (activeRequest !== identity) return;
         if ([400, 401, 403, 409, 422].includes(error.status)) {
           stopPolling();
           activeRequest = null;
