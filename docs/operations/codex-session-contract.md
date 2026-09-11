@@ -220,3 +220,29 @@ early `turn/started` notifications are persisted even before their RPC response.
 A persistence exception never returns output and never retries generation. Failed
 terminal persistence is left to O's durable recovery state; it cannot be made
 successful by swallowing the error or replaying the remote request.
+
+## B6 staged application acceptance
+
+`tests/v2/test_gpt_lecture_acceptance.py` exercises actual app/service/worker
+constructors with synthetic slide/transcript uploads, fake subscription-session
+responses and explicit objectives. Cleaning, image quiz generation, unresolved
+manual review, explicit publication, original PNG delivery and native grading
+run without a notebook, outline or Google provider. Provider/Notebook entry
+points are traps. Source changes, missing copied images and invented citations
+fail closed. An account can be connected while generation remains disabled with
+`capability_unverified`; the account flag does not activate generation.
+
+The opt-in `OMS_B6_BROWSER=1` check uses installed Chrome at desktop/mobile sizes
+against an ephemeral loopback fixture server. It blocks external requests and
+checks real UI review/publication/grading and separate account/readiness labels.
+Office conversion is a synthetic fixture. Actual presentation rasterization runs
+in a checked subprocess: the local combined app/PyMuPDF process completed
+assertions but crashed at interpreter teardown before isolation. Isolated passes
+are functional evidence, not acceptance of that in-process native runtime.
+
+Acceptance remains split into offline transport contracts, local pipeline/UI
+fixtures, Windows subscription/restriction evidence, an explicitly authorized
+live lecture audit, and a guarded production release. B6 supplies only the local
+pipeline/UI slice. Windows/provider capability, live source quality, optional
+outline promotion and deployment are not established by these tests. No live
+attempt was consumed; no retry or activation is implied.
