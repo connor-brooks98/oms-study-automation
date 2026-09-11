@@ -1062,3 +1062,117 @@ test("performance summary groups right and need-review counts", () => {
     flagged: 0,
   });
 });
+
+
+test("personal session submits delivered attempt and never reads browser history", async () => {
+  const { documentRef, app } = buildQuizApp();
+  app.dataset.personalSession = "true";
+  app.dataset.answerUrl = "/study/sessions/session/answers/{attempt_id}";
+  documentRef.defaultView = { get localStorage() { throw new Error("must not read browser history"); } };
+  const rendered = { ...mixedContent(), closed: false,
+    questions: [{ ...mixedContent().questions[0], attempt_id: "server-attempt" }] };
+  const requests = [];
+  await quiz.initialize(documentRef, async (url, options) => {
+    if (options?.method === "POST") {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, async json() { return { correct: true, correct_choice_id: "c1",
+        rationale: "Reviewed", topic: "Graded topic", attempt_id: "server-attempt" }; } };
+    }
+    return { ok: true, async json() { return rendered; } };
+  });
+  assert.equal(findByClass(app, "quiz-flag"), null);
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+  assert.deepEqual(requests, [{ url: "/study/sessions/session/answers/server-attempt",
+    body: { kind: "choice", choice_id: "c1", elapsed_ms: null } }]);
+  assert.ok(findByClass(app, "quiz-information"));
+});
+
+test("personal session restores only acknowledged feedback and keeps staged selection retryable", async () => {
+  const { documentRef, app } = buildQuizApp();
+  app.dataset.personalSession = "true";
+  const rendered = { ...mixedContent(), questions: [
+    { ...mixedContent().questions[0], attempt_id: "one",
+      answer: { kind: "choice", choice_id: "c1" },
+      feedback: { correct: true, correct_choice_id: "c1", rationale: "Saved" } },
+    { ...mixedContent().questions[1], attempt_id: "two",
+      answer: { kind: "matching", matches: { p1: "c2", p2: "c1" } } },
+  ] };
+  await quiz.initialize(documentRef, async () => ({ ok: true, async json() { return rendered; } }));
+  assert.equal(app.querySelector('[data-focus-key="submit"]').disabled, false);
+  assert.equal(findByClass(app, "quiz-feedback").hidden, true);
+});
+
+test("personal retry preserves a previously staged duration", async () => {
+  let request;
+  const state = quiz.createQuizState(content).questions.q1;
+  await quiz.answerRequest(async (url, options) => {
+    request = { url, body: JSON.parse(options.body) };
+    return { ok: true, async json() { return {
+      correct: true, correct_choice_id: "c1", rationale: "Saved",
+    }; } };
+  }, "/study/sessions/s/answers/{attempt_id}", "q1", "c1", "csrf", state, "issued", 42);
+  assert.deepEqual(request, { url: "/study/sessions/s/answers/issued",
+    body: { kind: "choice", choice_id: "c1", elapsed_ms: 42 } });
+});
+
+test("closed personal session keeps an unstaged question disabled", async () => {
+  const { documentRef, app } = buildQuizApp();
+  app.dataset.personalSession = "true";
+  const rendered = { ...mixedContent(), closed: true,
+    questions: [{ ...mixedContent().questions[0], attempt_id: "one" }] };
+  const posts = [];
+  await quiz.initialize(documentRef, async (url, options) => {
+    if (options?.method === "POST") posts.push(url);
+    return { ok: true, async json() { return rendered; } };
+  });
+  assert.equal(app.querySelector('[data-focus-key="submit"]').disabled, true);
+  assert.equal(app.querySelector('[data-focus-key="answer-c1"]').disabled, true);
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+  assert.deepEqual(posts, []);
+});
+
+for (const closed of [false, true]) {
+  for (const matching of [false, true]) {
+    test(`${closed ? "closed" : "open"} session reload retries a locked staged ${matching ? "matching" : "choice"} answer`, async () => {
+      const { documentRef, app } = buildQuizApp();
+      app.dataset.personalSession = "true";
+      app.dataset.answerUrl = "/study/sessions/session/answers/{attempt_id}";
+      const savedAnswer = matching
+        ? { kind: "matching", matches: { p1: "c2", p2: "c1" } }
+        : { kind: "choice", choice_id: "c1" };
+      const rendered = { ...mixedContent(), closed,
+        questions: [{ ...mixedContent().questions[matching ? 1 : 0],
+          attempt_id: "staged-attempt", answer: savedAnswer, elapsed_ms: 42 }] };
+      const posts = [];
+      await quiz.initialize(documentRef, async (url, options) => {
+        if (options?.method === "POST") {
+          posts.push({ url, body: JSON.parse(options.body) });
+          return { ok: true, async json() { return matching ? matchingFeedback(true)
+            : { correct: true, correct_choice_id: "c1", rationale: "Saved" }; } };
+        }
+        return { ok: true, async json() { return rendered; } };
+      });
+      assert.equal(findByClass(app, "quiz-feedback").hidden, true);
+      assert.equal(app.querySelector('[data-focus-key="submit"]').disabled, false);
+      if (matching) {
+        const select = app.querySelector('[data-focus-key="match-p1"]');
+        assert.equal(select.disabled, true);
+        select.value = "c1";
+        select._listeners.change[0]();
+      } else {
+        const choice = app.querySelector('[data-focus-key="answer-c2"]');
+        const strike = app.querySelector('[data-focus-key="strike-c1"]');
+        assert.equal(choice.disabled, true);
+        assert.equal(strike.disabled, true);
+        choice._listeners.click[0]();
+        strike._listeners.click[0]();
+      }
+      await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+      assert.deepEqual(posts, [{ url: "/study/sessions/session/answers/staged-attempt",
+        body: { ...savedAnswer, elapsed_ms: 42 } }]);
+      assert.notEqual(findByClass(app, "quiz-feedback").hidden, true);
+      assert.equal(app.querySelector('[data-focus-key="submit"]'), null);
+    });
+  }
+}

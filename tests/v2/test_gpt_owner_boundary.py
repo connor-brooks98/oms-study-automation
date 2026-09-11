@@ -55,3 +55,51 @@ def test_chat_app_wiring_shares_client_and_enforces_source_owner(tmp_path, monke
         assert response.status_code == 200 and 'href="/study/chat"' in response.text
         assert repository.load_request(identity, owner_id="local-owner").state == "interrupted"
     app.state.database.close()
+
+
+def test_personal_session_app_wiring_and_public_isolation(tmp_path):
+    import pytest
+
+    from oms_hub.models import PublishedQuizMediaModel, PublishedQuizModel
+    from oms_hub.question_bank.contracts import QuestionKey
+
+    app = create_app(Settings(_env_file=None, data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}", study_root=tmp_path / "study"))
+    token = "a" * 64
+    payload = ('{"title":"Local fixture","questions":[{"stem":"Which?",'
+               '"choices":["One","Two","Three","Four"],'
+               '"correct_index":0,"rationale":"One is correct."}]}')
+    with app.state.database.session() as session:
+        session.add(PublishedQuizModel(token=token, title="Local fixture", payload_json=payload))
+    service = app.state.study_session_service
+    for callback, value in ((service.load_quiz, token), (service.topics_for,
+        QuestionKey(source="study_hub", product="lecture_quiz", question_id="q1"))):
+        with pytest.raises(PermissionError):
+            callback("other", value)
+    with TestClient(app) as client:
+        page = client.get(f"/study/sessions/new?quiz_token={token}")
+        assert page.status_code == 200 and "Start session" in page.text
+        csrf = client.cookies.get("study_hub_csrf")
+        created = client.post("/study/sessions", json={"quiz_token": token},
+                              headers={"X-CSRF-Token": csrf})
+        assert created.status_code == 200
+        path = created.json()["url"]
+        content = client.get(path + "/content").json()
+        assert "correct_choice_id" not in str(content)
+        attempt = content["questions"][0]["attempt_id"]
+        assert client.post(path + "/answers/" + attempt, json={"choice_id": "c1"},
+            headers={"X-CSRF-Token": csrf}).json()["correct"] is True
+        assert client.get("/study/progress/data").json()["summary"]["correct"] == 1
+        assert client.post(f"/public/quizzes/{token}/answer",
+            json={"question_id": "q1", "choice_id": "c2"}).status_code == 200
+        assert len(app.state.question_bank.iter_attempts(learner_id="local-owner")) == 1
+        owner_library = client.get("/studio/library/quizzes").text
+        assert f"/study/sessions/new?quiz_token={token}" in owner_library
+        assert "Study with progress" not in client.get("/public/quizzes").text
+        with app.state.database.session() as session:
+            session.add(PublishedQuizMediaModel(quiz_token=token, image_key="bad",
+                path=str(tmp_path.parent / "outside.png"), sha256="a" * 64,
+                media_type="image/png", width=1, height=1, alt_text="Image"))
+        assert client.post("/study/sessions", json={"quiz_token": token},
+            headers={"X-CSRF-Token": csrf}).status_code == 409
+    app.state.database.close()

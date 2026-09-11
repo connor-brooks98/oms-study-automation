@@ -140,10 +140,13 @@
                     aria-label="Restart {{ row.title }}"
                     title="Restart {{ row.title }}"
                   >↻</button>
-                  {% if row.outline_url or management_mode %}
+                  {% if row.outline_url or owner_navigation %}
                   <details class="quiz-overflow t-context-menu" data-quiz-overflow>
                     <summary class="sh-iconbtn" data-quiz-title-for="{{ row.token }}" aria-label="More actions for {{ row.title }}" title="More actions">⋯</summary>
                     <div class="quiz-overflow__menu t-context-menu__panel">
+                      {% if owner_navigation %}
+                      <a class="button sh-btn sh-btn--secondary" href="/study/sessions/new?quiz_token={{ row.token }}">Study with progress</a>
+                      {% endif %}
                       {% if row.outline_url %}
                       <a class="button outline-button sh-btn sh-btn--secondary" href="{{ row.outline_url }}" target="_blank" rel="noopener">Lecture Outline</a>
                       {% endif %}

@@ -73,6 +73,7 @@ from oms_hub.document_processing.shadow import DocumentShadowEvaluator, LegacyPp
 from oms_hub.document_processing.text_adapter import TextProcessor
 from oms_hub.document_processing.web_adapter import WebProcessor
 from oms_hub.files.office import SerialOfficeConverter
+from oms_hub.files.trusted_paths import trusted_managed_path
 from oms_hub.ingestion.matcher import UploadMatcher
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import (
@@ -91,6 +92,7 @@ from oms_hub.llm.service import LLMService
 from oms_hub.llm.structured import StructuredTextGenerator, StructuredTextService
 from oms_hub.migrations import LATEST_SCHEMA_VERSION
 from oms_hub.public_boundary import classify_public_path
+from oms_hub.question_bank.contracts import QuestionKey, TopicLabel
 from oms_hub.question_bank.repository import BankRepository
 from oms_hub.question_bank.routes import create_question_bank_router
 from oms_hub.repositories import CatalogRepository
@@ -116,7 +118,11 @@ from oms_hub.study_chat.routes import router as study_chat_router
 from oms_hub.study_chat.service import ChatService
 from oms_hub.study_chat.sources import ChatSources
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
-from oms_hub.study_generation.domain import PromptKind
+from oms_hub.study_generation.domain import (
+    PromptKind,
+    PublishedQuizMediaRecord,
+    PublishedQuizRecord,
+)
 from oms_hub.study_generation.gpt_lecture import GptLectureWorker
 from oms_hub.study_generation.gpt_outline import GptOutlineGenerator
 from oms_hub.study_generation.native_quiz import NativeQuizPublisher
@@ -147,6 +153,9 @@ from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.study_generation.studio_service import StudioService
 from oms_hub.study_generation.studio_worker import StudioWorker
 from oms_hub.study_generation.worker import GenerationWorker
+from oms_hub.study_progress.routes import router as study_progress_router
+from oms_hub.study_progress.service import ProgressService
+from oms_hub.study_progress.sessions import StudySessionService
 from oms_hub.transcripts.codex_cleaner import CodexTranscriptCleaner
 from oms_hub.transcripts.pipeline import (
     TranscriptPipeline as V2TranscriptPipeline,
@@ -1176,6 +1185,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if app.state.gpt_lecture_worker is not None:
         app.state.practice_review.lecture_validator = app.state.gpt_lecture_worker.validate_review
     app.state.question_bank = BankRepository(database.session)
+
+    def load_study_quiz(owner_id: str, token: str) -> PublishedQuizRecord:
+        if owner_id != study_owner:
+            raise PermissionError("publication owner mismatch")
+        publication = app.state.generation_repository.published_quiz(token)
+        if publication is None or not publication.active:
+            raise PermissionError("publication unavailable")
+        return cast(PublishedQuizRecord, publication)
+
+    def study_topics(owner_id: str, key: QuestionKey) -> tuple[TopicLabel, ...]:
+        if owner_id != study_owner:
+            raise PermissionError("topic owner mismatch")
+        question = app.state.question_bank.get_question(key)
+        return tuple(question.topics) if question is not None else ()
+
+    def study_media(
+        owner_id: str, publication: PublishedQuizRecord,
+    ) -> tuple[PublishedQuizMediaRecord, ...]:
+        if owner_id != study_owner:
+            raise PermissionError("media owner mismatch")
+        media = app.state.generation_repository.published_quiz_media(publication.token)
+        if any(not trusted_managed_path(item.path, resolved.data_dir.resolve(),
+            require_regular_file=True) for item in media):
+            raise ValueError("publication media path unavailable")
+        return cast(tuple[PublishedQuizMediaRecord, ...], media)
+
+    app.state.study_session_service = StudySessionService(
+        database.session, bank=app.state.question_bank, load_quiz=load_study_quiz,
+        topics_for=study_topics, media_for=study_media,
+    )
+    app.state.study_progress_service = ProgressService(app.state.question_bank)
     app.state.quiz_import_worker = QuizImportWorker(
         app.state.studio_repository,
         app.state.document_processor_router,
@@ -1415,6 +1455,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(quarantine_router)
     app.include_router(generation_router)
     app.include_router(study_chat_router)
+    app.include_router(study_progress_router)
     app.include_router(create_question_bank_router(
         app.state.question_bank, studio=app.state.studio_repository,
         anki_index=app.state.anki_companion_index))

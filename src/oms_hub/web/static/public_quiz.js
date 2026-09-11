@@ -438,18 +438,25 @@
     answer,
     csrf,
     expectedQuestion,
+    attemptId = null,
+    elapsedMs = null,
   ) => {
     let response;
     try {
-      response = await fetchImpl(url, {
+      const target = attemptId ? url.replace("{attempt_id}", encodeURIComponent(attemptId)) : url;
+      response = await fetchImpl(target, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-CSRF-Token": csrf,
         },
-        body: JSON.stringify(typeof answer === "string"
-          ? { question_id: questionId, choice_id: answer }
-          : { kind: "matching", question_id: questionId, matches: answer }),
+        body: JSON.stringify(attemptId
+          ? (typeof answer === "string"
+            ? { kind: "choice", choice_id: answer, elapsed_ms: elapsedMs }
+            : { kind: "matching", matches: answer, elapsed_ms: elapsedMs })
+          : (typeof answer === "string"
+            ? { question_id: questionId, choice_id: answer }
+            : { kind: "matching", question_id: questionId, matches: answer })),
         cache: "no-store",
       });
     } catch (_) {
@@ -618,6 +625,7 @@
   ) => {
     const app = documentRef.querySelector("[data-quiz-token]");
     if (!app) return;
+    const personalSession = app.dataset.personalSession === "true";
     const allowUnansweredNavigation = (
       app.dataset.allowUnansweredNavigation === "true"
     );
@@ -630,9 +638,33 @@
         return;
       }
       const content = await response.json();
-      const storage = safeStorage(() => documentRef.defaultView);
+      const closedSession = personalSession && content.closed;
+      const storage = personalSession
+        ? { getItem: () => null, setItem: () => false }
+        : safeStorage(() => documentRef.defaultView);
       const key = storageKey(content);
       let state = restoreProgress(content, storage.getItem(key));
+      if (personalSession) {
+        for (const question of content.questions) {
+          const answer = question.answer;
+          if (!answer) continue;
+          if (answer.kind === "matching") {
+            for (const [prompt, choice] of Object.entries(answer.matches)) {
+              state = selectMatch(state, question.id, prompt, choice);
+            }
+          } else {
+            state = selectChoice(state, question.id, answer.choice_id);
+          }
+          if (question.feedback) {
+            state = recordFeedback(state, question.id, question.feedback);
+            for (const name of ["area", "topic", "learning_objective"]) {
+              if (question.feedback[name]) question[name] = question.feedback[name];
+            }
+          }
+        }
+        const next = content.questions.findIndex((q) => !state.questions[q.id].submitted);
+        state = { ...state, currentIndex: next < 0 ? content.questions.length : next };
+      }
       let lastPersistSucceeded = true;
       const informationOpen = new Map();
       let pendingFocusKey;
@@ -678,7 +710,9 @@
               documentRef,
               "p",
               "quiz-result-copy",
-              `${summary.percentage}% correct · Your answers were stored only in this browser.`,
+              `${summary.percentage}% correct · ${personalSession
+                ? "Your answers are saved to your personal progress."
+                : "Your answers were stored only in this browser."}`,
             ),
           );
           const summaryHeading = element(
@@ -740,6 +774,8 @@
 
         const question = content.questions[state.currentIndex];
         const questionProgress = state.questions[question.id];
+        const stagedAnswer = personalSession ? question.answer : null;
+        const selectionLocked = closedSession || Boolean(stagedAnswer);
         const shell = element(
           documentRef,
           "article",
@@ -893,7 +929,8 @@
         });
         flagLabel.append(flagSelect);
         flag.append(flagLabel);
-        studyTools.append(tools, flag);
+        studyTools.append(tools);
+        if (!personalSession) studyTools.append(flag);
         body.append(studyTools);
 
         const answers = element(documentRef, "div", "quiz-answers");
@@ -915,7 +952,7 @@
             select.className = "sh-select";
             select.dataset.focusKey = `match-${prompt.id}`;
             select.setAttribute("aria-label", `Choice for prompt ${prompt.label}`);
-            select.disabled = questionProgress.submitted || questionProgress.submitting;
+            select.disabled = selectionLocked || questionProgress.submitted || questionProgress.submitting;
             const placeholder = element(documentRef, "option", "", "Choose a term");
             placeholder.value = "";
             placeholder.disabled = true;
@@ -927,6 +964,7 @@
             });
             select.value = selected;
             select.addEventListener("change", () => {
+              if (selectionLocked) return;
               state = selectMatch(state, question.id, prompt.id, select.value);
               persist();
               render();
@@ -981,7 +1019,7 @@
             `answer-${choice.id}`,
           );
           answer.type = "button";
-          answer.disabled = questionProgress.submitted || questionProgress.submitting;
+          answer.disabled = selectionLocked || questionProgress.submitted || questionProgress.submitting;
           answer.setAttribute("aria-pressed", String(selected));
           answer.append(
             element(
@@ -993,6 +1031,7 @@
             element(documentRef, "span", "quiz-choice-text", choice.text),
           );
           answer.addEventListener("click", () => {
+            if (selectionLocked) return;
             state = selectChoice(state, question.id, choice.id);
             persist();
             render();
@@ -1006,7 +1045,7 @@
             `strike-${choice.id}`,
           );
           strike.type = "button";
-          strike.disabled = questionProgress.submitted || questionProgress.submitting;
+          strike.disabled = selectionLocked || questionProgress.submitted || questionProgress.submitting;
           strike.setAttribute("aria-pressed", String(eliminated));
           strike.setAttribute(
             "aria-label",
@@ -1014,6 +1053,7 @@
           );
           strike.title = eliminated ? "Restore answer" : "Cross out answer";
           strike.addEventListener("click", () => {
+            if (selectionLocked) return;
             state = toggleEliminated(state, question.id, choice.id);
             persist();
             render();
@@ -1062,7 +1102,9 @@
             const message = element(documentRef, "p", "quiz-error");
             message.setAttribute("role", "alert");
             message.append(documentRef.createTextNode(
-              `${questionProgress.submissionError.message} ${lastPersistSucceeded
+              `${questionProgress.submissionError.message} ${personalSession
+                ? "Retry this same selection. Previously saved answers are restored from the server. "
+                : lastPersistSucceeded
                 ? "Your selection is saved. "
                 : "Your selection could not be saved; refreshing may lose progress. "}`,
             ));
@@ -1083,14 +1125,18 @@
               documentRef,
               "p",
               "quiz-submit-note",
-              "You can change your selection until you submit.",
+              stagedAnswer
+                ? "Saved selection is locked. Retry to finish recording this answer."
+                : closedSession
+                  ? "This question was not answered before the session closed."
+                  : "You can change your selection until you submit.",
             ),
           );
           const submit = element(
             documentRef,
             "button",
             "quiz-primary quiz-submit sh-btn sh-btn--primary sh-btn--block sh-btn--stateful",
-            questionProgress.submitting ? "Checking…" : "Submit Answer",
+            questionProgress.submitting ? "Checking…" : stagedAnswer ? "Retry saved answer" : "Submit Answer",
             "submit",
           );
           submit.type = "button";
@@ -1098,14 +1144,17 @@
             ? "loading"
             : questionProgress.submissionError ? "error" : "idle";
           if (questionProgress.submitting) submit.setAttribute("aria-busy", "true");
-          const selectedAnswer = question.kind === "matching"
-            ? questionProgress.selectedChoiceIds
-            : questionProgress.selectedChoiceId;
+          const selectedAnswer = stagedAnswer
+            ? (stagedAnswer.kind === "matching" ? stagedAnswer.matches : stagedAnswer.choice_id)
+            : (question.kind === "matching"
+              ? questionProgress.selectedChoiceIds
+              : questionProgress.selectedChoiceId);
           const answerComplete = question.kind === "matching"
             ? questionProgress.promptIds.every((id) => selectedAnswer[id])
             : Boolean(selectedAnswer);
-          submit.disabled = !answerComplete || questionProgress.submitting;
+          submit.disabled = (closedSession && !stagedAnswer) || !answerComplete || questionProgress.submitting;
           submit.addEventListener("click", async () => {
+            if (submit.disabled) return;
             const submittedAnswer = typeof selectedAnswer === "string"
               ? selectedAnswer
               : { ...selectedAnswer };
@@ -1122,6 +1171,8 @@
                 submittedAnswer,
                 csrfToken(documentRef),
                 questionProgress,
+                personalSession ? question.attempt_id : null,
+                question.elapsed_ms ?? null,
               );
               state = recordFeedback(
                 state,
@@ -1129,6 +1180,11 @@
                 feedbackResult,
                 submittedAnswer,
               );
+              if (personalSession) {
+                for (const name of ["area", "topic", "learning_objective"]) {
+                  if (feedbackResult[name]) question[name] = feedbackResult[name];
+                }
+              }
               pendingFocusKey = "forward";
               persist();
               render();
@@ -1171,9 +1227,9 @@
           "forward",
         );
         forward.type = "button";
-        forward.disabled = !(allowUnansweredNavigation || questionProgress.submitted);
+        forward.disabled = !(closedSession || allowUnansweredNavigation || questionProgress.submitted);
         forward.addEventListener("click", () => {
-          if (!(allowUnansweredNavigation || questionProgress.submitted)) return;
+          if (!(closedSession || allowUnansweredNavigation || questionProgress.submitted)) return;
           state = navigateQuestion(state, state.currentIndex + 1, content.questions.length);
           persist();
           render();
