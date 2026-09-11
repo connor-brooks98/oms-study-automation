@@ -778,6 +778,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             return harden(JSONResponse({"detail": "Host is not allowed"}, status_code=400))
 
+        if not public_path.is_public:
+            request.state.study_owner_id = (
+                resolved.cloudflare_access_allowed_email or "local-owner"
+            ).casefold()
+
         origin = request.headers.get("origin")
         allowed_origins = {
             f"http://127.0.0.1:{resolved.dashboard_port}",
