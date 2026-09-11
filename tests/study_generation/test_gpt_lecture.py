@@ -1,5 +1,8 @@
+import json
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 from io import BytesIO
@@ -21,15 +24,420 @@ from oms_hub.document_processing.pdf_adapter import PdfProcessor
 from oms_hub.document_processing.presentation_render import PresentationRenderer
 from oms_hub.document_processing.router import DocumentProcessorRouter, ParserMode
 from oms_hub.document_processing.text_adapter import TextProcessor
+from oms_hub.llm.codex_session import (
+    CodexSessionClient,
+    SessionError,
+    SessionLifecycle,
+    SessionResult,
+)
 from oms_hub.study_generation.gpt_lecture import (
+    GeneratedLectureQuiz,
+    LectureGenerationError,
     LectureInputs,
     LectureSourceBinding,
+    generate_lecture_quiz,
     parse_lecture_sources,
     source_asset,
     source_manifest,
     uncovered_objectives,
+    validate_generated_quiz,
     validate_lecture_inputs,
 )
+
+
+class _QuizClient:
+    def __init__(self, work_root, inputs, *, invalid=False):
+        self.work_root = work_root
+        self.inputs = inputs
+        self.requests = []
+        self.callback = None
+        self.invalid = invalid
+
+    def generate(self, request, *, cancelled, on_lifecycle):
+        assert on_lifecycle is self.callback
+        assert not cancelled()
+        self.requests.append(request)
+        for path, digest in zip(request.image_paths, request.image_sha256, strict=True):
+            assert path.is_relative_to(self.work_root)
+            assert sha256(path.read_bytes()).hexdigest() == digest
+        for phase in ("dispatching", "thread_created", "turn_started", "completed"):
+            on_lifecycle(SessionLifecycle(request.request_id, phase, "thread", "turn"))
+        payload = _quiz_payload(self.inputs)
+        source = json.loads(request.source_text)
+        objective_ids = [item["id"] for item in source["objectives"]]
+        for question in payload["questions"]:
+            question["objective_ids"] = objective_ids
+            question["stem"] += " Batch " + request.request_id
+        return SessionResult(
+            "thread", "turn", "broken JSON" if self.invalid else json.dumps(payload)
+        )
+
+
+def test_fake_generation_stages_source_images_and_saves_complete_private_artifacts(tmp_path):
+    inputs = _inputs(tmp_path)
+    client = _QuizClient(tmp_path / "work", inputs)
+    events = []
+    client.callback = events.append
+    quiz = generate_lecture_quiz(
+        client, "run1", "chosen", inputs, cancelled=lambda: False, on_lifecycle=client.callback
+    )
+    validate_generated_quiz(quiz, inputs, require_images=True)
+    assert len(client.requests) == 1
+    request = client.requests[0]
+    assert request.request_id == "run1:batch-0001"
+    assert request.output_schema == GeneratedLectureQuiz.model_json_schema()
+    source = json.loads(request.source_text)
+    assert source["images"][0]["asset_key"] == "figure-1"
+    assert source["sources"][0]["segments"][0]["style_metadata"] == ["color #FF0000: high yield"]
+    assert str(tmp_path) not in request.source_text
+    assert not request.image_paths[0].exists()
+    complete = list(client.work_root.rglob("complete.json"))
+    assert len(complete) == 1
+    record = json.loads(complete[0].read_text())
+    assert record["requested_model"] == "chosen"
+    assert record["actual_model"] is None
+    assert record["thread_id"] == "thread" and record["turn_id"] == "turn"
+    assert (complete[0].parent / "raw.txt").read_text().startswith('{"title"')
+    recovered = generate_lecture_quiz(
+        client, "run1", "chosen", inputs, cancelled=lambda: False, on_lifecycle=client.callback
+    )
+    assert recovered == quiz
+    assert len(client.requests) == 1
+
+
+@pytest.mark.parametrize("changed", ["model", "prompt", "manifest", "raw", "quiz"])
+def test_mismatched_or_corrupted_artifacts_cannot_be_reused_or_reissued(
+    tmp_path, monkeypatch, changed
+):
+    from oms_hub.study_generation import gpt_lecture
+
+    inputs = _inputs(tmp_path)
+    client = _QuizClient(tmp_path / "work", inputs)
+    client.callback = lambda event: None
+    generate_lecture_quiz(
+        client, "run1", "chosen", inputs, cancelled=lambda: False, on_lifecycle=client.callback
+    )
+    model = "chosen"
+    if changed == "model":
+        model = "different"
+    elif changed == "prompt":
+        prompt = gpt_lecture._quiz_prompt()
+        monkeypatch.setattr(
+            gpt_lecture, "_quiz_prompt", lambda: replace(prompt, content="changed", sha256="f" * 64)
+        )
+    elif changed == "manifest":
+        inputs = replace(inputs, prompt_version="changed")
+    elif changed == "raw":
+        next(client.work_root.rglob("raw.txt")).write_text("corrupted")
+    else:
+        complete = next(client.work_root.rglob("complete.json"))
+        record = json.loads(complete.read_text())
+        record["quiz"]["title"] = "corrupted"
+        complete.write_text(json.dumps(record))
+    with pytest.raises(SessionError):
+        generate_lecture_quiz(
+            client,
+            "run1",
+            model,
+            inputs,
+            cancelled=lambda: False,
+            on_lifecycle=client.callback,
+            resume=True,
+        )
+    assert len(client.requests) == 1
+
+
+def test_callback_failure_leaves_ambiguous_dispatch_that_explicit_resume_cannot_repeat(tmp_path):
+    inputs = _inputs(tmp_path)
+    client = _QuizClient(tmp_path / "work", inputs)
+
+    def fail(event):
+        raise SessionError("interrupted")
+
+    client.callback = fail
+    for resume in (False, True):
+        with pytest.raises(SessionError, match="interrupted"):
+            generate_lecture_quiz(
+                client,
+                "run1",
+                "chosen",
+                inputs,
+                cancelled=lambda: False,
+                on_lifecycle=client.callback,
+                resume=resume,
+            )
+    assert len(client.requests) == 1
+    assert not list(client.work_root.rglob("complete.json"))
+    assert not list(client.work_root.glob("lecture-images-*"))
+
+
+@pytest.mark.parametrize("models", [("chosen", "chosen"), ("chosen", "different")])
+def test_concurrent_callers_cannot_dispatch_same_run_twice(tmp_path, monkeypatch, models):
+    from oms_hub.study_generation import gpt_lecture
+
+    inputs = _inputs(tmp_path)
+    client = _QuizClient(tmp_path / "work", inputs)
+    client.callback = lambda event: None
+    prompt = gpt_lecture._quiz_prompt()
+    barrier = threading.Barrier(2)
+
+    def synchronized_prompt():
+        barrier.wait(timeout=5)
+        return prompt
+
+    monkeypatch.setattr(gpt_lecture, "_quiz_prompt", synchronized_prompt)
+
+    def generate(model):
+        try:
+            return generate_lecture_quiz(
+                client,
+                "run1",
+                model,
+                inputs,
+                cancelled=lambda: False,
+                on_lifecycle=client.callback,
+                resume=True,
+            )
+        except SessionError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(generate, models))
+    assert any(result is not None for result in results)
+    assert len(client.requests) == 1
+
+
+def test_real_fake_pipe_malformed_json_is_saved_before_feature_rejection(tmp_path, monkeypatch):
+    inputs = _inputs(tmp_path)
+    executable = Path(sys.executable).resolve()
+    client = CodexSessionClient(
+        executable,
+        tmp_path / "session",
+        tmp_path / "work",
+        binary_sha256=sha256(executable.read_bytes()).hexdigest(),
+        turn_timeout=2,
+        shutdown_timeout=0.2,
+    )
+    trace = tmp_path / "wire.jsonl"
+    client._command = [
+        sys.executable,
+        str(Path(__file__).parents[1] / "llm/fixtures/codex_fake_server.py"),
+        "bad_json",
+        str(trace),
+    ]
+    # Synthetic local executable only: production capability readiness remains closed.
+    monkeypatch.setattr(client, "_require_generation_ready", lambda request: None)
+    events = []
+    try:
+        for resume in (False, True):
+            with pytest.raises(LectureGenerationError) as error:
+                generate_lecture_quiz(
+                    client,
+                    "run1",
+                    "chosen",
+                    inputs,
+                    cancelled=lambda: False,
+                    on_lifecycle=events.append,
+                    resume=resume,
+                )
+            assert error.value.code == "invalid_output"
+            assert error.value.objective_ids == tuple(key for key, _ in inputs.objectives)
+        assert events[-1].phase == "completed"
+        assert next(client.work_root.rglob("raw.txt")).read_text() == "not JSON"
+        provider = json.loads(next(client.work_root.rglob("provider.json")).read_text())
+        assert (provider["thread_id"], provider["turn_id"]) == ("thread-fixture", "turn-fixture")
+        assert not list(client.work_root.rglob("complete.json"))
+        assert sum(
+            json.loads(line).get("method") == "turn/start"
+            for line in trace.read_text().splitlines()
+        ) == 1
+    finally:
+        client.close()
+
+
+def test_explicit_resume_reuses_completed_batches_and_only_starts_missing(tmp_path):
+    inputs = replace(
+        _inputs(tmp_path), objectives=tuple((f"LO{i}", f"Objective {i}") for i in range(26))
+    )
+    client = _QuizClient(tmp_path / "work", inputs)
+    client.callback = lambda event: None
+    def stop():
+        return len(client.requests) == 1
+
+    with pytest.raises(SessionError, match="interrupted"):
+        generate_lecture_quiz(
+            client, "run1", "chosen", inputs, cancelled=stop, on_lifecycle=client.callback
+        )
+    assert len(client.requests) == 1
+    with pytest.raises(SessionError):
+        generate_lecture_quiz(
+            client, "run1", "chosen", inputs, cancelled=lambda: False, on_lifecycle=client.callback
+        )
+    assert len(client.requests) == 1
+    quiz = generate_lecture_quiz(
+        client,
+        "run1",
+        "chosen",
+        inputs,
+        cancelled=lambda: False,
+        on_lifecycle=client.callback,
+        resume=True,
+    )
+    assert len(client.requests) == 2
+    assert len(quiz.questions) == 6
+    assert len({question.id for question in quiz.questions}) == 6
+    assert [len(json.loads(request.source_text)["objectives"]) for request in client.requests] == [
+        25,
+        1,
+    ]
+    validate_generated_quiz(quiz, inputs, require_images=True)
+
+
+def test_invalid_output_preserves_raw_evidence_and_never_retries(tmp_path):
+    inputs = _inputs(tmp_path)
+    client = _QuizClient(tmp_path / "work", inputs, invalid=True)
+    client.callback = lambda event: None
+    for resume in (False, True):
+        with pytest.raises(SessionError) as error:
+            generate_lecture_quiz(
+                client,
+                "run1",
+                "chosen",
+                inputs,
+                cancelled=lambda: False,
+                on_lifecycle=client.callback,
+                resume=resume,
+            )
+        assert error.value.code == "invalid_output"
+    assert len(client.requests) == 1
+    assert next(client.work_root.rglob("raw.txt")).read_text() == "broken JSON"
+    assert not list(client.work_root.rglob("complete.json"))
+
+
+@pytest.mark.parametrize("oversize", ["text", "images"])
+def test_context_blocker_lists_counts_and_every_affected_objective(tmp_path, oversize):
+    inputs = _inputs(tmp_path)
+    slide = inputs.documents[0]
+    if oversize == "text":
+        slide = replace(slide, segments=(replace(slide.segments[0], text="x" * 100001),))
+    else:
+        slide = replace(
+            slide,
+            assets=tuple(replace(slide.assets[0], key=f"figure-{index}") for index in range(21)),
+        )
+    inputs = replace(inputs, documents=(slide, inputs.documents[1]))
+    client = _QuizClient(tmp_path / "work", inputs)
+    with pytest.raises(LectureGenerationError) as error:
+        generate_lecture_quiz(
+            client,
+            "run1",
+            "chosen",
+            inputs,
+            cancelled=lambda: False,
+            on_lifecycle=lambda event: None,
+        )
+    assert error.value.code == "context_limit"
+    assert error.value.objective_ids == tuple(key for key, _ in inputs.objectives)
+    assert error.value.counts["source_characters" if oversize == "text" else "images"] > (
+        100000 if oversize == "text" else 20
+    )
+    assert not client.requests
+
+
+def _quiz_payload(inputs):
+    citations = [{"source_id": inputs.slide_source_id, "segment_key": "block-1"}]
+    return {
+        "title": "Synthetic Heme Exam 3 lecture",
+        "questions": [
+            {
+                "id": f"q-{number}",
+                "stem": f"Synthetic patient case {number} has a distinct finding.",
+                "choices": ["Mechanism A", "Mechanism B"],
+                "correct_index": 0,
+                "rationale": "The selected slide's mechanism supports A.",
+                "distractor_explanations": [
+                    "A matches the supplied mechanism.",
+                    "B lacks the finding described by the supplied source.",
+                ],
+                "objective_ids": [inputs.objectives[number % len(inputs.objectives)][0]],
+                "source_segments": citations,
+                "image": {"source_id": inputs.slide_source_id, "asset_key": "figure-1"}
+                if number == 0
+                else None,
+            }
+            for number in range(3)
+        ],
+    }
+
+
+def test_generated_quiz_uses_real_lecture_asset_and_covers_both_objectives(tmp_path):
+    inputs = _inputs(tmp_path)
+    quiz = GeneratedLectureQuiz.model_validate(_quiz_payload(inputs))
+    validate_generated_quiz(quiz, inputs, require_images=True)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "objective",
+        "segment",
+        "transcript_image",
+        "answer",
+        "duplicate_id",
+        "blank_choice",
+        "duplicate_choice",
+        "coverage",
+        "image_bytes",
+        "duplicate_stem",
+        "missing_explanation",
+        "blank_explanation",
+        "missing_image",
+        "unassociated_image",
+        "too_few",
+    ],
+)
+def test_generated_quiz_rejects_unsupported_or_incomplete_output(tmp_path, defect):
+    inputs = _inputs(tmp_path)
+    payload = _quiz_payload(inputs)
+    question = payload["questions"][0]
+    if defect == "objective":
+        question["objective_ids"] = ["unknown"]
+    elif defect == "segment":
+        question["source_segments"] = [
+            {"source_id": inputs.slide_source_id, "segment_key": "unknown"}
+        ]
+    elif defect == "transcript_image":
+        question["image"]["source_id"] = inputs.transcript_source_id
+    elif defect == "answer":
+        question["correct_index"] = 2
+    elif defect == "duplicate_id":
+        payload["questions"][1]["id"] = question["id"]
+    elif defect == "blank_choice":
+        question["choices"][1] = " "
+    elif defect == "duplicate_choice":
+        question["choices"][1] = " MECHANISM  A "
+    elif defect == "coverage":
+        for item in payload["questions"]:
+            item["objective_ids"] = [inputs.objectives[0][0]]
+    elif defect == "image_bytes":
+        inputs.documents[0].assets[0].path.write_bytes(b"changed")
+    elif defect == "duplicate_stem":
+        payload["questions"][1]["stem"] = " " + question["stem"].upper() + " "
+    elif defect == "missing_explanation":
+        question["distractor_explanations"] = ["only one"]
+    elif defect == "blank_explanation":
+        question["distractor_explanations"][1] = " "
+    elif defect == "missing_image":
+        question["image"] = None
+    elif defect == "unassociated_image":
+        question["source_segments"] = [
+            {"source_id": inputs.transcript_source_id, "segment_key": "block-1"}
+        ]
+    elif defect == "too_few":
+        payload["questions"].pop()
+    with pytest.raises(ValueError):
+        quiz = GeneratedLectureQuiz.model_validate(payload)
+        validate_generated_quiz(quiz, inputs, require_images=True)
 
 
 def test_coverage_is_per_objective_not_question_count():
