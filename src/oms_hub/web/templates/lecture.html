@@ -202,6 +202,8 @@
     </div>
   </details>
 
+  {% include "_gpt_lecture.html" %}
+
   <details class="metadata-panel sh-card">
     <summary><span class="sh-disclose" aria-hidden="true">▸</span> Edit lecture details</summary>
     <form method="post" action="/lectures/{{ lecture.id }}/metadata">
@@ -217,5 +219,6 @@
 </article>
 {% endblock %}
 {% block scripts %}
+<script src="/static/gpt.js?v=20260911" defer></script>
 <script src="/static/lecture.js?v={{ shell_asset_version }}" defer></script>
 {% endblock %}

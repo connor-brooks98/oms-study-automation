@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import json
 import logging
@@ -66,6 +67,7 @@ from oms_hub.db import Database
 from oms_hub.document_processing.anydoc_adapter import AnydocProcessor
 from oms_hub.document_processing.pdf_adapter import PdfProcessor
 from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher
+from oms_hub.document_processing.presentation_render import PresentationRenderer
 from oms_hub.document_processing.router import DocumentProcessorRouter, ParserMode
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator, LegacyPptxProcessor
 from oms_hub.document_processing.text_adapter import TextProcessor
@@ -79,6 +81,7 @@ from oms_hub.ingestion.service import (
 from oms_hub.ingestion.staging import StagingService
 from oms_hub.ingestion.worker import IngestionWorker
 from oms_hub.llm.anthropic import AnthropicProvider
+from oms_hub.llm.codex_session import CodexSessionClient
 from oms_hub.llm.domain import ProviderName
 from oms_hub.llm.gemini import GeminiProvider
 from oms_hub.llm.openai import OpenAIProvider
@@ -131,11 +134,12 @@ from oms_hub.study_generation.prompts import PromptFileService
 from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.quiz_import_worker import QuizImportWorker
 from oms_hub.study_generation.repository import GenerationRepository
-from oms_hub.study_generation.service import GenerationService
+from oms_hub.study_generation.service import GenerationService, GptLectureService
 from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.study_generation.studio_service import StudioService
 from oms_hub.study_generation.studio_worker import StudioWorker
 from oms_hub.study_generation.worker import GenerationWorker
+from oms_hub.transcripts.codex_cleaner import CodexTranscriptCleaner
 from oms_hub.transcripts.pipeline import (
     TranscriptPipeline as V2TranscriptPipeline,
 )
@@ -516,6 +520,9 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        codex_client = getattr(app.state, "codex_session", None)
+        if codex_client is not None:
+            await asyncio.to_thread(codex_client.close)
         if supervisor_started:
             supervisor.stop()
         try:
@@ -951,6 +958,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(
         database,
+        transcript_backend=resolved.study_backend,
         artifact_v2_root=expanded_path(resolved.data_dir) / "artifacts" / "v2",
         study_root=expanded_path(resolved.study_root),
         icloud_root=(
@@ -1033,6 +1041,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         (expanded_path(transcript_prompt_path) if transcript_prompt_path is not None else None),
         resolved.transcript_prompt_sha256,
     )
+    app.state.codex_session = (
+        CodexSessionClient(resolved.codex_executable, resolved.data_dir / "codex-session",
+            resolved.data_dir / "codex-work", binary_sha256=resolved.codex_binary_sha256)
+        if resolved.codex_executable is not None and resolved.codex_binary_sha256 else None
+    )
+    app.state.codex_model = (
+        app.state.study_ai_settings.get().codex_model or resolved.codex_model
+    )
+    app.state.gpt_transcript_cleaner = (
+        CodexTranscriptCleaner(app.state.codex_session, app.state.codex_model)
+        if app.state.codex_session is not None else None
+    )
+    app.state.gpt_transcript_pipeline = (
+        V2TranscriptPipeline(database, resolved, app.state.transcript_prompt,
+            app.state.gpt_transcript_cleaner)
+        if app.state.gpt_transcript_cleaner is not None else None
+    )
     app.state.transcript_pipeline = V2TranscriptPipeline(
         database,
         resolved,
@@ -1043,6 +1068,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.ingestion_repository,
         app.state.slide_pipeline,
         app.state.transcript_pipeline,
+        gpt_transcript_pipeline=app.state.gpt_transcript_pipeline,
     )
     prompt_files = PromptFileService(app.state.generation_repository)
     app.state.generation_service = GenerationService(
@@ -1094,6 +1120,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             TextProcessor(),
         ),
         mode=ParserMode.ANYDOC,
+    )
+    app.state.gpt_lecture_service = GptLectureService(
+        app.state.catalog_repository, app.state.ingestion_repository, app.state.studio_repository,
+        DocumentProcessorRouter(primary=AnydocProcessor(PptxLocatorEnricher()),
+            fallbacks=(PdfProcessor(), LegacyPptxProcessor(), TextProcessor()),
+            mode=ParserMode.ANYDOC),
+        PresentationRenderer(SerialOfficeConverter(resolved.office_timeout_seconds)),
+        resolved.data_dir / "codex-work" / "lectures",
+        owner_id=(resolved.cloudflare_access_allowed_email or "local-owner").casefold(),
+        model=app.state.codex_model,
     )
     app.state.quiz_import_worker = QuizImportWorker(
         app.state.studio_repository,

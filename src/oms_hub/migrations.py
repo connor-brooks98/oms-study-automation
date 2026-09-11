@@ -41,7 +41,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 36
+LATEST_SCHEMA_VERSION = 38
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -2721,6 +2721,22 @@ def _upgrade_bank_batches_v36(database: "Database") -> None:
         connection.execute(text("DROP TABLE bank_review_runs_v34"))
 
 
+def _upgrade_managed_model_v37(database: "Database") -> None:
+    columns = {c["name"] for c in inspect(database.engine).get_columns("study_ai_settings")}
+    if "codex_model" not in columns:
+        with database.engine.begin() as connection:
+            connection.execute(text("ALTER TABLE study_ai_settings ADD COLUMN codex_model "
+                "VARCHAR(200) NOT NULL DEFAULT ''"))
+
+
+def _upgrade_chat_raw_v38(database: "Database") -> None:
+    columns = {c["name"] for c in inspect(database.engine).get_columns("study_chat_requests")}
+    if "raw_response_text" not in columns:
+        with database.engine.begin() as connection:
+            connection.execute(text("ALTER TABLE study_chat_requests "
+                "ADD COLUMN raw_response_text TEXT"))
+
+
 def migrate_database(database: "Database") -> None:
     # A populated current schema is an integrity check, not an opportunity to
     # rewrite persisted identities.  Keep this branch read-only.
@@ -2754,6 +2770,8 @@ def migrate_database(database: "Database") -> None:
                 _upgrade_gpt_platform_v32(database)
                 _upgrade_ingestion_backend_v35(database)
                 _upgrade_bank_batches_v36(database)
+                _upgrade_managed_model_v37(database)
+                _upgrade_chat_raw_v38(database)
                 _validate_gpt_platform_v32(database)
                 with database.engine.begin() as connection:
                     _validate_study_chat_v33(database)
@@ -2817,6 +2835,8 @@ def migrate_database(database: "Database") -> None:
     _upgrade_gpt_platform_v32(database)
     _upgrade_ingestion_backend_v35(database)
     _upgrade_bank_batches_v36(database)
+    _upgrade_managed_model_v37(database)
+    _upgrade_chat_raw_v38(database)
     _validate_ingestion_backend_v35(database)
     _validate_gpt_platform_v32(database)
     _validate_study_chat_v33(database)

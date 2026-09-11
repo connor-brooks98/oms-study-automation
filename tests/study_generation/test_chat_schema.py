@@ -23,4 +23,12 @@ def test_chat_schema_serializes_conversation_and_preserves_existing_bank(tmp_pat
         c.execute(statement, values)
     with pytest.raises(IntegrityError), database.engine.begin() as c:
         c.execute(statement, {'id': 'r2'})
+    with database.engine.begin() as c:
+        c.execute(text("ALTER TABLE study_chat_requests DROP COLUMN raw_response_text"))
+        c.execute(text("ALTER TABLE study_ai_settings DROP COLUMN codex_model"))
+        c.execute(text("UPDATE schema_version SET version=36"))
+    database.migrate()
+    with database.engine.connect() as c:
+        assert c.execute(text("SELECT question,raw_response_text FROM study_chat_requests "
+            "WHERE request_id='r1'")).one() == ("question", None)
     database.close()

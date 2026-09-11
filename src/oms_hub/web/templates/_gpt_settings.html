@@ -1,0 +1,26 @@
+<section class="card sh-card provider-card" data-gpt-settings aria-labelledby="gpt-settings-heading">
+  <div class="provider-card-heading">
+    <div><p class="provider-kicker">ChatGPT subscription</p><h2 id="gpt-settings-heading">Study generation</h2></div>
+  </div>
+  <p class="field-help">Use your ChatGPT account for lecture quizzes and study chat. Connect opens the managed sign-in flow.</p>
+  <div class="provider-buttons">
+    <button class="button primary sh-btn sh-btn--primary" type="button" data-gpt-action="login">Connect ChatGPT</button>
+    <button class="button secondary sh-btn sh-btn--secondary" type="button" data-gpt-action="status">Check connection</button>
+  </div>
+  <div data-gpt-challenge hidden>
+    <p><a data-gpt-login-link target="_blank" rel="noopener noreferrer">Open ChatGPT sign-in</a></p>
+    <p data-gpt-code-row hidden>Sign-in code: <code data-gpt-code></code></p>
+    <button class="button secondary sh-btn sh-btn--secondary" type="button" data-gpt-action="cancel">Cancel sign-in</button>
+  </div>
+  <p class="field-help" data-gpt-status aria-live="polite">Account: not checked. Generation readiness: not checked.</p>
+  <div class="provider-field">
+    <label for="gpt-model">Generation model</label>
+    <div class="provider-action-row">
+      <select class="sh-select" id="gpt-model" data-gpt-model disabled><option value="">Check connection to load models</option></select>
+      <button class="button secondary sh-btn sh-btn--secondary" type="button" data-gpt-action="model" disabled>Save model</button>
+    </div>
+    <p class="field-help">Models marked “images” advertise image input. Usage limits pause generation until you can resume.</p>
+  </div>
+  <p class="field-message" data-gpt-message role="status" aria-live="polite"></p>
+  <noscript><p>Enable JavaScript to connect your account and select a model.</p></noscript>
+</section>

@@ -9,6 +9,7 @@ from oms_hub.models import StudyAISettingModel
 @dataclass(frozen=True, slots=True)
 class StudyAISettings:
     accuracy_gate_enabled: bool
+    codex_model: str = ""
 
 
 class StudyAISettingsRepository:
@@ -27,12 +28,17 @@ class StudyAISettingsRepository:
         self,
         *,
         accuracy_gate_enabled: bool | None = None,
+        codex_model: str | None = None,
     ) -> StudyAISettings:
         with self.database.session() as session:
             model = session.get(StudyAISettingModel, 1)
             if model is None:
                 model = StudyAISettingModel(id=1)
                 session.add(model)
+            if codex_model is not None:
+                if not codex_model.strip() or len(codex_model) > 200:
+                    raise ValueError("select a valid managed model")
+                model.codex_model = codex_model.strip()
             if accuracy_gate_enabled is not None:
                 model.accuracy_gate_enabled = bool(accuracy_gate_enabled)
             session.flush()
@@ -48,4 +54,4 @@ class StudyAISettingsRepository:
 
     @staticmethod
     def _domain(model: StudyAISettingModel) -> StudyAISettings:
-        return StudyAISettings(model.accuracy_gate_enabled)
+        return StudyAISettings(model.accuracy_gate_enabled, model.codex_model)

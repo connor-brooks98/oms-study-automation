@@ -10,6 +10,8 @@
     </div>
   </div>
 
+  {% include "_gpt_settings.html" %}
+
   <details class="settings-disclosure t-accordion" open>
     <summary>
       <span class="settings-disclosure-summary">
@@ -248,5 +250,6 @@
 </section>
 {% endblock %}
 {% block scripts %}
+<script src="/static/gpt.js?v=20260911" defer></script>
 <script src="/static/settings.js?v=20260828.5" defer></script>
 {% endblock %}

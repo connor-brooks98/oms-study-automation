@@ -324,6 +324,7 @@ class LLMTaskAssignmentModel(Base):
 class StudyAISettingModel(Base):
     __tablename__ = "study_ai_settings"
 
+    codex_model: Mapped[str] = mapped_column(String(200), default="", server_default="")
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
     openrouter_model: Mapped[str] = mapped_column(
         String(200),
@@ -1080,6 +1081,7 @@ class ChatRequestModel(Base):
     turn_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     lifecycle_json: Mapped[str] = mapped_column(Text, default="[]")
     answer_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    raw_response_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     answer_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     citation_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)

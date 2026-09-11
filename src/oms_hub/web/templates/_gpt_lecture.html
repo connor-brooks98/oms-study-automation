@@ -1,0 +1,20 @@
+<section class="card sh-card provider-card" data-gpt-lecture="{{ lecture.id }}" aria-labelledby="gpt-quiz-heading">
+  <div class="provider-card-heading"><h2 id="gpt-quiz-heading">Create lecture quiz</h2></div>
+  <p class="field-help">Build questions from this lecture’s approved slides and cleaned transcript, then review them before publication. An outline is optional.</p>
+  <form data-gpt-quiz-form>
+    <div class="provider-field">
+      <label for="gpt-quiz-label">Quiz title</label>
+      <input class="sh-input" id="gpt-quiz-label" name="label" value="{{ lecture.topic }} quiz" maxlength="200" required>
+    </div>
+    <div class="provider-field">
+      <label for="gpt-quiz-objectives">Learning objectives</label>
+      <textarea class="sh-input" id="gpt-quiz-objectives" name="objectives" rows="5" aria-describedby="gpt-objectives-help" required></textarea>
+      <p class="field-help" id="gpt-objectives-help">Enter one learning objective per line.</p>
+    </div>
+    <label class="checkbox-inline sh-check"><input type="checkbox" name="require_images" checked> Require lecture images</label>
+    <div class="provider-buttons"><button class="button primary sh-btn sh-btn--primary" type="submit">Create quiz for review</button></div>
+  </form>
+  <p class="field-message" data-gpt-message role="status" aria-live="polite"></p>
+  <a class="button secondary sh-btn sh-btn--secondary" data-gpt-review hidden>Open question review</a>
+  <noscript><p>Enable JavaScript to create a lecture quiz.</p></noscript>
+</section>

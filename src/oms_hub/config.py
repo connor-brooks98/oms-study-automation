@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     )
     transcript_min_clean_ratio: float = Field(default=0.60, ge=0.1, le=1.0)
     transcript_max_clean_ratio: float = Field(default=1.25, ge=1.0, le=2.0)
+    study_backend: Literal["codex_subscription", "legacy_api"] = "codex_subscription"
+    codex_executable: Path | None = None
+    codex_model: str = Field(default="", max_length=200)
+    codex_binary_sha256: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
     openai_model: str = "gpt-5.2"
     openai_input_usd_per_million: float = Field(default=2.50, ge=0)
     openai_output_usd_per_million: float = Field(default=15.00, ge=0)
