@@ -11,7 +11,7 @@
   "workers": {
     "B": {
       "client_thread_id": "client-new-thread:f0c101c3-7b75-4c64-8aa6-60e6188860cb",
-      "state": "running_B4",
+      "state": "idle_B6_parent_review",
       "thread_id": "01a09273-0ad0-7ae1-902e-d24a1556741a",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/ca93/oms-study-automation",
@@ -19,7 +19,7 @@
     },
     "Q": {
       "client_thread_id": "client-new-thread:ff914d7d-00ef-4079-8b4b-bdff39cf34b3",
-      "state": "idle_waiting_Q5_slot",
+      "state": "idle_Q6_review",
       "thread_id": "01a09273-0ad0-7ae1-902e-d21c0e15d9c8",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/f0c7/oms-study-automation",
@@ -31,7 +31,7 @@
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/5b09/oms-study-automation",
       "base_commit": "c09c44e75f9ad405823f2a5134265036745dcbfb",
-      "state": "running_C1"
+      "state": "running_C3"
     }
   },
   "tasks": {
@@ -47,35 +47,35 @@
       "next_action": "maintain exact dispatch"
     },
     "O1": {
-      "state": "running",
+      "state": "review_pending",
       "worker": "O",
-      "commit": "8de567845e4ba53be558f876aa3dffb1fd195cf8",
+      "commit": "a3b763b8d89f86f4e411d93c0af99ec7de12b751",
       "tests": [
         "21 migration tests passed",
         "scoped Ruff passed",
         "mypy models/migrations passed"
       ],
-      "review": "schema36, cleaner/restart, queue/load PASS; app/schema38/UI inreview",
+      "review": "legacy publication bypass correction0eb86491 under review",
       "blocker": null,
-      "next_action": "wireB5andC1 afteraccepted"
+      "next_action": "review outline/helper and correctedpublication"
     },
     "O2": {
-      "state": "ready",
+      "state": "running",
       "worker": "O",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "review ready Q6/C3; thenB6B7C4"
     },
     "O3": {
-      "state": "ready",
+      "state": "running",
       "worker": "O",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "live read-onlypreflighthealthyf487c622/schema31; finalexactcandidateCIpending"
     },
     "B1": {
       "state": "accepted_local",
@@ -111,22 +111,26 @@
       "next_action": "dependent tasks ready"
     },
     "B4": {
-      "state": "running",
+      "state": "accepted_local",
       "worker": "B",
-      "commit": null,
-      "tests": [],
-      "review": null,
+      "commit": "95fbe4d9812e43c607323025af735bd9000ad68a",
+      "tests": [
+        "188 plus5 correction checks independently reproduced"
+      ],
+      "review": "PASS independent review",
       "blocker": null,
-      "next_action": "structured generation semantic validation and durable batch capture"
+      "next_action": "integrated"
     },
     "B5": {
-      "state": "ready",
+      "state": "accepted_local",
       "worker": "B",
-      "commit": null,
-      "tests": [],
-      "review": null,
+      "commit": "9e8c5a20",
+      "tests": [
+        "167 independently reproduced"
+      ],
+      "review": "PASS independent review",
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "integrated; external capabilities separately pending"
     },
     "B6": {
       "state": "ready",
@@ -189,49 +193,57 @@
       "next_action": "dependent tasks ready"
     },
     "Q5": {
-      "state": "ready",
+      "state": "accepted_local",
       "worker": "Q",
-      "commit": null,
-      "tests": [],
-      "review": null,
+      "commit": "a0dd67a5f76f73206aee5451f4c864ebc60d74e2",
+      "tests": [
+        "248 initial +35 exact import/app correction checks"
+      ],
+      "review": "PASS independent review",
       "blocker": null,
-      "next_action": "ready afterCleaderfreesslot; Obridgeaccepted"
+      "next_action": "integrated; external capabilities separately pending"
     },
     "Q6": {
-      "state": "ready",
+      "state": "review_pending",
       "worker": "Q",
-      "commit": null,
-      "tests": [],
+      "commit": "c83ef86fa5f4746e38d0dcb0c72411dfd0e11169",
+      "tests": [
+        "304 worker checks passed"
+      ],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "independent review then integrate"
     },
     "C1": {
+      "state": "accepted_local",
+      "worker": "C",
+      "commit": "763248746e3cd19b65f2d93dfd4bac7f56d32dc8",
+      "tests": [
+        "47 Python +8 Node independently reproduced"
+      ],
+      "review": "PASS independent review",
+      "blocker": null,
+      "next_action": "integrated"
+    },
+    "C2": {
+      "state": "accepted_local",
+      "worker": "C",
+      "commit": "347e6bdf",
+      "tests": [
+        "17 independently reproduced unavailable checks"
+      ],
+      "review": "PASS independent review",
+      "blocker": null,
+      "next_action": "integrated; external capabilities separately pending"
+    },
+    "C3": {
       "state": "running",
       "worker": "C",
       "commit": null,
       "tests": [],
-      "review": "foundation dispatch replay BLOCK corrected; fullslice reviewpending",
-      "blocker": null,
-      "next_action": "consume accepted rawresponse column and final receipt"
-    },
-    "C2": {
-      "state": "ready",
-      "worker": "C",
-      "commit": null,
-      "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
-    },
-    "C3": {
-      "state": "ready",
-      "worker": "C",
-      "commit": null,
-      "tests": [],
-      "review": null,
-      "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "trusted private attempts/progress using approved callbacks"
     },
     "C4": {
       "state": "ready",
@@ -249,8 +261,9 @@
     "uworld_sample": "not_supplied",
     "truelearn_sample": "not_supplied",
     "vendor_request": "Asked once for product and official per-question results/QID/notes export controls; answer pending.",
-    "managed_login": "isolated device challenge prepared; waiting user completion; no generation",
-    "runtime_restrictions": "capability_unverified: universal pre-execution tool restriction not proven; generation remains disabled"
+    "managed_login": "issued once; timed out and cancelled; no account confirmation; no automatic retry",
+    "runtime_restrictions": "capability_unverified: universal pre-execution tool restriction not proven; generation remains disabled",
+    "anki_qid_rules": "fixture-tested; observed real source/product-qualified prefixes not configured"
   },
   "release": {
     "candidate": null,
@@ -278,7 +291,7 @@
   ],
   "helper": {
     "owner": "O",
-    "task": "review Oapp/schema38 andB2rawamendment",
+    "task": "Ointegration/outline and publication bypass correction",
     "state": "active_reviewer",
     "agent": "/root/review_o1_schema",
     "no_grandchildren": true

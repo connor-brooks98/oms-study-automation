@@ -1416,7 +1416,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(generation_router)
     app.include_router(study_chat_router)
     app.include_router(create_question_bank_router(
-        app.state.question_bank, studio=app.state.studio_repository))
+        app.state.question_bank, studio=app.state.studio_repository,
+        anki_index=app.state.anki_companion_index))
     app.include_router(anki_prompt_router)
     app.include_router(notebook_router)
     app.include_router(lecture_router)

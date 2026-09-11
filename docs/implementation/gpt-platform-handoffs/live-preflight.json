@@ -1,0 +1,95 @@
+{
+  "observed_at": "2026-09-11T23:30:15.7956267Z",
+  "read_only": true,
+  "root": "C:\\Services\\oms-study-automation-v2",
+  "commit": "f487c6229b91d2b1ac11729e465561f6c1ffe997",
+  "tree": "a9f7cc7f9c03040cb63ccea3ef05b70add443e6a",
+  "dirty": [
+    " M src/oms_hub/web/static/public_quiz.css",
+    "?? .env.pre-8765-ui-restore-20260825",
+    "?? \"OMS II Goodnotes Inbox/\"",
+    "?? format_upload.py",
+    "?? neuro-exam-3-import-bundle.zip",
+    "?? neuro_catalog.py",
+    "?? neuro_revisions.py",
+    "?? neuro_verify_import.py",
+    "?? upload-bundle.zip",
+    "?? upload_native.py",
+    "?? verify_msk_upload.py"
+  ],
+  "task": {
+    "principal": "conbr",
+    "name": "OMS Study Hub V2",
+    "state": "Running"
+  },
+  "listeners": [
+    {
+      "parent_pid": 11300,
+      "pid": 8268,
+      "owner": "Connors_NUC\\conbr",
+      "created": "2026-09-09T16:10:46.6779340-04:00",
+      "is_hub": true,
+      "executable": "C:\\Users\\conbr\\AppData\\Local\\Programs\\Python\\Python312\\python.exe"
+    }
+  ],
+  "health": {
+    "build_revision": "f487c6229b91d2b1ac11729e465561f6c1ffe997",
+    "workers": {
+      "generation_worker": {
+        "name": "generation_worker",
+        "thread_id": 22248,
+        "start_count": 1,
+        "alive": true,
+        "heartbeat_age_seconds": 4.391,
+        "last_work_age_seconds": 27287.5,
+        "active_work_age_seconds": null,
+        "active_work_timeout_seconds": 900.0,
+        "recovery_error": null,
+        "current_error": null,
+        "last_error": null,
+        "maintenance_runs": 0,
+        "maintenance_age_seconds": null,
+        "maintenance_removed": 0,
+        "maintenance_error": null
+      },
+      "ingestion_worker": {
+        "name": "ingestion_worker",
+        "thread_id": 20272,
+        "start_count": 1,
+        "alive": true,
+        "heartbeat_age_seconds": 4.172,
+        "last_work_age_seconds": null,
+        "active_work_age_seconds": null,
+        "active_work_timeout_seconds": 900.0,
+        "recovery_error": null,
+        "current_error": null,
+        "last_error": null,
+        "maintenance_runs": 614,
+        "maintenance_age_seconds": 64.297,
+        "maintenance_removed": 0,
+        "maintenance_error": null
+      },
+      "studio_worker": {
+        "name": "studio_worker",
+        "thread_id": 10756,
+        "start_count": 1,
+        "alive": true,
+        "heartbeat_age_seconds": 0.328,
+        "last_work_age_seconds": 170729.578,
+        "active_work_age_seconds": null,
+        "active_work_timeout_seconds": 900.0,
+        "recovery_error": null,
+        "current_error": null,
+        "last_error": null,
+        "maintenance_runs": 0,
+        "maintenance_age_seconds": null,
+        "maintenance_removed": 0,
+        "maintenance_error": null
+      }
+    },
+    "build_tree": "a9f7cc7f9c03040cb63ccea3ef05b70add443e6a",
+    "database_reachable": true,
+    "status": "ok",
+    "schema_version": 31
+  }
+}

@@ -200,9 +200,9 @@ The reducer excludes other thread/turn output, ignores commentary and deltas,
 deduplicates completed items by id, and accepts the last final-answer item only
 after matching successful completion. Older phase-less completed assistant items
 are used only when there is no explicit final-answer item. Failed/interrupted/EOF
-attempts cannot return text. When an output schema was requested, the client also
-requires parseable JSON; the caller's Pydantic/schema and source validators remain
-authoritative for full output semantics.
+attempts cannot return text. The transport returns raw completed text. Each caller durably records it privately
+before JSON/schema and source validation; invalid output is retained for diagnosis
+and never accepted as study content.
 
 Every unsolicited server request is denied before the client accepts more output;
 command/file approvals receive `decision:decline`, other requests get a fixed RPC
