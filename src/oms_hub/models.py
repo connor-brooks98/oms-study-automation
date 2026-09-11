@@ -340,6 +340,9 @@ class IngestionJobModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     upload_item_id: Mapped[str] = mapped_column(ForeignKey("upload_items.id"))
     action: Mapped[str] = mapped_column(String(30))
+    backend: Mapped[str] = mapped_column(
+        String(30), default="legacy_api", server_default="legacy_api"
+    )
     state: Mapped[str] = mapped_column(String(30), default="queued")
     attempts: Mapped[int] = mapped_column(default=0)
     next_attempt_at: Mapped[str | None] = mapped_column(

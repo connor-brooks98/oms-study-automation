@@ -41,7 +41,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 34
+LATEST_SCHEMA_VERSION = 35
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -2680,6 +2680,21 @@ def _validate_bank_review_v34(database: "Database") -> None:
         raise RuntimeError("schema v34 bank review mappings are missing")
 
 
+def _upgrade_ingestion_backend_v35(database: "Database") -> None:
+    columns = {c["name"] for c in inspect(database.engine).get_columns("ingestion_jobs")}
+    if "backend" not in columns:
+        with database.engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE ingestion_jobs ADD COLUMN backend VARCHAR(30) "
+                "NOT NULL DEFAULT 'legacy_api'"
+            ))
+
+
+def _validate_ingestion_backend_v35(database: "Database") -> None:
+    if "backend" not in {c["name"] for c in inspect(database.engine).get_columns("ingestion_jobs")}:
+        raise RuntimeError("schema v35 ingestion backend is missing")
+
+
 def migrate_database(database: "Database") -> None:
     # A populated current schema is an integrity check, not an opportunity to
     # rewrite persisted identities.  Keep this branch read-only.
@@ -2711,6 +2726,7 @@ def migrate_database(database: "Database") -> None:
                 # Only the new delta: historical backfills can rewrite retained quizzes.
                 database.create_schema()
                 _upgrade_gpt_platform_v32(database)
+                _upgrade_ingestion_backend_v35(database)
                 _validate_gpt_platform_v32(database)
                 with database.engine.begin() as connection:
                     _validate_study_chat_v33(database)
@@ -2722,6 +2738,7 @@ def migrate_database(database: "Database") -> None:
             _validate_gpt_platform_v32(database)
             _validate_study_chat_v33(database)
             _validate_bank_review_v34(database)
+            _validate_ingestion_backend_v35(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -2771,6 +2788,8 @@ def migrate_database(database: "Database") -> None:
     _upgrade_lecture_passes_v30(database)
     _upgrade_lecture_pass_resources_v31(database)
     _upgrade_gpt_platform_v32(database)
+    _upgrade_ingestion_backend_v35(database)
+    _validate_ingestion_backend_v35(database)
     _validate_gpt_platform_v32(database)
     _validate_study_chat_v33(database)
     _validate_bank_review_v34(database)

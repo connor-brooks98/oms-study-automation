@@ -507,3 +507,26 @@ def test_recovery_parks_cleaning_owner_when_a_current_revision_exists(
         ).all()
     assert len(states) == 1
     assert states[0] not in {"queued", "processing"}
+
+
+def test_gpt_backend_selection_preserves_existing_queued_ingestion(tmp_path: Path) -> None:
+    database, legacy, lecture_id = _prepared(tmp_path)
+    _add(legacy, tmp_path, "legacy")
+    legacy.set_manual_assignment("legacy", lecture_id)
+    with database.engine.begin() as connection:
+        connection.execute(text("ALTER TABLE ingestion_jobs DROP COLUMN backend"))
+        connection.execute(text("UPDATE schema_version SET version=34 WHERE id=1"))
+    database.migrate()
+    gpt = IngestionRepository(database, transcript_backend="codex_subscription")
+    second_lecture = CatalogRepository(database).upsert_lecture(
+        LectureInput("Cardiology", 1, 8, "Valves", "Dr Test", None)
+    )
+    _add(gpt, tmp_path, "gpt")
+    gpt.set_manual_assignment("gpt", second_lecture)
+    first = gpt.claim_next_job(datetime.now(UTC))
+    second = gpt.claim_next_job(datetime.now(UTC))
+    assert first is not None and first.upload_item_id == "legacy"
+    assert first.backend == "legacy_api"
+    assert second is not None and second.upload_item_id == "gpt"
+    assert second.backend == "codex_subscription"
+    database.close()

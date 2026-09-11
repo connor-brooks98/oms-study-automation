@@ -35,11 +35,13 @@ class IngestionWorker:
         slide_pipeline: IngestionPipeline,
         transcript_pipeline: IngestionPipeline,
         *,
+        gpt_transcript_pipeline: IngestionPipeline | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.repository = repository
         self.slide_pipeline = slide_pipeline
         self.transcript_pipeline = transcript_pipeline
+        self.gpt_transcript_pipeline = gpt_transcript_pipeline
         self.now = now or (lambda: datetime.now(UTC))
 
     def recover_interrupted_jobs(self) -> int:
@@ -57,6 +59,12 @@ class IngestionWorker:
                 if job.kind is UploadKind.SLIDES
                 else self.transcript_pipeline
             )
+            if job.kind is UploadKind.TRANSCRIPTS and job.backend == "codex_subscription":
+                if self.gpt_transcript_pipeline is None:
+                    raise ValueError("GPT transcript backend is not configured")
+                pipeline = self.gpt_transcript_pipeline
+            elif job.backend != "legacy_api":
+                raise ValueError("unsupported ingestion backend")
             pipeline.process(job.upload_item_id)
         except Exception as error:  # noqa: BLE001 - job boundary records all failures
             self._handle_failure(job, error)

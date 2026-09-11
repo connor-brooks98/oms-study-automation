@@ -88,7 +88,11 @@ class IngestionRepository:
         artifact_v2_root: Path | None = None,
         study_root: Path | None = None,
         icloud_root: Path | None = None,
+        transcript_backend: str = "legacy_api",
     ):
+        if transcript_backend not in {"legacy_api", "codex_subscription"}:
+            raise ValueError("unsupported transcript backend")
+        self.transcript_backend = transcript_backend
         self.database = database
         self.artifact_v2_root = artifact_v2_root
         self.study_root = study_root
@@ -632,6 +636,7 @@ class IngestionRepository:
                 action=job.action,
                 attempts=job.attempts,
                 claimed_at=now,
+                backend=job.backend,
             )
 
     def recover_interrupted_jobs(self) -> int:
@@ -1301,10 +1306,18 @@ class IngestionRepository:
             )
         )
         if stored is None:
+            item = session.get(UploadItemModel, item_id)
+            if item is None:
+                raise ValueError("ingestion upload item is missing")
             session.add(
                 IngestionJobModel(
                     upload_item_id=item_id,
                     action=action,
+                    backend=(
+                        self.transcript_backend
+                        if item.kind == UploadKind.TRANSCRIPTS.value
+                        else "legacy_api"
+                    ),
                     state=UploadState.QUEUED.value,
                 )
             )

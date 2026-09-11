@@ -189,3 +189,4 @@ class IngestionJob:
     action: str
     attempts: int
     claimed_at: datetime
+    backend: str = "legacy_api"
