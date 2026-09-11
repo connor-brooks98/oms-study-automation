@@ -20,6 +20,7 @@ from oms_hub.models import (
     BankImportRowModel,
     BankReviewQuestionModel,
     BankReviewRunModel,
+    LectureModel,
     PublishedQuizMediaModel,
     PublishedQuizModel,
     StudioImportRunSourceModel,
@@ -32,6 +33,7 @@ from oms_hub.models import (
     StudioRunSourceModel,
     StudioSourceModel,
     StudioSourceOperationModel,
+    StudyRevisionModel,
 )
 from oms_hub.study_generation.domain import NativeQuiz
 from oms_hub.study_generation.native_quiz import (
@@ -1200,6 +1202,71 @@ class StudioRepository:
                 )
                 for model in models
             )
+
+    def queue_gpt_lecture(
+        self, inputs: Any, *, run_id: str, owner_id: str, label: str, model: str,
+    ) -> StudioRun:
+        from oms_hub.study_generation.gpt_lecture import source_manifest
+        from oms_hub.study_generation.quiz_import_worker import _document_json
+
+        if not owner_id or not model.strip() or not label.strip() or len(label) > 300:
+            raise ValueError("owner, model and valid label are required")
+        manifest = source_manifest(inputs)
+        with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+            lecture = session.get(LectureModel, inputs.lecture_id)
+            if lecture is None or (lecture.subject, lecture.exam_number) != (
+                inputs.subject, inputs.exam_number
+            ):
+                raise ValueError("lecture scope changed")
+            for binding in inputs.bindings:
+                revision = session.get(StudyRevisionModel, binding.revision_id)
+                expected_kind = "slides" if binding.role == "slides" else "transcripts"
+                if (revision is None or revision.lecture_id != inputs.lecture_id
+                    or revision.kind != expected_kind or not revision.current
+                    or revision.state != "current"):
+                    raise ValueError("lecture source is no longer current and approved")
+                path, digest = (
+                    (revision.immutable_source_path, revision.source_sha256)
+                    if binding.role == "slides" else
+                    (revision.immutable_derived_path, revision.derived_sha256)
+                )
+                if path is None or (Path(path), digest) != (
+                    binding.snapshot.path, binding.snapshot.sha256
+                ):
+                    raise ValueError("lecture source binding changed")
+            key = normalize_subject(inputs.subject)
+            run = StudioRunModel(id=run_id, subject=inputs.subject, subject_key=key,
+                exam_number=inputs.exam_number, destination_subject=inputs.subject,
+                destination_subject_key=key, destination_exam_number=inputs.exam_number,
+                label=label, label_key=normalize_subject(label), prompt="",
+                workflow_kind="lecture_generation", backend="codex_subscription",
+                content_kind="lecture_quiz", state="queued", stage="validate")
+            session.add(run)
+            session.flush()
+            for position, binding in enumerate(inputs.bindings):
+                snapshot = binding.snapshot
+                session.add(StudioSourceModel(id=snapshot.id, subject=inputs.subject,
+                    subject_key=key, exam_number=inputs.exam_number, source_type="file",
+                    title=snapshot.title, purpose="local_import",
+                    import_role="supporting_reference",
+                    state="ready", snapshot_sha256=snapshot.sha256,
+                    media_type=snapshot.media_type, payload_path=str(snapshot.path)))
+                session.flush()
+                session.add(StudioImportRunSourceModel(run_id=run.id, source_id=snapshot.id,
+                    source_role="supporting_reference", attach_to_notebook=False,
+                    position=position))
+            artifacts = {"gpt:manifest": json.dumps(manifest, sort_keys=True),
+                "gpt:settings": json.dumps({"owner_id": owner_id, "model": model})}
+            artifacts.update({f"parse:{doc.source_id}": _document_json(doc)
+                for doc in inputs.documents})
+            for key, payload in artifacts.items():
+                session.add(StudioRunArtifactModel(run_id=run.id, artifact_key=key,
+                    signature_sha256=hashlib.sha256(payload.encode()).hexdigest(),
+                    payload_json=payload, provider="codex_subscription", model=model))
+            session.flush()
+            return self._run_domain(session, run)
 
     def create_bank_import_review(
         self, *, bank_import_id: str, learner_id: str, subject: str,
