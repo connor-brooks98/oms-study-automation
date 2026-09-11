@@ -482,3 +482,37 @@ class BankRepository:
                 .order_by(BankImportRowModel.row_number)
             )
             return tuple(ImportRow.model_validate_json(row.row_json) for row in rows)
+
+    def get_import(self, *, import_id: str, learner_id: str) -> tuple[ImportPreview, ImportReceipt]:
+        """Load an owned external import and its original receipt for review."""
+        _owner(learner_id)
+        with self._session_factory() as session:
+            record = session.get(BankImportModel, import_id)
+            if record is None or record.learner_id != learner_id:
+                raise ValueError("Import is not available to this learner")
+            rows = session.scalars(
+                select(BankImportRowModel)
+                .where(BankImportRowModel.import_id == import_id)
+                .order_by(BankImportRowModel.row_number)
+            )
+            preview = preview_import(
+                _json(
+                    {
+                        "schema_version": 1,
+                        "source": record.source,
+                        "product": record.product,
+                        "export_id": record.export_id,
+                        "provenance": json.loads(record.provenance_json),
+                        "rows": [json.loads(row.row_json) for row in rows],
+                    }
+                ).encode()
+            )
+            stored = json.loads(record.receipt_json)
+            receipt = ImportReceipt(
+                record.id,
+                stored["inserted_questions"],
+                stored["inserted_attempts"],
+                stored["duplicate_rows"],
+                (),
+            )
+            return preview, receipt

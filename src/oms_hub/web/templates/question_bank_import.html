@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Question bank imports · Study Hub{% endblock %}
+{% block content %}
+<style>
+.bank-import .bank-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:1rem;margin:1.5rem 0}
+.bank-import .bank-metrics div{padding:1rem;border:1px solid var(--border-color,#dce1e9);border-radius:12px}
+.bank-import dt{font-size:.85rem}.bank-import dd{font-size:1.65rem;margin:0;font-weight:600}
+.bank-import .card{margin-bottom:1rem}.bank-import form{display:grid;gap:.8rem}.bank-import code,.bank-import p,.bank-import summary{overflow-wrap:anywhere}
+.bank-import details{padding:.75rem 0;border-bottom:1px solid #dce1e9}.bank-import .bank-check{display:flex;gap:.6rem;align-items:flex-start}.bank-import pre{white-space:pre-wrap;overflow-wrap:anywhere}
+</style>
+<section class="page-shell sh-container--narrow bank-import">
+  <div class="page-heading sh-header"><div><p class="eyebrow sh-eyebrow">Your study records</p>
+    <h1 class="sh-title">Question bank imports</h1>
+    <p class="page-summary sh-subtitle">Bring results, question IDs and your notes into Study Hub. Preview every import before saving.</p>
+  </div></div>
+  {% if error %}<section class="card sh-card" role="alert"><h2>Import needs attention</h2><p>{{ error }}</p></section>{% endif %}
+  {% if not preview %}
+  <section class="card sh-card"><h2>Start with a normalized JSON file</h2>
+    <p>Study Hub JSON v1 · up to 10 MiB · 1–10,000 rows. UWorld and TrueLearn export adapters are awaiting supported sample files.</p>
+    <form method="post" action="/question-bank/imports/preview" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <label for="bank-file" class="sh-field-label">Import file</label>
+      <input id="bank-file" name="file" type="file" accept="application/json,.json" required>
+      <button class="button primary sh-btn sh-btn--primary" type="submit">Preview import</button>
+    </form>
+  </section>
+  {% else %}
+  <section class="card sh-card">
+    <h2>{{ 'Results imported' if receipt else 'Preview import' }}</h2>
+    <p><strong>{{ preview.envelope.source }} · {{ preview.envelope.product }}</strong> · {{ preview.envelope.export_id }}</p>
+    <p>{{ preview.envelope.provenance.kind }} — {{ preview.envelope.provenance.description }}</p>
+    {% if receipt %}<p>Saved {{ receipt.inserted_questions }} new question identities and {{ receipt.inserted_attempts }} new attempts. {{ receipt.duplicate_rows }} duplicate rows did not add attempts.</p><p>Imported records are separate from published questions. Question bodies still need source review.</p>{% else %}<p>Nothing has been saved yet.</p>{% endif %}
+    <dl class="bank-metrics">
+      {% for label, count in [('Original rows',counts.rows),('Unique QIDs',counts.qids),('Attempts',counts.attempts),('Unknown outcomes',counts.unknown),('Held bodies',counts.held),('Duplicates',counts.duplicates),('Conflicts',counts.conflicts),('Topic proposals',counts.topics)] %}
+      <div><dt>{{ label }}</dt><dd>{{ count }}</dd></div>{% endfor %}
+    </dl>
+    <details><summary>Preview fingerprint</summary><code>{{ preview.digest }}</code></details>
+  </section>
+  {% if not receipt %}
+  <section class="card sh-card"><h2>Confirm this file</h2><p>Choose the same file again. Its fingerprint must match this preview.</p>
+    <form method="post" action="/question-bank/imports/confirm" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><input type="hidden" name="digest" value="{{ preview.digest }}">
+      <label for="confirm-file" class="sh-field-label">Same import file</label><input id="confirm-file" name="file" type="file" accept="application/json,.json" required>
+      <button class="button primary sh-btn sh-btn--primary" type="submit" {% if counts.conflicts %}disabled{% endif %}>Confirm import</button>
+    </form>
+  </section>
+  {% elif has_content %}
+  <section class="card sh-card"><h2>Review questions</h2><p>Select up to 500 original rows for a review batch. Answers and images must be verified in the existing quiz review before publication. Rows with unsupported structure stay excluded.</p>
+    <form method="post" action="/question-bank/imports/{{ receipt.import_id }}/review">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <label for="subject">Course / subject</label><input class="sh-input" id="subject" name="subject" maxlength="100" required>
+      <label for="exam">Exam number</label><input class="sh-input" id="exam" name="exam_number" type="number" min="1" required>
+      <label for="batch-label">Review batch label</label><input class="sh-input" id="batch-label" name="label" maxlength="300" required>
+      <fieldset><legend>Original rows for this batch ({{ available|length }} reviewable)</legend>
+      {% for number, draft in available.items() %}<label class="bank-check"><input name="row_numbers" type="checkbox" value="{{ number }}" {% if available|length <= 500 %}checked{% endif %}><span>Row {{ number }} · {{ draft.original_identifier }} — {{ draft.stem[:160] }}</span></label>{% endfor %}
+      </fieldset><button class="button primary sh-btn sh-btn--primary" type="submit" {% if not available %}disabled{% endif %}>Open question review</button>
+    </form>
+  </section>
+  {% endif %}
+  <section class="card sh-card"><h2>Anki candidates</h2>
+    <p>{{ 'Exact matches from the supplied index; snapshot freshness is unverified.' if mapping_configured else 'Mapping is not configured. No current Anki collection has been checked.' }}</p>
+    <p>{{ links|length }} candidate notes · {{ unmatched|length }} unmatched QIDs. Candidates remain pending review; card schedules and source tags are unchanged.</p>
+    {% for link in links %}<p>{{ link.key.question_id }} → note {{ link.note_id }} · cards {{ link.card_ids|join(', ') or 'none in snapshot' }} · {{ link.evidence_tag }}</p>{% endfor %}
+    {% if receipt and links %}<a class="button secondary sh-btn sh-btn--secondary" href="/question-bank/imports/{{ receipt.import_id }}/anki-export">Download Anki search</a>{% endif %}
+    {% if unmatched %}<details><summary>Unmatched QIDs</summary><p>{% for key in unmatched %}{{ key.question_id }}{% if not loop.last %}, {% endif %}{% endfor %}</p></details>{% endif %}
+  </section>
+  <section class="card sh-card"><h2>Original rows</h2>
+    {% for row in preview.envelope.rows %}{% set number = loop.index %}
+    <details><summary>Row {{ number }} · {{ row.question_id }} · {{ row.result }}{% if issues.get(number) %} · {{ issues[number]|join(', ') }}{% endif %}{% if row.question and number not in available %} · excluded from question review{% endif %}</summary>
+      <p>Attempt: {{ row.attempt_id or 'none' }} · Time: {{ row.occurred_at or 'unknown' }}</p>
+      {% if row.user_note %}<pre>{{ row.user_note }}</pre>{% endif %}
+      <p>Original tags: {{ row.tags|join(', ') or 'none' }}</p>
+      {% for topic in row.topics %}<p>{{ topic.axis }}: {{ topic.label }} · pending proposal</p>{% endfor %}
+    </details>{% endfor %}
+  </section>
+  <a href="/question-bank">Start another import</a>
+  {% endif %}
+</section>
+{% endblock %}
