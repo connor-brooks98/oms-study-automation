@@ -630,7 +630,10 @@ class PracticeReviewService:
             return
         if self.lecture_validator is None:
             raise ValueError("lecture publication validation is not configured")
-        self.lecture_validator(run_id, questions, session)
+        try:
+            self.lecture_validator(run_id, questions, session)
+        except OSError:
+            raise ValueError("lecture source or response evidence is unavailable") from None
 
     def run_diagnostics(self, run_id: str) -> tuple[dict[str, object], ...]:
         artifact = self.repository.run_artifact(run_id, _RUN_DIAGNOSTICS_ARTIFACT_KEY)

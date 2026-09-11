@@ -997,6 +997,8 @@ class GptLectureWorker:
         try:
             current = self.repository.get_run(run.id)
             if current.state is not StudioRunState.RUNNING:
+                if self.repository.gpt_cancelled(run.id):
+                    raise SessionError("interrupted")
                 return
             if current.workflow_kind is not QuizWorkflowKind.LECTURE_GENERATION:
                 raise ValueError("GPT worker requires a lecture generation run")
@@ -1077,6 +1079,8 @@ class GptLectureWorker:
             return
         self.repository.validate_gpt_manifest_in_session(session, run_id)
         inputs = self.load_inputs(self.repository.get_run(run_id))
+        if self._artifact(run_id, "gpt:manifest", session) != source_manifest(inputs):
+            raise ValueError("lecture manifest changed within publication")
         original = self._response(run_id, inputs, session)
         if original is None or self._artifact(run_id, "gpt:coverage", session) != self._coverage(
             original, inputs

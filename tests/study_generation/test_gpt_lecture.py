@@ -63,7 +63,9 @@ class _QuizClient:
             assert path.is_relative_to(self.work_root)
             assert sha256(path.read_bytes()).hexdigest() == digest
         for phase in ("dispatching", "thread_created", "turn_started", "completed"):
-            event = SessionLifecycle(request.request_id, phase, "thread", "turn")
+            event = SessionLifecycle(request.request_id, phase,
+                None if phase == "dispatching" else "thread",
+                "turn" if phase in {"turn_started", "completed"} else None)
             self.events.append(event)
             on_lifecycle(event)
         payload = _quiz_payload(self.inputs)
@@ -727,6 +729,68 @@ def test_ambiguous_gpt_attempt_cannot_be_reissued_after_restart(gpt_review_run, 
     worker.run(repository.get_run(run.id))
     assert repository.get_run(run.id).state.value == "interrupted"
     assert len(client.requests) == 1
+
+
+@pytest.mark.parametrize("when", ["before_worker", "after_completion", "before_review"])
+def test_gpt_worker_acknowledges_cancellation_once_and_preserves_explicit_resume(
+    gpt_review_run, monkeypatch, when
+):
+    repository, run, worker, client, _ = gpt_review_run
+    stop = repository.stop_gpt_run
+    stops = []
+
+    def acknowledge(run_id, error):
+        stops.append(error.code)
+        return stop(run_id, error)
+
+    def cancel():
+        repository.control_gpt_run(run.id, owner_id="owner", action="cancel")
+
+    monkeypatch.setattr(repository, "stop_gpt_run", acknowledge)
+    if when == "before_worker":
+        cancel()
+    elif when == "after_completion":
+        generate = client.generate
+
+        def cancel_after_output(*args, **kwargs):
+            result = generate(*args, **kwargs)
+            cancel()
+            return result
+
+        monkeypatch.setattr(client, "generate", cancel_after_output)
+    else:
+        await_review = repository.await_import_review
+
+        def cancel_before_review(*args):
+            cancel()
+            return await_review(*args)
+
+        monkeypatch.setattr(repository, "await_import_review", cancel_before_review)
+    worker.run(run)
+    assert len(stops) == 1
+    assert repository.get_run(run.id).state.value == "interrupted"
+    control = json.loads(repository.run_artifact(run.id, "gpt:control").payload_json)
+    assert control["cancelled"] and not control["worker_stopping"]
+    assert repository.get_run(run.id).published_token is None
+    resumed = repository.control_gpt_run(run.id, owner_id="owner", action="resume")
+    assert resumed.state.value == "queued"
+
+
+def test_gpt_publication_validator_observes_current_revision_in_supplied_transaction(
+    gpt_review_run,
+):
+    from oms_hub.models import StudyRevisionModel
+    from oms_hub.study_generation.practice_review import PracticeReviewService
+
+    repository, run, worker, _, inputs = gpt_review_run
+    worker.run(run)
+    review = PracticeReviewService(repository, lecture_validator=worker.validate_review)
+    for question in review.review(run.id):
+        review.verify_generated_answer(run.id, question.draft.question_id)
+    with repository.database.session() as session:
+        session.get(StudyRevisionModel, inputs.slide_revision_id).current = False
+        with pytest.raises(ValueError, match="no longer current"):
+            review.to_native_quiz_in_session(session, run.id, title="Lecture")
 
 
 @pytest.mark.parametrize(
