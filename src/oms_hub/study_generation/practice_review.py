@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from oms_hub.document_processing.domain import ParsedDocument
 from oms_hub.files.atomic import sha256_file
-from oms_hub.models import StudioRunArtifactModel
+from oms_hub.models import StudioRunArtifactModel, StudioRunModel
 from oms_hub.study_generation.domain import (
     NativeQuiz,
     QuizChoice,
@@ -30,6 +31,7 @@ from oms_hub.study_generation.practice_domain import (
     MatchingPromptDraft,
     MatchingQuestionDraft,
     QuestionDraftValue,
+    QuizWorkflowKind,
 )
 from oms_hub.study_generation.practice_extraction import ExtractionResult
 from oms_hub.study_generation.practice_matching import matching_summary
@@ -144,9 +146,14 @@ class PracticeReviewService:
         self,
         repository: StudioRepository,
         image_service: StudioQuizImageService | None = None,
+        *,
+        lecture_validator: Callable[
+            [str, tuple[ReviewQuestion, ...], Session | None], None
+        ] | None = None,
     ) -> None:
         self.repository = repository
         self.image_service = image_service
+        self.lecture_validator = lecture_validator
 
     def set_image_service(self, image_service: StudioQuizImageService) -> None:
         self.image_service = image_service
@@ -234,9 +241,9 @@ class PracticeReviewService:
                 if not (exact or explicit_citation or adjacent):
                     continue
                 score = 3 if exact else 2 if explicit_citation else 1
-                candidate_id = "candidate-" + hashlib.sha256(
-                    f"{question.draft.question_id}:{reference.source_id}:{asset.key}".encode()
-                ).hexdigest()[:32]
+                candidate_id = _candidate_id(
+                    question.draft.question_id, reference.source_id, asset.key
+                )
                 candidate = ImageCandidate(
                     candidate_id,
                     question.draft.question_id,
@@ -607,7 +614,23 @@ class PracticeReviewService:
 
     def blockers(self, run_id: str) -> tuple[str, ...]:
         question_blockers = _blockers_from_issues(self.issues(run_id))
+        try:
+            self._validate_lecture(run_id, self.review(run_id))
+        except ValueError as error:
+            question_blockers = (*question_blockers, str(error))
         return (*question_blockers, *self.run_diagnostic_blockers(run_id))
+
+    def _validate_lecture(
+        self, run_id: str, questions: tuple[ReviewQuestion, ...], session: Session | None = None
+    ) -> None:
+        run = session.get(StudioRunModel, run_id) if session else self.repository.get_run(run_id)
+        if run is None:
+            raise ValueError("review run is missing")
+        if run.workflow_kind != QuizWorkflowKind.LECTURE_GENERATION:
+            return
+        if self.lecture_validator is None:
+            raise ValueError("lecture publication validation is not configured")
+        self.lecture_validator(run_id, questions, session)
 
     def run_diagnostics(self, run_id: str) -> tuple[dict[str, object], ...]:
         artifact = self.repository.run_artifact(run_id, _RUN_DIAGNOSTICS_ARTIFACT_KEY)
@@ -717,13 +740,17 @@ class PracticeReviewService:
         blockers = self.run_diagnostic_blockers(run_id)
         if blockers:
             raise ValueError("; ".join(blockers))
-        return _native_quiz(_questions_from_json(artifact.payload_json), title)
+        questions = _questions_from_json(artifact.payload_json)
+        self._validate_lecture(run_id, questions, session)
+        return _native_quiz(questions, title)
 
     def to_native_quiz(self, run_id: str, *, title: str | None = None) -> NativeQuiz:
         blockers = self.run_diagnostic_blockers(run_id)
         if blockers:
             raise ValueError("; ".join(blockers))
-        return _native_quiz(self.review(run_id), title or "Imported practice questions")
+        questions = self.review(run_id)
+        self._validate_lecture(run_id, questions)
+        return _native_quiz(questions, title or "Imported practice questions")
 
     def _save(self, run_id: str, questions: tuple[ReviewQuestion, ...]) -> None:
         payload = _questions_json(questions)
@@ -1144,6 +1171,12 @@ def _origin(value: str | None) -> str:
 
 def _image_key(question_id: str) -> str:
     return "img-" + hashlib.sha256(question_id.encode()).hexdigest()[:60]
+
+
+def _candidate_id(question_id: str, source_id: str, asset_key: str) -> str:
+    return "candidate-" + hashlib.sha256(
+        f"{question_id}:{source_id}:{asset_key}".encode()
+    ).hexdigest()[:32]
 
 
 def _public_image_ref(image: QuizImageRef | None) -> QuizImageRef | None:

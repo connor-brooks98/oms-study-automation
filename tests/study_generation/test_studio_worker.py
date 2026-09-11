@@ -137,6 +137,25 @@ class _ImportWorker:
         self.runs.append(run)
 
 
+def test_lecture_generation_delegates_once_before_any_notebook_or_publication_work(tmp_path):
+    repository = StudioRepository(_database(tmp_path))
+    run = _queued_run(repository)
+    with repository.database.session() as session:
+        stored = session.get(StudioRunModel, run.id)
+        stored.workflow_kind = "lecture_generation"
+        stored.backend = "codex_subscription"
+    delegated = _ImportWorker()
+    connection = _FakeConnection()
+    worker = StudioWorker(
+        repository, _RaisingGateway(AssertionError("Notebook must not be consulted")),
+        object(), connection, publisher=object(), gpt_worker=delegated,
+    )
+    assert worker.run_once()
+    assert len(delegated.runs) == 1 and delegated.runs[0].id == run.id
+    assert not connection.invalidated
+    assert not worker.run_once()
+
+
 def _sqlite_busy_error() -> OperationalError:
     orig = sqlite3.OperationalError("database is locked")
     orig.sqlite_errorcode = sqlite3.SQLITE_BUSY

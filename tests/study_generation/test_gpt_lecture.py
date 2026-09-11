@@ -32,6 +32,7 @@ from oms_hub.llm.codex_session import (
 )
 from oms_hub.study_generation.gpt_lecture import (
     GeneratedLectureQuiz,
+    GptLectureWorker,
     LectureGenerationError,
     LectureInputs,
     LectureSourceBinding,
@@ -39,6 +40,7 @@ from oms_hub.study_generation.gpt_lecture import (
     parse_lecture_sources,
     source_asset,
     source_manifest,
+    to_review_drafts,
     uncovered_objectives,
     validate_generated_quiz,
     validate_lecture_inputs,
@@ -502,6 +504,229 @@ def test_generated_quiz_uses_real_lecture_asset_and_covers_both_objectives(tmp_p
     inputs = _inputs(tmp_path)
     quiz = GeneratedLectureQuiz.model_validate(_quiz_payload(inputs))
     validate_generated_quiz(quiz, inputs, require_images=True)
+
+
+def test_generated_drafts_preserve_explanations_sources_and_require_manual_verification(tmp_path):
+    from oms_hub.study_generation.practice_domain import AnswerProvenance
+
+    inputs = _inputs(tmp_path)
+    quiz = GeneratedLectureQuiz.model_validate(_quiz_payload(inputs))
+    drafts = to_review_drafts(quiz, inputs)
+    assert len(drafts) == 3
+    for original, draft in zip(quiz.questions, drafts, strict=True):
+        assert draft.question_id == original.id
+        assert draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+        assert draft.verification_required and draft.verified_at is None
+        assert draft.source_refs[0].source_id == inputs.slide_source_id
+        assert draft.source_refs[0].segment_key == "block-1"
+        assert all(
+            explanation in draft.rationale for explanation in original.distractor_explanations
+        )
+        assert draft.answer_evidence
+    assert drafts[0].image_ref is not None
+    assert drafts[1].image_ref is None
+
+
+@pytest.fixture
+def gpt_review_run(tmp_path, request):
+    from oms_hub.db import Database
+    from oms_hub.ingestion.repository import IngestionRepository
+    from oms_hub.models import StudyRevisionModel, UploadBatchModel, UploadItemModel
+    from oms_hub.repositories import CatalogRepository, LectureInput
+    from oms_hub.study_generation.quiz_images import StudioQuizImageService
+    from oms_hub.study_generation.service import GptLectureService
+    from oms_hub.study_generation.studio_repository import StudioRepository
+
+    database = Database(f"sqlite:///{tmp_path / 'worker.db'}")
+    database.migrate()
+    image_free = getattr(request, "param", False)
+    inputs = replace(_inputs(tmp_path), image_required=not image_free)
+    catalog = CatalogRepository(database)
+    assert catalog.upsert_lecture(LectureInput("Heme", 3, 1, "Fixture", "Teacher", None)) == 1
+    with database.session() as session:
+        for binding in inputs.bindings:
+            kind = "slides" if binding.role == "slides" else "transcripts"
+            snapshot = binding.snapshot
+            session.add(UploadBatchModel(id=kind, kind=kind, state="complete"))
+            session.flush()
+            session.add(UploadItemModel(id=kind, batch_id=kind, kind=kind,
+                original_filename=snapshot.path.name, staged_path=str(snapshot.path),
+                sha256=snapshot.sha256, size_bytes=snapshot.path.stat().st_size,
+                state="complete", lecture_id=1))
+            session.flush()
+            session.add(StudyRevisionModel(id=binding.revision_id, upload_item_id=kind,
+                lecture_id=1, kind=kind, source_sha256=snapshot.sha256,
+                immutable_source_path=str(snapshot.path), derived_sha256=snapshot.sha256,
+                immutable_derived_path=str(snapshot.path),
+                canonical_derived_path=str(snapshot.path),
+                state="current", current=True))
+    repository = StudioRepository(database)
+    repository.queue_gpt_lecture(inputs, run_id="gpt-run", owner_id="owner",
+        label="Lecture draft", model="chosen")
+    run = repository.claim_next_run()
+    service = GptLectureService(catalog, IngestionRepository(database), repository,
+        None, None, tmp_path / "source-work", owner_id="owner", model="chosen")
+    client = _QuizClient(tmp_path / "client", inputs)
+    generate = client.generate
+
+    def four_questions(request, **kwargs):
+        result = generate(request, **kwargs)
+        payload = json.loads(result.text)
+        last = dict(payload["questions"][-1], id="q-3", stem="Fourth independent patient case.")
+        payload["questions"].append(last)
+        for index, question in enumerate(payload["questions"]):
+            question["objective_ids"] = [inputs.objectives[int(index == 3)][0]]
+            if image_free:
+                question["image"] = None
+        return replace(result, text=json.dumps(payload))
+
+    client.generate = four_questions
+    images = StudioQuizImageService(repository, tmp_path / "media")
+    worker = GptLectureWorker(repository, client, service.load_inputs,
+        "configuration-changed-after-queue", images, tmp_path / "evidence")
+    try:
+        yield repository, run, worker, client, inputs
+    finally:
+        database.close()
+
+
+def test_gpt_worker_enters_unresolved_review_with_sources_images_and_frozen_model(gpt_review_run):
+    from oms_hub.study_generation.practice_review import PracticeReviewService
+
+    repository, run, worker, client, inputs = gpt_review_run
+    worker.run(run)
+    current = repository.get_run(run.id)
+    assert current.state.value == "awaiting_review", current.error
+    assert current.notebook_id is None and current.published_token is None
+    assert len(client.requests) == 1 and client.requests[0].model == "chosen"
+    review = PracticeReviewService(repository, worker.image_service,
+        lecture_validator=worker.validate_review)
+    questions = review.review(run.id)
+    assert len(questions) == 4
+    assert all(q.verification_required and q.verified_at is None for q in questions)
+    assert questions[0].selected_candidate_id and questions[0].chosen_image
+    stored = repository.import_review_image(run.id, questions[0].chosen_image.key)
+    assert stored.sha256 == inputs.documents[0].assets[0].sha256
+    coverage = json.loads(repository.run_artifact(run.id, "gpt:coverage").payload_json)
+    assert [o["id"] for o in coverage["objectives"]] == [key for key, _ in inputs.objectives]
+    assert all(o["question_ids"] and o["source_segments"] for o in coverage["objectives"])
+    with pytest.raises(ValueError, match="requires verification"):
+        review.to_native_quiz(run.id)
+
+
+@pytest.mark.parametrize("defect", ["coverage", "image", "bytes", "refs", "objectives", "revision"])
+def test_gpt_review_revalidates_edits_coverage_and_image_ownership(gpt_review_run, defect):
+    from oms_hub.models import StudyRevisionModel
+    from oms_hub.study_generation.practice_domain import QuestionSourceRef
+    from oms_hub.study_generation.practice_review import PracticeReviewService
+
+    repository, run, worker, client, inputs = gpt_review_run
+    worker.run(run)
+    assert repository.get_run(run.id).state.value == "awaiting_review"
+    review = PracticeReviewService(repository, worker.image_service,
+        lecture_validator=worker.validate_review)
+    for question in review.review(run.id):
+        review.verify_generated_answer(run.id, question.draft.question_id)
+    original_response = repository.run_artifact(run.id, "gpt:response").payload_json
+    questions = list(review.review(run.id))
+    if defect == "coverage":
+        questions.pop()
+    elif defect == "image":
+        questions[0] = replace(questions[0], chosen_image=None, image_not_needed=True)
+    elif defect == "bytes":
+        image = repository.import_review_image(run.id, questions[0].chosen_image.key)
+        image.path.write_bytes(b"changed media")
+    elif defect == "refs":
+        questions[0] = replace(questions[0], draft=replace(questions[0].draft,
+            source_refs=(QuestionSourceRef(inputs.slide_source_id, "invented", "slide 2"),)))
+    elif defect == "objectives":
+        questions[0] = replace(questions[0], learning_objective="invented")
+    else:
+        with repository.database.session() as session:
+            session.get(StudyRevisionModel, inputs.slide_revision_id).current = False
+    review.store_review(run.id, tuple(questions))
+    with pytest.raises(ValueError):
+        review.to_native_quiz(run.id)
+    with repository.database.session() as session, pytest.raises(ValueError):
+        review.to_native_quiz_in_session(session, run.id, title="Lecture")
+    assert repository.run_artifact(run.id, "gpt:response").payload_json == original_response
+    assert len(client.requests) == 1
+
+
+@pytest.mark.parametrize("gpt_review_run", [True], indirect=True)
+def test_image_free_gpt_draft_still_requires_review_and_edits_reset_verification(gpt_review_run):
+    from oms_hub.study_generation.practice_review import PracticeReviewService
+
+    repository, run, worker, _, _ = gpt_review_run
+    worker.run(run)
+    assert repository.get_run(run.id).state.value == "awaiting_review"
+    review = PracticeReviewService(repository, lecture_validator=worker.validate_review)
+    questions = review.review(run.id)
+    assert all(q.chosen_image is None for q in questions)
+    with pytest.raises(ValueError, match="requires verification"):
+        review.to_native_quiz(run.id)
+    for question in questions:
+        review.verify_generated_answer(run.id, question.draft.question_id)
+    quiz = review.to_native_quiz(run.id)
+    assert len(quiz.questions) == 4 and all(q.learning_objective for q in quiz.questions)
+    changed = review.update_question(run.id, questions[0].draft.question_id,
+        {"stem": "Edited patient case requiring another manual check."})
+    assert changed.verification_required and changed.verified_at is None
+    with pytest.raises(ValueError, match="requires verification"):
+        review.to_native_quiz(run.id)
+
+
+def test_completed_gpt_response_recovers_review_without_repeating_client_call(
+    gpt_review_run, monkeypatch
+):
+    from oms_hub.models import StudioRunModel
+
+    repository, run, worker, client, _ = gpt_review_run
+    await_review = repository.await_import_review
+
+    def crash_after_artifacts(*args):
+        raise SessionError("interrupted")
+
+    monkeypatch.setattr(repository, "await_import_review", crash_after_artifacts)
+    worker.run(run)
+    assert repository.run_artifact(run.id, "gpt:response")
+    assert repository.run_artifact(run.id, "normalized")
+    assert repository.get_run(run.id).state.value == "interrupted"
+    assert len(client.requests) == 1
+    monkeypatch.setattr(repository, "await_import_review", await_review)
+    with repository.database.session() as session:
+        session.get(StudioRunModel, run.id).state = "running"
+    restarted = GptLectureWorker(repository, client, worker.load_inputs, worker.model,
+        worker.image_service, worker.artifact_root)
+    client.requests.clear()
+    restarted.run(repository.get_run(run.id))
+    assert repository.get_run(run.id).state.value == "awaiting_review"
+    assert not client.requests
+
+
+def test_ambiguous_gpt_attempt_cannot_be_reissued_after_restart(gpt_review_run, monkeypatch):
+    from oms_hub.models import StudioRunModel
+
+    repository, run, worker, client, _ = gpt_review_run
+    persist = repository.record_gpt_lifecycle
+
+    def interrupt(event_run_id, event):
+        persist(event_run_id, event)
+        if event.phase == "turn_started":
+            raise SessionError("interrupted")
+
+    monkeypatch.setattr(repository, "record_gpt_lifecycle", interrupt)
+    worker.run(run)
+    assert repository.get_run(run.id).state.value == "interrupted"
+    assert len(client.requests) == 1
+    assert not repository.run_artifact(run.id, "gpt:response")
+    monkeypatch.setattr(repository, "record_gpt_lifecycle", persist)
+    monkeypatch.setattr(repository, "gpt_resume_requested", lambda run_id: True)
+    with repository.database.session() as session:
+        session.get(StudioRunModel, run.id).state = "running"
+    worker.run(repository.get_run(run.id))
+    assert repository.get_run(run.id).state.value == "interrupted"
+    assert len(client.requests) == 1
 
 
 @pytest.mark.parametrize(

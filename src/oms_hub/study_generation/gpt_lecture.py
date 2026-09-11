@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -34,7 +34,7 @@ from oms_hub.llm.codex_session import (
     SessionLifecycle,
     SessionRequest,
 )
-from oms_hub.study_generation.domain import PromptSnapshot
+from oms_hub.study_generation.domain import PromptSnapshot, QuizImageRef
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.practice_contracts import (
     AssetCitation,
@@ -44,6 +44,15 @@ from oms_hub.study_generation.practice_contracts import (
     validate_source_references,
 )
 from oms_hub.study_generation.quiz_images import MAX_QUIZ_IMAGE_BYTES, sanitize_quiz_image
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+    from oms_hub.study_generation.practice_domain import QuestionDraftValue
+    from oms_hub.study_generation.practice_review import ReviewQuestion
+    from oms_hub.study_generation.quiz_images import StudioQuizImageService
+    from oms_hub.study_generation.studio_domain import StudioRun
+    from oms_hub.study_generation.studio_repository import StudioRepository
 
 
 class GeneratedQuestion(BaseModel):
@@ -415,6 +424,58 @@ def generate_lecture_quiz(
 
 def _normalized(text: str) -> str:
     return " ".join(text.split()).casefold()
+
+
+def to_review_drafts(
+    quiz: GeneratedLectureQuiz, inputs: LectureInputs
+) -> tuple[QuestionDraftValue, ...]:
+    from oms_hub.study_generation.practice_domain import (
+        AnswerProvenance,
+        QuestionDraft,
+        QuestionSourceRef,
+    )
+    from oms_hub.study_generation.practice_review import _image_key
+
+    validate_generated_quiz(quiz, inputs, require_images=inputs.image_required)
+    segments = {
+        (document.source_id, segment.key): segment
+        for document in inputs.documents for segment in document.segments
+    }
+    drafts = []
+    for question in quiz.questions:
+        refs = tuple(
+            QuestionSourceRef(citation.source_id, citation.segment_key,
+                segments[citation.source_id, citation.segment_key].locator.label)
+            for citation in question.source_segments
+        )
+        explanations = tuple(
+            f"{choice}: {explanation}"
+            for choice, explanation in zip(
+                question.choices, question.distractor_explanations, strict=True
+            )
+        )
+        drafts.append(QuestionDraft(
+            question_id=question.id,
+            original_identifier=question.id,
+            stem=question.stem,
+            choices=tuple(question.choices),
+            correct_index=question.correct_index,
+            rationale=question.rationale + "\n\n" + "\n\n".join(explanations),
+            image_ref=QuizImageRef(_image_key(question.id), "Lecture slides",
+                source_asset(inputs, question.image.source_id,
+                    question.image.asset_key).locator.label, "Lecture source image")
+                if question.image else None,
+            source_refs=refs,
+            answer_provenance=AnswerProvenance.GENERATED_BY_AI,
+            extraction_confidence=0.0,
+            diagnostics=(),
+            verification_required=True,
+            verified_at=None,
+            answer_evidence=tuple(
+                f"{ref.source_id}:{ref.segment_key} ({ref.locator})" for ref in refs
+            ),
+        ))
+    return tuple(drafts)
 
 
 def validate_generated_quiz(
@@ -832,3 +893,238 @@ def lecture_inputs_from_manifest(manifest: dict[str, object]) -> LectureInputs:
     if source_manifest(inputs) != manifest:
         raise ValueError("source manifest evidence is inconsistent")
     return inputs
+
+
+class GptLectureWorker:
+    """Adapt validated local GPT artifacts into the existing unresolved review queue."""
+
+    def __init__(
+        self,
+        repository: StudioRepository,
+        client: CodexSessionClient,
+        load_inputs: Callable[[StudioRun], LectureInputs],
+        model: str,
+        image_service: StudioQuizImageService,
+        artifact_root: Path,
+    ):
+        self.repository = repository
+        self.client = client
+        self.load_inputs = load_inputs
+        self.model = model
+        self.image_service = image_service
+        self.artifact_root = artifact_root
+
+    def _artifact(
+        self, run_id: str, key: str, session: Session | None = None
+    ) -> dict[str, object] | None:
+        from sqlalchemy import select
+
+        from oms_hub.models import StudioRunArtifactModel
+
+        artifact = session.scalar(select(StudioRunArtifactModel).where(
+            StudioRunArtifactModel.run_id == run_id,
+            StudioRunArtifactModel.artifact_key == key,
+        )) if session else self.repository.run_artifact(run_id, key)
+        if artifact is None:
+            return None
+        if hashlib.sha256(artifact.payload_json.encode()).hexdigest() != artifact.signature_sha256:
+            raise ValueError("GPT artifact checksum changed")
+        payload = json.loads(artifact.payload_json)
+        if not isinstance(payload, dict):
+            raise ValueError("GPT artifact must be an object")
+        return payload
+
+    def _save_artifact(self, run_id: str, key: str, payload: dict[str, object]) -> None:
+        encoded = _canonical(payload)
+        self.repository.save_run_artifact(
+            run_id, key, hashlib.sha256(encoded.encode()).hexdigest(), encoded
+        )
+
+    def _selected_model(self, run_id: str, session: Session | None = None) -> str:
+        settings = self._artifact(run_id, "gpt:settings", session)
+        model = settings.get("model") if settings else None
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("frozen GPT model selection is missing")
+        return model
+
+    def _response(
+        self, run_id: str, inputs: LectureInputs, session: Session | None = None
+    ) -> GeneratedLectureQuiz | None:
+        response = self._artifact(run_id, "gpt:response", session)
+        if response is None:
+            return None
+        directory = self.artifact_root / hashlib.sha256(run_id.encode()).hexdigest()
+        if (
+            response.get("manifest_sha256") != source_manifest(inputs)["sha256"]
+            or response.get("requested_model") != self._selected_model(run_id, session)
+            or response.get("evidence_directory") != str(directory)
+            or response.get("quiz_sha256") != _digest(response.get("quiz"))
+            or _read_record(directory / "quiz.json") != response.get("quiz")
+        ):
+            raise ValueError("GPT response no longer matches its source and artifact evidence")
+        quiz = GeneratedLectureQuiz.model_validate(response["quiz"])
+        validate_generated_quiz(quiz, inputs, require_images=inputs.image_required)
+        return quiz
+
+    @staticmethod
+    def _coverage(quiz: GeneratedLectureQuiz, inputs: LectureInputs) -> dict[str, object]:
+        return {
+            "manifest_sha256": source_manifest(inputs)["sha256"],
+            "objectives": [
+                {
+                    "id": key,
+                    "question_ids": [q.id for q in quiz.questions if key in q.objective_ids],
+                    "source_segments": [
+                        citation.model_dump(mode="json")
+                        for q in quiz.questions if key in q.objective_ids
+                        for citation in q.source_segments
+                    ],
+                }
+                for key, _ in inputs.objectives
+            ],
+        }
+
+    def run(self, run: StudioRun) -> None:
+        from oms_hub.study_generation.practice_domain import QuizWorkflowKind
+        from oms_hub.study_generation.practice_review import (
+            PracticeReviewService,
+            ReviewQuestion,
+            _candidate_id,
+        )
+        from oms_hub.study_generation.quiz_import_worker import _drafts_json
+        from oms_hub.study_generation.studio_domain import StudioRunState
+
+        try:
+            current = self.repository.get_run(run.id)
+            if current.state is not StudioRunState.RUNNING:
+                return
+            if current.workflow_kind is not QuizWorkflowKind.LECTURE_GENERATION:
+                raise ValueError("GPT worker requires a lecture generation run")
+            inputs = self.load_inputs(current)
+            model = self._selected_model(run.id)
+            quiz = self._response(run.id, inputs)
+            if quiz is None:
+                quiz = generate_lecture_quiz(
+                    self.client, run.id, model, inputs,
+                    cancelled=lambda: self.repository.gpt_cancelled(run.id),
+                    on_lifecycle=lambda event: self.repository.record_gpt_lifecycle(run.id, event),
+                    artifact_root=self.artifact_root,
+                    resume=self.repository.gpt_resume_requested(run.id),
+                )
+                self._save_artifact(run.id, "gpt:response", {
+                    "manifest_sha256": source_manifest(inputs)["sha256"],
+                    "requested_model": model,
+                    "actual_model": None,
+                    "model_evidence": "unverified",
+                    "quiz": quiz.model_dump(mode="json"),
+                    "quiz_sha256": _digest(quiz.model_dump(mode="json")),
+                    "evidence_directory": str(
+                        self.artifact_root / hashlib.sha256(run.id.encode()).hexdigest()
+                    ),
+                })
+            if self.repository.gpt_cancelled(run.id):
+                raise SessionError("interrupted")
+            # Recheck current source ownership after generation, before entering review.
+            if source_manifest(self.load_inputs(current)) != source_manifest(inputs):
+                raise ValueError("lecture source changed during generation")
+            drafts = to_review_drafts(quiz, inputs)
+            self._save_artifact(run.id, "gpt:coverage", self._coverage(quiz, inputs))
+            normalized = _drafts_json(drafts)
+            self.repository.save_run_artifact(run.id, "normalized",
+                hashlib.sha256(normalized.encode()).hexdigest(), normalized)
+            review = PracticeReviewService(self.repository, self.image_service)
+            if self.repository.run_artifact(run.id, "review:questions") is None:
+                questions = []
+                for generated, draft in zip(quiz.questions, drafts, strict=True):
+                    candidate_id = None
+                    if generated.image is not None:
+                        asset = source_asset(inputs, generated.image.source_id,
+                            generated.image.asset_key)
+                        assert asset.path is not None and draft.image_ref is not None
+                        copied = self.image_service.copy_import_candidate(
+                            run.id, draft.image_ref.key, draft.image_ref.source_title,
+                            draft.image_ref.locator, draft.image_ref.description,
+                            asset.path, asset.sha256, asset.key,
+                        )
+                        if copied.sha256 != asset.sha256:
+                            raise ValueError("review image differs from the approved source image")
+                        candidate_id = _candidate_id(draft.question_id,
+                            generated.image.source_id, generated.image.asset_key)
+                    questions.append(ReviewQuestion(draft,
+                        learning_objective=", ".join(generated.objective_ids),
+                        chosen_image=draft.image_ref, selected_candidate_id=candidate_id))
+                review.store_review(run.id, tuple(questions))
+            self.repository.await_import_review(run.id,
+                tuple(question.draft for question in review.review(run.id)))
+        except SessionError as error:
+            self.repository.stop_gpt_run(run.id, error)
+        except Exception:
+            # Persist only a safe failure code; private source/output stays in private artifacts.
+            self.repository.stop_gpt_run(run.id, SessionError("invalid_output"))
+
+    def validate_review(
+        self, run_id: str, questions: tuple[ReviewQuestion, ...], session: Session | None = None
+    ) -> None:
+        from sqlalchemy import select
+
+        from oms_hub.models import StudioQuizImageRequirementModel
+        from oms_hub.study_generation.practice_domain import AnswerProvenance, QuestionDraft
+        from oms_hub.study_generation.practice_review import _candidate_id, _image_key
+
+        if session is None:
+            with self.repository.database.session() as owned:
+                self.validate_review(run_id, questions, owned)
+            return
+        self.repository.validate_gpt_manifest_in_session(session, run_id)
+        inputs = self.load_inputs(self.repository.get_run(run_id))
+        original = self._response(run_id, inputs, session)
+        if original is None or self._artifact(run_id, "gpt:coverage", session) != self._coverage(
+            original, inputs
+        ):
+            raise ValueError("original GPT response or coverage evidence is missing")
+        originals = {question.id: question for question in original.questions}
+        original_drafts = {draft.question_id: draft for draft in to_review_drafts(original, inputs)}
+        revised = []
+        for question in questions:
+            draft = question.draft
+            original_question = originals.get(draft.question_id)
+            if not isinstance(draft, QuestionDraft) or original_question is None:
+                raise ValueError("review question has no original lecture provenance")
+            if draft.correct_index is None or not draft.rationale:
+                raise ValueError("lecture answer and explanation are incomplete")
+            if (
+                draft.source_refs != original_drafts[draft.question_id].source_refs
+                or question.learning_objective != ", ".join(original_question.objective_ids)
+                or not draft.verification_required
+                or draft.answer_provenance not in {
+                    AnswerProvenance.GENERATED_BY_AI, AnswerProvenance.MANUALLY_CORRECTED
+                }
+            ):
+                raise ValueError("lecture source and objective provenance cannot be replaced")
+            image = None
+            if question.chosen_image is not None:
+                selected = next((asset for document in inputs.documents
+                    if document.source_id == inputs.slide_source_id for asset in document.assets
+                    if _candidate_id(draft.question_id, inputs.slide_source_id, asset.key)
+                        == question.selected_candidate_id), None)
+                if selected is None or question.chosen_image.key != _image_key(draft.question_id):
+                    raise ValueError("selected image is not an original lecture slide asset")
+                binding = session.scalar(select(StudioQuizImageRequirementModel).where(
+                    StudioQuizImageRequirementModel.run_id == run_id,
+                    StudioQuizImageRequirementModel.image_key == question.chosen_image.key,
+                ))
+                if (binding is None or binding.asset_sha256 != selected.sha256
+                    or not binding.asset_path
+                    or sha256_file(Path(binding.asset_path)) != selected.sha256):
+                    raise ValueError("selected lecture image bytes or ownership changed")
+                image = AssetCitation(source_id=inputs.slide_source_id, asset_key=selected.key)
+            revised.append(GeneratedQuestion(
+                id=draft.question_id, stem=draft.stem, choices=list(draft.choices),
+                correct_index=draft.correct_index, rationale=draft.rationale,
+                # Edited rationale is reviewed manually; original explanations remain immutable.
+                distractor_explanations=[draft.rationale or ""] * len(draft.choices),
+                objective_ids=original_question.objective_ids,
+                source_segments=original_question.source_segments, image=image,
+            ))
+        validate_generated_quiz(GeneratedLectureQuiz(title=original.title, questions=revised),
+            inputs, require_images=inputs.image_required)

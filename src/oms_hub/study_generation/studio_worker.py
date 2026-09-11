@@ -37,6 +37,7 @@ from oms_hub.study_generation.studio_repository import (
 )
 
 if TYPE_CHECKING:
+    from oms_hub.study_generation.gpt_lecture import GptLectureWorker
     from oms_hub.study_generation.quiz_import_worker import QuizImportWorker
 
 LOGGER = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class StudioWorker:
         publisher: GenerationRepository | None = None,
         image_service: StudioQuizImageService | None = None,
         import_worker: QuizImportWorker | None = None,
+        gpt_worker: GptLectureWorker | None = None,
     ):
         self.repository = repository
         self.gateway = gateway
@@ -64,6 +66,7 @@ class StudioWorker:
         self.publisher = publisher
         self.image_service = image_service
         self.import_worker = import_worker
+        self.gpt_worker = gpt_worker
 
     def recover_interrupted_jobs(self) -> int:
         recovered = 0
@@ -95,6 +98,14 @@ class StudioWorker:
             return False
         from oms_hub.study_generation.practice_domain import QuizWorkflowKind
 
+        if run.workflow_kind is QuizWorkflowKind.LECTURE_GENERATION:
+            if self.gpt_worker is None:
+                from oms_hub.llm.codex_session import SessionError
+
+                self.repository.stop_gpt_run(run.id, SessionError("capability_unverified"))
+            else:
+                self.gpt_worker.run(run)
+            return True
         if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
             if self.import_worker is None:
                 self.repository.fail_run(

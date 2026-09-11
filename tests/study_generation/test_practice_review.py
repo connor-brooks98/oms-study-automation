@@ -90,6 +90,57 @@ def _draft(question_id: str, *, generated: bool) -> QuestionDraft:
     )
 
 
+@pytest.mark.parametrize("path", ["preview", "publication", "blockers"])
+def test_lecture_review_uses_validation_hook_and_fails_closed_without_it(tmp_path, path):
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=False),))
+    with service.repository.database.session() as session:
+        run = session.get(StudioRunModel, "run-1")
+        run.workflow_kind = "lecture_generation"
+        run.backend = "codex_subscription"
+
+    def check():
+        if path == "blockers":
+            return service.blockers("run-1")
+        if path == "publication":
+            with service.repository.database.session() as session:
+                service.to_native_quiz_in_session(session, "run-1", title="Lecture")
+        else:
+            service.to_native_quiz("run-1")
+
+    if path == "blockers":
+        assert "lecture publication validation is not configured" in check()
+    else:
+        with pytest.raises(ValueError, match="not configured"):
+            check()
+    calls = []
+
+    def validate(run_id, questions, session):
+        calls.append((run_id, questions, session))
+        raise ValueError("lecture coverage changed")
+
+    service.lecture_validator = validate
+    if path == "blockers":
+        assert "lecture coverage changed" in check()
+    else:
+        with pytest.raises(ValueError, match="coverage changed"):
+            check()
+    assert calls[0][0] == "run-1"
+    assert calls[0][1][0].draft.question_id == "q1"
+    assert (calls[0][2] is not None) == (path == "publication")
+
+
+def test_legacy_review_does_not_call_lecture_validator(tmp_path):
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=False),))
+
+    def reject(*args):
+        raise AssertionError("legacy import must not use GPT validation")
+
+    service.lecture_validator = reject
+    assert len(service.to_native_quiz("run-1").questions) == 1
+
+
 def _matching_draft(question_id: str = "matching-1") -> MatchingQuestionDraft:
     return MatchingQuestionDraft(
         question_id,
