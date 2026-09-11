@@ -78,7 +78,7 @@ def test_outline_uses_frozen_backend_model_and_pauses_without_google(gpt_review_
         service.queue_outline(1)
 
 
-@pytest.mark.parametrize("change_at", ["render", "commit"])
+@pytest.mark.parametrize("change_at", [None, "render", "commit"])
 def test_outline_filing_rechecks_sources_and_preserves_prior_bytes(
     gpt_review_run, tmp_path, monkeypatch, change_at
 ):
@@ -119,7 +119,17 @@ def test_outline_filing_rechecks_sources_and_preserves_prior_bytes(
             promote()
             return original(*args, **kwargs)
         monkeypatch.setattr(repository, "record_outline", record)
+    service = OutlineService(settings, repository, Renderer())
+    if change_at is None:
+        record = service.file(job, key, NotebookAnswer("Outline"))
+        assert record.provenance_kind == "codex_generated"
+        assert record.job_id == job.id and record.import_id is None
+        assert repository.current_outline(1) == record
+        assert destination.read_bytes().startswith(b"%PDF-")
+        studio.database.migrate()
+        assert repository.current_outline(1).provenance_kind == "codex_generated"
+        return
     with pytest.raises(ValueError, match="source is no longer current"):
-        OutlineService(settings, repository, Renderer()).file(job, key, NotebookAnswer("Outline"))
+        service.file(job, key, NotebookAnswer("Outline"))
     assert destination.read_bytes() == b"retained prior outline"
     assert repository.current_outline(1) is None

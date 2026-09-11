@@ -130,6 +130,13 @@ class GenerationRepository:
         ):
             raise ValueError("GPT outline requires a selected model")
         with self.database.session() as session:
+            if backend == "codex_subscription" and session.scalar(
+                select(OutlineOutputModel.id).where(
+                    OutlineOutputModel.lecture_id == lecture_id,
+                    OutlineOutputModel.provenance_kind == "imported_notebooklm",
+                )
+            ) is not None:
+                raise ValueError("GPT replacement of imported outlines is not available.")
             existing = session.scalar(
                 select(GenerationJobModel)
                 .where(
@@ -720,6 +727,9 @@ class GenerationRepository:
                 model.path = str(path)
                 model.sha256 = sha256
                 model.current = True
+            job = session.get(GenerationJobModel, job_id)
+            if job is not None and job.backend == "codex_subscription":
+                model.provenance_kind = "codex_generated"
             session.flush()
             return self._outline(model)
 
@@ -749,6 +759,15 @@ class GenerationRepository:
     ) -> None:
         job = session.get(GenerationJobModel, job_id)
         if job is not None and job.backend == "codex_subscription":
+            # ponytail: GPT replacement waits for imported provenance graph support.
+            if session.scalar(
+                select(OutlineOutputModel.id).where(
+                    OutlineOutputModel.lecture_id == lecture_id,
+                    OutlineOutputModel.provenance_kind == "imported_notebooklm",
+                )
+            ) is not None:
+                raise ImportedOutlineReplacementRequired(
+                    "GPT replacement of imported outlines is not available.")
             if (job.lecture_id != lecture_id or job.kind != GenerationKind.OUTLINE.value
                 or job.state != GenerationState.RUNNING.value):
                 raise ValueError("GPT outline job is not active for this lecture")
@@ -803,6 +822,9 @@ class GenerationRepository:
             raise ValueError("replacement operator and reason are required")
         with self.database.session() as session:
             job = session.get(GenerationJobModel, job_id)
+            if job is not None and job.backend == "codex_subscription":
+                raise ImportedOutlineReplacementRequired(
+                    "GPT replacement of imported outlines is not available.")
             current = session.scalar(
                 select(OutlineOutputModel).where(
                     OutlineOutputModel.lecture_id == lecture_id,

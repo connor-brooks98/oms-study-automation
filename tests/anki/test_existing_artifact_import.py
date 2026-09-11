@@ -933,6 +933,50 @@ def test_ordinary_outline_record_keeps_generation_provenance_and_job_id(tmp_path
     database.close()
 
 
+def test_gpt_imported_outline_queue_approval_and_filing_are_unavailable(
+    imported_bundle: ImportedBundle,
+) -> None:
+    repository = GenerationRepository(imported_bundle.database)
+    retained = {
+        path: path.read_bytes() for path in (
+            imported_bundle.outline_path, imported_bundle.immutable_outline_path,
+            imported_bundle.transcript_path, imported_bundle.immutable_transcript_path,
+        )
+    }
+    with pytest.raises(ValueError, match="GPT replacement of imported outlines is not available"):
+        repository.queue(imported_bundle.lecture_id, GenerationKind.OUTLINE,
+                         backend="codex_subscription", codex_model="fixture")
+    assert repository.current_job(imported_bundle.lecture_id, GenerationKind.OUTLINE) is None
+
+    # A retained job from before the queue guard cannot bypass approval or filing.
+    job = _failed_imported_outline_job(imported_bundle, repository, "# Replacement")
+    with imported_bundle.database.session() as session:
+        stored = session.get(GenerationJobModel, job.id)
+        assert stored is not None
+        stored.backend = "codex_subscription"
+        stored.codex_model = "fixture"
+    with pytest.raises(ImportedOutlineReplacementRequired, match="not available"):
+        repository.approve_imported_outline_replacement(
+            imported_bundle.lecture_id, job.id, "operator", "Reviewed replacement"
+        )
+    with pytest.raises(ImportedOutlineReplacementRequired, match="not available"):
+        repository.assert_outline_replacement_allowed(imported_bundle.lecture_id, job.id)
+    with pytest.raises(ImportedOutlineReplacementRequired, match="not available"):
+        repository.record_outline(
+            imported_bundle.lecture_id, job.id,
+            imported_bundle.outline_path, _sha256(imported_bundle.outline_path),
+        )
+    assert repository.imported_outline_replacement_review(
+        imported_bundle.lecture_id, job.id
+    ) is None
+    current = repository.current_outline(imported_bundle.lecture_id)
+    assert current is not None and current.id == imported_bundle.outline_id
+    assert current.provenance_kind == "imported_notebooklm"
+    assert repository.get(job.id).state.value == "failed"
+    assert all(path.read_bytes() == content for path, content in retained.items())
+    imported_bundle.database.migrate()
+
+
 def test_imported_outline_requires_explicit_replacement_and_rolls_back_copy(
     imported_bundle: ImportedBundle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -999,6 +1043,12 @@ def test_imported_outline_requires_explicit_replacement_and_rolls_back_copy(
     # An approved replacement makes the imported outline historical without
     # invalidating its immutable provenance graph at the next startup.
     imported_bundle.database.migrate()
+    retained = imported_bundle.immutable_outline_path.read_bytes()
+    with pytest.raises(ValueError, match="GPT replacement of imported outlines is not available"):
+        repository.queue(imported_bundle.lecture_id, GenerationKind.OUTLINE,
+                         backend="codex_subscription", codex_model="fixture")
+    assert imported_bundle.immutable_outline_path.read_bytes() == retained
+    assert repository.current_outline(imported_bundle.lecture_id) == record
     later_job = repository.queue(imported_bundle.lecture_id, GenerationKind.OUTLINE)
     later_path = imported_bundle.outline_path.with_name("later-generated-outline.pdf")
     later_path.write_bytes(OutlinePdfRenderer().render("Later", answer.text))
