@@ -54,3 +54,48 @@ def test_restart_never_requeues_ambiguous_gpt_run(tmp_path):
     assert repo.claim_next_run().id == "old"
     assert repo.claim_next_run() is None
     database.close()
+
+
+def test_concurrent_terminal_events_cannot_overwrite_acknowledged_completion(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, BrokenBarrierError
+
+    from sqlalchemy import event as sql_event
+
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.session() as session:
+        session.add(StudioRunModel(id="run", subject="Heme", subject_key="heme", exam_number=3,
+            destination_subject="Heme", destination_subject_key="heme", destination_exam_number=3,
+            label="Lecture", prompt="", backend="codex_subscription"))
+    repo = StudioRepository(database)
+    for lifecycle in (SessionLifecycle("run:b", "dispatching"),
+                      SessionLifecycle("run:b", "thread_created", "t"),
+                      SessionLifecycle("run:b", "turn_started", "t", "u")):
+        repo.record_gpt_lifecycle("run", lifecycle)
+    reads = Barrier(2)
+
+    def align_reads(connection, cursor, statement, parameters, context, executemany):
+        if statement.startswith("SELECT studio_run_artifacts."):
+            try:
+                reads.wait(timeout=0.15)
+            except BrokenBarrierError:
+                pass  # Serialized reads cannot meet; an unguarded implementation can.
+
+    sql_event.listen(database.engine, "after_cursor_execute", align_reads)
+
+    def finish(phase):
+        try:
+            repo.record_gpt_lifecycle("run", SessionLifecycle("run:b", phase, "t", "u"))
+            return phase
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        accepted = list(pool.map(finish, ("completed", "failed")))
+    sql_event.remove(database.engine, "after_cursor_execute", align_reads)
+    assert sum(value is not None for value in accepted) == 1
+    saved = json.loads(repo.run_artifact("run", "gpt:attempt:run:b").payload_json)
+    assert saved['phase'] == next(value for value in accepted if value is not None)
+    assert len(saved['events']) == 4
+    database.close()

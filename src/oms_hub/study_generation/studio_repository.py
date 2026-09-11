@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -1210,7 +1210,11 @@ class StudioRepository:
             "turn_started": {"completed", "failed", "interrupted"},
         }
         with self.database.session() as session:
-            run = session.get(StudioRunModel, run_id)
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+            run = session.scalar(
+                select(StudioRunModel).where(StudioRunModel.id == run_id).with_for_update()
+            )
             if run is None or run.backend != "codex_subscription":
                 raise ValueError("GPT request/run ownership mismatch")
             key = "gpt:attempt:" + event.request_id
