@@ -55,6 +55,7 @@ def setup(tmp_path):
             snapshot_id="fixture",
             fingerprint="b" * 64,
         )
+        app.state.fixture_index = index
         app.include_router(
             create_question_bank_router(
                 repo,
@@ -196,3 +197,40 @@ def test_valid_utf8_upload_can_confirm_and_reload_without_escaped_json_limit(set
         follow_redirects=False)
     assert response.status_code == 303
     assert client.get(response.headers["location"]).status_code == 200
+
+
+def test_manual_candidates_are_read_only_bounded_and_owner_protected(setup, monkeypatch):
+    client, repo, app = setup
+    path = "/question-bank/anki-candidates"
+    assert client.get(path).status_code == 200
+    response = client.post(path, data={"query": "nid:101,999 OR nid:101"})
+    assert response.status_code == 200
+    assert "2 candidate notes" in response.text and "201, 202" in response.text
+    assert "Note 999 · missing from snapshot" in response.text
+    assert "user-pasted AMBOSS candidates · unverified" in response.text
+    assert "Snapshot: fixture · unverified" in response.text
+    assert repo.iter_attempts(learner_id="test") == ()
+
+    def no_read(*args):
+        pytest.fail("Invalid query must fail before reading the index")
+
+    monkeypatch.setattr(app.state.fixture_index, "snapshot_id", no_read)
+    for query in ("tag:AMBOSS", "nid:101 OR deck:*", "nid:0", "x" * 65537):
+        assert client.post(path, data={"query": query}).status_code == 422
+    client.headers.pop(app.state.csrf.header_name)
+    assert client.post(path, data={"query": "nid:101"}).status_code == 403
+    app.state.fixture_owner = None
+    assert client.get(path).status_code == 401
+    assert client.post(path, data={"query": "nid:101"}).status_code == 401
+
+
+def test_manual_candidates_unavailable_and_snapshot_failure(setup, monkeypatch):
+    client, _, app = setup
+    path = "/question-bank/anki-candidates"
+    monkeypatch.setattr(app.state.fixture_index, "snapshot_id", lambda: None)
+    response = client.post(path, data={"query": "nid:101"})
+    assert response.status_code == 503 and "Local note index unavailable" in response.text
+    snapshots = iter(("before", "before", "after"))
+    monkeypatch.setattr(app.state.fixture_index, "snapshot_id", lambda: next(snapshots))
+    response = client.post(path, data={"query": "nid:101"})
+    assert response.status_code == 422 and "Index snapshot changed" in response.text

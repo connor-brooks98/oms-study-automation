@@ -8,7 +8,13 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from oms_hub.anki.index import AnkiIndex
-from oms_hub.question_bank.anki_links import AnkiCandidate, TagRule, match_qid_tags
+from oms_hub.question_bank.anki_links import (
+    AnkiCandidate,
+    TagRule,
+    match_qid_tags,
+    parse_candidate_query,
+    preview_candidate_notes,
+)
 from oms_hub.question_bank.contracts import ImportPreview, ImportReceipt, QuestionKey
 from oms_hub.question_bank.imports import preview_import
 from oms_hub.question_bank.native_review import reviewable_drafts, stage_native_review
@@ -115,6 +121,38 @@ def create_question_bank_router(
     def index(request: Request) -> HTMLResponse:
         _owner(request)
         return page(request)
+
+    @router.get("/anki-candidates", response_class=HTMLResponse)
+    def candidate_form(request: Request) -> HTMLResponse:
+        _owner(request)
+        return templates.TemplateResponse(
+            request=request, name="question_bank_import.html", context={"manual_candidates": True}
+        )
+
+    @router.post("/anki-candidates", response_class=HTMLResponse)
+    def candidate_preview(
+        request: Request,
+        query: Annotated[str, Form()],
+        csrf_token: Annotated[str | None, Form()] = None,
+    ) -> HTMLResponse:
+        _owner(request)
+        require_form_csrf(request, csrf_token)
+        context: dict[str, object] = {"manual_candidates": True}
+        status = 200
+        try:
+            parse_candidate_query(query)
+            context["candidate_query"] = query
+            if anki_index is None or anki_index.snapshot_id() is None:
+                context["candidate_error"] = "Local note index unavailable. No notes were checked."
+                status = 503
+            else:
+                context["candidate_notes"] = preview_candidate_notes(query, anki_index)
+        except ValueError as error:
+            context["candidate_error"] = str(error)
+            status = 422
+        return templates.TemplateResponse(
+            request=request, name="question_bank_import.html", context=context, status_code=status
+        )
 
     @router.post("/imports/preview", response_class=HTMLResponse)
     async def preview(

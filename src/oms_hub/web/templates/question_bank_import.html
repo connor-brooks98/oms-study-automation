@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Question bank imports · Study Hub{% endblock %}
+{% block title %}{{ 'Manual Anki candidates' if manual_candidates else 'Question bank imports' }} · Study Hub{% endblock %}
 {% block content %}
 <style>
 .bank-import .bank-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:1rem;margin:1.5rem 0}
@@ -9,6 +9,35 @@
 .bank-import details{padding:.75rem 0;border-bottom:1px solid #dce1e9}.bank-import .bank-check{display:flex;gap:.6rem;align-items:flex-start}.bank-import pre{white-space:pre-wrap;overflow-wrap:anywhere}
 </style>
 <section class="page-shell sh-container--narrow bank-import">
+  {% if manual_candidates %}
+  <div class="page-heading sh-header"><div><p class="eyebrow sh-eyebrow">User-pasted AMBOSS candidates</p>
+    <h1 class="sh-title">Review Anki candidates</h1>
+    <p class="page-summary sh-subtitle">Paste note IDs to preview matches in the supplied local snapshot.</p>
+  </div></div>
+  <section class="card sh-card">
+    <p>Provenance: user-pasted AMBOSS candidates · unverified. This does not verify AMBOSS access or a question-to-note match. Candidates remain pending review.</p>
+    {% if candidate_error %}<p role="alert">{{ candidate_error }}</p>{% endif %}
+    <form method="post" action="/question-bank/anki-candidates">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <label for="candidate-query">Note ID query</label>
+      <textarea class="sh-input" id="candidate-query" name="query" rows="4" maxlength="65536" required aria-describedby="candidate-help">{{ candidate_query or '' }}</textarea>
+      <p id="candidate-help">Example: <code>nid:123,456 OR nid:789</code>. Up to 2,000 IDs and 64 KiB. Only note IDs joined by OR are supported.</p>
+      <button class="button primary sh-btn sh-btn--primary" type="submit">Preview notes</button>
+    </form>
+  </section>
+  {% if candidate_notes %}
+  <section class="card sh-card"><h2>{{ candidate_notes|length }} candidate notes</h2>
+    <p>Snapshot freshness is unverified. These previews do not change notes, tags or card schedules.</p>
+    {% for note in candidate_notes %}
+    <details open><summary>Note {{ note.note_id }} · {{ 'missing from snapshot' if note.missing else 'pending review' }}</summary>
+      <p>Cards: {{ note.card_ids|join(', ') or 'none in snapshot' }} · Snapshot: {{ note.snapshot_id or 'unknown' }} · unverified</p>
+      {% if note.text %}<pre>{{ note.text }}</pre>{% endif %}
+    </details>
+    {% endfor %}
+  </section>
+  {% endif %}
+  <a href="/question-bank">Question bank imports</a>
+  {% else %}
   <div class="page-heading sh-header"><div><p class="eyebrow sh-eyebrow">Your study records</p>
     <h1 class="sh-title">Question bank imports</h1>
     <p class="page-summary sh-subtitle">Bring results, question IDs and your notes into Study Hub. Preview every import before saving.</p>
@@ -74,6 +103,7 @@
     </details>{% endfor %}
   </section>
   <a href="/question-bank">Start another import</a>
+  {% endif %}
   {% endif %}
 </section>
 {% endblock %}

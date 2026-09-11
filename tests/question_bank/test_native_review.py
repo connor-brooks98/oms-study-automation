@@ -169,3 +169,66 @@ def test_results_only_and_unsupported_bodies_stay_out_of_review(setup):
     import_id = imported(bank, payload)
     with pytest.raises(ValueError, match="reviewable"):
         stage(bank, studio, import_id)
+
+
+def test_normalized_acceptance_reconciles_records_replay_and_publication(setup):
+    bank, studio, review, generation = setup
+    rows = [
+        {"question_id": "00123", "attempt_id": "a", "result": "correct", "question": body()},
+        {"question_id": "002", "attempt_id": "b", "result": "incorrect", "user_note": "Revisit"},
+        {"question_id": "003", "attempt_id": "c", "result": "omitted"},
+        {"question_id": "004", "attempt_id": "d", "result": "unknown"},
+        {"question_id": "005", "user_note": "QID only — no attempt", "tags": ["Original::Tag"]},
+        {"question_id": "006", "question": body() | {"correct_index": -1, "rationale": ""}},
+        {"question_id": "007", "question": body() | {"image_ref": {
+            "key": "figure", "source_title": "Fixture", "locator": "page 1",
+            "description": "Synthetic image",
+        }}},
+    ]
+    rows.append(dict(rows[0]))
+    payload = data(rows) | {"source": "uworld"}
+    preview = preview_import(json.dumps(payload).encode())
+    assert preview.ready_question_rows == (1,)
+    assert [(i.row, i.code) for i in preview.issues] == [
+        (6, "invalid_question"), (7, "missing_image"), (8, "duplicate_row")
+    ]
+    receipt = bank.commit_import(preview, learner_id="test", expected_digest=preview.digest)
+    original = bank.review_rows(import_id=receipt.import_id, learner_id="test")
+    assert len(rows) == len(original) + len(receipt.conflicts) == 8
+    assert original == preview.envelope.rows
+    assert (receipt.inserted_questions, receipt.inserted_attempts, receipt.duplicate_rows) == (
+        7, 4, 1
+    )
+    facts = bank.iter_attempts(learner_id="test")
+    assert [f.result for f in facts] == ["correct", "incorrect", "omitted", "unknown"]
+    assert all(f.occurred_at is None and f.elapsed_ms is None for f in facts)
+    assert bank.commit_import(preview, learner_id="test", expected_digest=preview.digest) == receipt
+    assert bank.iter_attempts(learner_id="test") == facts
+    assert len(bank.list_ready_questions(learner_id="test")) == 1
+
+    other = data([rows[0]]) | {"source": "truelearn"}
+    imported(bank, other)
+    facts = bank.iter_attempts(learner_id="test")
+    assert len(facts) == 5
+    assert [(f.key.source, f.key.question_id) for f in (facts[0], facts[-1])] == [
+        ("uworld", "00123"), ("truelearn", "00123")
+    ]
+    conflict = payload | {"export_id": "conflict", "rows": [
+        {"question_id": "new", "attempt_id": "new", "result": "correct"},
+        rows[0] | {"result": "incorrect"},
+    ]}
+    checked = preview_import(json.dumps(conflict).encode())
+    rejected = bank.commit_import(checked, learner_id="test", expected_digest=checked.digest)
+    assert rejected.conflicts and rejected.conflicts[0].row == 2
+    assert rejected.inserted_questions == rejected.inserted_attempts == 0
+    with pytest.raises(ValueError):
+        bank.get_import(import_id=rejected.import_id, learner_id="test")
+    assert bank.iter_attempts(learner_id="test") == facts
+
+    ref = stage(bank, studio, receipt.import_id)
+    assert [key.question_id for _, key in ref.original_keys] == ["00123", "006", "007"]
+    assert "q2: answer is missing" in review.blockers(ref.run_id)
+    with pytest.raises(ValueError):
+        generation.publish_reviewed_studio_quiz(ref.run_id)
+    with studio.database.session() as session:
+        assert session.scalar(select(PublishedQuizModel)) is None
