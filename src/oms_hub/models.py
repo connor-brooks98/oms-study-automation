@@ -1141,3 +1141,25 @@ class BankReviewQuestionModel(Base):
     local_question_id: Mapped[str] = mapped_column(String(200), primary_key=True)
     question_id: Mapped[int] = mapped_column(ForeignKey("bank_questions.id"))
     import_row_id: Mapped[int] = mapped_column(ForeignKey("bank_import_rows.id"))
+
+
+class StudyTopicSuggestionModel(Base):
+    __tablename__ = "study_topic_suggestions"
+    __table_args__ = (
+        CheckConstraint("state IN ('pending','running','completed','failed','interrupted')"),
+        Index("ix_study_topic_suggestions_owner", "owner_id", "created_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(320))
+    key_json: Mapped[str] = mapped_column(Text)
+    question_content_hash: Mapped[str] = mapped_column(String(64))
+    evidence_json: Mapped[str] = mapped_column(Text)
+    taxonomy_json: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(200))
+    state: Mapped[str] = mapped_column(String(32), default="pending")
+    lifecycle_json: Mapped[str] = mapped_column(Text, default="[]")
+    raw_response_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggestions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)

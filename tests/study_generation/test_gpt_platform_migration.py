@@ -72,3 +72,29 @@ def test_v31_upgrade_preserves_published_quiz_and_media_rows(tmp_path):
         assert connection.execute(text("SELECT * FROM published_quizzes")).all() == before_quiz
         assert connection.execute(text("SELECT * FROM published_quiz_media")).all() == before_media
     database.close()
+
+
+def test_v39_upgrade_adds_pending_topic_evidence_without_rewriting_sessions(tmp_path):
+    from oms_hub.models import StudySessionModel, StudyTopicSuggestionModel
+
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.session() as session:
+        session.add(StudySessionModel(id="retained-session", owner_id="owner"))
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE study_topic_suggestions"))
+        connection.execute(text("UPDATE schema_version SET version=39 WHERE id=1"))
+        before = connection.execute(text("SELECT * FROM study_sessions")).all()
+    database.migrate()
+    with database.session() as session:
+        session.add(StudyTopicSuggestionModel(id="suggestion", owner_id="owner", key_json="{}",
+            question_content_hash="a" * 64, evidence_json="[]", taxonomy_json="[]", model="test"))
+    database.migrate()
+    with database.engine.connect() as connection:
+        assert connection.execute(text("SELECT * FROM study_sessions")).all() == before
+        assert connection.execute(text("SELECT state FROM study_topic_suggestions")).scalar_one()\
+            == "pending"
+        assert connection.execute(text("SELECT COUNT(*) FROM bank_topic_reviews")).scalar_one() == 0
+    with pytest.raises(IntegrityError), database.engine.begin() as connection:
+        connection.execute(text("UPDATE study_topic_suggestions SET state='accepted'"))
+    database.close()

@@ -41,7 +41,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 39
+LATEST_SCHEMA_VERSION = 40
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -2748,6 +2748,18 @@ def _upgrade_generation_backend_v39(database: "Database") -> None:
             connection.execute(text("ALTER TABLE generation_jobs ADD COLUMN codex_model "
                 "VARCHAR(200) NOT NULL DEFAULT ''"))
 
+def _validate_topic_suggestions_v40(database: "Database") -> None:
+    inspector = inspect(database.engine)
+    table = "study_topic_suggestions"
+    required = {"id", "owner_id", "key_json", "question_content_hash", "evidence_json",
+                "taxonomy_json", "model", "state", "lifecycle_json", "raw_response_text",
+                "suggestions_json", "error_code", "created_at", "updated_at"}
+    if not inspector.has_table(table) or not required <= {
+        column["name"] for column in inspector.get_columns(table)
+    }:
+        raise RuntimeError("schema v40 topic suggestion evidence is missing")
+
+
 def migrate_database(database: "Database") -> None:
     # A populated current schema is an integrity check, not an opportunity to
     # rewrite persisted identities.  Keep this branch read-only.
@@ -2796,6 +2808,7 @@ def migrate_database(database: "Database") -> None:
             _validate_study_chat_v33(database)
             _validate_bank_review_v34(database)
             _validate_ingestion_backend_v35(database)
+            _validate_topic_suggestions_v40(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -2850,6 +2863,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_managed_model_v37(database)
     _upgrade_chat_raw_v38(database)
     _upgrade_generation_backend_v39(database)
+    _validate_topic_suggestions_v40(database)
     _validate_ingestion_backend_v35(database)
     _validate_gpt_platform_v32(database)
     _validate_study_chat_v33(database)
