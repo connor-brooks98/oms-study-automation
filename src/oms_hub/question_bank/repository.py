@@ -102,13 +102,17 @@ def _ready(question: BankQuestionModel) -> BankQuestion | None:
 
 
 def _fact(
-    attempt: BankAttemptModel, question: BankQuestionModel, row: BankImportRowModel
+    attempt: BankAttemptModel,
+    question: BankQuestionModel,
+    row: BankImportRowModel,
+    provenance_json: str,
 ) -> AttemptFact:
     reviewed = _TOPICS.validate_json(question.reviewed_topics_json)
     reviewed_labels = {(topic.axis, topic.label) for topic in reviewed}
-    # Import claims never grant reviewer authority; their exact originals stay in row_json.
+    trusted_native = json.loads(provenance_json).get("kind") == "study_hub_attempt"
+    # Only the internal recording path can create this provenance, never external input.
     proposals = tuple(
-        topic.model_copy(update={"review_state": "pending"})
+        topic if trusted_native else topic.model_copy(update={"review_state": "pending"})
         for topic in _TOPICS.validate_json(row.topics_json)
         if (topic.axis, topic.label) not in reviewed_labels
     )
@@ -312,14 +316,20 @@ class BankRepository:
             raise ValueError("Invalid attempt cursor or limit")
         with self._session_factory() as session:
             rows = session.execute(
-                select(BankAttemptModel, BankQuestionModel, BankImportRowModel)
+                select(
+                    BankAttemptModel,
+                    BankQuestionModel,
+                    BankImportRowModel,
+                    BankImportModel.provenance_json,
+                )
                 .join(BankQuestionModel, BankQuestionModel.id == BankAttemptModel.question_id)
                 .join(BankImportRowModel, BankImportRowModel.id == BankAttemptModel.import_row_id)
+                .join(BankImportModel, BankImportModel.id == BankImportRowModel.import_id)
                 .where(BankAttemptModel.learner_id == learner_id, BankAttemptModel.id > after_id)
                 .order_by(BankAttemptModel.id)
                 .limit(limit)
             )
-            return tuple(_fact(attempt, question, row) for attempt, question, row in rows)
+            return tuple(_fact(*row) for row in rows)
 
     def record_attempt(
         self,
@@ -362,9 +372,15 @@ class BankRepository:
             raise ValueError(receipt.conflicts[0].detail)
         with self._session_factory() as session:
             result_row = session.execute(
-                select(BankAttemptModel, BankQuestionModel, BankImportRowModel)
+                select(
+                    BankAttemptModel,
+                    BankQuestionModel,
+                    BankImportRowModel,
+                    BankImportModel.provenance_json,
+                )
                 .join(BankQuestionModel, BankQuestionModel.id == BankAttemptModel.question_id)
                 .join(BankImportRowModel, BankImportRowModel.id == BankAttemptModel.import_row_id)
+                .join(BankImportModel, BankImportModel.id == BankImportRowModel.import_id)
                 .where(
                     BankAttemptModel.learner_id == learner_id,
                     BankQuestionModel.source == key.source,

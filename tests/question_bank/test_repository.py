@@ -291,9 +291,11 @@ def test_reviewed_topics_hash_guard_filters_and_raw_provenance(bank_repo):
     assert any(t.canonical_id == "topic:a" for t in repo.iter_attempts(learner_id="test")[0].topics)
 
 
-def test_imported_review_claim_is_only_a_proposal_and_no_body_leak(bank_repo):
+@pytest.mark.parametrize("source", ["uworld", "study_hub"])
+def test_imported_review_claim_is_only_a_proposal_and_no_body_leak(bank_repo, source):
     repo, _ = bank_repo
     data = with_body(payload())
+    data["source"] = source
     data["rows"][0]["topics"][0].update(canonical_id="system:heme", review_state="accepted")
     commit(repo, data)
     assert repo.list_ready_questions(learner_id="test", topic_ids=("system:heme",)) == ()
@@ -341,6 +343,33 @@ def test_native_attempt_without_question_body(bank_repo):
     with database.session() as session:
         record = session.get(BankImportModel, first.import_id)
         assert json.loads(record.provenance_json)["kind"] == "study_hub_attempt"
+
+
+def test_native_reviewed_topics_survive_without_question_body(bank_repo):
+    repo, _ = bank_repo
+    trusted = (
+        TopicLabel(
+            axis="topic",
+            label="Coagulation",
+            canonical_id="topic:coagulation",
+            method="user",
+            review_state="accepted",
+        ),
+    )
+    kwargs = dict(
+        learner_id="test",
+        key=QuestionKey(source="study_hub", product="lecture_quiz", question_id="revision-7:q1"),
+        attempt_id="answer-event-1",
+        result="correct",
+        occurred_at=None,
+        elapsed_ms=1500,
+        topics=trusted,
+    )
+    first = repo.record_attempt(**kwargs)
+    assert repo.get_question(kwargs["key"]) is None
+    assert first.topics == trusted
+    assert repo.iter_attempts(learner_id="test")[0].topics == trusted
+    assert repo.record_attempt(**kwargs) == first
 
 
 @pytest.mark.parametrize("mode", ["same-export", "different-exports", "native"])
