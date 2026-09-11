@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from oms_hub.anki.sources import SourcePassage
-from oms_hub.llm.codex_session import SessionLifecycle
+from oms_hub.llm.codex_session import MAX_OUTPUT_BYTES, SessionLifecycle, SessionResult
 from oms_hub.models import ChatConversationModel, ChatRequestModel, utc_now
 from oms_hub.study_chat.contracts import (
     BeginResult,
@@ -201,6 +201,26 @@ class ChatRepository:
             row.state = event.phase if event.phase in {"failed", "interrupted"} else "running"
             row.lifecycle_json = _json([*history, event_data | {"recorded_at": utc_now()}])
             row.updated_at = utc_now()
+
+    def record_output(self, request_id: str, result: SessionResult, *, owner_id: str) -> None:
+        """Commit raw transport output privately before decoding or accepting its content."""
+        if not isinstance(result.text, str) or len(result.text.encode("utf-8")) > MAX_OUTPUT_BYTES:
+            raise ValueError("provider output exceeds storage bound")
+        with self.sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            row, conversation = self._owned_request(session, request_id, owner_id)
+            self._open(conversation)
+            if (
+                row.state != "running"
+                or row.provider_phase != "completed"
+                or not result.thread_id
+                or not result.turn_id
+                or (row.thread_id, row.turn_id) != (result.thread_id, result.turn_id)
+            ):
+                raise ValueError("provider output does not match completed lifecycle")
+            if row.raw_response_text is not None and row.raw_response_text != result.text:
+                raise ValueError("provider output content conflict")
+            row.raw_response_text, row.updated_at = result.text, utc_now()
 
     def append(self, request: ChatRequest, answer: ChatAnswer) -> None:
         with self.sessions() as session:

@@ -163,3 +163,47 @@ def test_actual_unconfigured_client_remains_offline_and_unavailable(setup, tmp_p
     assert repo.load_request(req.request_id, owner_id="owner").error_code == "capability_unverified"
     assert not (tmp_path / "session").exists()
     assert not (tmp_path / "work").exists()
+
+
+def test_raw_malformed_output_is_persisted_privately_before_parse(setup):
+    from oms_hub.models import ChatRequestModel
+
+    repo, database, _ = setup
+    req = request(repo, "general")
+
+    class MalformedClient(FakeClient):
+        def generate(self, *args, **kwargs):
+            result = super().generate(*args, **kwargs)
+            return replace(result, text="{malformed-private-output")
+
+    service = ChatService(repo, MalformedClient(), model="chosen")
+    assert service.answer(req).status == "unavailable"
+    with database.session() as session:
+        row = session.get(ChatRequestModel, req.request_id)
+        assert row.raw_response_text == "{malformed-private-output"
+        assert row.state == "failed" and row.answer_text is None
+    stored = repo.load_request(req.request_id, owner_id="owner")
+    assert "malformed-private-output" not in repr(stored)
+    assert stored.provider_phase == "completed" and stored.answer is None
+    from .test_routes import client_for
+
+    client, _ = client_for(repo)
+    with client:
+        assert "malformed-private-output" not in client.get(
+            f"/study/chat/requests/{req.request_id}"
+        ).text
+        assert "malformed-private-output" not in client.get(
+            f"/study/chat/conversations/{req.conversation_id}"
+        ).text
+
+
+def test_output_persistence_failure_cannot_accept_answer(setup, monkeypatch):
+    repo, _, _ = setup
+    req = request(repo, "general")
+
+    def reject(*args, **kwargs):
+        raise OSError("private storage unavailable")
+
+    monkeypatch.setattr(repo, "record_output", reject)
+    assert ChatService(repo, FakeClient(), model="chosen").answer(req).status == "unavailable"
+    assert repo.load_request(req.request_id, owner_id="owner").answer is None

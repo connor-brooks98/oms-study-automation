@@ -257,3 +257,28 @@ def test_dispatch_and_later_notifications_cannot_replay_after_terminal_state(set
             repo.record_lifecycle(req.request_id, last, owner_id="owner")
         with pytest.raises(ValueError):
             repo.record_lifecycle(req.request_id, dispatch, owner_id="owner")
+
+
+def test_raw_output_requires_owner_completed_phase_and_matching_ids(setup):
+    from oms_hub.llm.codex_session import MAX_OUTPUT_BYTES, SessionResult
+
+    repo, database, _ = setup
+    req = request(repo, "general")
+    repo.begin(req, model="chosen")
+    result = SessionResult("thread", "turn", "raw")
+    with pytest.raises(ValueError):
+        repo.record_output(req.request_id, result, owner_id="owner")
+    complete_provider(repo, req)
+    with pytest.raises(PermissionError):
+        repo.record_output(req.request_id, result, owner_id="other")
+    with pytest.raises(ValueError):
+        repo.record_output(req.request_id, replace(result, turn_id="other"), owner_id="owner")
+    with pytest.raises(ValueError):
+        repo.record_output(
+            req.request_id, replace(result, text="x" * (MAX_OUTPUT_BYTES + 1)), owner_id="owner"
+        )
+    repo.record_output(req.request_id, result, owner_id="owner")
+    with database.session() as session:
+        assert session.get(ChatRequestModel, req.request_id).raw_response_text == "raw"
+    with pytest.raises(ValueError):
+        repo.record_output(req.request_id, replace(result, text="changed"), owner_id="owner")

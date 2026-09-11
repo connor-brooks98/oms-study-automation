@@ -112,9 +112,7 @@ class ChatService:
                         owner_id=request.owner_id,
                     ),
                 )
-                stored = self.repository.load_request(request.request_id, owner_id=request.owner_id)
-                if (stored.thread_id, stored.turn_id) != (result.thread_id, result.turn_id):
-                    raise ValueError("provider result identity mismatch")
+                self.repository.record_output(request.request_id, result, owner_id=request.owner_id)
                 answer = _ANSWER.validate_json(result.text)
             if event.is_set():
                 raise SessionError("interrupted")
