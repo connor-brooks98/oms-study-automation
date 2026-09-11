@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "source": "uworld",
+  "product": "step1",
+  "export_id": "user-block-2026-09-11-a",
+  "provenance": {"kind": "user_results", "description": "Synthetic user-transcribed result and own note"},
+  "rows": [{
+    "question_id": "00123",
+    "attempt_id": "block-a-attempt-1",
+    "result": "incorrect",
+    "occurred_at": "2026-09-11T15:00:00Z",
+    "elapsed_ms": 90000,
+    "user_note": "Review coagulation pathway",
+    "tags": ["Heme"],
+    "topics": [{"axis": "system", "label": "Heme", "canonical_id": null,
+                "method": "unmapped", "confidence": null, "review_state": "pending"}],
+    "question": null
+  }]
+}
