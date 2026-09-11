@@ -38,7 +38,7 @@
     "O0": {
       "state": "accepted_local",
       "worker": "O",
-      "commit": "37f6bedd",
+      "commit": "37f6beddec4ae53043aaae779b85e22a39072756",
       "tests": [
         "36 baseline migration/generation tests passed"
       ],
@@ -49,7 +49,7 @@
     "O1": {
       "state": "running",
       "worker": "O",
-      "commit": "c09c44e75f9ad405823f2a5134265036745dcbfb",
+      "commit": "89c0cbd237fa6cddb2dc33393df9effc2b31c70b",
       "tests": [
         "21 migration tests passed",
         "scoped Ruff passed",
@@ -57,7 +57,7 @@
       ],
       "review": "schema32/33, owner boundary, lifecycle fixes independently PASS",
       "blocker": null,
-      "next_action": "source queue/application and bank review integration"
+      "next_action": "review bank bridge/ingestion discriminator; GPT cleaner/application wiring"
     },
     "O2": {
       "state": "ready",
@@ -98,13 +98,13 @@
       "next_action": "implement and return scoped receipt"
     },
     "B3": {
-      "state": "ready",
-      "worker": "B",
+      "state": "running",
+      "worker": "B/helper",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "bounded source manifest/PDF/serialization tests and receipt"
     },
     "B4": {
       "state": "ready",
@@ -163,22 +163,24 @@
       "next_action": "inspect supported results/QID/notes sample, no proprietary parser guessing"
     },
     "Q3": {
+      "state": "review",
+      "worker": "Q",
+      "commit": "8d448a543362048d3cd98a2863679527acb855b0",
+      "tests": [
+        "129 worker repository/import/migration tests passed"
+      ],
+      "review": "queued for independent review; B3 holds helper token",
+      "blocker": null,
+      "next_action": "independent review"
+    },
+    "Q4": {
       "state": "running",
       "worker": "Q",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "implement and return scoped receipt"
-    },
-    "Q4": {
-      "state": "ready",
-      "worker": "Q",
-      "commit": null,
-      "tests": [],
-      "review": null,
-      "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "fixture-only exact Anki matching and candidate query parser"
     },
     "Q5": {
       "state": "ready",
@@ -239,7 +241,8 @@
     "amboss": "automatic_acknowledgment_only; developer_reply_pending",
     "amboss_thread_id": "1a0924aab334e5da",
     "uworld_sample": "not_supplied",
-    "truelearn_sample": "not_supplied"
+    "truelearn_sample": "not_supplied",
+    "vendor_request": "Asked once for product and official per-question results/QID/notes export controls; answer pending."
   },
   "release": {
     "candidate": null,
@@ -269,6 +272,8 @@
     "owner": "B",
     "task": "B3",
     "state": "token_granted",
-    "no_grandchildren": true
+    "no_grandchildren": true,
+    "agent": "/root/b3_sources",
+    "worktree": "/Users/connor/.codex/worktrees/gpt-b3-helper/oms-study-automation"
   }
 }
