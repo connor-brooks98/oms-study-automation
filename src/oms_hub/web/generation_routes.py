@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, cast
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
@@ -420,5 +420,43 @@ def queue_gpt_quiz(request: Request, lecture_id: int, body: GptLectureQueue) -> 
             if isinstance(error, IntegrityError) else str(error))
         raise HTTPException(409, message) from error
     return JSONResponse({"run_id": run.id, "state": run.state.value,
-        "review_url": f"/studio/runs/{run.id}/review"}, status_code=202,
+        "review_url": f"/lectures/gpt-runs/{run.id}"}, status_code=202,
         headers={"Cache-Control": "no-store"})
+
+
+def _gpt_run_payload(request: Request, run_id: str) -> dict[str, object]:
+    import json
+
+    owner = _private_owner(request, mutation=False)
+    repository = request.app.state.studio_repository
+    settings = repository.run_artifact(run_id, "gpt:settings")
+    if settings is None or json.loads(settings.payload_json).get("owner_id") != owner:
+        raise HTTPException(404, "GPT quiz run was not found")
+    run = repository.get_run(run_id)
+    return {"run_id": run.id, "state": run.state.value, "error": run.error,
+        "diagnostic_source": run.diagnostic_source,
+        "review_url": f"/studio/runs/{run_id}/review"}
+
+
+@router.get("/codex/runs/{run_id}")
+def gpt_run_status(request: Request, run_id: str) -> JSONResponse:
+    return JSONResponse(_gpt_run_payload(request, run_id), headers={"Cache-Control": "no-store"})
+
+
+@router.post("/codex/runs/{run_id}/{action}")
+def gpt_run_control(request: Request, run_id: str, action: str) -> JSONResponse:
+    owner = _private_owner(request)
+    try:
+        request.app.state.studio_repository.control_gpt_run(run_id, owner_id=owner, action=action)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return gpt_run_status(request, run_id)
+
+
+@lecture_router.get("/gpt-runs/{run_id}")
+def gpt_run_page(request: Request, run_id: str) -> HTMLResponse:
+    from oms_hub.web.studio_routes import templates
+
+    _gpt_run_payload(request, run_id)
+    return templates.TemplateResponse(request=request, name="gpt_run.html",
+        context={"run_id": run_id}, headers={"Cache-Control": "no-store"})

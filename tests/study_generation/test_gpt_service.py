@@ -10,6 +10,7 @@ from oms_hub.document_processing.presentation_render import PresentationRenderer
 from oms_hub.document_processing.router import DocumentProcessorRouter, ParserMode
 from oms_hub.document_processing.text_adapter import TextProcessor
 from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.llm.codex_session import SessionLifecycle
 from oms_hub.models import StudyRevisionModel, UploadBatchModel, UploadItemModel
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.service import GptLectureService
@@ -68,4 +69,6 @@ def test_gpt_queue_freezes_sources_without_google_and_rechecks_scope(tmp_path, r
         revision.current = False
     with pytest.raises(ValueError, match='no longer current'):
         service.load_inputs(run)
+    with pytest.raises(ValueError, match='no longer current'):
+        repo.record_gpt_lifecycle(run.id, SessionLifecycle(run.id + ':late', 'dispatching'))
     database.close()

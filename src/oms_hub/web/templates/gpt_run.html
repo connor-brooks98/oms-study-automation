@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Quiz progress · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell sh-container" data-gpt-run="{{ run_id }}" aria-labelledby="gpt-run-heading">
+  <div class="page-heading sh-header">
+    <div><p class="eyebrow sh-eyebrow">Lecture quiz</p><h1 class="sh-title" id="gpt-run-heading">Quiz progress</h1></div>
+  </div>
+  <article class="card sh-card provider-card">
+    <h2 data-gpt-run-state aria-live="polite">Loading progress…</h2>
+    <p class="field-help">Review generated questions before publishing. Paused or interrupted work resumes only when you choose Resume.</p>
+    <p class="field-message" data-gpt-run-error></p>
+    <p class="field-help" data-gpt-run-diagnostic></p>
+    <div class="provider-buttons">
+      <button class="button secondary sh-btn sh-btn--secondary" type="button" data-gpt-run-refresh>Refresh</button>
+      <button class="button secondary sh-btn sh-btn--secondary" type="button" data-gpt-run-cancel hidden>Cancel</button>
+      <button class="button primary sh-btn sh-btn--primary" type="button" data-gpt-run-resume hidden>Resume</button>
+      <a class="button primary sh-btn sh-btn--primary" data-gpt-run-review hidden>Open question review</a>
+    </div>
+    <p class="field-message" role="status" aria-live="polite" data-gpt-run-message></p>
+    <noscript><p>Enable JavaScript to check progress, resume, or cancel this quiz request.</p></noscript>
+  </article>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/gpt.js?v=20260911" defer></script>
+{% endblock %}

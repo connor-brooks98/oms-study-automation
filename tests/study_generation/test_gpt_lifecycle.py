@@ -14,7 +14,7 @@ def test_lifecycle_is_scoped_ordered_and_durable(tmp_path):
     with database.session() as session:
         session.add(StudioRunModel(id="run", subject="Heme", subject_key="heme", exam_number=3,
             destination_subject="Heme", destination_subject_key="heme", destination_exam_number=3,
-            label="Lecture", prompt="", backend="codex_subscription"))
+            label="Lecture", prompt="", state="running", backend="codex_subscription"))
     repo = StudioRepository(database)
     request = "run:batch1"
     with pytest.raises(ValueError, match="ownership"):
@@ -67,7 +67,7 @@ def test_concurrent_terminal_events_cannot_overwrite_acknowledged_completion(tmp
     with database.session() as session:
         session.add(StudioRunModel(id="run", subject="Heme", subject_key="heme", exam_number=3,
             destination_subject="Heme", destination_subject_key="heme", destination_exam_number=3,
-            label="Lecture", prompt="", backend="codex_subscription"))
+            label="Lecture", prompt="", state="running", backend="codex_subscription"))
     repo = StudioRepository(database)
     for lifecycle in (SessionLifecycle("run:b", "dispatching"),
                       SessionLifecycle("run:b", "thread_created", "t"),
@@ -98,4 +98,37 @@ def test_concurrent_terminal_events_cannot_overwrite_acknowledged_completion(tmp
     saved = json.loads(repo.run_artifact("run", "gpt:attempt:run:b").payload_json)
     assert saved['phase'] == next(value for value in accepted if value is not None)
     assert len(saved['events']) == 4
+    database.close()
+
+
+def test_explicit_cancel_resume_and_stopped_review_are_owner_bound(tmp_path):
+    from oms_hub.llm.codex_session import SessionError
+
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.session() as session:
+        session.add(StudioRunModel(id="run", subject="Heme", subject_key="heme", exam_number=3,
+            destination_subject="Heme", destination_subject_key="heme", destination_exam_number=3,
+            label="Lecture", prompt="", state="running", backend="codex_subscription"))
+    repo = StudioRepository(database)
+    repo.save_run_artifact("run", "gpt:settings", "hash", '{"owner_id":"owner"}')
+    with pytest.raises(ValueError, match="ownership"):
+        repo.control_gpt_run("run", owner_id="other", action="cancel")
+    repo.record_gpt_lifecycle("run", SessionLifecycle("run:b", "dispatching"))
+    repo.control_gpt_run("run", owner_id="owner", action="cancel")
+    assert repo.gpt_cancelled("run")
+    with pytest.raises(ValueError, match="active run"):
+        repo.record_gpt_lifecycle("run", SessionLifecycle("run:late", "dispatching"))
+    with pytest.raises(ValueError, match="stopped before review"):
+        repo.await_import_review("run", ())
+    with pytest.raises(ValueError, match="unfinished"):
+        repo.control_gpt_run("run", owner_id="owner", action="resume")
+    repo.record_gpt_lifecycle("run", SessionLifecycle("run:b", "interrupted"))
+    repo.control_gpt_run("run", owner_id="owner", action="resume")
+    assert repo.gpt_resume_requested("run") and not repo.gpt_cancelled("run")
+    run = repo.claim_next_run()
+    assert run is not None and run.id == "run"
+    repo.stop_gpt_run("run", SessionError("rate_limited", reset_at="2026-09-12T00:00:00+00:00"))
+    assert repo.get_run("run").state.value == "paused"
+    assert repo.claim_next_run() is None
     database.close()

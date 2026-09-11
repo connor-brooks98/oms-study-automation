@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
 from oms_hub.files.atomic import sha256_file
-from oms_hub.llm.codex_session import SessionLifecycle
+from oms_hub.llm.codex_session import SessionError, SessionLifecycle
 from oms_hub.models import (
     BankImportModel,
     BankImportRowModel,
@@ -1377,6 +1377,82 @@ class StudioRepository:
             session.flush()
             return self._run_domain(session, run)
 
+    def control_gpt_run(self, run_id: str, *, owner_id: str, action: str) -> StudioRun:
+        if action not in {"cancel", "resume"}:
+            raise ValueError("unsupported GPT action")
+        with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+            run = session.get(StudioRunModel, run_id)
+            settings = session.scalar(select(StudioRunArtifactModel).where(
+                StudioRunArtifactModel.run_id == run_id,
+                StudioRunArtifactModel.artifact_key == "gpt:settings"))
+            if (run is None or run.backend != "codex_subscription" or settings is None
+                or json.loads(settings.payload_json).get("owner_id") != owner_id):
+                raise ValueError("GPT run ownership mismatch")
+            allowed = {"queued", "running", "paused", "interrupted", "failed"}
+            if (run.state not in allowed
+                or (action == "resume" and run.state in {"queued", "running"})):
+                raise ValueError("GPT run cannot perform this action in its current state")
+            if action == "resume":
+                attempts = session.scalars(select(StudioRunArtifactModel).where(
+                    StudioRunArtifactModel.run_id == run_id,
+                    StudioRunArtifactModel.artifact_key.startswith("gpt:attempt:")))
+                if any(json.loads(a.payload_json).get("phase") in {
+                    "dispatching", "thread_created", "turn_started"
+                } for a in attempts):
+                    raise ValueError("Dispatched attempt is unfinished; inspect before resuming.")
+            stored = session.scalar(select(StudioRunArtifactModel).where(
+                StudioRunArtifactModel.run_id == run_id,
+                StudioRunArtifactModel.artifact_key == "gpt:control"))
+            previous = json.loads(stored.payload_json) if stored else {}
+            payload = json.dumps({"cancelled": action == "cancel", "resume": action == "resume",
+                "events": previous.get("events", []) + [
+                    {"action": action, "at": datetime.now(UTC).isoformat()}]})
+            if stored is None:
+                stored = StudioRunArtifactModel(run_id=run_id, artifact_key="gpt:control")
+                session.add(stored)
+            stored.payload_json = payload
+            stored.signature_sha256 = hashlib.sha256(payload.encode()).hexdigest()
+            if action == "cancel":
+                run.state = "interrupted"
+                run.error = "Cancelled; any dispatched attempt remains retained."
+            else:
+                run.state = "queued"
+                run.error = None
+            run.next_attempt_at = None
+            session.flush()
+            return self._run_domain(session, run)
+
+    def gpt_cancelled(self, run_id: str) -> bool:
+        control = self.run_artifact(run_id, "gpt:control")
+        return bool(control and json.loads(control.payload_json).get("cancelled"))
+
+    def gpt_resume_requested(self, run_id: str) -> bool:
+        control = self.run_artifact(run_id, "gpt:control")
+        return bool(control and json.loads(control.payload_json).get("resume"))
+
+    def stop_gpt_run(self, run_id: str, error: SessionError) -> StudioRun:
+        with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+            run = session.get(StudioRunModel, run_id)
+            if run is None or run.backend != "codex_subscription":
+                raise ValueError("GPT run is missing")
+            if run.state not in {"queued", "running", "paused", "interrupted", "failed"}:
+                raise ValueError("GPT run already finished")
+            run.state = ("interrupted" if error.code in {"timeout", "interrupted"}
+                or run.state == "interrupted" else "paused"
+                if error.code in {"auth_required", "rate_limited", "capability_unverified",
+                                  "model_unavailable"} else "failed")
+            run.error = str(error)
+            if error.reset_at:
+                run.error += f" Reset time: {error.reset_at}."
+            run.diagnostic_source = error.code
+            run.next_attempt_at = None
+            session.flush()
+            return self._run_domain(session, run)
+
     def record_gpt_lifecycle(self, run_id: str, event: SessionLifecycle) -> None:
         """Commit remote identity before the shared client can advance the turn."""
         if event.request_id != run_id and not event.request_id.startswith(run_id + ":"):
@@ -1397,6 +1473,39 @@ class StudioRepository:
             )
             if run is None or run.backend != "codex_subscription":
                 raise ValueError("GPT request/run ownership mismatch")
+            if event.phase == "dispatching":
+                if run.state != "running":
+                    raise ValueError("GPT dispatch requires an active run")
+                if run.workflow_kind == "lecture_generation":
+                    from oms_hub.study_generation.gpt_lecture import lecture_inputs_from_manifest
+
+                    manifest = session.scalar(select(StudioRunArtifactModel).where(
+                        StudioRunArtifactModel.run_id == run_id,
+                        StudioRunArtifactModel.artifact_key == "gpt:manifest"))
+                    if manifest is None:
+                        raise ValueError("GPT manifest is missing")
+                    inputs = lecture_inputs_from_manifest(json.loads(manifest.payload_json))
+                    lecture = session.get(LectureModel, inputs.lecture_id)
+                    if lecture is None or (lecture.subject, lecture.exam_number) != (
+                        inputs.subject, inputs.exam_number
+                    ):
+                        raise ValueError("GPT lecture scope changed")
+                    for binding in inputs.bindings:
+                        revision = session.get(StudyRevisionModel, binding.revision_id)
+                        if (revision is None or revision.lecture_id != inputs.lecture_id
+                            or not revision.current or revision.state != "current"):
+                            raise ValueError("GPT source is no longer current and approved")
+                        expected_kind = "slides" if binding.role == "slides" else "transcripts"
+                        path, digest = (
+                            (revision.immutable_source_path, revision.source_sha256)
+                            if binding.role == "slides" else
+                            (revision.immutable_derived_path, revision.derived_sha256)
+                        )
+                        if (revision.kind != expected_kind or path is None
+                            or (Path(path), digest) != (
+                                binding.snapshot.path, binding.snapshot.sha256
+                            )):
+                            raise ValueError("GPT source binding changed before dispatch")
             key = "gpt:attempt:" + event.request_id
             stored = session.scalar(select(StudioRunArtifactModel).where(
                 StudioRunArtifactModel.run_id == run_id,
@@ -1541,11 +1650,17 @@ class StudioRepository:
 
     def await_import_review(self, run_id: str, drafts: Sequence[QuestionDraftValue]) -> StudioRun:
         """Persist direct-import provenance and stop before any publication path."""
-        self.save_question_reviews(run_id, drafts)
+        if len({draft.question_id for draft in drafts}) != len(drafts):
+            raise ValueError("question drafts contain duplicate question identifiers")
         with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
             model = session.get(StudioRunModel, run_id)
             if model is None:
                 raise KeyError(run_id)
+            if model.backend == "codex_subscription" and model.state != "running":
+                raise ValueError("GPT run was stopped before review")
+            self._save_question_reviews_in_session(session, run_id, drafts)
             model.state = StudioRunState.AWAITING_REVIEW.value
             model.stage = StudioRunStage.REVIEW.value
             model.error = None

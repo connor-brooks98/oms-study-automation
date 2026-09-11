@@ -46,3 +46,79 @@ test("login links require HTTPS and review links stay on this Hub", () => {
 test("initializing an empty page makes no connection or login calls", () => {
   gpt.initialize({ querySelector: () => null }, () => { throw Error("Unexpected page-load request"); });
 });
+
+test("run controls and polling follow only their allowed states", () => {
+  for (const state of ["queued", "running"]) assert.deepEqual(
+    [gpt.runPresentation(state).active, gpt.runPresentation(state).resume, gpt.runPresentation(state).review], [true, false, false]);
+  for (const state of ["paused", "interrupted", "failed"]) assert.deepEqual(
+    [gpt.runPresentation(state).active, gpt.runPresentation(state).resume, gpt.runPresentation(state).review], [false, true, false]);
+  for (const state of ["awaiting_review", "complete"]) assert.deepEqual(
+    [gpt.runPresentation(state).active, gpt.runPresentation(state).resume, gpt.runPresentation(state).review], [false, false, true]);
+  assert.deepEqual(gpt.runPresentation("unexpected"), { label: "Status unavailable", active: false, resume: false, review: false });
+});
+
+function runFixture() {
+  const nodes = Object.fromEntries(["state", "refresh", "cancel", "resume", "review", "message", "error", "diagnostic"].map((name) => [name, {
+    hidden: true, textContent: "", addEventListener(type, fn) { this[type] = fn; },
+  }]));
+  const page = { dataset: { gptRun: "run-1" }, setAttribute() {}, querySelector: (selector) => nodes[selector.slice(14, -1)] };
+  const documentRef = { cookie: "study_hub_csrf=token", baseURI: "http://localhost:8765/lectures/gpt-runs/run-1" };
+  const runtime = { setTimeout(fn, delay) { this.next = fn; this.delay = delay; return 1; }, clearTimeout() { this.next = null; }, addEventListener(_, fn) { this.unload = fn; } };
+  return { nodes, page, documentRef, runtime };
+}
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test("run poll is serialized, stops on terminal state, and never publishes", async () => {
+  const { nodes, page, documentRef, runtime } = runFixture();
+  const calls = [];
+  let resolve;
+  const fetchImpl = (...args) => { calls.push(args); return new Promise((done) => { resolve = done; }); };
+  gpt.initializeRun(page, documentRef, fetchImpl, runtime);
+  nodes.refresh.click();
+  nodes.cancel.click();
+  assert.equal(calls.length, 1);
+  resolve({ ok: true, json: async () => ({ run_id: "run-1", state: "running" }) });
+  await flush();
+  assert.equal(runtime.delay, 3000);
+  assert.equal(nodes.cancel.hidden, false);
+  runtime.next();
+  resolve({ ok: true, json: async () => ({ run_id: "run-1", state: "awaiting_review", review_url: "/studio/runs/run-1" }) });
+  await flush();
+  assert.equal(runtime.next, null);
+  assert.equal(nodes.review.href, "http://localhost:8765/studio/runs/run-1");
+  assert.equal(nodes.review.hidden, false);
+  assert.equal(nodes.cancel.hidden, true);
+  assert.ok(calls.every(([path, options]) => path.endsWith("/runs/run-1") && !options.method));
+});
+
+test("explicit resume uses CSRF then refreshes; unload ignores late responses", async () => {
+  const { nodes, page, documentRef, runtime } = runFixture();
+  const calls = [];
+  let finish;
+  const fetchImpl = async (path, options) => {
+    calls.push([path, options]);
+    if (calls.length === 3) return new Promise((resolve) => { finish = resolve; });
+    return { ok: true, json: async () => ({ run_id: "run-1", state: "paused" }) };
+  };
+  gpt.initializeRun(page, documentRef, fetchImpl, runtime);
+  await flush();
+  assert.equal(nodes.resume.hidden, false);
+  nodes.resume.click();
+  await flush();
+  assert.equal(calls[1][0], "/settings/generation/codex/runs/run-1/resume");
+  assert.equal(calls[1][1].headers["X-CSRF-Token"], "token");
+  runtime.unload();
+  finish({ ok: true, json: async () => ({ run_id: "run-1", state: "running" }) });
+  await flush();
+  assert.equal(nodes.state.textContent, "Paused");
+  assert.equal(runtime.next, null);
+});
+
+test("wrong run identity is rejected without polling or review navigation", async () => {
+  const { nodes, page, documentRef, runtime } = runFixture();
+  gpt.initializeRun(page, documentRef, async () => ({ ok: true, json: async () => ({ run_id: "other", state: "complete", review_url: "/studio/other" }) }), runtime);
+  await flush();
+  assert.match(nodes.message.textContent, /different quiz request/);
+  assert.equal(nodes.review.hidden, true);
+  assert.equal(runtime.next, null);
+});

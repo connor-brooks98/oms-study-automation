@@ -38,6 +38,71 @@
     }
     return url.href;
   };
+  const runPresentation = (state) => ({
+    label: ({ queued: "Queued", running: "Generating questions", paused: "Paused", interrupted: "Interrupted", failed: "Failed", awaiting_review: "Ready for question review", complete: "Complete" })[state] || "Status unavailable",
+    active: ["queued", "running"].includes(state),
+    resume: ["paused", "interrupted", "failed"].includes(state),
+    review: ["awaiting_review", "complete"].includes(state),
+  });
+
+  function initializeRun(page, documentRef, fetchImpl, runtime = root) {
+    const runId = page.dataset.gptRun;
+    const path = `/settings/generation/codex/runs/${encodeURIComponent(runId)}`;
+    const find = (name) => page.querySelector(`[data-gpt-run-${name}]`);
+    const buttons = [find("refresh"), find("cancel"), find("resume")];
+    let busy = false;
+    let stopped = false;
+    let timer;
+    async function update(action) {
+      if (busy || stopped) return;
+      busy = true;
+      runtime.clearTimeout(timer);
+      buttons.forEach((button) => { button.disabled = true; });
+      page.setAttribute("aria-busy", "true");
+      find("message").textContent = action ? "Updating quiz request…" : "Checking quiz progress…";
+      let active = false;
+      try {
+        if (action) await post(documentRef, fetchImpl, `${path}/${action}`);
+        if (stopped) return;
+        const response = await fetchImpl(path, { credentials: "same-origin", cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (stopped) return;
+        if (!response.ok) throw new Error(errorMessage(payload, `Request failed (${response.status}).`));
+        if (payload.run_id !== runId) throw new Error("The server returned a different quiz request. Refresh to retry.");
+        const view = runPresentation(payload.state);
+        find("state").textContent = view.label;
+        find("cancel").hidden = !view.active;
+        find("resume").hidden = !view.resume;
+        find("review").hidden = true;
+        if (view.review && payload.review_url) {
+          find("review").href = safeLink(payload.review_url, documentRef.baseURI);
+          find("review").hidden = false;
+        }
+        find("error").textContent = typeof payload.error === "string" ? payload.error : "";
+        find("diagnostic").textContent = typeof payload.diagnostic_source === "string" ? payload.diagnostic_source : "";
+        find("message").textContent = view.active ? "Progress updates every 3 seconds." : "Progress is up to date.";
+        active = view.active;
+      } catch (error) {
+        if (!stopped) {
+          find("message").textContent = error.message || "Unable to load progress. Refresh to retry.";
+          find("cancel").hidden = find("resume").hidden = find("review").hidden = true;
+        }
+      } finally {
+        busy = false;
+        if (!stopped) {
+          page.setAttribute("aria-busy", "false");
+          buttons.forEach((button) => { button.disabled = false; });
+          if (active) timer = runtime.setTimeout(() => update(), 3000);
+        }
+      }
+    }
+    find("refresh").addEventListener("click", () => update());
+    for (const action of ["cancel", "resume"]) find(action).addEventListener("click", () => update(action));
+    const stop = () => { stopped = true; runtime.clearTimeout(timer); };
+    runtime.addEventListener?.("pagehide", stop, { once: true });
+    update();
+    return stop;
+  }
 
   function initialize(documentRef, fetchImpl = root.fetch.bind(root)) {
     const settings = documentRef.querySelector("[data-gpt-settings]");
@@ -126,15 +191,18 @@
           });
           if (!payload.run_id || !payload.review_url) throw new Error("The server did not return a quiz review link.");
           review.href = safeLink(payload.review_url, documentRef.baseURI);
+          review.textContent = "Follow quiz progress";
           review.hidden = false;
-          message.textContent = `Quiz request ${payload.state || "created"}. Open question review to follow its progress.`;
+          message.textContent = `Quiz request ${payload.state || "created"}. Follow quiz progress to see when questions are ready for review.`;
         } catch (error) { message.textContent = error.message || "Request failed."; }
         finally { busy = false; submit.disabled = false; form.setAttribute("aria-busy", "false"); }
       });
     }
+    const run = documentRef.querySelector("[data-gpt-run]");
+    if (run) return initializeRun(run, documentRef, fetchImpl);
   }
 
-  const api = { objectives, errorMessage, statusText, csrfToken, post, safeLink, initialize };
+  const api = { objectives, errorMessage, statusText, csrfToken, post, safeLink, runPresentation, initializeRun, initialize };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     if (root.document.readyState === "loading") root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

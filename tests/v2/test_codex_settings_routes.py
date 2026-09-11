@@ -62,3 +62,29 @@ def test_managed_settings_are_explicit_private_and_share_one_client(tmp_path, mo
     restored = create_app(settings)
     assert restored.state.codex_model == 'fixture-model'
     restored.state.database.close()
+
+
+def test_gpt_progress_controls_require_owner_and_csrf(tmp_path):
+    from oms_hub.models import StudioRunModel
+
+    app = create_app(Settings(_env_file=None, data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}"))
+    with app.state.database.session() as session:
+        session.add(StudioRunModel(id='run', subject='Heme', subject_key='heme', exam_number=3,
+            destination_subject='Heme', destination_subject_key='heme', destination_exam_number=3,
+            label='Quiz', prompt='', backend='codex_subscription', state='paused'))
+    repo = app.state.studio_repository
+    repo.save_run_artifact('run', 'gpt:settings', 'hash', '{"owner_id":"local-owner"}')
+    client = TestClient(app)
+    page = client.get('/lectures/gpt-runs/run')
+    assert page.status_code == 200 and 'Quiz progress' in page.text
+    path = '/settings/generation/codex/runs/run'
+    assert client.get(path).json()['state'] == 'paused'
+    assert client.post(path + '/resume').status_code == 403
+    headers = {'X-CSRF-Token': client.cookies['study_hub_csrf']}
+    assert client.post(path + '/resume', headers=headers).json()['state'] == 'queued'
+    assert client.post(path + '/cancel', headers=headers).json()['state'] == 'interrupted'
+    repo.save_run_artifact('run', 'gpt:settings', 'hash', '{"owner_id":"another-owner"}')
+    assert client.get(path).status_code == 404
+    assert client.post(path + '/resume', headers=headers).status_code == 409
+    app.state.database.close()
