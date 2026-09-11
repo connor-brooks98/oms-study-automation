@@ -11,31 +11,45 @@
   "workers": {
     "B": {
       "client_thread_id": "client-new-thread:f0c101c3-7b75-4c64-8aa6-60e6188860cb",
-      "state": "setup_pending"
+      "state": "running",
+      "thread_id": "01a09273-0ad0-7ae1-902e-d24a1556741a",
+      "host_id": "local",
+      "cwd": "/Users/connor/.codex/worktrees/ca93/oms-study-automation",
+      "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2"
     },
     "Q": {
       "client_thread_id": "client-new-thread:ff914d7d-00ef-4079-8b4b-bdff39cf34b3",
-      "state": "setup_pending"
+      "state": "running",
+      "thread_id": "01a09273-0ad0-7ae1-902e-d21c0e15d9c8",
+      "host_id": "local",
+      "cwd": "/Users/connor/.codex/worktrees/f0c7/oms-study-automation",
+      "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2"
     }
   },
   "tasks": {
     "O0": {
-      "state": "running",
+      "state": "accepted_local",
       "worker": "O",
-      "commit": null,
-      "tests": [],
-      "review": null,
+      "commit": "37f6bedd",
+      "tests": [
+        "36 baseline migration/generation tests passed"
+      ],
+      "review": "identity verified from worker receipts",
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "maintain exact dispatch"
     },
     "O1": {
-      "state": "ready",
+      "state": "running",
       "worker": "O",
-      "commit": null,
-      "tests": [],
+      "commit": "86bf3e2583614b0e52a80a998cd6f05fc67c538e",
+      "tests": [
+        "21 migration tests passed",
+        "scoped Ruff passed",
+        "mypy models/migrations passed"
+      ],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "independent schema review; owner and GPT lifecycle wiring"
     },
     "O2": {
       "state": "ready",
@@ -56,13 +70,13 @@
       "next_action": "follow approved dependency table"
     },
     "B1": {
-      "state": "ready",
+      "state": "running",
       "worker": "B",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "await scoped receipt and independent review"
     },
     "B2": {
       "state": "ready",
@@ -119,13 +133,13 @@
       "next_action": "follow approved dependency table"
     },
     "Q1": {
-      "state": "ready",
+      "state": "running",
       "worker": "Q",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "await scoped receipt and independent review"
     },
     "Q2": {
       "state": "ready",
