@@ -84,7 +84,16 @@
              ),
            );
            const summaryHeading = element(
-@@ -893,7 +927,8 @@
+@@ -740,6 +774,8 @@
+
+         const question = content.questions[state.currentIndex];
+         const questionProgress = state.questions[question.id];
++        const stagedAnswer = personalSession ? question.answer : null;
++        const selectionLocked = closedSession || Boolean(stagedAnswer);
+         const shell = element(
+           documentRef,
+           "article",
+@@ -893,7 +929,8 @@
          });
          flagLabel.append(flagSelect);
          flag.append(flagLabel);
@@ -94,7 +103,58 @@
          body.append(studyTools);
 
          const answers = element(documentRef, "div", "quiz-answers");
-@@ -1062,7 +1097,9 @@
+@@ -915,7 +952,7 @@
+             select.className = "sh-select";
+             select.dataset.focusKey = `match-${prompt.id}`;
+             select.setAttribute("aria-label", `Choice for prompt ${prompt.label}`);
+-            select.disabled = questionProgress.submitted || questionProgress.submitting;
++            select.disabled = selectionLocked || questionProgress.submitted || questionProgress.submitting;
+             const placeholder = element(documentRef, "option", "", "Choose a term");
+             placeholder.value = "";
+             placeholder.disabled = true;
+@@ -927,6 +964,7 @@
+             });
+             select.value = selected;
+             select.addEventListener("change", () => {
++              if (selectionLocked) return;
+               state = selectMatch(state, question.id, prompt.id, select.value);
+               persist();
+               render();
+@@ -981,7 +1019,7 @@
+             `answer-${choice.id}`,
+           );
+           answer.type = "button";
+-          answer.disabled = questionProgress.submitted || questionProgress.submitting;
++          answer.disabled = selectionLocked || questionProgress.submitted || questionProgress.submitting;
+           answer.setAttribute("aria-pressed", String(selected));
+           answer.append(
+             element(
+@@ -993,6 +1031,7 @@
+             element(documentRef, "span", "quiz-choice-text", choice.text),
+           );
+           answer.addEventListener("click", () => {
++            if (selectionLocked) return;
+             state = selectChoice(state, question.id, choice.id);
+             persist();
+             render();
+@@ -1006,7 +1045,7 @@
+             `strike-${choice.id}`,
+           );
+           strike.type = "button";
+-          strike.disabled = questionProgress.submitted || questionProgress.submitting;
++          strike.disabled = selectionLocked || questionProgress.submitted || questionProgress.submitting;
+           strike.setAttribute("aria-pressed", String(eliminated));
+           strike.setAttribute(
+             "aria-label",
+@@ -1014,6 +1053,7 @@
+           );
+           strike.title = eliminated ? "Restore answer" : "Cross out answer";
+           strike.addEventListener("click", () => {
++            if (selectionLocked) return;
+             state = toggleEliminated(state, question.id, choice.id);
+             persist();
+             render();
+@@ -1062,7 +1102,9 @@
              const message = element(documentRef, "p", "quiz-error");
              message.setAttribute("role", "alert");
              message.append(documentRef.createTextNode(
@@ -105,16 +165,50 @@
                  ? "Your selection is saved. "
                  : "Your selection could not be saved; refreshing may lose progress. "}`,
              ));
-@@ -1104,7 +1141,7 @@
+@@ -1083,14 +1125,18 @@
+               documentRef,
+               "p",
+               "quiz-submit-note",
+-              "You can change your selection until you submit.",
++              stagedAnswer
++                ? "Saved selection is locked. Retry to finish recording this answer."
++                : closedSession
++                  ? "This question was not answered before the session closed."
++                  : "You can change your selection until you submit.",
+             ),
+           );
+           const submit = element(
+             documentRef,
+             "button",
+             "quiz-primary quiz-submit sh-btn sh-btn--primary sh-btn--block sh-btn--stateful",
+-            questionProgress.submitting ? "Checking…" : "Submit Answer",
++            questionProgress.submitting ? "Checking…" : stagedAnswer ? "Retry saved answer" : "Submit Answer",
+             "submit",
+           );
+           submit.type = "button";
+@@ -1098,14 +1144,17 @@
+             ? "loading"
+             : questionProgress.submissionError ? "error" : "idle";
+           if (questionProgress.submitting) submit.setAttribute("aria-busy", "true");
+-          const selectedAnswer = question.kind === "matching"
+-            ? questionProgress.selectedChoiceIds
+-            : questionProgress.selectedChoiceId;
++          const selectedAnswer = stagedAnswer
++            ? (stagedAnswer.kind === "matching" ? stagedAnswer.matches : stagedAnswer.choice_id)
++            : (question.kind === "matching"
++              ? questionProgress.selectedChoiceIds
++              : questionProgress.selectedChoiceId);
            const answerComplete = question.kind === "matching"
              ? questionProgress.promptIds.every((id) => selectedAnswer[id])
              : Boolean(selectedAnswer);
 -          submit.disabled = !answerComplete || questionProgress.submitting;
-+          submit.disabled = closedSession || !answerComplete || questionProgress.submitting;
++          submit.disabled = (closedSession && !stagedAnswer) || !answerComplete || questionProgress.submitting;
            submit.addEventListener("click", async () => {
++            if (submit.disabled) return;
              const submittedAnswer = typeof selectedAnswer === "string"
                ? selectedAnswer
-@@ -1122,6 +1159,8 @@
+               : { ...selectedAnswer };
+@@ -1122,6 +1171,8 @@
                  submittedAnswer,
                  csrfToken(documentRef),
                  questionProgress,
@@ -123,7 +217,7 @@
                );
                state = recordFeedback(
                  state,
-@@ -1129,6 +1168,11 @@
+@@ -1129,6 +1180,11 @@
                  feedbackResult,
                  submittedAnswer,
                );
@@ -135,7 +229,7 @@
                pendingFocusKey = "forward";
                persist();
                render();
-@@ -1171,9 +1215,9 @@
+@@ -1171,9 +1227,9 @@
            "forward",
          );
          forward.type = "button";
@@ -149,7 +243,7 @@
            render();
 --- a/tests/js/public_quiz.test.js
 +++ b/tests/js/public_quiz.test.js
-@@ -1062,3 +1062,66 @@
+@@ -1062,3 +1062,117 @@
      flagged: 0,
    });
  });
@@ -207,12 +301,63 @@
 +    body: { kind: "choice", choice_id: "c1", elapsed_ms: 42 } });
 +});
 +
-+test("closed personal session disables new submission", async () => {
++test("closed personal session keeps an unstaged question disabled", async () => {
 +  const { documentRef, app } = buildQuizApp();
 +  app.dataset.personalSession = "true";
 +  const rendered = { ...mixedContent(), closed: true,
-+    questions: [{ ...mixedContent().questions[0], attempt_id: "one",
-+      answer: { kind: "choice", choice_id: "c1" } }] };
-+  await quiz.initialize(documentRef, async () => ({ ok: true, async json() { return rendered; } }));
++    questions: [{ ...mixedContent().questions[0], attempt_id: "one" }] };
++  const posts = [];
++  await quiz.initialize(documentRef, async (url, options) => {
++    if (options?.method === "POST") posts.push(url);
++    return { ok: true, async json() { return rendered; } };
++  });
 +  assert.equal(app.querySelector('[data-focus-key="submit"]').disabled, true);
++  assert.equal(app.querySelector('[data-focus-key="answer-c1"]').disabled, true);
++  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
++  assert.deepEqual(posts, []);
 +});
++
++for (const closed of [false, true]) {
++  for (const matching of [false, true]) {
++    test(`${closed ? "closed" : "open"} session reload retries a locked staged ${matching ? "matching" : "choice"} answer`, async () => {
++      const { documentRef, app } = buildQuizApp();
++      app.dataset.personalSession = "true";
++      app.dataset.answerUrl = "/study/sessions/session/answers/{attempt_id}";
++      const savedAnswer = matching
++        ? { kind: "matching", matches: { p1: "c2", p2: "c1" } }
++        : { kind: "choice", choice_id: "c1" };
++      const rendered = { ...mixedContent(), closed,
++        questions: [{ ...mixedContent().questions[matching ? 1 : 0],
++          attempt_id: "staged-attempt", answer: savedAnswer, elapsed_ms: 42 }] };
++      const posts = [];
++      await quiz.initialize(documentRef, async (url, options) => {
++        if (options?.method === "POST") {
++          posts.push({ url, body: JSON.parse(options.body) });
++          return { ok: true, async json() { return matching ? matchingFeedback(true)
++            : { correct: true, correct_choice_id: "c1", rationale: "Saved" }; } };
++        }
++        return { ok: true, async json() { return rendered; } };
++      });
++      assert.equal(findByClass(app, "quiz-feedback").hidden, true);
++      assert.equal(app.querySelector('[data-focus-key="submit"]').disabled, false);
++      if (matching) {
++        const select = app.querySelector('[data-focus-key="match-p1"]');
++        assert.equal(select.disabled, true);
++        select.value = "c1";
++        select._listeners.change[0]();
++      } else {
++        const choice = app.querySelector('[data-focus-key="answer-c2"]');
++        const strike = app.querySelector('[data-focus-key="strike-c1"]');
++        assert.equal(choice.disabled, true);
++        assert.equal(strike.disabled, true);
++        choice._listeners.click[0]();
++        strike._listeners.click[0]();
++      }
++      await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
++      assert.deepEqual(posts, [{ url: "/study/sessions/session/answers/staged-attempt",
++        body: { ...savedAnswer, elapsed_ms: 42 } }]);
++      assert.notEqual(findByClass(app, "quiz-feedback").hidden, true);
++      assert.equal(app.querySelector('[data-focus-key="submit"]'), null);
++    });
++  }
++}
