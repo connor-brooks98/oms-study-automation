@@ -1124,6 +1124,8 @@ class StudySessionQuestionModel(Base):
 class BankReviewRunModel(Base):
     __tablename__ = "bank_review_runs"
     import_id: Mapped[str] = mapped_column(ForeignKey("bank_imports.id"), primary_key=True)
+    batch_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    draft_sha256: Mapped[str] = mapped_column(String(64))
     run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"), unique=True)
 
 

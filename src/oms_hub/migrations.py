@@ -41,7 +41,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 35
+LATEST_SCHEMA_VERSION = 36
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -2695,6 +2695,32 @@ def _validate_ingestion_backend_v35(database: "Database") -> None:
         raise RuntimeError("schema v35 ingestion backend is missing")
 
 
+def _upgrade_bank_batches_v36(database: "Database") -> None:
+    inspector = inspect(database.engine)
+    if "batch_key" in {c["name"] for c in inspector.get_columns("bank_review_runs")}:
+        return
+    import hashlib
+    import json
+
+    with database.engine.begin() as connection:
+        rows = connection.execute(text("SELECT import_id, run_id FROM bank_review_runs")).all()
+        connection.execute(text("ALTER TABLE bank_review_runs RENAME TO bank_review_runs_v34"))
+        connection.execute(text("CREATE TABLE bank_review_runs (import_id VARCHAR(36) NOT NULL "
+            "REFERENCES bank_imports(id), batch_key VARCHAR(64) NOT NULL, "
+            "draft_sha256 VARCHAR(64) NOT NULL, run_id VARCHAR(36) NOT NULL UNIQUE "
+            "REFERENCES studio_runs(id), PRIMARY KEY(import_id, batch_key))"))
+        for import_id, run_id in rows:
+            ids = connection.execute(text("SELECT import_row_id FROM bank_review_questions "
+                "WHERE run_id=:run"), {"run": run_id}).scalars().all()
+            payload = connection.execute(text("SELECT payload_json FROM studio_run_artifacts "
+                "WHERE run_id=:run AND artifact_key='normalized'"), {"run": run_id}).scalar_one()
+            connection.execute(text("INSERT INTO bank_review_runs VALUES (:import_id, :batch, "
+                ":digest, :run)"), {"import_id": import_id, "run": run_id,
+                "batch": hashlib.sha256(json.dumps(sorted(ids)).encode()).hexdigest(),
+                "digest": hashlib.sha256(payload.encode()).hexdigest()})
+        connection.execute(text("DROP TABLE bank_review_runs_v34"))
+
+
 def migrate_database(database: "Database") -> None:
     # A populated current schema is an integrity check, not an opportunity to
     # rewrite persisted identities.  Keep this branch read-only.
@@ -2727,6 +2753,7 @@ def migrate_database(database: "Database") -> None:
                 database.create_schema()
                 _upgrade_gpt_platform_v32(database)
                 _upgrade_ingestion_backend_v35(database)
+                _upgrade_bank_batches_v36(database)
                 _validate_gpt_platform_v32(database)
                 with database.engine.begin() as connection:
                     _validate_study_chat_v33(database)
@@ -2789,6 +2816,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_lecture_pass_resources_v31(database)
     _upgrade_gpt_platform_v32(database)
     _upgrade_ingestion_backend_v35(database)
+    _upgrade_bank_batches_v36(database)
     _validate_ingestion_backend_v35(database)
     _validate_gpt_platform_v32(database)
     _validate_study_chat_v33(database)

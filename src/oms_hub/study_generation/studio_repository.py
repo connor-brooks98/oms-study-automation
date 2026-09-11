@@ -1223,16 +1223,6 @@ class StudioRepository:
                 raise ValueError("bank import ownership mismatch")
             if json.loads(imported.provenance_json).get("kind") != "authorized_question_export":
                 raise ValueError("Import has no authorized question content")
-            existing = session.get(BankReviewRunModel, bank_import_id)
-            if existing is not None:
-                run = session.get(StudioRunModel, existing.run_id)
-                if run is None:
-                    raise ValueError("bank review run is missing")
-                if (run.subject_key, run.exam_number, run.label_key) != (
-                    subject_key, exam_number, label_key
-                ):
-                    raise ValueError("bank import already has a different review destination")
-                return self._run_domain(session, run)
             rows = {row.row_number: row for row in session.scalars(
                 select(BankImportRowModel).where(BankImportRowModel.import_id == bank_import_id)
             )}
@@ -1252,6 +1242,21 @@ class StudioRepository:
                 selected.append(row)
             if len({row.id for row in selected}) != len(selected):
                 raise ValueError("bank draft rows must be unique")
+            batch_key = hashlib.sha256(
+                json.dumps(sorted(row.id for row in selected)).encode()
+            ).hexdigest()
+            payload = _drafts_json(drafts)
+            draft_sha256 = hashlib.sha256(payload.encode()).hexdigest()
+            existing = session.get(BankReviewRunModel, (bank_import_id, batch_key))
+            if existing is not None:
+                run = session.get(StudioRunModel, existing.run_id)
+                if run is None or existing.draft_sha256 != draft_sha256:
+                    raise ValueError("bank batch replay has changed content")
+                if (run.subject_key, run.exam_number, run.label_key) != (
+                    subject_key, exam_number, label_key
+                ):
+                    raise ValueError("bank batch already has a different review destination")
+                return self._run_domain(session, run)
             active = session.scalar(select(StudioRunModel.id).where(
                 StudioRunModel.destination_subject_key == subject_key,
                 StudioRunModel.destination_exam_number == exam_number,
@@ -1266,14 +1271,16 @@ class StudioRepository:
             ))
             if active is not None or published is not None:
                 raise ValueError("this quiz label is already in use for the destination exam")
-            if session.get(StudioSourceModel, bank_import_id) is not None:
+            source = session.get(StudioSourceModel, bank_import_id)
+            if source is None:
+                source = StudioSourceModel(
+                    id=bank_import_id, subject=subject, subject_key=subject_key,
+                    exam_number=exam_number, source_type="text", title=label,
+                    purpose="local_import", import_role="combined_questions_answers",
+                    state="ready", snapshot_sha256=imported.digest, media_type="application/json",
+                )
+            elif source.purpose != "local_import" or source.snapshot_sha256 != imported.digest:
                 raise ValueError("bank source identity collision")
-            source = StudioSourceModel(
-                id=bank_import_id, subject=subject, subject_key=subject_key,
-                exam_number=exam_number, source_type="text", title=label,
-                purpose="local_import", import_role="combined_questions_answers",
-                state="ready", snapshot_sha256=imported.digest, media_type="application/json",
-            )
             run = StudioRunModel(
                 id=str(uuid4()), subject=subject, subject_key=subject_key,
                 exam_number=exam_number, destination_subject=subject,
@@ -1287,7 +1294,8 @@ class StudioRepository:
                 run_id=run.id, source_id=source.id, source_role="combined_questions_answers",
                 attach_to_notebook=False, position=0,
             ))
-            session.add(BankReviewRunModel(import_id=bank_import_id, run_id=run.id))
+            session.add(BankReviewRunModel(import_id=bank_import_id, batch_key=batch_key,
+                draft_sha256=draft_sha256, run_id=run.id))
             for draft, row in zip(drafts, selected, strict=True):
                 session.add(BankReviewQuestionModel(
                     run_id=run.id, local_question_id=draft.question_id,

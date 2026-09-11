@@ -1,7 +1,8 @@
 import json
+from dataclasses import replace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from oms_hub.db import Database
 from oms_hub.models import (
@@ -43,7 +44,29 @@ def test_bank_review_is_atomic_owned_and_not_published(tmp_path):
     run = repo.create_bank_import_review(**kwargs)
     assert run.state.value == 'awaiting_review'
     assert repo.create_bank_import_review(**kwargs).id == run.id
+    # Reconstruct the previously accepted candidate schema, retaining its run.
+    with database.engine.begin() as connection:
+        connection.execute(text('ALTER TABLE bank_review_runs RENAME TO bank_review_runs_new'))
+        connection.execute(text('CREATE TABLE bank_review_runs (import_id VARCHAR(36) PRIMARY KEY '
+            'REFERENCES bank_imports(id), run_id VARCHAR(36) UNIQUE REFERENCES studio_runs(id))'))
+        connection.execute(text('INSERT INTO bank_review_runs SELECT import_id, run_id '
+            'FROM bank_review_runs_new'))
+        connection.execute(text('DROP TABLE bank_review_runs_new'))
+        connection.execute(text('UPDATE schema_version SET version=35'))
+    database.migrate()
+    assert repo.create_bank_import_review(**kwargs).id == run.id
     assert repo.claim_next_run() is None
+    with database.session() as session:
+        session.add(BankImportRowModel(import_id='import', row_number=2, question_id=question.id,
+            canonical_row_hash='c' * 64, row_json=json.dumps({'question': {'stem': 'Case 2'}})))
+    second = replace(draft, question_id='q2', stem='Case 2',
+        source_refs=(QuestionSourceRef('import', 'row:2', 'Import row 2'),))
+    second_kwargs = kwargs | {'label': 'Practice 2', 'drafts': (second,)}
+    second_run = repo.create_bank_import_review(**second_kwargs)
+    assert second_run.id != run.id
+    assert repo.create_bank_import_review(**second_kwargs).id == second_run.id
+    with pytest.raises(ValueError, match='changed content'):
+        repo.create_bank_import_review(**(kwargs | {'drafts': (replace(draft, stem='Altered'),)}))
     review = PracticeReviewService(repo)
     assert review.question(run.id, 'q1').verification_required
     with pytest.raises(ValueError):
@@ -52,6 +75,7 @@ def test_bank_review_is_atomic_owned_and_not_published(tmp_path):
     assert len(review.to_native_quiz(run.id).questions) == 1
     with database.session() as session:
         assert session.scalar(select(PublishedQuizModel)) is None
-        link = session.scalar(select(BankReviewQuestionModel))
+        link = session.scalar(select(BankReviewQuestionModel).where(
+            BankReviewQuestionModel.run_id == run.id))
         assert link is not None and link.local_question_id == 'q1'
     database.close()
