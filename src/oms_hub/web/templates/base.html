@@ -18,7 +18,7 @@
 <body class="sh-app">
   <a class="skip-link" href="#main-content">Skip to main content</a>
   {% set current_path = request.url.path %}
-  {% set more_active = current_path.startswith('/uploads/') or current_path.startswith('/quarantine') or current_path.startswith('/review') or current_path.startswith('/settings') %}
+  {% set more_active = current_path.startswith('/study/') or current_path.startswith('/question-bank') or current_path.startswith('/uploads/') or current_path.startswith('/quarantine') or current_path.startswith('/review') or current_path.startswith('/settings') %}
   <header class="site-header sh-topbar">
     <div class="sh-topbar__inner">
       <a class="brand sh-wordmark" href="/">
@@ -35,6 +35,7 @@
         <details class="sh-more">
           <summary class="sh-nav__link sh-more__trigger {% if more_active %}sh-nav__link--active{% endif %}" aria-expanded="false" {% if more_active %}aria-current="page"{% endif %}>More <span class="sh-more__chevron" aria-hidden="true">▾</span></summary>
           <div class="sh-more__menu t-dropdown" data-origin="top-right">
+            <a href="/study/chat">Study chat</a>
             <a href="/uploads/slides">Upload slides</a>
             <a href="/uploads/transcripts">Upload transcript</a>
             <a href="/quarantine">Unmatched uploads</a>
@@ -69,6 +70,7 @@
       <a href="/studio" data-command-item>Quiz Builder <span>Generate or import quizzes</span></a>
       <a href="/public/quizzes" data-command-item>Quizzes <span>Open released lecture quizzes</span></a>
       <a href="/public/practice-questions" data-command-item>Practice Questions <span>Open released question sets</span></a>
+      <a href="/study/chat" data-command-item>Study chat <span>Ask about selected lecture sources</span></a>
       <a href="/uploads/slides" data-command-item>Upload slides <span>Convert PowerPoint files to PDF</span></a>
       <a href="/uploads/transcripts" data-command-item>Upload transcript <span>Clean lecture transcripts</span></a>
       <a href="/quarantine" data-command-item>Unmatched uploads <span>Choose the matching lecture</span></a>
@@ -85,6 +87,7 @@
     <nav aria-label="Mobile navigation">
       <a href="/" data-dialog-initial-focus>Home</a><a href="/lectures">Lectures</a><a href="/anki">Anki</a><a href="/studio">Quiz Builder</a>
       <a href="/public/quizzes">Quizzes</a><a href="/public/practice-questions">Practice Questions</a>
+      <a href="/study/chat">Study chat</a>
       <a href="/uploads/slides">Upload slides</a><a href="/uploads/transcripts">Upload transcript</a>
       <a href="/quarantine">Unmatched uploads</a><a href="/review">Review</a><a href="/settings">Settings</a>
     </nav>

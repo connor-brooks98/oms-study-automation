@@ -109,6 +109,10 @@ from oms_hub.security.csrf import (
 from oms_hub.security.rate_limit import PublicQuizRateLimiter, public_client_identifier
 from oms_hub.security.secret_store import VOYAGE_API_KEY_SECRET, KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
+from oms_hub.study_chat.repository import ChatRepository
+from oms_hub.study_chat.routes import router as study_chat_router
+from oms_hub.study_chat.service import ChatService
+from oms_hub.study_chat.sources import ChatSources
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.domain import PromptKind
 from oms_hub.study_generation.native_quiz import NativeQuizPublisher
@@ -516,6 +520,11 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
     supervisor = app.state.worker_supervisor
     supervisor_started = getattr(app.state, "anki_rehearsal_mode", "off") == "off"
     if supervisor_started:
+        # This new app owns no active chat turns; retain interrupted prior requests, never replay.
+        app.state.study_chat_repository.interrupt_pending(
+            owner_id=(app.state.settings.cloudflare_access_allowed_email
+                      or "local-owner").casefold()
+        )
         supervisor.start()
     try:
         yield
@@ -1049,6 +1058,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.codex_model = (
         app.state.study_ai_settings.get().codex_model or resolved.codex_model
     )
+    study_owner = (resolved.cloudflare_access_allowed_email or "local-owner").casefold()
+
+    def authorize_chat_revision(owner_id: str, revision_id: int) -> None:
+        if owner_id != study_owner:
+            raise PermissionError("source owner mismatch")
+        revision = app.state.ingestion_repository.get_study_revision(revision_id)
+        if revision is None or not revision.current or revision.state != "current":
+            raise ValueError("source revision is not current and approved")
+
+    app.state.study_chat_repository = ChatRepository(database.session, sources=ChatSources(
+        database.session, LectureSourceExtractor(app.state.ingestion_repository),
+        authorize_revision=authorize_chat_revision,
+    ))
+    app.state.study_chat_service = (
+        ChatService(app.state.study_chat_repository, app.state.codex_session,
+                    model=app.state.codex_model)
+        if app.state.codex_session is not None else None
+    )
     app.state.gpt_transcript_cleaner = (
         CodexTranscriptCleaner(app.state.codex_session, app.state.codex_model)
         if app.state.codex_session is not None else None
@@ -1368,6 +1395,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(upload_router)
     app.include_router(quarantine_router)
     app.include_router(generation_router)
+    app.include_router(study_chat_router)
     app.include_router(anki_prompt_router)
     app.include_router(notebook_router)
     app.include_router(lecture_router)
