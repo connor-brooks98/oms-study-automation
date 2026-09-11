@@ -56,6 +56,10 @@ def test_exact_ids_and_unknown_results():
         ("occurred_at", "2026-09-11T15:00:00"),
         ("occurred_at", "2026-09-11"),
         ("occurred_at", 1789140000),
+        ("occurred_at", "1789140000"),
+        ("occurred_at", "20260911"),
+        ("occurred_at", "1789140000.5"),
+        ("occurred_at", "-1789140000"),
         ("occurred_at", "yesterday"),
         ("user_note", "x" * 20001),
         ("user_note", 1),
@@ -71,6 +75,22 @@ def test_invalid_row_fields(field, value):
     data["rows"][0][field] = value
     with pytest.raises(ValueError):
         parse_import(raw(data))
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-09-11T15:00:00Z",
+        "2026-09-11T11:00:00-04:00",
+        "2026-09-11T20:30:00.123456+05:30",
+    ],
+)
+def test_explicit_timezone_datetimes_remain_supported(timestamp):
+    data = payload()
+    data["rows"][0]["occurred_at"] = timestamp
+    parsed = parse_import(raw(data)).rows[0].occurred_at
+    assert parsed is not None
+    assert parsed.isoformat() == timestamp.replace("Z", "+00:00")
 
 
 @pytest.mark.parametrize(

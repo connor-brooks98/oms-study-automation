@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal, Self
@@ -61,6 +62,15 @@ class ImportRow(_Input):
     tags: tuple[Label, ...] = ()
     topics: tuple[TopicLabel, ...] = ()
     question: dict[str, object] | None = None
+
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def timestamp_is_explicit(cls, value: object) -> object:
+        if isinstance(value, str):
+            if not re.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt ]", value):
+                raise ValueError("occurred_at requires an explicit timezone-bearing datetime")
+            return datetime.fromisoformat(value.replace("t", "T").replace("z", "Z"))
+        return value
 
     @field_validator("question")
     @classmethod

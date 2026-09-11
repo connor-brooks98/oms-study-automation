@@ -57,6 +57,9 @@ JSON strings remain data: no expression evaluation, path access or URL fetching.
 or have surrounding whitespace. They are never trimmed or case-normalized.
 `attempt_id: null` requires `result: unknown`, `occurred_at: null`, and
 `elapsed_ms: null`. A QID alone cannot invent an attempt or a correctness result.
+Timestamp strings must begin with an explicit `YYYY-MM-DD` date and a date/time
+separator (`T`, `t`, or space), followed by a valid time and timezone. Numeric
+strings such as `1789140000` or `20260911` are rejected rather than guessed as epochs.
 An explicit attempt may still have unknown outcome or missing time. Omitted and
 unknown outcomes remain distinct from incorrect answers.
 
