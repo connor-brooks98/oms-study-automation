@@ -41,7 +41,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 31
+LATEST_SCHEMA_VERSION = 32
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -2637,6 +2637,30 @@ def _is_deployed_study_hub_v23_schema(database: "Database", version: int | None)
     return {"import_attach_to_notebook", "import_role"} <= studio_source_columns
 
 
+def _upgrade_gpt_platform_v32(database: "Database") -> None:
+    columns = {column["name"] for column in inspect(database.engine).get_columns("studio_runs")}
+    if "backend" not in columns:
+        with database.engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE studio_runs ADD COLUMN backend VARCHAR(30) "
+                "NOT NULL DEFAULT 'notebooklm'"
+            ))
+
+
+def _validate_gpt_platform_v32(database: "Database") -> None:
+    inspector = inspect(database.engine)
+    required = {"bank_imports", "bank_questions", "bank_import_rows", "bank_attempts",
+                "bank_topic_reviews"}
+    if not required <= set(inspector.get_table_names()):
+        raise RuntimeError("schema v32 question bank tables are missing")
+    if "backend" not in {c["name"] for c in inspector.get_columns("studio_runs")}:
+        raise RuntimeError("schema v32 Studio backend is missing")
+    constraints = inspector.get_unique_constraints("bank_attempts")
+    if not any(c["column_names"] == ["learner_id", "question_id", "external_attempt_id"]
+               for c in constraints):
+        raise RuntimeError("schema v32 attempt identity constraint is missing")
+
+
 def migrate_database(database: "Database") -> None:
     # A populated current schema is an integrity check, not an opportunity to
     # rewrite persisted identities.  Keep this branch read-only.
@@ -2664,6 +2688,7 @@ def migrate_database(database: "Database") -> None:
             _validate_v3_durable_reservations_v29(database)
             _validate_lecture_passes_v30(database)
             _validate_lecture_pass_resources_v31(database)
+            _validate_gpt_platform_v32(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -2712,6 +2737,8 @@ def migrate_database(database: "Database") -> None:
     _upgrade_v3_durable_reservations_v29(database)
     _upgrade_lecture_passes_v30(database)
     _upgrade_lecture_pass_resources_v31(database)
+    _upgrade_gpt_platform_v32(database)
+    _validate_gpt_platform_v32(database)
     _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
     _validate_complete_existing_artifact_graph(database)
     _validate_current_artifact_indexes(database)

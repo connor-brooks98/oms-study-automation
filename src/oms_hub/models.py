@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -533,6 +533,9 @@ class StudioRunModel(Base):
     workflow_kind: Mapped[str] = mapped_column(
         String(30), default="notebook_generation"
     )
+    backend: Mapped[str] = mapped_column(
+        String(30), default="notebooklm", server_default="notebooklm"
+    )
     content_kind: Mapped[str] = mapped_column(String(30), default="exam_review")
     state: Mapped[str] = mapped_column(String(30), default="queued")
     stage: Mapped[str] = mapped_column(String(30), default="validate")
@@ -959,3 +962,78 @@ class PublishedQuizFlagModel(Base):
     status: Mapped[str] = mapped_column(String(20), default="open")
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class BankImportModel(Base):
+    __tablename__ = "bank_imports"
+    __table_args__ = (UniqueConstraint("learner_id", "source", "product", "export_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    learner_id: Mapped[str] = mapped_column(String(320))
+    source: Mapped[str] = mapped_column(String(30))
+    product: Mapped[str] = mapped_column(String(100))
+    export_id: Mapped[str] = mapped_column(String(200))
+    digest: Mapped[str] = mapped_column(String(64))
+    provenance_json: Mapped[str] = mapped_column(Text)
+    imported_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    receipt_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class BankQuestionModel(Base):
+    __tablename__ = "bank_questions"
+    __table_args__ = (UniqueConstraint("source", "product", "external_question_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(30))
+    product: Mapped[str] = mapped_column(String(100))
+    external_question_id: Mapped[str] = mapped_column(String(200))
+    native_question_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    body_ready: Mapped[bool] = mapped_column(default=False)
+    reviewed_topics_json: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class BankImportRowModel(Base):
+    __tablename__ = "bank_import_rows"
+    __table_args__ = (UniqueConstraint("import_id", "row_number"),
+                      CheckConstraint("row_number > 0"))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    import_id: Mapped[str] = mapped_column(ForeignKey("bank_imports.id"))
+    row_number: Mapped[int]
+    question_id: Mapped[int] = mapped_column(ForeignKey("bank_questions.id"))
+    canonical_row_hash: Mapped[str] = mapped_column(String(64))
+    row_json: Mapped[str] = mapped_column(Text)
+    user_note: Mapped[str] = mapped_column(Text, default="")
+    tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    topics_json: Mapped[str] = mapped_column(Text, default="[]")
+    issues_json: Mapped[str] = mapped_column(Text, default="[]")
+    body_ready: Mapped[bool] = mapped_column(default=False)
+
+
+class BankAttemptModel(Base):
+    __tablename__ = "bank_attempts"
+    __table_args__ = (
+        UniqueConstraint("learner_id", "question_id", "external_attempt_id"),
+        CheckConstraint("elapsed_ms IS NULL OR elapsed_ms >= 0"),
+        CheckConstraint("result IN ('correct','incorrect','omitted','unknown')"),
+        Index("ix_bank_attempts_learner_cursor", "learner_id", "id"),
+        {"sqlite_autoincrement": True},
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    learner_id: Mapped[str] = mapped_column(String(320))
+    question_id: Mapped[int] = mapped_column(ForeignKey("bank_questions.id"))
+    external_attempt_id: Mapped[str] = mapped_column(String(200))
+    result: Mapped[str] = mapped_column(String(20))
+    occurred_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    elapsed_ms: Mapped[int | None] = mapped_column(nullable=True)
+    imported_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    import_row_id: Mapped[int] = mapped_column(ForeignKey("bank_import_rows.id"))
+
+
+class BankTopicReviewModel(Base):
+    __tablename__ = "bank_topic_reviews"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    question_id: Mapped[int] = mapped_column(ForeignKey("bank_questions.id"))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    previous_topics_json: Mapped[str] = mapped_column(Text)
+    new_topics_json: Mapped[str] = mapped_column(Text)
+    reviewer_context_json: Mapped[str] = mapped_column(Text)
+    reviewed_at: Mapped[str] = mapped_column(String(40), default=utc_now)

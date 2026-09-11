@@ -193,7 +193,7 @@ def test_v31_creates_and_backfills_pass_resources_idempotently(tmp_path) -> None
         (4, "x" * 101),
         (5, None),
     ]
-    assert version == 31
+    assert version == LATEST_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize(
