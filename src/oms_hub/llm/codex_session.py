@@ -406,6 +406,7 @@ class CodexSessionClient:
             self._lock.release()
 
     def _stop(self) -> None:
+        self._pending_login = None
         if self._wire is not None:
             wire, self._wire = self._wire, None
             wire.close()

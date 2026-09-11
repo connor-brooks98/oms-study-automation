@@ -145,7 +145,7 @@ known and discriminator members. It is deliberately **not** a general JSON Schem
 validator or a subprocess/event-reducer test. Nested semantics, response-id
 correlation, timeouts, EOF, cancellation, durable callbacks and tool-request
 interception are covered separately by B2's production reducer and owned fake
-subprocess tests (65 focused checks including the optional local schema export).
+subprocess tests (66 focused checks including the optional local schema export).
 
 The schema exposes read-only sandbox and approval choices, but this inspection
 does not establish a universal pre-execution tool denial policy. Read-only does
@@ -184,7 +184,9 @@ is reaped before its temporary staging directory is removed, including failures.
 Only allowlisted platform environment variables plus the dedicated `CODEX_HOME`
 are passed; API keys and provider overrides are omitted. Importing or constructing
 the client does not create a process. Status can start an account-inspection process
-but never starts login or generation. Close is terminal for the client.
+but never starts login or generation. Stopping or losing transport clears its
+process-bound pending login challenge; a later explicit login can create a new
+challenge. No challenge is restarted automatically. Close is terminal for the client.
 
 For image requests, B3/B4 must supply sanitized PNG bytes already staged under
 the client's dedicated work root, with one recorded SHA-256 per `image_paths`

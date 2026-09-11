@@ -305,6 +305,25 @@ def test_managed_login_cancel_uses_real_transport_without_generation(fake_sessio
     ]
 
 
+def test_explicit_new_login_recovers_after_pending_challenge_transport_dies(fake_session):
+    client, trace, wires = fake_session(ready=False)
+    client.start_login()
+    wires[0].process.kill()
+    wires[0].process.wait(timeout=2)
+    status = client.status()
+    assert status.state == "unavailable"
+    assert status.error_code == "interrupted"
+    assert client._wire is None
+    assert len(wires) == 1
+    assert sum(row.get("method") == "account/login/start" for row in wire_records(trace)) == 1
+
+    challenge = client.start_login()
+    assert challenge.login_id == "login-fixture"
+    assert len(wires) == 2
+    assert sum(row.get("method") == "account/login/start" for row in wire_records(trace)) == 2
+    client.cancel_login(challenge.login_id)
+
+
 @pytest.mark.parametrize(
     "scenario,state,reset",
     [
