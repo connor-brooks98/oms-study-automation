@@ -16,6 +16,10 @@ from oms_hub.db import Database
 from oms_hub.files.atomic import sha256_file
 from oms_hub.llm.codex_session import SessionLifecycle
 from oms_hub.models import (
+    BankImportModel,
+    BankImportRowModel,
+    BankReviewQuestionModel,
+    BankReviewRunModel,
     PublishedQuizMediaModel,
     PublishedQuizModel,
     StudioImportRunSourceModel,
@@ -1197,6 +1201,107 @@ class StudioRepository:
                 for model in models
             )
 
+    def create_bank_import_review(
+        self, *, bank_import_id: str, learner_id: str, subject: str,
+        exam_number: int, label: str, drafts: tuple[QuestionDraftValue, ...],
+    ) -> StudioRun:
+        """Stage an owner-bound bank import atomically, never as claimable work."""
+        from oms_hub.study_generation.quiz_import_worker import _drafts_json
+
+        if not subject.strip() or not label.strip() or not 1 <= len(drafts) <= 500:
+            raise ValueError("review needs a subject, label and 1-500 questions")
+        if len(subject) > 100 or len(label) > 300 or exam_number < 1:
+            raise ValueError("review destination is invalid")
+        if len({d.question_id for d in drafts}) != len(drafts):
+            raise ValueError("review question identifiers must be unique")
+        subject_key, label_key = normalize_subject(subject), normalize_subject(label)
+        with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+            imported = session.get(BankImportModel, bank_import_id)
+            if imported is None or imported.learner_id != learner_id:
+                raise ValueError("bank import ownership mismatch")
+            if json.loads(imported.provenance_json).get("kind") != "authorized_question_export":
+                raise ValueError("Import has no authorized question content")
+            existing = session.get(BankReviewRunModel, bank_import_id)
+            if existing is not None:
+                run = session.get(StudioRunModel, existing.run_id)
+                if run is None:
+                    raise ValueError("bank review run is missing")
+                if (run.subject_key, run.exam_number, run.label_key) != (
+                    subject_key, exam_number, label_key
+                ):
+                    raise ValueError("bank import already has a different review destination")
+                return self._run_domain(session, run)
+            rows = {row.row_number: row for row in session.scalars(
+                select(BankImportRowModel).where(BankImportRowModel.import_id == bank_import_id)
+            )}
+            selected: list[BankImportRowModel] = []
+            for draft in drafts:
+                if len(draft.source_refs) != 1:
+                    raise ValueError("bank draft must identify its original row")
+                ref = draft.source_refs[0]
+                prefix, separator, number = ref.segment_key.partition(":")
+                if ref.source_id != bank_import_id or prefix != "row" or not separator:
+                    raise ValueError("bank draft source ownership mismatch")
+                row = rows.get(int(number)) if number.isdecimal() else None
+                if row is None or json.loads(row.row_json).get("question") is None:
+                    raise ValueError("bank draft has no original question content")
+                if not draft.verification_required or draft.verified_at is not None:
+                    raise ValueError("bank questions require fresh source verification")
+                selected.append(row)
+            if len({row.id for row in selected}) != len(selected):
+                raise ValueError("bank draft rows must be unique")
+            active = session.scalar(select(StudioRunModel.id).where(
+                StudioRunModel.destination_subject_key == subject_key,
+                StudioRunModel.destination_exam_number == exam_number,
+                StudioRunModel.label_key == label_key,
+                StudioRunModel.state.in_({"queued", "running", "retrying"}),
+            ))
+            published = session.scalar(select(PublishedQuizModel.token).where(
+                PublishedQuizModel.destination_subject_key == subject_key,
+                PublishedQuizModel.destination_exam_number == exam_number,
+                PublishedQuizModel.label_key == label_key,
+                PublishedQuizModel.active.is_(True),
+            ))
+            if active is not None or published is not None:
+                raise ValueError("this quiz label is already in use for the destination exam")
+            if session.get(StudioSourceModel, bank_import_id) is not None:
+                raise ValueError("bank source identity collision")
+            source = StudioSourceModel(
+                id=bank_import_id, subject=subject, subject_key=subject_key,
+                exam_number=exam_number, source_type="text", title=label,
+                purpose="local_import", import_role="combined_questions_answers",
+                state="ready", snapshot_sha256=imported.digest, media_type="application/json",
+            )
+            run = StudioRunModel(
+                id=str(uuid4()), subject=subject, subject_key=subject_key,
+                exam_number=exam_number, destination_subject=subject,
+                destination_subject_key=subject_key, destination_exam_number=exam_number,
+                label=label, label_key=label_key, prompt="", workflow_kind="direct_import",
+                content_kind="practice_questions", state="awaiting_review", stage="review",
+            )
+            session.add_all([source, run])
+            session.flush()
+            session.add(StudioImportRunSourceModel(
+                run_id=run.id, source_id=source.id, source_role="combined_questions_answers",
+                attach_to_notebook=False, position=0,
+            ))
+            session.add(BankReviewRunModel(import_id=bank_import_id, run_id=run.id))
+            for draft, row in zip(drafts, selected, strict=True):
+                session.add(BankReviewQuestionModel(
+                    run_id=run.id, local_question_id=draft.question_id,
+                    question_id=row.question_id, import_row_id=row.id,
+                ))
+            payload = _drafts_json(drafts)
+            session.add(StudioRunArtifactModel(
+                run_id=run.id, artifact_key="normalized",
+                signature_sha256=hashlib.sha256(payload.encode()).hexdigest(), payload_json=payload,
+            ))
+            self._save_question_reviews_in_session(session, run.id, drafts)
+            session.flush()
+            return self._run_domain(session, run)
+
     def record_gpt_lifecycle(self, run_id: str, event: SessionLifecycle) -> None:
         """Commit remote identity before the shared client can advance the turn."""
         if event.request_id != run_id and not event.request_id.startswith(run_id + ":"):
@@ -1377,31 +1482,37 @@ class StudioRepository:
         if len({draft.question_id for draft in drafts}) != len(drafts):
             raise ValueError("question drafts contain duplicate question identifiers")
         with self.database.session() as session:
-            session.execute(
-                delete(StudioQuestionReviewModel).where(StudioQuestionReviewModel.run_id == run_id)
+            self._save_question_reviews_in_session(session, run_id, drafts)
+
+    @staticmethod
+    def _save_question_reviews_in_session(
+        session: Session, run_id: str, drafts: Sequence[QuestionDraftValue],
+    ) -> None:
+        session.execute(
+            delete(StudioQuestionReviewModel).where(StudioQuestionReviewModel.run_id == run_id)
+        )
+        session.add_all(
+            StudioQuestionReviewModel(
+                run_id=run_id,
+                question_id=draft.question_id,
+                answer_provenance=(
+                    draft.answer_provenance.value
+                    if draft.answer_provenance is not None
+                    else None
+                ),
+                verification_required=draft.verification_required,
+                verified_at=draft.verified_at,
+                source_refs_json=json.dumps(
+                    [asdict(source_ref) for source_ref in draft.source_refs]
+                ),
+                extraction_confidence=draft.extraction_confidence,
+                diagnostics_json=json.dumps(
+                    [asdict(diagnostic) for diagnostic in draft.diagnostics]
+                ),
+                original_identifier=draft.original_identifier,
             )
-            session.add_all(
-                StudioQuestionReviewModel(
-                    run_id=run_id,
-                    question_id=draft.question_id,
-                    answer_provenance=(
-                        draft.answer_provenance.value
-                        if draft.answer_provenance is not None
-                        else None
-                    ),
-                    verification_required=draft.verification_required,
-                    verified_at=draft.verified_at,
-                    source_refs_json=json.dumps(
-                        [asdict(source_ref) for source_ref in draft.source_refs]
-                    ),
-                    extraction_confidence=draft.extraction_confidence,
-                    diagnostics_json=json.dumps(
-                        [asdict(diagnostic) for diagnostic in draft.diagnostics]
-                    ),
-                    original_identifier=draft.original_identifier,
-                )
-                for draft in drafts
-            )
+            for draft in drafts
+        )
 
     def get_run(self, run_id: str) -> StudioRun:
         with self.database.session() as session:

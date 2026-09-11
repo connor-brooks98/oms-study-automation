@@ -589,9 +589,10 @@ class PracticeReviewService:
             raise ValueError("matching answers do not require generated-answer verification")
         if draft.correct_index is None or not draft.rationale or not draft.rationale.strip():
             raise ValueError("answer is incomplete")
-        if draft.answer_provenance not in {
+        if not draft.verification_required or draft.answer_provenance not in {
             AnswerProvenance.GENERATED_BY_AI,
             AnswerProvenance.MANUALLY_CORRECTED,
+            AnswerProvenance.PROVIDED_BY_SOURCE,
         }:
             raise ValueError("answer does not require generated-answer verification")
         updated = replace(

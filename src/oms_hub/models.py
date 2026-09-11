@@ -1116,3 +1116,18 @@ class StudySessionQuestionModel(Base):
     bank_attempt_id: Mapped[int | None] = mapped_column(
         ForeignKey("bank_attempts.id"), nullable=True, unique=True
     )
+
+
+class BankReviewRunModel(Base):
+    __tablename__ = "bank_review_runs"
+    import_id: Mapped[str] = mapped_column(ForeignKey("bank_imports.id"), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"), unique=True)
+
+
+class BankReviewQuestionModel(Base):
+    __tablename__ = "bank_review_questions"
+    __table_args__ = (UniqueConstraint("run_id", "import_row_id"),)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"), primary_key=True)
+    local_question_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    question_id: Mapped[int] = mapped_column(ForeignKey("bank_questions.id"))
+    import_row_id: Mapped[int] = mapped_column(ForeignKey("bank_import_rows.id"))

@@ -41,7 +41,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 33
+LATEST_SCHEMA_VERSION = 34
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -2673,6 +2673,13 @@ def _validate_study_chat_v33(database: "Database") -> None:
         raise RuntimeError("schema v33 active conversation constraint is missing")
 
 
+def _validate_bank_review_v34(database: "Database") -> None:
+    if not {"bank_review_runs", "bank_review_questions"} <= set(
+        inspect(database.engine).get_table_names()
+    ):
+        raise RuntimeError("schema v34 bank review mappings are missing")
+
+
 def migrate_database(database: "Database") -> None:
     # A populated current schema is an integrity check, not an opportunity to
     # rewrite persisted identities.  Keep this branch read-only.
@@ -2707,12 +2714,14 @@ def migrate_database(database: "Database") -> None:
                 _validate_gpt_platform_v32(database)
                 with database.engine.begin() as connection:
                     _validate_study_chat_v33(database)
+                    _validate_bank_review_v34(database)
                     connection.execute(
                         text("UPDATE schema_version SET version=:version WHERE id=1"),
                         {"version": LATEST_SCHEMA_VERSION},
                     )
             _validate_gpt_platform_v32(database)
             _validate_study_chat_v33(database)
+            _validate_bank_review_v34(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -2764,6 +2773,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_gpt_platform_v32(database)
     _validate_gpt_platform_v32(database)
     _validate_study_chat_v33(database)
+    _validate_bank_review_v34(database)
     _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
     _validate_complete_existing_artifact_graph(database)
     _validate_current_artifact_indexes(database)
