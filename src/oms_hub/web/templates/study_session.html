@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Personal study session · Study Hub{% endblock %}
+{% block content %}
+{% if not view %}
+<section class="page-shell sh-container--narrow sh-card">
+  <h1 class="sh-title">Start a personal study session</h1>
+  <p>Answers in this session are saved to your personal progress. Each new session counts as a new attempt.</p>
+  <form method="post" action="/study/sessions/start">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="quiz_token" value="{{ quiz_token }}">
+    <button class="sh-btn sh-btn--primary" type="submit">Start session</button>
+  </form>
+</section>
+{% else %}
+<link rel="stylesheet" href="/public/quizzes/assets/player.css?v={{ player_asset_version }}">
+<div class="page-shell sh-container--narrow"><a href="/study/progress">Personal progress</a>
+  <p>Answers are saved to this personal session. Reloading restores saved answers.</p>
+  {% if view.closed %}<p>This session is closed. New answers are disabled.</p>{% endif %}
+</div>
+<section id="quiz-player" class="quiz-app sh-container--narrow" tabindex="-1"
+  data-quiz-token="{{ view.id }}" data-quiz-version="{{ view.quiz_version }}"
+  data-personal-session="true" data-content-url="/study/sessions/{{ view.id }}/content"
+  data-answer-url="/study/sessions/{{ view.id }}/answers/{attempt_id}">
+  <p role="status">Loading {{ view.title }}…</p>
+</section>
+<script src="/public/quizzes/assets/player.js?v={{ player_asset_version }}" defer></script>
+{% endif %}
+{% endblock %}

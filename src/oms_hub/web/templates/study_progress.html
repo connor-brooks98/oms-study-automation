@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Personal progress · Study Hub{% endblock %}
+{% macro counts(summary) %}
+  {{ summary.correct }} correct / {{ summary.graded }} graded
+  {% if summary.graded %}({{ '%.1f'|format(100 * summary.correct / summary.graded) }}%){% endif %};
+  {{ summary.incorrect }} incorrect, {{ summary.omitted }} omitted, {{ summary.unknown }} unknown
+{% endmacro %}
+{% block content %}
+<section class="page-shell sh-container sh-stack">
+  <h1 class="sh-title">Personal progress</h1>
+  {% if report is none %}<p>Personal progress has not been configured.</p>
+  {% else %}
+  <nav class="file-actions" aria-label="Attempt view">
+    <a class="sh-btn sh-btn--secondary" href="/study/progress" {% if not report.first_only %}aria-current="page"{% endif %}>All attempts</a>
+    <a class="sh-btn sh-btn--secondary" href="/study/progress?first_only=true" {% if report.first_only %}aria-current="page"{% endif %}>First attempts</a>
+  </nav>
+  <section class="sh-card" aria-label="Attempt summary">
+    <h2>{{ 'First attempts with known ordering' if report.first_only else 'All recorded attempts' }}</h2>
+    <p>{{ counts(report.summary) }}</p>
+    <p>{{ report.sample_count }} recorded events across {{ report.question_count }} question versions;
+      {{ report.summary.repeated }} repeated attempts.</p>
+    <p>{{ report.ambiguous_questions }} questions have ambiguous attempt ordering and are excluded from first-attempt accuracy.
+      A single undated event has no competing attempt and is included.</p>
+    <p>Date coverage: {{ report.date_start.strftime('%b %d, %Y') if report.date_start else 'No known attempt dates' }}
+      {% if report.last_activity %}through {{ report.last_activity.strftime('%b %d, %Y') }}{% endif %}.
+      {{ report.undated }} events have no recorded attempt date.</p>
+    <p>Last activity: {{ report.last_activity.strftime('%b %d, %Y · %H:%M %Z') if report.last_activity else 'Unknown' }}.
+      Last recorded/imported event: {{ report.last_import.strftime('%b %d, %Y · %H:%M %Z') if report.last_import else 'None' }}.</p>
+    <p>Accuracy describes this sample. It does not predict a passing score or exam readiness.</p>
+  </section>
+  <section class="sh-card"><h2>Sources</h2>
+    {% for label, summary in report.sources %}<p><strong>{{ label|replace('_', ' ')|title }}</strong>: {{ counts(summary) }}; {{ summary.repeated }} repeats</p>
+    {% else %}<p>No recorded attempts yet. Start a personal session from an accepted quiz or import your results.</p>{% endfor %}
+  </section>
+  <section class="sh-card"><h2>Reviewed categories</h2>
+    <p>Only accepted labels are grouped. A question may appear in several categories; it counts once in the overall total.</p>
+    {% for group in report.topics %}<p><strong>{{ group.topic.axis }} · {{ group.topic.label }}</strong>
+      {% if group.topic.canonical_id %}<small>({{ group.topic.canonical_id }})</small>{% endif %}:
+      {{ counts(group.summary) }}</p>
+    {% else %}<p>No reviewed categories in this history.</p>{% endfor %}
+  </section>
+  {% endif %}
+  <p>Your lecture pass tracker continues to track study dates and resources separately. <a href="/lectures">Open lectures</a></p>
+  <details class="sh-card"><summary>Category sources</summary>
+    <p>Versioned top-level categories are available for review. Questions are grouped only after their labels are accepted; no automatic crosswalk is applied.</p>
+    {% for taxonomy in taxonomies %}<p><a href="{{ taxonomy.source_url }}">{{ taxonomy.title }} · {{ taxonomy.version }}</a>.
+      {{ taxonomy.applicability }} <a href="{{ taxonomy.specifications_url }}">Official specifications</a>.
+      Verified {{ taxonomy.verified_on }}.</p>{% endfor %}
+  </details>
+</section>
+{% endblock %}
