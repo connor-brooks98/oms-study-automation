@@ -16,6 +16,7 @@ from oms_hub.llm import codex_session
 from oms_hub.llm.codex_session import (
     CodexSessionClient,
     SessionError,
+    SessionLifecycle,
     SessionRequest,
     collect_completed_text,
     model_ready,
@@ -253,7 +254,6 @@ def test_callback_failure_never_returns_or_replays_output(fake_session, phase):
         ("large", "protocol_error"),
         ("aggregate", "protocol_error"),
         ("failed", "rate_limited"),
-        ("bad_json", "invalid_output"),
     ],
 )
 def test_pipe_failures_reap_process_and_retain_known_ids(fake_session, scenario, code):
@@ -271,6 +271,17 @@ def test_pipe_failures_reap_process_and_retain_known_ids(fake_session, scenario,
     assert sum(row.get("method") == "turn/start" for row in rows) == 1
     if scenario == "approval":
         assert {"id": "tool-fixture", "result": {"decision": "decline"}} in rows
+
+
+def test_completed_malformed_json_returns_raw_for_consumer_validation(fake_session):
+    client, trace, _ = fake_session("bad_json")
+    events = []
+    result = client.generate(request(), cancelled=lambda: False, on_lifecycle=events.append)
+    assert result.text == "not JSON"
+    assert events[-1] == SessionLifecycle(
+        request().request_id, "completed", "thread-fixture", "turn-fixture"
+    )
+    assert sum(row.get("method") == "turn/start" for row in wire_records(trace)) == 1
 
 
 def test_early_turn_notification_persists_identity_before_response(fake_session):

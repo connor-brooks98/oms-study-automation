@@ -790,11 +790,7 @@ class CodexSessionClient:
                             raise _remote_error(params.get("error"))
                 thread_id = _identifier(self._active_ids[0])
                 text = collect_completed_text(self._events, thread_id=thread_id, turn_id=turn_id)
-                if request.output_schema is not None:
-                    try:
-                        json.loads(text)
-                    except ValueError:
-                        raise SessionError("invalid_output") from None
+                # Consumers persist completed raw output before schema/semantic validation.
                 if is_cancelled():
                     raise SessionError("interrupted")
                 emit("completed")
