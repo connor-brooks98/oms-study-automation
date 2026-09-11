@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -290,6 +291,7 @@ def generate_lecture_quiz(
                     ):
                         raise ValueError("invalid batch diagnostic")
                     raise LectureGenerationError("invalid_output", objective_ids=tuple(missing))
+                prior_preflights = set(directory.glob("preflight-*.json"))
                 if (directory / "dispatch.json").exists() or (previously_started and not resume):
                     raise SessionError("interrupted")
                 client.work_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -297,8 +299,8 @@ def generate_lecture_quiz(
                     paths = []
                     for image_index, asset in enumerate(assets):
                         assert asset.path is not None
-                        with asset.path.open("rb") as file:
-                            payload = file.read(MAX_QUIZ_IMAGE_BYTES + 1)
+                        with asset.path.open("rb") as source_image:
+                            payload = source_image.read(MAX_QUIZ_IMAGE_BYTES + 1)
                         if hashlib.sha256(payload).hexdigest() != asset.sha256:
                             raise ValueError("source image changed before staging")
                         path = Path(staged) / f"image-{image_index:04d}.png"
@@ -313,19 +315,38 @@ def generate_lecture_quiz(
                             os.fsync(file.fileno())
                     except FileExistsError:
                         raise SessionError("interrupted") from None
-                    result = client.generate(
-                        SessionRequest(
-                            str(descriptor["request_id"]),
-                            model,
-                            prompt.content,
-                            source,
-                            image_paths=tuple(paths),
-                            output_schema=schema,
-                            image_sha256=tuple(asset.sha256 for asset in assets),
-                        ),
-                        cancelled=cancelled,
-                        on_lifecycle=on_lifecycle,
-                    )
+                    lifecycle_seen = False
+
+                    def record_lifecycle(event: SessionLifecycle) -> None:
+                        nonlocal lifecycle_seen
+                        # A failed observer is ambiguous too: mark before calling it.
+                        lifecycle_seen = True
+                        on_lifecycle(event)
+
+                    try:
+                        if set(directory.glob("preflight-*.json")) != prior_preflights:
+                            # A concurrent failed owner retired its claim while we staged.
+                            # Only a fresh explicit resume may use that released reservation.
+                            raise SessionError("interrupted")
+                        result = client.generate(
+                            SessionRequest(
+                                str(descriptor["request_id"]),
+                                model,
+                                prompt.content,
+                                source,
+                                image_paths=tuple(paths),
+                                output_schema=schema,
+                                image_sha256=tuple(asset.sha256 for asset in assets),
+                            ),
+                            cancelled=cancelled,
+                            on_lifecycle=record_lifecycle,
+                        )
+                    except SessionError as error:
+                        if not lifecycle_seen:
+                            (directory / "dispatch.json").rename(
+                                directory / f"preflight-{uuid4().hex}-{error.code}.json"
+                            )
+                        raise
                 raw = result.text.encode("utf-8")
                 verified_atomic_write(raw[:MAX_OUTPUT_BYTES], directory / "raw.txt")
                 (directory / "raw.txt").chmod(0o600)

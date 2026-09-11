@@ -52,16 +52,18 @@ class _QuizClient:
         self.requests = []
         self.callback = None
         self.invalid = invalid
+        self.events = []
 
     def generate(self, request, *, cancelled, on_lifecycle):
-        assert on_lifecycle is self.callback
         assert not cancelled()
         self.requests.append(request)
         for path, digest in zip(request.image_paths, request.image_sha256, strict=True):
             assert path.is_relative_to(self.work_root)
             assert sha256(path.read_bytes()).hexdigest() == digest
         for phase in ("dispatching", "thread_created", "turn_started", "completed"):
-            on_lifecycle(SessionLifecycle(request.request_id, phase, "thread", "turn"))
+            event = SessionLifecycle(request.request_id, phase, "thread", "turn")
+            self.events.append(event)
+            on_lifecycle(event)
         payload = _quiz_payload(self.inputs)
         source = json.loads(request.source_text)
         objective_ids = [item["id"] for item in source["objectives"]]
@@ -83,6 +85,9 @@ def test_fake_generation_stages_source_images_and_saves_complete_private_artifac
     )
     validate_generated_quiz(quiz, inputs, require_images=True)
     assert len(client.requests) == 1
+    assert len(events) == 4 and all(
+        delivered is original for delivered, original in zip(events, client.events, strict=True)
+    )
     request = client.requests[0]
     assert request.request_id == "run1:batch-0001"
     assert request.output_schema == GeneratedLectureQuiz.model_json_schema()
@@ -169,6 +174,129 @@ def test_callback_failure_leaves_ambiguous_dispatch_that_explicit_resume_cannot_
     assert len(client.requests) == 1
     assert not list(client.work_root.rglob("complete.json"))
     assert not list(client.work_root.glob("lecture-images-*"))
+    assert list(client.work_root.rglob("dispatch.json"))
+    assert not list(client.work_root.rglob("preflight-*.json"))
+
+
+def test_real_capability_preflight_failure_preserves_receipt_and_allows_only_explicit_resume(
+    tmp_path,
+):
+    inputs = _inputs(tmp_path)
+    executable = Path(sys.executable).resolve()
+    client = CodexSessionClient(
+        executable,
+        tmp_path / "session",
+        tmp_path / "work",
+        binary_sha256=sha256(executable.read_bytes()).hexdigest(),
+    )
+    events = []
+    try:
+        with pytest.raises(SessionError) as error:
+            generate_lecture_quiz(
+                client, "run1", "chosen", inputs,
+                cancelled=lambda: False, on_lifecycle=events.append,
+            )
+        assert error.value.code == "capability_unverified"
+    finally:
+        client.close()
+    assert not events
+    assert not list(client.work_root.rglob("dispatch.json"))
+    receipts = list(client.work_root.rglob("preflight-*.json"))
+    assert len(receipts) == 1 and "capability_unverified" in receipts[0].name
+    assert json.loads(receipts[0].read_text())["request_id"] == "run1:batch-0001"
+    original_receipt = receipts[0].read_bytes()
+
+    # Model readiness is simulated after correction; no production readiness gate is relaxed.
+    ready = _QuizClient(client.work_root, inputs)
+    ready.callback = events.append
+    with pytest.raises(SessionError, match="interrupted"):
+        generate_lecture_quiz(
+            ready, "run1", "chosen", inputs,
+            cancelled=lambda: False, on_lifecycle=ready.callback,
+        )
+    assert not ready.requests
+    quiz = generate_lecture_quiz(
+        ready, "run1", "chosen", inputs,
+        cancelled=lambda: False, on_lifecycle=ready.callback, resume=True,
+    )
+    assert len(ready.requests) == 1
+    validate_generated_quiz(quiz, inputs, require_images=True)
+    assert receipts[0].read_bytes() == original_receipt
+
+
+def test_concurrent_staged_caller_cannot_reuse_a_just_retired_preflight_claim(
+    tmp_path, monkeypatch
+):
+    inputs = _inputs(tmp_path)
+    client = _QuizClient(tmp_path / "work", inputs)
+    client.callback = lambda event: None
+    with pytest.raises(SessionError, match="interrupted"):
+        generate_lecture_quiz(
+            client, "run1", "chosen", inputs,
+            cancelled=lambda: True, on_lifecycle=client.callback,
+        )
+    local = threading.local()
+    stale_staged = threading.Event()
+    owner_claimed = threading.Event()
+    allow_failure = threading.Event()
+    owner_finished = threading.Event()
+    original_open = Path.open
+    original_generate = client.generate
+    client_calls = []
+
+    def staged_open(path, mode="r", *args, **kwargs):
+        if path.name == "dispatch.json" and mode == "xb":
+            if local.label == "owner":
+                assert stale_staged.wait(5)
+            elif local.label == "stale":
+                stale_staged.set()
+                assert owner_finished.wait(5)
+        return original_open(path, mode, *args, **kwargs)
+
+    def preflight(request, **kwargs):
+        client_calls.append(local.label)
+        if local.label == "owner":
+            owner_claimed.set()
+            assert allow_failure.wait(5)
+            raise SessionError("capability_unverified")
+        return original_generate(request, **kwargs)
+
+    monkeypatch.setattr(Path, "open", staged_open)
+    monkeypatch.setattr(client, "generate", preflight)
+
+    def attempt(label):
+        local.label = label
+        try:
+            return generate_lecture_quiz(
+                client, "run1", "chosen", inputs,
+                cancelled=lambda: False, on_lifecycle=client.callback, resume=True,
+            )
+        except SessionError as error:
+            return error.code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        owner = executor.submit(attempt, "owner")
+        stale = executor.submit(attempt, "stale")
+        try:
+            assert owner_claimed.wait(5)
+            claim = next(client.work_root.rglob("dispatch.json"))
+            original_claim = claim.read_bytes()
+            assert attempt("contender") == "interrupted"
+            assert claim.read_bytes() == original_claim
+            assert not list(client.work_root.rglob("preflight-*.json"))
+            allow_failure.set()
+            assert owner.result(timeout=5) == "capability_unverified"
+            owner_finished.set()
+            assert stale.result(timeout=5) == "interrupted"
+        finally:
+            allow_failure.set()
+            owner_finished.set()
+    assert client_calls == ["owner"]
+    assert not list(client.work_root.rglob("dispatch.json"))
+    assert len(list(client.work_root.rglob("preflight-*.json"))) == 2
+    quiz = attempt("fresh")
+    assert isinstance(quiz, GeneratedLectureQuiz)
+    assert client_calls == ["owner", "fresh"]
 
 
 @pytest.mark.parametrize("models", [("chosen", "chosen"), ("chosen", "different")])
