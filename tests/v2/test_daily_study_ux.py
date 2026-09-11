@@ -41,15 +41,13 @@ def test_library_exposes_searchable_material_and_study_states(tmp_path):
     )
 
 
-def test_lecture_prioritizes_study_actions_and_contextual_builder(tmp_path):
+def test_lecture_omits_study_actions_and_keeps_materials_and_pass_tracker(tmp_path):
     app, lecture_id = app_with_lecture(tmp_path)
     document = HTMLParser(TestClient(app).get(f"/lectures/{lecture_id}").text)
 
-    actions = document.css_first(".lecture-study-actions")
-    assert actions is not None
-    assert "0/5 configured passes complete" in actions.text(strip=True)
-    builder = actions.css_first('a[href*="workflow=import"]')
-    assert builder.attributes["href"] == "/studio?subject=Heme/Lymph&exam=3&workflow=import"
+    assert document.css_first(".lecture-study-actions") is None
+    assert len(document.css(".file-card-grid .file-card")) == 4
+    assert document.css_first("#pass-tracker [data-pass-count]").text(strip=True) == "0/5"
     pipeline = document.css_first(".pipeline-card")
     assert pipeline.tag == "details" and "open" not in pipeline.attributes
     assert (

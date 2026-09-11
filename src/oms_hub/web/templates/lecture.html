@@ -22,15 +22,6 @@
 
   {% set completed_passes = lecture.passes|selectattr('completed_on')|list|length %}
   {% set pass_total = lecture.passes|length %}
-  <nav class="lecture-study-actions sh-card" aria-label="Study this lecture">
-    <div><span class="mono-label">Study progress</span><strong>{{ completed_passes }}/{{ pass_total }} configured passes complete</strong></div>
-    {% if slide_revision and not slide_problem %}<a class="sh-btn sh-btn--primary" href="/artifacts/{{ slide_revision.id }}/pdf">Open lecture PDF</a>{% endif %}
-    {% if transcript_revision and not transcript_problem %}<a class="sh-btn sh-btn--primary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open transcript</a>{% endif %}
-    {% if outline_output %}<a class="sh-btn sh-btn--primary" href="/artifacts/outlines/{{ outline_output.id }}">Open outline</a>{% endif %}
-    {% if quiz_output %}<a class="sh-btn sh-btn--primary" href="{{ quiz_output.url }}" target="_blank" rel="noopener noreferrer">Take quiz</a>{% endif %}
-    <a class="sh-btn sh-btn--secondary" href="/studio?subject={{ lecture.subject|urlencode }}&amp;exam={{ lecture.exam_number }}&amp;workflow=import">Open question builder</a>
-    <a class="sh-btn sh-btn--secondary" href="#pass-tracker">Record a pass</a>
-  </nav>
 
   <div class="lecture-workbench">
   <details class="pipeline-card sh-panel" aria-labelledby="pipeline-heading" {% if status in ('failed', 'quarantined', 'needs_review') %}open{% endif %}>
