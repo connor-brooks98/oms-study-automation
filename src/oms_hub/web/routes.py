@@ -20,6 +20,7 @@ from oms_hub.naming import display_title
 from oms_hub.progress import overall_status
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.domain import GenerationKind
+from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import revision_readiness_problem
 from oms_hub.web.csrf import require_form_csrf
@@ -253,6 +254,10 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
             "course_hue": _course_hue(lecture.subject),
             "outline_output": outline,
             "quiz_output": quiz,
+            "use_gpt": request.app.state.settings.study_backend == "codex_subscription",
+            "gpt_quizzes": tuple(q for q in generation.published_quizzes(
+                frozenset({QuizContentKind.LECTURE_QUIZ}))
+                                 if q.lecture_id == lecture_id and q.studio_run_id is not None),
             "outline_job": generation.current_job(
                 lecture_id,
                 GenerationKind.OUTLINE,

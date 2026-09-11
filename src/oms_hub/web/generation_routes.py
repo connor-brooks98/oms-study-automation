@@ -394,7 +394,8 @@ def codex_model(request: Request, body: ManagedModelUpdate) -> JSONResponse:
         raise HTTPException(409, "Choose a model advertised by the connected managed account.")
     request.app.state.study_ai_settings.save(codex_model=body.model)
     request.app.state.codex_model = body.model
-    for name in ("gpt_lecture_service", "gpt_transcript_cleaner", "study_chat_service"):
+    for name in ("gpt_lecture_service", "gpt_transcript_cleaner", "study_chat_service",
+                 "generation_service"):
         service = getattr(request.app.state, name, None)
         if service is not None:
             service.model = body.model

@@ -87,6 +87,8 @@ class GenerationJob:
     supersedes_job_id: str | None = None
     quiz_url: str | None = None
 
+    backend: str = "notebooklm"
+    codex_model: str = ""
 
 @dataclass(frozen=True, slots=True)
 class PromptSnapshot:

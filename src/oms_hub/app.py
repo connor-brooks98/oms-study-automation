@@ -91,6 +91,8 @@ from oms_hub.llm.service import LLMService
 from oms_hub.llm.structured import StructuredTextGenerator, StructuredTextService
 from oms_hub.migrations import LATEST_SCHEMA_VERSION
 from oms_hub.public_boundary import classify_public_path
+from oms_hub.question_bank.repository import BankRepository
+from oms_hub.question_bank.routes import create_question_bank_router
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
 from oms_hub.runtime import WorkerSupervisor, configure_application_logging
@@ -115,6 +117,8 @@ from oms_hub.study_chat.service import ChatService
 from oms_hub.study_chat.sources import ChatSources
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.domain import PromptKind
+from oms_hub.study_generation.gpt_lecture import GptLectureWorker
+from oms_hub.study_generation.gpt_outline import GptOutlineGenerator
 from oms_hub.study_generation.native_quiz import NativeQuizPublisher
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_auth import NotebookCLIAuth
@@ -1104,6 +1108,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.generation_repository,
         prompt_files,
         app.state.notebook_connection,
+        backend=("codex_subscription" if resolved.study_backend == "codex_subscription"
+                 else "notebooklm"), model=app.state.codex_model,
     )
     notebook_gateway = StoredNotebookLMGateway(
         notebook_storage_path,
@@ -1122,6 +1128,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved,
         ),
         app.state.notebook_connection,
+        gpt_outline=(GptOutlineGenerator(app.state.codex_session,
+                     resolved.data_dir / "codex-work" / "outlines")
+                     if app.state.codex_session is not None else None),
     )
     app.state.studio_repository = StudioRepository(database)
     app.state.practice_review = PracticeReviewService(app.state.studio_repository)
@@ -1158,6 +1167,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         owner_id=(resolved.cloudflare_access_allowed_email or "local-owner").casefold(),
         model=app.state.codex_model,
     )
+    app.state.gpt_lecture_worker = (
+        GptLectureWorker(app.state.studio_repository, app.state.codex_session,
+            app.state.gpt_lecture_service.load_inputs, app.state.codex_model,
+            app.state.studio_quiz_image_service, resolved.data_dir / "codex-work" / "quizzes")
+        if app.state.codex_session is not None else None
+    )
+    if app.state.gpt_lecture_worker is not None:
+        app.state.practice_review.lecture_validator = app.state.gpt_lecture_worker.validate_review
+    app.state.question_bank = BankRepository(database.session)
     app.state.quiz_import_worker = QuizImportWorker(
         app.state.studio_repository,
         app.state.document_processor_router,
@@ -1177,6 +1195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.generation_repository,
         app.state.studio_quiz_image_service,
         app.state.quiz_import_worker,
+        app.state.gpt_lecture_worker,
     )
     app.state.worker_supervisor = WorkerSupervisor(
         {
@@ -1396,6 +1415,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(quarantine_router)
     app.include_router(generation_router)
     app.include_router(study_chat_router)
+    app.include_router(create_question_bank_router(
+        app.state.question_bank, studio=app.state.studio_repository))
     app.include_router(anki_prompt_router)
     app.include_router(notebook_router)
     app.include_router(lecture_router)

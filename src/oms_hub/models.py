@@ -721,6 +721,9 @@ class GenerationJobModel(Base):
     kind: Mapped[str] = mapped_column(String(20))
     state: Mapped[str] = mapped_column(String(30), default="queued")
     stage: Mapped[str] = mapped_column(String(30), default="validate")
+    backend: Mapped[str] = mapped_column(String(32), default="notebooklm",
+                                       server_default="notebooklm")
+    codex_model: Mapped[str] = mapped_column(String(200), default="", server_default="")
     attempts: Mapped[int] = mapped_column(default=0)
     next_attempt_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

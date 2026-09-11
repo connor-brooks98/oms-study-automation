@@ -1,3 +1,4 @@
+import json
 import re
 import secrets
 from dataclasses import dataclass, replace
@@ -31,6 +32,7 @@ from oms_hub.models import (
     QuizOutputModel,
     StudioQuizImageOverrideModel,
     StudioQuizImageRequirementModel,
+    StudioRunArtifactModel,
     StudioRunModel,
     StudyPromptSettingModel,
     StudyRevisionModel,
@@ -119,7 +121,14 @@ class GenerationRepository:
         self.accuracy_gate = accuracy_gate
         self.practice_review = practice_review
 
-    def queue(self, lecture_id: int, kind: GenerationKind) -> GenerationJob:
+    def queue(self, lecture_id: int, kind: GenerationKind, *,
+              backend: str = "notebooklm", codex_model: str = "") -> GenerationJob:
+        if backend not in {"notebooklm", "codex_subscription"}:
+            raise ValueError("unsupported generation backend")
+        if backend == "codex_subscription" and (
+            kind is not GenerationKind.OUTLINE or not codex_model.strip()
+        ):
+            raise ValueError("GPT outline requires a selected model")
         with self.database.session() as session:
             existing = session.scalar(
                 select(GenerationJobModel)
@@ -148,6 +157,7 @@ class GenerationRepository:
                 state=GenerationState.QUEUED.value,
                 stage=GenerationStage.VALIDATE.value,
                 supersedes_job_id=(predecessor.id if predecessor else None),
+                backend=backend, codex_model=codex_model,
             )
             session.add(model)
             session.flush()
@@ -573,8 +583,12 @@ class GenerationRepository:
                 )
             ).all()
             for model in models:
-                model.state = GenerationState.QUEUED.value
-                model.error = "requeued after an interrupted Hub process"
+                if model.backend == "codex_subscription":
+                    model.state = GenerationState.PAUSED.value
+                    model.error = "GPT operation interrupted; explicit recovery required"
+                else:
+                    model.state = GenerationState.QUEUED.value
+                    model.error = "requeued after an interrupted Hub process"
                 model.next_attempt_at = None
             return len(models)
 
@@ -1650,6 +1664,8 @@ class GenerationRepository:
         run_id: str,
     ) -> PublishedQuizRecord:
         with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
             run = session.get(StudioRunModel, run_id)
             if run is None:
                 raise KeyError(run_id)
@@ -1662,18 +1678,26 @@ class GenerationRepository:
                 ):
                     return self._published_quiz(existing)
             self._require_unreserved_studio_publication_scope(session, run)
-            if run.workflow_kind == QuizWorkflowKind.DIRECT_IMPORT.value:
+            if run.workflow_kind in {QuizWorkflowKind.DIRECT_IMPORT.value,
+                                     QuizWorkflowKind.LECTURE_GENERATION.value}:
                 if run.state != StudioRunState.AWAITING_REVIEW.value:
                     raise ValueError("imported quiz is not awaiting question review")
                 if self.practice_review is None:
                     raise ValueError("imported question review is not configured")
+                if run.backend == "codex_subscription" and not callable(
+                    getattr(self.practice_review, "lecture_validator", None)
+                ):
+                    raise ValueError("GPT lecture review validator is not configured")
                 quiz = self.practice_review.to_native_quiz_in_session(
                     session,
                     run.id,
                     title=run.label,
                 )
                 _validate_question_kinds(quiz, run.content_kind)
-                self._validate_accuracy(quiz)
+                # GPT drafts require explicit human verification and the lecture validator.
+                # Never invoke the legacy paid accuracy provider for a subscription run.
+                if run.backend != "codex_subscription":
+                    self._validate_accuracy(quiz)
                 return self._publish_direct_import_in_session(session, run, quiz)
             if run.state != StudioRunState.AWAITING_IMAGES.value:
                 raise ValueError("Studio run is not awaiting image publication")
@@ -1847,6 +1871,14 @@ class GenerationRepository:
         ]
         if unresolved:
             raise ValueError("quiz images are still required: " + ", ".join(unresolved))
+        lecture_id = None
+        if run.workflow_kind == QuizWorkflowKind.LECTURE_GENERATION.value:
+            manifest = session.scalar(select(StudioRunArtifactModel).where(
+                StudioRunArtifactModel.run_id == run.id,
+                StudioRunArtifactModel.artifact_key == "gpt:manifest"))
+            if manifest is None:
+                raise ValueError("GPT source manifest is missing")
+            lecture_id = int(json.loads(manifest.payload_json)["lecture_id"])
         model = None
         if run.supersedes_run_id:
             model = session.scalar(
@@ -1868,7 +1900,7 @@ class GenerationRepository:
                 raise ValueError("a published Studio quiz already uses this label for that exam")
             model = PublishedQuizModel(
                 token=secrets.token_hex(32),
-                lecture_id=None,
+                lecture_id=lecture_id,
                 job_id=None,
                 studio_run_id=run.id,
                 destination_subject=run.destination_subject,
@@ -1888,6 +1920,7 @@ class GenerationRepository:
             previous = session.get(StudioRunModel, run.supersedes_run_id)
             if previous is not None:
                 previous.published_token = None
+            model.lecture_id = lecture_id
             model.studio_run_id = run.id
             model.destination_subject = run.destination_subject
             model.destination_subject_key = run.destination_subject_key
@@ -2219,6 +2252,7 @@ class GenerationRepository:
             gemini_quiz_id=model.gemini_quiz_id,
             supersedes_job_id=model.supersedes_job_id,
             quiz_url=model.quiz_url,
+            backend=model.backend, codex_model=model.codex_model,
         )
 
     @staticmethod

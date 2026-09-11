@@ -245,7 +245,8 @@ def runs(
                     ),
                     "review_url": (
                         f"/studio/runs/{item.id}/review"
-                        if item.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT
+                        if item.workflow_kind in {QuizWorkflowKind.DIRECT_IMPORT,
+                                                  QuizWorkflowKind.LECTURE_GENERATION}
                         and item.state.value == "awaiting_review"
                         else None
                     ),
@@ -340,7 +341,8 @@ def _direct_import_review_run(request: Request, run_id: str) -> StudioRun:
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
-    if run.workflow_kind is not QuizWorkflowKind.DIRECT_IMPORT:
+    if run.workflow_kind not in {QuizWorkflowKind.DIRECT_IMPORT,
+                                 QuizWorkflowKind.LECTURE_GENERATION}:
         raise HTTPException(404, "imported question review is not available for this run")
     if run.state is not StudioRunState.AWAITING_REVIEW:
         raise HTTPException(409, "imported quiz is not awaiting question review")
@@ -760,7 +762,7 @@ def _set_override(
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
-    if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
+    if run.workflow_kind in {QuizWorkflowKind.DIRECT_IMPORT, QuizWorkflowKind.LECTURE_GENERATION}:
         require_form_csrf(request, None)
         _direct_import_review_run(request, run_id)
         try:
@@ -897,7 +899,7 @@ def preview_quiz_page(request: Request, run_id: str) -> Response:
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
-    if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
+    if run.workflow_kind in {QuizWorkflowKind.DIRECT_IMPORT, QuizWorkflowKind.LECTURE_GENERATION}:
         try:
             direct_run, quiz = _direct_preview_quiz(request, run_id)
         except ReviewArtifactUnavailable as error:
@@ -937,7 +939,7 @@ def preview_quiz_content(request: Request, run_id: str) -> JSONResponse:
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
-    if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
+    if run.workflow_kind in {QuizWorkflowKind.DIRECT_IMPORT, QuizWorkflowKind.LECTURE_GENERATION}:
         try:
             direct_run, quiz = _direct_preview_quiz(request, run_id)
         except ReviewArtifactUnavailable as error:
@@ -976,7 +978,7 @@ def preview_quiz_media(
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
-    if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
+    if run.workflow_kind in {QuizWorkflowKind.DIRECT_IMPORT, QuizWorkflowKind.LECTURE_GENERATION}:
         try:
             direct_run, quiz = _direct_preview_quiz(request, run_id)
         except ReviewArtifactUnavailable as error:
@@ -1030,7 +1032,7 @@ def preview_quiz_answer(
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
-    if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
+    if run.workflow_kind in {QuizWorkflowKind.DIRECT_IMPORT, QuizWorkflowKind.LECTURE_GENERATION}:
         try:
             _, quiz = _direct_preview_quiz(request, run_id)
         except ReviewArtifactUnavailable as error:

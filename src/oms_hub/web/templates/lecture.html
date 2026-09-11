@@ -109,7 +109,7 @@
       </div>
       {% if outline_output %}<button class="lecture-regenerate sh-iconbtn" type="button" data-generate aria-label="Regenerate lecture outline" title="Regenerate lecture outline"><span aria-hidden="true">↻</span></button>{% endif %}
     </section>
-    <section class="file-card sh-card {{ 'ready' if quiz_output else 'missing' }}" data-generation-card data-kind="quiz">
+    <section class="file-card sh-card {{ 'ready' if quiz_output else 'missing' }}" {% if not use_gpt %}data-generation-card{% endif %} data-kind="quiz">
       <div class="file-card-title">
         <span class="file-state-icon" aria-hidden="true">{{ "✓" if quiz_output else "✦" }}</span>
         <h2>Lecture Quiz</h2>
@@ -123,10 +123,11 @@
         {% if quiz_output %}
         <a class="button primary sh-btn sh-btn--primary" data-generation-link href="{{ quiz_output.url }}" target="_blank" rel="noopener noreferrer">Take Lecture Quiz</a>
         {% else %}
-        <button class="button primary sh-btn sh-btn--primary" type="button" data-generate>Generate Lecture Quiz</button>
+        {% if use_gpt %}<a class="button primary sh-btn sh-btn--primary" href="#gpt-quiz-heading">Generate Lecture Quiz</a>
+        {% else %}<button class="button primary sh-btn sh-btn--primary" type="button" data-generate>Generate Lecture Quiz</button>{% endif %}
         {% endif %}
       </div>
-      {% if quiz_output %}<button class="lecture-regenerate sh-iconbtn" type="button" data-generate aria-label="Regenerate lecture quiz" title="Regenerate lecture quiz"><span aria-hidden="true">↻</span></button>{% endif %}
+      {% if quiz_output and not use_gpt %}<button class="lecture-regenerate sh-iconbtn" type="button" data-generate aria-label="Regenerate lecture quiz" title="Regenerate lecture quiz"><span aria-hidden="true">↻</span></button>{% endif %}
     </section>
   </div>
   </div>

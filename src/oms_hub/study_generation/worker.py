@@ -7,6 +7,7 @@ from oms_hub.db import is_sqlite_busy
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import UploadKind
+from oms_hub.llm.codex_session import SessionError
 from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.study_generation.domain import (
     GenerationKind,
@@ -43,6 +44,7 @@ class GenerationWorker:
         outline: Any,
         publisher: Any,
         notebook_connection: Any | None = None,
+        *, gpt_outline: Any | None = None,
     ):
         self.repository = repository
         self.catalog = catalog
@@ -52,6 +54,7 @@ class GenerationWorker:
         self.outline = outline
         self.publisher = publisher
         self.notebook_connection = notebook_connection
+        self.gpt_outline = gpt_outline
 
     def recover_interrupted_jobs(self) -> int:
         return cast(int, self.repository.recover_interrupted())
@@ -68,8 +71,18 @@ class GenerationWorker:
             f"{job.kind.value.title()} generation is running",
         )
         try:
-            self._run(job)
+            if getattr(job, "backend", "notebooklm") == "codex_subscription":
+                self._run_gpt_outline(job)
+            else:
+                self._run(job)
         except Exception as error:  # noqa: BLE001 - durable boundary sanitizes content
+            if getattr(job, "backend", "notebooklm") == "codex_subscription":
+                safe = str(error) if isinstance(error, SessionError) else (
+                    "GPT outline stopped; retained attempt requires review.")
+                self.repository.fail(job.id, safe, paused=True)
+                self.catalog.set_step_status(job.lecture_id, progress_step,
+                                             StepStatus.NEEDS_REVIEW, safe)
+                return True
             if (
                 self.notebook_connection is not None
                 and isinstance(error, NotebookAuthenticationError)
@@ -112,6 +125,52 @@ class GenerationWorker:
                     safe,
                 )
         return True
+
+    def _run_gpt_outline(self, job: Any) -> None:
+        if job.kind is not GenerationKind.OUTLINE or self.gpt_outline is None:
+            raise SessionError("capability_unverified")
+        lecture = self.catalog.get_lecture(job.lecture_id)
+        if lecture is None:
+            raise SourceIsolationError("lecture was removed")
+        prompt = self.prompts.inspect(PromptKind.OUTLINE)
+        if prompt.sha256 != job.prompt_sha256:
+            raise SourceIsolationError("outline prompt changed")
+
+        def sources() -> tuple[RevisionSource, RevisionSource]:
+            values = []
+            for revision_id, upload_kind, source_kind in (
+                (job.pdf_revision_id, UploadKind.SLIDES, SourceKind.LECTURE_PDF),
+                (job.transcript_revision_id, UploadKind.TRANSCRIPTS, SourceKind.CLEANED_TRANSCRIPT),
+            ):
+                revision = self.ingestion.get_study_revision(revision_id)
+                source = _revision_source(revision, job.lecture_id, upload_kind, source_kind)
+                immutable = revision.immutable_derived_path
+                if (revision.state != "current" or immutable is None or not immutable.is_file()
+                    or sha256_file(immutable) != source.sha256):
+                    raise SourceIsolationError("immutable outline source is unavailable")
+                values.append(RevisionSource(source.lecture_id, source.revision_id,
+                                             immutable, source.sha256, source.kind))
+            return values[0], values[1]
+
+        pdf, transcript = sources()
+
+        def lifecycle(event: Any) -> None:
+            if event.request_id != job.id:
+                raise SourceIsolationError("outline request identity changed")
+            if event.phase == "dispatching" and sources() != (pdf, transcript):
+                raise SourceIsolationError("outline source binding changed")
+
+        answer = self.gpt_outline.generate(job, prompt, pdf, transcript, on_lifecycle=lifecycle)
+        if sources() != (pdf, transcript):
+            raise SourceIsolationError("outline sources changed before filing")
+        # Existing filer owns the replacement fence, backup and rollback behavior.
+        key = LectureKey(lecture.subject, lecture.exam_number,
+                         lecture.lecture_number, lecture.topic)
+        review = self.repository.imported_outline_replacement_review(job.lecture_id, job.id)
+        self.outline.file(job, key, answer, replacement_review=review)
+        self.repository.complete(job.id)
+        self.catalog.set_step_status(job.lecture_id, V2StepName.SUMMARY_FILED,
+                                     StepStatus.COMPLETE, "Lecture summary PDF is ready")
 
     def _run(self, job: Any) -> None:
         lecture = self.catalog.get_lecture(job.lecture_id)
