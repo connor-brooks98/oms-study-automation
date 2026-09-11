@@ -11,7 +11,7 @@
   "workers": {
     "B": {
       "client_thread_id": "client-new-thread:f0c101c3-7b75-4c64-8aa6-60e6188860cb",
-      "state": "idle_B6_parent_review",
+      "state": "running_B6_then_B7",
       "thread_id": "01a09273-0ad0-7ae1-902e-d24a1556741a",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/ca93/oms-study-automation",
@@ -19,7 +19,7 @@
     },
     "Q": {
       "client_thread_id": "client-new-thread:ff914d7d-00ef-4079-8b4b-bdff39cf34b3",
-      "state": "idle_Q6_review",
+      "state": "idle_local_complete",
       "thread_id": "01a09273-0ad0-7ae1-902e-d21c0e15d9c8",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/f0c7/oms-study-automation",
@@ -31,7 +31,7 @@
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/5b09/oms-study-automation",
       "base_commit": "c09c44e75f9ad405823f2a5134265036745dcbfb",
-      "state": "running_C3"
+      "state": "running_C4"
     }
   },
   "tasks": {
@@ -47,15 +47,15 @@
       "next_action": "maintain exact dispatch"
     },
     "O1": {
-      "state": "review_pending",
+      "state": "accepted_local",
       "worker": "O",
-      "commit": "a3b763b8d89f86f4e411d93c0af99ec7de12b751",
+      "commit": "0eb86491e68af5f64570ea47422f0e079cc3ddee",
       "tests": [
         "21 migration tests passed",
         "scoped Ruff passed",
         "mypy models/migrations passed"
       ],
-      "review": "legacy publication bypass correction0eb86491 under review",
+      "review": "PASS independent core publication/schema review; outline guard followup incremental review",
       "blocker": null,
       "next_action": "review outline/helper and correctedpublication"
     },
@@ -66,7 +66,7 @@
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "review ready Q6/C3; thenB6B7C4"
+      "next_action": "review C3 integration and outline guard; B6/B7 and C4 run"
     },
     "O3": {
       "state": "running",
@@ -133,13 +133,13 @@
       "next_action": "integrated; external capabilities separately pending"
     },
     "B6": {
-      "state": "ready",
+      "state": "running",
       "worker": "B",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "synthetic route tests exit0 with isolated native raster; desktop/mobile browser pending"
     },
     "B7": {
       "state": "ready",
@@ -148,7 +148,7 @@
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "B authorized to proceed after B6 receipt"
     },
     "Q1": {
       "state": "accepted_local",
@@ -204,15 +204,15 @@
       "next_action": "integrated; external capabilities separately pending"
     },
     "Q6": {
-      "state": "review_pending",
+      "state": "accepted_local",
       "worker": "Q",
       "commit": "c83ef86fa5f4746e38d0dcb0c72411dfd0e11169",
       "tests": [
         "304 worker checks passed"
       ],
-      "review": null,
+      "review": "PASS independent 53 focused checks",
       "blocker": null,
-      "next_action": "independent review then integrate"
+      "next_action": "integrated500123b4; vendor samples and real tag rules external"
     },
     "C1": {
       "state": "accepted_local",
@@ -237,22 +237,25 @@
       "next_action": "integrated; external capabilities separately pending"
     },
     "C3": {
+      "state": "review_pending",
+      "worker": "C",
+      "commit": "fd6922f2996cf58c2965f4f21616b0ce2631476b",
+      "tests": [
+        "12 independent server checks",
+        "O integrated15Python+76Node passed"
+      ],
+      "review": "server PASS; corrected player/app incremental review",
+      "blocker": null,
+      "next_action": "independent app callback and corrected player review"
+    },
+    "C4": {
       "state": "running",
       "worker": "C",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "trusted private attempts/progress using approved callbacks"
-    },
-    "C4": {
-      "state": "ready",
-      "worker": "C",
-      "commit": null,
-      "tests": [],
-      "review": null,
-      "blocker": null,
-      "next_action": "follow approved dependency table"
+      "next_action": "accepted native blocks and topic review from fd6922f2"
     }
   },
   "external": {
@@ -291,7 +294,7 @@
   ],
   "helper": {
     "owner": "O",
-    "task": "Ointegration/outline and publication bypass correction",
+    "task": "C3 app/player and outline guard review",
     "state": "active_reviewer",
     "agent": "/root/review_o1_schema",
     "no_grandchildren": true
