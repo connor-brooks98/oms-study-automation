@@ -5,7 +5,8 @@ app-server startup → initialize → ephemeral thread/start with explicit empty
 environments → synthetic text turn/start path does not call the normal debug
 CLI's Windows setup/ACL reconciliation. This supports a separately reviewed
 registry-only diagnostic scope. It is not a native Windows acceptance result.
-No implementation or Windows launch was performed here.
+The source trace below preceded the separate implementation recorded at the end.
+No Windows launch was performed in this scope.
 
 All OpenAI source references below are pinned to release commit
 `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`; local copies are retained under the
@@ -82,3 +83,66 @@ A Windows port needs separate implementation and review that preserves that
 guard; no monkeypatching, platform spoofing, firewall change or native launch is
 implied by this finding. The normal debug CLI remains rejected at its known
 setup/ACL boundary. Production generation stays closed.
+
+
+## Separate implementation receipt — 2026-09-12
+
+Implementation commit: `f1f799af7a904752fd2822df83c9f50008519964`.
+Tree: `33f23c52528bdd0ef9a9c6be74174fd9d646f292`.
+Script SHA-256: `2c27997fba090aa496c37c7096c755b8db4cfeae83fcb8a80f9d4052c4afa339`.
+
+The new `scripts/probe-codex-windows-registry.py` uses only Python stdlib and can
+run with `-I -B`, without the repository, PYTHONPATH or OMS dependencies. It rejects
+non-Windows execution and any executable other than the separately pinned Windows
+SHA-256 `444a3f0008050605cae73cd9b7a2dcac61294062dfaab56dd20430fd6498518b`.
+It requires a fresh absolute output directory whose parent already exists.
+
+The proposed O-owned invocation, after independent review/staging, is:
+
+```powershell
+& 'C:\Services\oms-study-automation-v2\.venv\Scripts\python.exe' -I -B `
+  '<staged>\probe-codex-windows-registry.py' `
+  --executable 'C:\Users\conbr\.local\bin\codex.exe' `
+  --output-dir '<new diagnostic root>\probe'
+```
+
+The probe makes one app-server launch with the reviewed private configuration and
+allowlisted environment. It verifies the private CODEX_HOME and returned model,
+provider, roots and thread policy; handles completion before the turn/start reply;
+denies server action requests; rejects unexpected item types; and returns only a
+fixed assistant message from its loopback Responses fixture. A diagnostic pass
+requires one request, no offered tools including `additional_tools`, one fixture
+response, a successful terminal turn and native exit zero. Every handled failure
+returns nonzero. This is a registry diagnostic, not a restriction acceptance gate.
+
+Evidence retained in the output directory includes `prelaunch.json` before Popen,
+`native-pid.json` immediately after launch, `sent-frames.jsonl` before sending,
+unbuffered bounded `stdout.jsonl`/`stderr.txt` before decoding, fixture request and
+response files, and final `result.json` with errors, native PID/exit and cleanup.
+The protocol deadline is 40 seconds; child reaping uses bounded 3-second waits,
+then terminate/kill escalation for the owned process. Output readers and fixture
+socket operations are bounded. The process environment retains only explicit
+Windows OS paths and fixture home/temp paths; no parent credential/proxy/executor
+settings are copied. No system configuration or owner auth/setup files are changed.
+
+O's independent outer deadline and process-tree postflight remain required for
+the native diagnostic. A hard outer kill can prevent final `result.json`; the
+incremental files remain available. The script does not claim descendant cleanup,
+OS network isolation, sandbox identity, restriction enforcement or provider
+acceptance. All those verification flags remain false. No native Windows or
+provider run occurred; production generation remains closed.
+
+Offline verification at the implementation commit:
+
+- Test-first missing-implementation check: 5 failed before implementation.
+- Focused Windows, Mac policy, session and text tests: **77 passed, 3 skipped**;
+  native opt-in and optional schema variables were explicitly unset.
+- Ruff format/check passed for both new Python files; `git diff --check` passed.
+- Standalone `python -I -B scripts/probe-codex-windows-registry.py --help` passed.
+- Mac probe and production `codex_session.py` match the pre-implementation HEAD.
+
+The new tests cover normal/early completion ordering, denied actions, private
+configuration and hash rejection without native launch, output limits, effective
+`additional_tools` detection, and a real offline loopback fixed-response/extra-
+request rejection exchange. Native feature compatibility and registry contents
+remain unverified until O's separately owned diagnostic.
