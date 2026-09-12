@@ -65,6 +65,8 @@ public sealed class OmsLpacResult {
     public bool ChildAccessCheckReturned, ChildAccessStatus;
     public uint ChildGrantedAccess;
     public int CapabilityCount;
+    public string[] CapabilitySids;
+    public uint[] CapabilityAttributes;
     public int SessionId;
     public bool ProfileCreated;
     public bool Resumed;
@@ -79,6 +81,18 @@ public static class OmsLpacProbe {
     // Documented TOKEN_INFORMATION_CLASS values (winnt.h).
     const int TokenElevation = 20, TokenIsAppContainer = 29, TokenCapabilities = 30;
     const int TokenAppContainerSid = 31;
+    // Microsoft's documented LPAC cmd.exe startup requirements, fixed to this synthetic probe.
+    // https://raw.githubusercontent.com/microsoft/SandboxSecurityTools/f6263b76dbf77305969aa599ff8a66579aae5a54/LaunchAppContainer/README.md
+    static readonly string[] CmdCapabilitySids = {
+        "S-1-15-3-1024-2405443489-874036122-4286035555-1823921565-1746547431-2453885448-3625952902-991631256", // lpacCom
+        "S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681" // registryRead
+    };
+    [StructLayout(LayoutKind.Sequential)] struct SidAndAttributes {
+        public IntPtr Sid; public uint Attributes;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct TokenGroupsHeader {
+        public uint Count; public SidAndAttributes First;
+    }
     const uint WAIT_TIMEOUT = 258, INFINITE_ERROR = 0xffffffff;
     [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes {
         public int Length; public IntPtr Descriptor; public int Inherit;
@@ -130,7 +144,8 @@ public static class OmsLpacProbe {
     static void Win32(bool ok, int error, string operation) {
         if (!ok) throw new Win32Exception(error, operation + " failed with Win32 error " + error);
     }
-    static IntPtr TokenData(IntPtr token, int kind) {
+    static IntPtr TokenData(IntPtr token, int kind, out int length) {
+        length = 0;
         int needed;
         bool first = GetTokenInformation(token, kind, IntPtr.Zero, 0, out needed);
         int sizeError = Marshal.GetLastWin32Error();
@@ -144,6 +159,7 @@ public static class OmsLpacProbe {
             int error = Marshal.GetLastWin32Error();
             Require(ok && needed >= minimum && needed <= capacity,
                 "Token data query: kind=" + kind + ", return=" + ok + ", error=" + error + ", needed=" + needed);
+            length = needed;
             return data;
         }
         catch { Marshal.FreeHGlobal(data); throw; }
@@ -161,11 +177,42 @@ public static class OmsLpacProbe {
         } finally { Marshal.FreeHGlobal(data); }
     }
     static string TokenSid(IntPtr token) {
-        IntPtr data = TokenData(token, TokenAppContainerSid);
+        int length;
+        IntPtr data = TokenData(token, TokenAppContainerSid, out length);
         try {
             IntPtr sid = Marshal.ReadIntPtr(data);
             Require(sid != IntPtr.Zero, "Child has no AppContainer SID.");
             return new SecurityIdentifier(sid).Value;
+        } finally { Marshal.FreeHGlobal(data); }
+    }
+    static void VerifyCmdCapabilities(IntPtr token, OmsLpacResult result) {
+        int length;
+        IntPtr data = TokenData(token, TokenCapabilities, out length);
+        try {
+            result.CapabilityCount = Marshal.ReadInt32(data);
+            Require(result.CapabilityCount == CmdCapabilitySids.Length, "Unexpected capability count.");
+            int first = Marshal.OffsetOf(typeof(TokenGroupsHeader), "First").ToInt32();
+            int stride = Marshal.SizeOf(typeof(SidAndAttributes));
+            Require(length >= first + stride * result.CapabilityCount, "Truncated capability array.");
+            result.CapabilitySids = new string[result.CapabilityCount];
+            result.CapabilityAttributes = new uint[result.CapabilityCount];
+            bool[] seen = new bool[CmdCapabilitySids.Length];
+            long start = data.ToInt64(), end = checked(start + length);
+            for (int i = 0; i < result.CapabilityCount; i++) {
+                SidAndAttributes entry = (SidAndAttributes)Marshal.PtrToStructure(
+                    IntPtr.Add(data, first + stride * i), typeof(SidAndAttributes));
+                long address = entry.Sid.ToInt64();
+                Require(address >= start && address <= end - 8, "Capability SID outside returned buffer.");
+                int sidLength = 8 + 4 * Marshal.ReadByte(entry.Sid, 1);
+                Require(address <= end - sidLength, "Truncated capability SID.");
+                string actual = new SecurityIdentifier(entry.Sid).Value;
+                result.CapabilitySids[i] = actual;
+                result.CapabilityAttributes[i] = entry.Attributes;
+                int expected = Array.IndexOf(CmdCapabilitySids, actual);
+                Require(expected >= 0 && !seen[expected] && entry.Attributes == 4,
+                    "Unexpected, duplicate or non-enabled capability: " + actual + " attributes=" + entry.Attributes);
+                seen[expected] = true;
+            }
         } finally { Marshal.FreeHGlobal(data); }
     }
     static void DuplicateForAccessCheck(IntPtr token, out IntPtr duplicate) {
@@ -223,6 +270,8 @@ public static class OmsLpacProbe {
         IntPtr callerCheckToken = IntPtr.Zero, childCheckToken = IntPtr.Zero;
         IntPtr attributes = IntPtr.Zero, capsData = IntPtr.Zero, policy = IntPtr.Zero, handlesData = IntPtr.Zero, environment = IntPtr.Zero;
         IntPtr stdin = IntPtr.Zero, stdout = IntPtr.Zero, stderr = IntPtr.Zero;
+        IntPtr capabilityEntries = IntPtr.Zero;
+        IntPtr[] capabilitySids = new IntPtr[CmdCapabilitySids.Length];
         ProcessInformation process = new ProcessInformation();
         bool attributesInitialized = false;
         string inside = Path.Combine(fixture, "inside");
@@ -282,7 +331,20 @@ public static class OmsLpacProbe {
             int initializeError = Marshal.GetLastWin32Error();
             Win32(initialized, initializeError, "Initialize attributes");
             attributesInitialized = true;
-            SecurityCapabilities caps = new SecurityCapabilities { Sid = sid };
+            int capabilityStride = Marshal.SizeOf(typeof(SidAndAttributes));
+            capabilityEntries = Marshal.AllocHGlobal(capabilityStride * CmdCapabilitySids.Length);
+            for (int i = 0; i < CmdCapabilitySids.Length; i++) {
+                SecurityIdentifier capability = new SecurityIdentifier(CmdCapabilitySids[i]);
+                byte[] bytes = new byte[capability.BinaryLength];
+                capability.GetBinaryForm(bytes, 0);
+                capabilitySids[i] = Marshal.AllocHGlobal(bytes.Length);
+                Marshal.Copy(bytes, 0, capabilitySids[i], bytes.Length);
+                Marshal.StructureToPtr(new SidAndAttributes { Sid = capabilitySids[i], Attributes = 4 },
+                    IntPtr.Add(capabilityEntries, i * capabilityStride), false); // SE_GROUP_ENABLED
+            }
+            SecurityCapabilities caps = new SecurityCapabilities {
+                Sid = sid, Capabilities = capabilityEntries, Count = (uint)CmdCapabilitySids.Length
+            };
             capsData = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(SecurityCapabilities)));
             Marshal.StructureToPtr(caps, capsData, false);
             Attribute(attributes, 0x20009, capsData, Marshal.SizeOf(typeof(SecurityCapabilities)));
@@ -322,9 +384,7 @@ public static class OmsLpacProbe {
             int childOpenError = Marshal.GetLastWin32Error();
             Win32(childOpened, childOpenError, "Open child token");
             result.IsAppContainer = TokenInt(childToken, TokenIsAppContainer);
-            IntPtr capabilitiesInfo = TokenData(childToken, TokenCapabilities);
-            try { result.CapabilityCount = Marshal.ReadInt32(capabilitiesInfo); }
-            finally { Marshal.FreeHGlobal(capabilitiesInfo); }
+            VerifyCmdCapabilities(childToken, result);
             result.SessionId = TokenInt(childToken, 12);
             result.ChildSid = TokenSid(childToken);
             DuplicateForAccessCheck(childToken, out childCheckToken);
@@ -339,11 +399,12 @@ public static class OmsLpacProbe {
                 + "\r\nChildAccessCheck.AccessStatus=" + result.ChildAccessStatus
                 + "\r\nChildAccessCheck.GrantedMask=" + result.ChildGrantedAccess
                 + "\r\nTokenCapabilities.Count=" + result.CapabilityCount
+                + "\r\nTokenCapabilities.Sids=" + String.Join(";", result.CapabilitySids)
                 + "\r\nTokenSessionId=" + result.SessionId
                 + "\r\nTokenAppContainerSid=" + result.ChildSid + "\r\n", Encoding.ASCII);
             Require(result.IsAppContainer == 1 && result.ChildAccessStatus && result.ChildGrantedAccess == 2
-                && result.CapabilityCount == 0 && result.ChildSid == result.ProfileSid && result.SessionId == 1,
-                "Suspended token does not match the zero-capability LPAC profile.");
+                && result.CapabilityCount == CmdCapabilitySids.Length && result.ChildSid == result.ProfileSid && result.SessionId == 1,
+                "Suspended token does not match the LPAC profile with the two fixed cmd capabilities.");
             result.Stage = "resume";
             uint previousCount = ResumeThread(process.Thread);
             int resumeError = Marshal.GetLastWin32Error();
@@ -392,8 +453,10 @@ public static class OmsLpacProbe {
                 if (!closed) result.Error += "\nCloseHandle failed with Win32 error " + closeError;
             }
             if (attributesInitialized) DeleteProcThreadAttributeList(attributes);
-            foreach (IntPtr allocation in new IntPtr[] { attributes, capsData, policy, handlesData, environment })
+            foreach (IntPtr allocation in new IntPtr[] { attributes, capsData, capabilityEntries, policy, handlesData, environment })
                 if (allocation != IntPtr.Zero) Marshal.FreeHGlobal(allocation);
+            foreach (IntPtr capabilitySid in capabilitySids)
+                if (capabilitySid != IntPtr.Zero) Marshal.FreeHGlobal(capabilitySid);
             if (sid != IntPtr.Zero) FreeSid(sid);
         }
         if (result.Error == null) {
