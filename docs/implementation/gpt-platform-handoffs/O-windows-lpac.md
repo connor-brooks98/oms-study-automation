@@ -5,7 +5,7 @@ LPAC identity verification now passes; child initialization still fails with
 `0xC0000142` with empty stdout/stderr; no canary read was established. Read-isolation acceptance has not passed.**
 Production generation remains `capability_unverified`.
 
-Current interpretation: [independent startup review](O-windows-startup-review.md) identifies a documented cmd.exe/zero-capability mismatch. The exact failing DLL remains unproven.
+Current interpretation: [independent startup review](O-windows-startup-review.md) identified the documented missing cmd capabilities. Both are now supplied and verified, but startup still fails. A matched-symbol native trace identifies KERNELBASE.dll failure during DLL_PROCESS_ATTACH; the internal failed operation remains unknown.
 
 ## Implemented corrections
 
@@ -22,7 +22,7 @@ Current interpretation: [independent startup review](O-windows-startup-review.md
   It changes no filesystem ACL and does not impersonate a thread.
 
 Current probe source SHA256:
-`e04780505e9e8ad42b7eb52792cfd89b9b3fac09653719f9977f8516154fe4d1`.
+`e0f721e87a521cedb8100bd682badee0c8220082c372cb02d69e1174a4a05123`.
 Independent source and wrapper review passed. Native PowerShell parsing and C#
 compilation passed. Exact sources and raw results are retained in the archives.
 
@@ -40,11 +40,11 @@ The sole native child is pinned System32 cmd.exe, with fixed command:
 /d /v:off /c "type inside.txt & type ..\outside.txt"
 ```
 
-Launch attributes require zero capabilities, ALL_APPLICATION_PACKAGES opt-out,
+Launch attributes require exactly lpacCom and registryRead with attributes4, ALL_APPLICATION_PACKAGES opt-out,
 three explicit standard-stream handles, and prohibited descendant processes.
 The explicit environment contains COMSPEC, LOCALAPPDATA, SystemRoot, TEMP, TMP
 and WINDIR. Before resuming the suspended child, require AppContainer1, exact
-new profile SID, zero capabilities, session1, caller AccessCheck3 and child2.
+new profile SID, those two distinct capability SIDs/attributes, session1, caller AccessCheck3 and child2.
 Any mismatch fails closed. The child has a15-second wait and5-second owned-handle
 termination/reap bound. Profiles, fixtures and disabled tasks remain retained.
 
@@ -137,3 +137,8 @@ weaker token, second launch, provider acceptance or live deployment followed.
 The next useful evidence is the actual failing DLL/initialization operation;
 another broad setting change is not justified by the exit code alone. Runtime
 activation remains closed. The production source is unchanged by this experiment.
+
+The implemented two-capability rerun and subsequent CDB evidence are recorded in
+[the startup review](O-windows-startup-review.md#loader-evidence-after-the-implemented-correction).
+Latest task OMS GPT LPAC Native Loader 213490c1ead3: token checks passed; read
+oracle failed0xc0000142. Both preservation checks passed21:19:05.5724365Z.

@@ -28,3 +28,12 @@ The original profiles, fixtures, tasks and unbundled files remain retained.
 Read-only console diagnosis: `windows-lpac-startup-diagnosis.zip`, SHA256 `2ecbb668182fcb80c71c869b519eceb34f0910f4ef4c703e77d26265ad9b4158`. Existing conbr LowBoxConsoleEnabled value was absent; no registry mutation occurred. This is a diagnostic lead, not a proven startup fix.
 
 Read-only deeper diagnosis: `windows-lpac-deep-diagnosis.zip`, SHA256 `b9759b07f349c38d482db30617be1d5d165103edeef8eda137f95ca47a932297`. Contains pinned Microsoft capability requirements, actual cmd/Codex PE import metadata and bounded debugger inventory; no target launch or configuration change.
+
+Two-capability implementation rerun: `windows-lpac-cmd-capabilities.zip`, SHA256 `7297760e5faac180842ed50acd2a66540841c406c66c9a94ff755e6a83afefde`. Exact token capabilities verified; startup failure unchanged; both preservation checks passed.
+
+Portable CDB traces (Microsoft tool/PDB binaries remain in private diagnostic directories; manifests record excluded hashes):
+
+- `windows-lpac-loader-trace.zip`: SHA256 `fba5e1f2d29a2d27d26a1a28c0a1ec8453cdd7be38846e5327553f4ce1384ade`; 63 manifest files. Child startup failure reproduced, loader flag could not be set without symbols.
+- `windows-lpac-loader-symbols.zip`: SHA256 `6d50811d7d6e91dc917a9872f798218a3a18f0d3686525af216627d3c148d0b1`; 61 manifest files. Instrumentation expression failed in compiler child; watchdog timeout and inner reap error retained. Outer cleanup passed; independent reconciliation confirms all four owned PIDs absent and Hub preserved. No LPAC child result.
+
+- `windows-lpac-native-loader.zip`: SHA256 `0261961bea28d0854c93352f06b83dc3e4a53897141c38d6eab48ddffa8d6bfe`; 57 manifest files. Matching symbols and loader flag verified. KERNELBASE.dll fails DLL_PROCESS_ATTACH; read oracle failed. Both postflights passed without timeout/cleanup error.

@@ -293,7 +293,7 @@
     ]
   },
   "release": {
-    "candidate": "a699f7a39f4da562bf057ffc941961cbd7b3dd8f",
+    "candidate": "67c58784042601d958d1e86879f96c71a8365bda",
     "live_authorized": false,
     "proposal": "docs/implementation/gpt-platform-release-proposal.md",
     "receipt": "docs/implementation/gpt-platform-handoffs/O3.md",
@@ -324,7 +324,7 @@
         "scope": "26passed1skip at8de86582"
       }
     ],
-    "code_tree": "7f3fb7930c381805938a0440463305d3afd4c107",
+    "code_tree": "32cbe21722dacc21d93e3ec07bbd3aece563332f",
     "archive_candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
     "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md"
   },
@@ -367,10 +367,10 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "LPAC token verification passed on Windows; cmd exited0xc0000142 before canary reads; both preservation checks passed; no provider acceptance",
-    "candidate": "f7b4a7c061d8f11e89084e134a57382bc0a84885",
-    "code_tree": "a0b89be8a3eaf3800e34700596d5c90c42f46cc2",
-    "review": "PASS independent policy/source/wrapper/native-result review; read boundary failed at child DLL initialization",
+    "native_progress": "Two documented cmd capabilities implemented and verified; native loader trace identifies KERNELBASE.dll DLL_PROCESS_ATTACH failure; read boundary and Codex runtime acceptance pending",
+    "candidate": "67c58784042601d958d1e86879f96c71a8365bda",
+    "code_tree": "32cbe21722dacc21d93e3ec07bbd3aece563332f",
+    "review": "PASS independent capability source, wrapper and final native loader evidence review; read acceptance failed",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
       "26 passed,1 skipped final export/atomic/routes at8de86582",
@@ -389,14 +389,14 @@
     "production_policy_commit": "0aa11c7ee40021ede773f6ddc3c9c6e063b557fc",
     "lpac": {
       "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-lpac.md",
-      "source_sha256": "e04780505e9e8ad42b7eb52792cfd89b9b3fac09653719f9977f8516154fe4d1",
-      "task": "OMS GPT LPAC Console f4eb50a9ed74",
+      "source_sha256": "e0f721e87a521cedb8100bd682badee0c8220082c372cb02d69e1174a4a05123",
+      "task": "OMS GPT LPAC Native Loader 213490c1ead3",
       "token_verification": "passed",
       "read_boundary": "failed_child_dll_initialization",
       "child_exit_code": "0xC0000142",
       "preservation": "passed",
-      "postflight_utc": "2026-09-12T15:50:39.4735015Z",
-      "next_action": "Obtain scoped per-target loader evidence without changing token or shared settings; do not treat zero-capability cmd as a valid positive read oracle",
+      "postflight_utc": "2026-09-12T21:19:05.5724365Z",
+      "next_action": "Use matching KERNELBASE symbols and a bounded cmd-only debugger trace to identify the failing initialization operation; no guessed ACL/capability/registry changes.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -407,9 +407,27 @@
         "archive_sha256": "94a596db0f57387fbde32418c1d919820184f2f46dfecb738fa0cf3a2c65c441",
         "review": "PASS independent wrapper and native/restoration evidence review"
       },
-      "diagnosis": "Documented payload/policy mismatch: Microsoft requires lpacCom and registryRead for LPAC cmd; probe grantszero. Exact failed DLL unproven.",
+      "diagnosis": "Missing documented cmd capabilities corrected; KERNELBASE.dll initialization fails during DLL_PROCESS_ATTACH. Internal failed operation remains unknown.",
       "independent_review": "docs/implementation/gpt-platform-handoffs/O-windows-startup-review.md",
-      "reviewer": "/root/independent_lpac_diagnosis"
+      "reviewer": "/root/independent_lpac_diagnosis",
+      "capabilities": [
+        "lpacCom",
+        "registryRead"
+      ],
+      "capability_attributes": [
+        4,
+        4
+      ],
+      "source_commit": "67c58784042601d958d1e86879f96c71a8365bda",
+      "loader_trace": {
+        "instrumentation": "passed; matching public ntdll PDB and NtGlobalFlag0->2 verified",
+        "failed_dll": "KERNELBASE.dll",
+        "phase": "DLL_PROCESS_ATTACH",
+        "child_pid": 19652,
+        "archive": "docs/implementation/gpt-platform-evidence/windows-lpac-native-loader.zip",
+        "archive_sha256": "0261961bea28d0854c93352f06b83dc3e4a53897141c38d6eab48ddffa8d6bfe",
+        "provider_request": false
+      }
     }
   },
   "local_preview": {
