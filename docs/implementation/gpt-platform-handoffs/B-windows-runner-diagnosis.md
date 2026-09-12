@@ -4,6 +4,17 @@
 before receiving that command. The cause of its missing pipe connection remains
 unknown; no retry or Windows change was performed by B.**
 
+Latest host evidence narrows this further: System/Application Popup event 26 at
+`2026-09-12T02:48:48.491Z` names `codex-command-runner-0.153.4.exe` and startup
+status `0xc0000142`. Microsoft defines this as `STATUS_DLL_INIT_FAILED` in its
+[immutable SDK header](https://github.com/microsoft/win32metadata/blob/29896383c51d9dd6a2ea0ec6304d095baca9418c/generation/WinSDK/RecompiledIdlHeaders/shared/ntstatus.h#L5047)
+and [MS-ERREF status table](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55).
+This is observed DLL-initialization failure consistent with the absent runner
+pipe connection. The specific DLL, initialization routine, and underlying cause
+are still unknown; the popup record does not carry exact runner PID correlation.
+Do not present pipe ACL failure, missing redistributables, or account corruption
+as established causes.
+
 ## Findings
 
 The official `rust-v0.153.4` tag resolves through annotated tag
@@ -151,6 +162,11 @@ helper help/version mode. This proposal has not been executed: it would prove PE
 loading and reaching main under the caller (`conbr`) only. It cannot establish
 sandbox-account loading, pipe ACL correctness, or a successful runner handshake.
 Do not supply live pipe names, change identity, or invoke the setup helper.
+The no-argument application path performs no log initialization, worker-thread
+spawn, network/pipe open, setup, credential read, or token creation. OS loader,
+DLL/CRT and Rust runtime startup still precede the application's `main`; these
+necessary initialization phases are precisely what the proposed smoke test
+would traverse. Exit 1 alone is insufficient: require the expected stderr text.
 
 The safe existing parent-log subset is helper source/destination selection only.
 When O confirms the default CODEX_HOME, its path is
@@ -170,3 +186,20 @@ can distinguish both causes under the sandbox account without a new launch or
 instrumentation. O's bounded crash/loader-event and PE/ACL metadata checks are the
 next discriminator. New source files are retained alongside the prior release
 snapshots. This follow-up performs no Windows launch or remote mutation.
+
+O's newer metadata confirms inherited read/execute access for SID ending `1005`
+on the helper. That SID is `CodexSandboxUsers`; Offline `1006` and Online `1007`
+are both members. This records file access grants, not the cause of DLL
+initialization failure or effective access to every dependency. The empty scoped
+Application crash/WER/SxS result does not negate the positive System popup event.
+Hub PID 8268 and all workers were healthy in the newer snapshot.
+
+Follow-up evidence root:
+`/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/windows-runner-followup`.
+`startup-metadata.stdout` SHA-256:
+`5945edbd8bc0021c1b6fdece07d4a6020a9073b62ff4409c4abab91cf86e8edd`.
+`system-events-and-identities.stdout` SHA-256:
+`d923087f572ac187136496c44ecd30328ac52d7ba0e8a98a4988822af7597031`.
+The Microsoft header and immutable-source manifest are retained in B's source
+evidence root; header SHA-256:
+`1d128c5f745ee87e3e6bba6fc1b00617245bd54ef500c4766fe13a0c6c48274a`.
