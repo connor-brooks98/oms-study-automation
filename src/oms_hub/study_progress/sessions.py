@@ -180,13 +180,21 @@ class StudySessionService:
             owner_id, tuple(native_reference(publication, q.id) for q in publication.quiz.questions)
         )
 
-    def create_block(self, owner_id: str, references: tuple[NativeQuestionRef, ...]) -> SessionView:
+    def create_block(
+        self,
+        owner_id: str,
+        references: tuple[NativeQuestionRef, ...],
+        *,
+        validate_selection: Callable[[], None] | None = None,
+    ) -> SessionView:
         TypeAdapter(OwnerId).validate_python(owner_id)
         references = tuple(NativeQuestionRef.model_validate(r.model_dump()) for r in references)
         if not 1 <= len(references) <= 500 or len(set(references)) != len(references):
             raise ValueError("Select 1-500 distinct versioned questions")
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
+            if validate_selection is not None:
+                validate_selection()
             publications = {}
             for ref in references:
                 if ref.quiz_token not in publications:

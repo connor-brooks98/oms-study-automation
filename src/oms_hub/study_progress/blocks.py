@@ -121,6 +121,12 @@ class BlockService:
                 with self.sessions._session_factory() as session:
                     publication = self.sessions._publication(session, owner_id, listed.token)
                     self.sessions._content(owner_id, publication)
+                    if (
+                        not publication.destination_subject.strip()
+                        or not publication.destination_subject_key.strip()
+                        or publication.destination_exam_number < 1
+                    ):
+                        raise ValueError("Publication scope is unavailable")
             except (PermissionError, ValueError, OSError):
                 unavailable += 1
                 continue
@@ -196,8 +202,16 @@ class BlockService:
         eligible = {q.key.question_id: q for q in self.eligible(catalog, filters)}
         if any(key not in eligible for key in selected_keys):
             raise ValueError("Selected question changed or is outside this scope")
+
+        def validate_selection() -> None:
+            current = {q.key.question_id for q in self.eligible(self.catalog(owner_id), filters)}
+            if any(key not in current for key in selected_keys):
+                raise ValueError("Selected question changed or is outside this scope")
+
         return self.sessions.create_block(
-            owner_id, tuple(eligible[key].reference for key in selected_keys)
+            owner_id,
+            tuple(eligible[key].reference for key in selected_keys),
+            validate_selection=validate_selection,
         )
 
     def resolve(self, owner_id: str, key_id: str) -> NativeCandidate:

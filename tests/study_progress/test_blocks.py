@@ -190,3 +190,78 @@ def test_scope_reviewed_topics_results_only_and_missing_media(blocks):
     catalog = service.catalog("owner")
     assert catalog.unavailable_publications == 1
     assert not any(q.reference.quiz_token == "quiz" for q in catalog.questions)
+
+
+@pytest.mark.parametrize("change", ["scope", "topic"])
+def test_scope_and_topic_are_rechecked_under_creation_write_lock(
+    blocks, tmp_path, monkeypatch, change
+):
+    from sqlalchemy import func, select
+
+    from oms_hub.models import StudySessionModel
+    from oms_hub.question_bank.contracts import TopicLabel
+    from oms_hub.study_progress.blocks import BlockFilters
+    from oms_hub.study_progress.sessions import _hash, question_key
+
+    service, bank, database, publications = blocks
+    publication = publications["quiz"]
+    key = question_key(publication, "q1")
+    ready = bank.register_native_projection(
+        learner_id="owner",
+        quiz_token=publication.token,
+        quiz_version=publication.version,
+        quiz_content_sha256=_hash(publication),
+        question_id="q1",
+        trusted_media_root=tmp_path,
+    )
+    bank.set_topics(
+        key,
+        (
+            TopicLabel(
+                axis="topic",
+                label="Reviewed",
+                canonical_id="reviewed",
+                method="user",
+                review_state="accepted",
+            ),
+        ),
+        ready.content_hash,
+        reviewer_context="owner",
+    )
+    filters = BlockFilters(course="neuro", exam_numbers=(1,), topic_ids=("reviewed",))
+    original = service.sessions.create_block
+
+    def racing_create(owner, references, **kwargs):
+        if change == "scope":
+            publications["quiz"] = replace(
+                publication,
+                destination_subject="Heme",
+                destination_subject_key="heme",
+                destination_exam_number=9,
+            )
+        else:
+            bank.set_topics(key, (), ready.content_hash, reviewer_context="owner")
+        return original(owner, references, **kwargs)
+
+    monkeypatch.setattr(service.sessions, "create_block", racing_create)
+    with pytest.raises(ValueError, match="outside this scope"):
+        service.create("owner", filters, selected_keys=(key.question_id,))
+    with database.session() as session:
+        assert session.scalar(select(func.count()).select_from(StudySessionModel)) == 0
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("destination_subject", ""),
+        ("destination_subject_key", "  "),
+        ("destination_exam_number", 0),
+    ],
+)
+def test_unscoped_publications_are_excluded_only_from_blocks(blocks, field, value):
+    service, _, _, publications = blocks
+    publications["quiz"] = replace(publications["quiz"], **{field: value})
+    catalog = service.catalog("owner")
+    assert catalog.unavailable_publications == 1
+    assert all(q.reference.quiz_token != "quiz" for q in catalog.questions)
+    assert service.sessions.create("owner", "quiz").questions
