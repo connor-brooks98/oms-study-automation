@@ -2,7 +2,9 @@
 
 Status: core implementation and bounded Windows artifact acceptance are ready for review. Actual Windows PowerPoint conversion preserved the embedded image and vector shape; a discovered long-path export defect was fixed, reviewed and passed18 Windows export checks plus retained-slide export/grade parity. The working local preview has a connected ChatGPT account. Generation activation and live NUC deployment remain pending.
 
-Reviewed code candidate: `a699f7a39f4da562bf057ffc941961cbd7b3dd8f`, tree `7f3fb7930c381805938a0440463305d3afd4c107`, branch `codex/gpt-runtime-activation`. Final status/receipt documentation follows that code commit. Production changes since the frozen base are Office cleanup and Windows export-path handling; runtime policy and JavaScript remain unchanged. The later standalone Windows registry probe adds diagnostic code/tests only; production source still matches `8de86582e1f9ca12bfc00119121c2628542fe43b`. The existing full release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`. The separate353-member Windows acceptance archive is exact-source test staging, not a deployment package. [Current bounded acceptance receipt](gpt-platform-handoffs/O-windows-runtime.md).
+Reviewed production-policy commit: `0aa11c7ee40021ede773f6ddc3c9c6e063b557fc`, tree `0614b7a5c19b791e8ca30bd8dafe906ed613236e`, branch `codex/gpt-runtime-fix-2026-09-12`. The requested pre-change snapshot was pushed at `274da9d74108e0e8a4f6b6b51ecec5a9550fdd0b`; `b5d19cd5` additionally backs up both completed Windows raw evidence bundles in Git. The production client now applies the accepted experimental protocol and fixed policy, private process home and platform binary pins, and rejects policy drift before `turn/start`. Independent review passed; O retest passed 97 checks with three opt-in skips, Ruff and strict mypy. The generation readiness guard remains closed. [Exact policy handoff](gpt-platform-handoffs/B-runtime-policy.md).
+
+Current source candidate: `f7b4a7c061d8f11e89084e134a57382bc0a84885`. The Windows LPAC probe compiled and passed actual suspended-token verification, but the resumed child exited `0xC0000142` before reading the synthetic canaries. Both preservation checks passed. Read-isolation acceptance remains pending. The LPAC probe is a separate network-free synthetic boundary test; its native acceptance status is recorded in [the LPAC handoff](gpt-platform-handoffs/O-windows-lpac.md). Existing release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`; they are not rebuilt packages for this candidate. [Prior Windows artifact/router acceptance](gpt-platform-handoffs/O-windows-runtime.md).
 
 ## Intended release and limits
 
@@ -40,7 +42,7 @@ The sixteen-item September 9 resolution record is retained in `docs/implementati
 
 ## Windows operational preservation
 
-Fresh before/after evidence is retained in the current bounded receipt. Final postflight: `2026-09-12T03:08:53.2049179Z`. The earlier full task/owner inventory remains in `gpt-platform-handoffs/live-preflight.json`.
+Fresh before/after evidence is retained in the current bounded receipt. Latest LPAC postflight: `2026-09-12T14:27:17.0931795Z` (both preservation checks passed). The earlier full task/owner inventory remains in `gpt-platform-handoffs/live-preflight.json`.
 
 - Root `C:\Services\oms-study-automation-v2`, commit `f487c6229b91d2b1ac11729e465561f6c1ffe997`, schema 31.
 - Scheduled task `OMS Study Hub V2`, principal `conbr`, Running.

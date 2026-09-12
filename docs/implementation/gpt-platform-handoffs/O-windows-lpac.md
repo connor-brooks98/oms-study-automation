@@ -1,106 +1,114 @@
-# O: bounded Windows LPAC probe
+# O: bounded Windows LPAC investigation
 
-2026-09-12. **Prepared only; Windows compilation, startup and isolation acceptance
-have not run.** This is a network-free feasibility test, not a production launcher
-or GPT activation receipt. Production remains `capability_unverified`.
+2026-09-12. **Runtime-policy fixes are reviewed and locally tested. Actual Windows
+LPAC identity verification now passes; child initialization still fails with
+`0xC0000142`, before either synthetic read. Read-isolation acceptance has not passed.**
+Production generation remains `capability_unverified`.
 
-## Exact scope
+## Implemented corrections
 
-`scripts/probe-windows-lpac.ps1` runs in an existing 64-bit Windows PowerShell
-Desktop process. The native portion rejects an elevated caller. It accepts an
-existing local fixture parent and a never-used name matching
-`oms-lpac-` plus 32 lowercase hexadecimal characters. Existing fixtures/profiles
-are errors, never reused. Reparse-point ancestors are rejected.
+- Query scalar token values using exact four-byte buffers. The original zero-size
+  query for class20 returned error24 and size4, not the assumed error122.
+- Decode the PowerShell5 JSON process ledger before wrapping it as an array;
+  otherwise cleanup receives array-valued PIDs. Retain PID/name/start-time checks.
+- Capture Win32 errors immediately and retain the numeric native error code.
+- Supply validated LOCALAPPDATA in the explicit child environment. This single
+  change resolved CreateProcessW error203: the next native run created the child.
+- Replace unsupported token class46 with Chromium's functional LPAC AccessCheck.
+  The host returned Win32 error87 and native `STATUS_INVALID_INFO_CLASS` for46.
+  An in-memory descriptor distinguishes ordinary caller mask3 from LPAC mask2.
+  It changes no filesystem ACL and does not impersonate a thread.
 
-The only native child is the existing System32 `cmd.exe`, with fixed arguments:
+Current probe source SHA256:
+`e04780505e9e8ad42b7eb52792cfd89b9b3fac09653719f9977f8516154fe4d1`.
+Independent source and wrapper review passed. Native PowerShell parsing and C#
+compilation passed. Exact sources and raw results are retained in the archives.
+
+## Fixed scope and safeguards
+
+The standalone probe uses a fresh retained AppContainer profile and synthetic
+fixture under a new acceptance directory. Only the new fixture ACLs change:
+package traverse on its root and read/execute on its inside directory. The sibling
+outside canary receives no package grant. No shared Windows directory/account ACL,
+firewall, loopback exemption, provider credential or live source is changed.
+
+The sole native child is pinned System32 cmd.exe, with fixed command:
 
 ```text
 /d /v:off /c "type inside.txt & type ..\outside.txt"
 ```
 
-Both files are newly generated synthetic canaries. The working directory is the
-fresh fixture's `inside` directory. No caller-supplied command text, Codex launch,
-auth, provider, sandbox setup, network request or loopback exemption is involved.
-O's outer wrapper must independently check the intended conbr/session1/Limited
-identity and Hub/process preservation before and after this invocation.
+Launch attributes require zero capabilities, ALL_APPLICATION_PACKAGES opt-out,
+three explicit standard-stream handles, and prohibited descendant processes.
+The explicit environment contains COMSPEC, LOCALAPPDATA, SystemRoot, TEMP, TMP
+and WINDIR. Before resuming the suspended child, require AppContainer1, exact
+new profile SID, zero capabilities, session1, caller AccessCheck3 and child2.
+Any mismatch fails closed. The child has a15-second wait and5-second owned-handle
+termination/reap bound. Profiles, fixtures and disabled tasks remain retained.
 
-## Mutations and lifetime
+The intended read oracle requires inside-only stdout, exact English access-denied
+stderr, cmd exit1, and unchanged canaries. A startup failure cannot satisfy it.
+The wrapper independently checks conbr/session1/Limited and the live Hub before
+and after, and bounds cleanup to recorded process identities.
 
-- A new fixture directory receives a protected caller-only DACL. All canaries,
-  compiler temporary files and raw evidence are new files under it. TEMP/TMP are
-  changed only within the calling process for compilation, then restored.
-- `CreateAppContainerProfile` creates a new per-user profile: directories **and
-  registry storage**. The profile name and package SID are retained in
-  `profile.txt`. No account creation or managed sandbox credential access occurs.
-- Only new fixture ACLs change: the new package SID receives non-inherited
-  traverse access on the fixture and inherited read/execute access on `inside`.
-  The sibling `outside.txt` and raw output files receive no package grant. No
-  Everyone, logon SID, ALL APPLICATION PACKAGES, shared Windows directory, shared
-  account ACL or firewall rule is changed.
-- The profile and fixture are retained on success and failure. This script never
-  deletes an AppContainer profile, retries, or selects ordinary AppContainer as a
-  fallback.
+## Native results, retained separately
 
-## Mandatory boundary and acceptance
+| Archive | Actual result |
+| --- | --- |
+| windows-lpac-acceptance | Caller scalar-token sizing failed before profile/child. Outer cleanup also hit the JSON-ledger defect. Independent reconciliation found all owned processes gone; Hub preserved. |
+| windows-lpac-retest | Token/ledger corrections passed; profile created; CreateProcessW failed before child. Both postflights passed. |
+| windows-lpac-create-error | Retained CreateProcessW error203; no child. Both postflights passed. |
+| windows-lpac-localappdata | Environment correction created child17664. Unsupported token46 check stopped it before resume; owned child terminated/reaped. Both postflights passed. |
+| windows-lpac-accesscheck | Caller3/child2, AppContainer1, exact SID, zero capabilities and session1 passed. Child3424 resumed and exited3221225794 (`0xC0000142`) with empty stdout/stderr. Read oracle failed. Both postflights passed. |
 
-The launch uses `SECURITY_CAPABILITIES` with **zero capabilities**, the LPAC
-`ALL_APPLICATION_PACKAGES` opt-out, an explicit three-handle stdin/stdout/stderr
-inheritance list, and a policy prohibiting descendant processes. The child gets
-only COMSPEC, SystemRoot, TEMP, TMP and WINDIR in its explicit environment.
-Standard streams are handles to new caller-private files; those inherited
-handles intentionally permit only this child's input/output without granting
-file-path access to the evidence directory.
+Latest task: `OMS GPT LPAC AccessCheck 3092ba4a06da`, disabled, last result1.
+Profile: `oms-lpac-3092ba4a06da4dcabb6e9e3943257907`.
+Remote root: `C:/Users/conbr/AppData/Local/OMSStudyHub/acceptance/lpac-3092ba4a06da`.
+Native run: `2026-09-12T14:27:10.9826022Z` to `14:27:11.0368589Z`.
+No timeout or kill was needed; child reaped. Latest outer postflight
+`2026-09-12T14:27:17.0931795Z`: no new/missing monitored processes, cleanup error
+null, task disabled, same healthy Hub listener PID8268/buildf487c622/schema31 and
+three workers alive with start count1. A narrow read-only System/Application event
+query for14:26:50–14:27:30Z found no matching events. It does not identify the DLL.
 
-`CreateProcessW` uses `CREATE_SUSPENDED`. Before `ResumeThread`, the parent records
-`token.txt` and requires `TokenIsAppContainer=1`,
-`TokenIsLessPrivilegedAppContainer=1`, zero token capabilities, and an exact match
-between the child package SID and the newly created profile SID. An unsupported
-attribute/query or mismatched token fails closed and terminates the suspended
-owned process. Enum values are 29, 46, 30 and 31 respectively.
+Latest archive manifest:46 files, SHA256
+`9701b1ba9b662ee852dc6f22f964b6a3f2e1466396bf9bcef6114dd03b89d612`.
+[Archive hashes and retained failures](../gpt-platform-evidence/README.md).
+Original raw evidence remains under O's visualization directory.
 
-The child has a 15-second wait limit. On failure/timeout, termination uses only
-its retained process handle, followed by a 5-second reap wait. Handles and native
-allocations are released. An unreaped child is explicitly reported as failure;
-O must retain the outer process watchdog and preservation checks.
+## Remaining boundary
 
-Success requires all of the following in `result.json`:
+`0xC0000142` establishes failed DLL initialization, not which DLL or missing access.
+Do not infer successful reads from the valid LPAC token, weaken the token, or alter
+shared ACLs to obtain a pass. Pinned Codex startup, all-tool prevention, managed
+credential separation, Windows login persistence and provider/model text/image
+acceptance remain separate gates. This standalone probe is not a production
+launcher; the production readiness guard remains closed.
 
-- Child exited 1 after the expected denied second TYPE command.
-- Raw stdout is exactly the inside canary and CRLF; the outside marker is absent.
-- Raw stderr, trimmed, is exactly English `Access is denied.`. Another locale or
-  any other error fails; it is not accepted as proof of access denial.
-- Both canaries retain their exact original content.
-- Token checks passed, the child was resumed once and then reaped normally.
+## Primary implementation sources
 
-Raw `child.stdin`, `child.stdout`, `child.stderr`, `profile.txt`, `token.txt` and
-`result.json` remain in the fixture when their respective stages were reached.
-Failures before a stage may lack its artifacts; the retained stage/error names
-identify the boundary. PowerShell compilation failures are recorded in
-`result.json` too.
+- [Microsoft AppContainer launch and LOCALAPPDATA rerouting](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer).
+- [Chromium CheckLpacToken](https://chromium.googlesource.com/chromium/src/%2B/04d774d3827c8532b1b7d3966629f9193a35dd0e/sandbox/win/src/app_container_test.cc): in-memory descriptor and required mask2.
+- [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw): suspended launch, explicit environment and retained handles.
 
-## Validation and next boundary
+## Concrete next diagnostic — not executed
 
-The script itself is the runnable acceptance check. No native Windows call or
-remote call was made while preparing it. This macOS environment has no PowerShell
-or C# compiler, so even Windows compilation is pending. Source review does not
-prove LPAC cmd/DLL startup or readable-root enforcement. There is deliberately no
-second Codex child or automatic compatibility workaround.
+Read-only inspection at `2026-09-12T14:30:43.3890405Z` found no
+`LowBoxConsoleEnabled` value in conbr's existing Console key. Microsoft's
+[LaunchAppContainer sample](https://github.com/microsoft/SandboxSecurityTools/blob/main/LaunchAppContainer/LaunchAppContainer/LaunchAppContainer.cpp#L423)
+sets this DWORD to1 to enable lowbox console processes. That is a supported lead,
+not proof that it causes this failure with CREATE_NO_WINDOW.
 
-A passing canary probe establishes only this new LPAC's synthetic read boundary.
-Pinned Codex startup, all-tool-class prevention, managed credential separation,
-login persistence, network/provider operation and production activation remain
-separate gates. The approved plan's OS identity requirement is not replaced by
-empty Codex execution environments.
+The proposed experiment is one fresh synthetic LPAC probe with the same reviewed
+source/hash/identity/oracle while temporarily setting only
+`HKEY_USERS\S-1-5-21-2532054349-1599019584-1571196523-1004\Console\LowBoxConsoleEnabled`
+to DWORD1. Check that it is still absent immediately beforehand, retain the
+before/after value/type, run the existing bounded watchdog, then restore absence
+in unconditional cleanup and verify restoration plus Hub/process preservation.
+If it exists or changes concurrently, stop rather than overwrite it. Retain the
+fresh task/profile/fixture and raw failed or successful output. No provider,
+credential, ACL, firewall or live Hub change is included.
 
-## Primary sources
-
-- [Microsoft LPAC launch procedure](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer):
-  SECURITY_CAPABILITIES, the extra opt-out attribute, and CreateProcess.
-- [CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile):
-  new per-user folders/registry storage and existing-profile failure.
-- [Token information classes](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ne-winnt-token_information_class):
-  AppContainer SID, capability count and LPAC identification.
-- [Process attributes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute):
-  explicit handle inheritance and child-process policy.
-- [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw):
-  suspended creation, explicit application/command/environment, and process handles.
+This changes an account-wide Windows setting, beyond the prior fixture-only
+mutation boundary. Approval is required before executing that mutation. No such setting was changed during this investigation. The diagnosis
+archive retains the exact read-only query and its result.

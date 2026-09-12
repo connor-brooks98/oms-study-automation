@@ -2,7 +2,7 @@
   "schema_version": 1,
   "program": "gpt-study-platform-2026-09-11",
   "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2",
-  "integration_branch": "codex/gpt-runtime-activation",
+  "integration_branch": "codex/gpt-runtime-fix-2026-09-12",
   "integration_worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
   "orchestrator": {
     "thread_id": "01a09271-e627-7712-a2fc-ff675db23a8b",
@@ -350,15 +350,15 @@
   ],
   "helper": {
     "owner": "O",
-    "task": "Windows patch source/code/task and43file native evidence review PASS",
-    "state": "idle",
-    "agent": "/root/windows_patch_scope",
+    "task": "Independent policy, source, wrapper and native evidence review",
+    "state": "complete",
+    "agent": "/root/review_production_policy",
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "windows_patch_denial_passed_remaining_gates_pending",
+    "state": "policy_fixed_lpac_startup_pending",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
-    "branch": "codex/gpt-runtime-activation",
+    "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
     "worker": "B",
     "task": "native tool-policy evidence and fail-closed activation",
@@ -367,20 +367,37 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Windows GPT5.5 empty registries and one valid apply_patch pre-handler denial passed under conbr1Limited; OS/all-tool/provider gates pending",
-    "candidate": "a699f7a39f4da562bf057ffc941961cbd7b3dd8f",
-    "code_tree": "7f3fb7930c381805938a0440463305d3afd4c107",
-    "review": "PASS independent source/code/task and43file raw native evidence review; single Windows apply_patch denial only",
+    "native_progress": "LPAC token verification passed on Windows; cmd exited0xc0000142 before canary reads; both preservation checks passed; no provider acceptance",
+    "candidate": "f7b4a7c061d8f11e89084e134a57382bc0a84885",
+    "code_tree": "a0b89be8a3eaf3800e34700596d5c90c42f46cc2",
+    "review": "PASS independent policy/source/wrapper/native-result review; read boundary failed at child DLL initialization",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
       "26 passed,1 skipped final export/atomic/routes at8de86582",
       "Ruff all source/tests/scripts and mypy231 files passed",
       "Actual Windows18passed2symlink cases deselected; retained native-PDF export continuation passed",
       "Windows registry-only native completion passed; O7 focused offline tests and Ruff passed; B77passed3skips",
-      "78passed3opt-inskip4.77s; Ruff passed; native Windows single apply_patch denial PASS"
+      "78passed3opt-inskip4.77s; Ruff passed; native Windows single apply_patch denial PASS",
+      "Policy O retest97passed3opt-inskip9.93s; Rufffivefiles and strictmypytwomodulesPASS"
     ],
     "worker_implementation": "f3711eb33656785ead908bce6c1458e423b03511",
-    "worker_receipt": "0c4d2ba6ef91c1f176760320483908b377027aff"
+    "worker_receipt": "0c4d2ba6ef91c1f176760320483908b377027aff",
+    "implementation_workers": {
+      "policy": "/root/runtime_policy_integration",
+      "isolation": "/root/windows_isolation_route"
+    },
+    "production_policy_commit": "0aa11c7ee40021ede773f6ddc3c9c6e063b557fc",
+    "lpac": {
+      "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-lpac.md",
+      "source_sha256": "e04780505e9e8ad42b7eb52792cfd89b9b3fac09653719f9977f8516154fe4d1",
+      "task": "OMS GPT LPAC AccessCheck 3092ba4a06da",
+      "token_verification": "passed",
+      "read_boundary": "failed_child_dll_initialization",
+      "child_exit_code": "0xC0000142",
+      "preservation": "passed",
+      "postflight_utc": "2026-09-12T14:27:17.0931795Z",
+      "next_action": "Review account-wide LowBoxConsoleEnabled diagnostic proposal; no registry mutation authorized or executed"
+    }
   },
   "local_preview": {
     "url": "http://127.0.0.1:56460",
@@ -461,5 +478,13 @@
       "reconciliation_utc": "2026-09-12T12:36:58.3106219Z",
       "review": "PASS all43files/rawprotocol/task/identity/canaryreport/Hub/process/transport reconciliation"
     }
+  },
+  "previous_runtime_branch": "codex/gpt-runtime-activation",
+  "snapshot": {
+    "branch": "codex/gpt-runtime-fix-2026-09-12",
+    "baseline_commit": "274da9d74108e0e8a4f6b6b51ecec5a9550fdd0b",
+    "evidence_backup_commit": "b5d19cd5",
+    "remote": "origin",
+    "pushed_and_verified": true
   }
 }
