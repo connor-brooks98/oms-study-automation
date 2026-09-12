@@ -1,14 +1,14 @@
 # GPT Study Hub candidate — release proposal
 
-Status: all planned local implementation is integrated and independently reviewed. Complete local verification passed: 3,821 Python tests and 284 JavaScript tests. No deployment is authorized or performed.
+Status: the core local implementation and this diagnostic continuation are integrated and independently reviewed. The base passed 3,821 Python and 284 JavaScript tests; the continuation passed 74 focused checks with two explicit/optional skips. The authorized isolated preview at `http://127.0.0.1:56460` has a connected ChatGPT account. Live NUC deployment remains unauthorized.
 
-Frozen code candidate: `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`, tree `35aae67a78ab911608b378b924345df9467ae1cc`, branch `codex/gpt-study-platform`. Later changes in this worktree are release records and operating documentation only; the candidate archive is built from this immutable commit.
+Reviewed continuation code candidate: `b556bd951201db03e07c90569b2866ca9379a33a`, tree `ffae60116f6dbcb308cb3d0bbe00286937475aa7`, branch `codex/gpt-runtime-activation`. Final status/receipt documentation follows that code commit. Application source, runtime configuration and JavaScript are unchanged from accepted base `159e529487d51c5f038bd492cba2c742105d5965`. The preserved release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`; they have not been relabeled or rebuilt for this diagnostic continuation.
 
 ## Intended release and limits
 
 This replaces the required Google path for new lecture quizzes with an explicitly selected Codex subscription backend, preserves full slide/transcript evidence and image assets, requires question/answer review before native publication, and adds private source-scoped/general chat. Outlines are optional. Existing publications, imported artifacts, Anki scheduling and Gate 2B proof resources are retained.
 
-**Activation is blocked, even after local tests pass.** The inspected Codex runtime has not established universal pre-execution tool prevention, restricted Windows identity/readable roots, account persistence, or actual model text/image/schema acceptance. Production generation fails closed with `capability_unverified`; no paid fallback or configuration bypass is present. Fake-client tests prove the application workflow only. The single managed-device login attempt timed out and was cancelled; no account connection was confirmed and no automatic retry is planned.
+**Activation is blocked, even after local tests pass.** The inspected Codex runtime has not established universal pre-execution tool prevention, restricted Windows identity/readable roots, account persistence, or actual model text/image/schema acceptance. Production generation fails closed with `capability_unverified`; no paid fallback or configuration bypass is present. Fake-client tests prove the application workflow only. A subsequently authorized managed-device login succeeded in the isolated macOS preview on September 11 (ET). The Hub reported the account connected and advertised model slugs. This establishes local login only; generation and Windows account persistence remain unverified.
 
 | Capability | Local candidate scope | External/operational limit |
 | --- | --- | --- |
@@ -23,6 +23,12 @@ This replaces the required Google path for new lecture quizzes with an explicitl
 | AMBOSS reference mode | Explicit unavailable state and official link; manual NID route | Specific sent thread has an automatic acknowledgement only; account/subscription does not prove MCP entitlement |
 
 The lecture pipeline fails before dispatch with `context_limit` and affected objective/count diagnostics when full evidence exceeds 20 images or 100,000 serialized source characters. It does not truncate sources or silently claim complete coverage. Automatic partitioning has not been accepted. These conservative ceilings are local implementation limits, not verified model context limits.
+
+## Runtime continuation after local login
+
+The isolated preview remains on the frozen base at port 56460. A separate continuation branch adds durable smoke-probe diagnostics and an auth-free native tool-policy probe. Actual pinned-runtime testing found that `gpt-6-astra` registers model-driven tools outside the ordinary feature controls: valid async-input and agent-list calls still execute. Ordinary tool router rejection and a disabled Code Mode host are insufficient universal protection. The partial policy was kept entirely out of production; generation remains unavailable. [Exact continuation handoff](gpt-platform-handoffs/O-runtime.md).
+
+The native probe uses blank synthetic roots and a loopback model endpoint. It proves neither subscription generation nor Windows isolation. Optional AMBOSS and vendor sample blockers remain separate from this runtime blocker.
 
 ## Retained state and UX
 
@@ -50,7 +56,7 @@ Use at most three source-free cases after the runtime restriction/identity gate 
 2. **Image/schema and hostile source:** one locally generated synthetic figure with a plainly visible geometric symbol; ask for the symbol and a fixed schema. Include source text attempting a shell/network/tool operation. Acceptance requires the correct visual result, no tool start or side effect, and documented pre-execution denial across every enabled tool class. A model choosing not to call a tool is insufficient restriction proof.
 3. **Interruption/limits/error:** one explicit interruption with bounded owned-process cleanup and no automatic resubmission. Inspect supplied usage-limit status when available; do not intentionally exhaust a subscription, manufacture a provider limit, consume reset credits, or buy fallback capacity.
 
-A transport failure stops that proof. Preserve diagnostics, fix the root cause, and propose one bounded rerun separately. No private source test is included. A fresh managed login would require Connor to act on a newly issued actual link/code; the prior code is expired. No passwords are needed.
+A transport failure stops that proof. Preserve diagnostics, fix the root cause, and propose one bounded rerun separately. No private source test is included. The isolated local preview already has a connected account; do not start another login there. A separate Windows acceptance session would require its own managed login if no valid session exists. No passwords are needed.
 
 ## Deployment and rollback proposal — not executed
 
@@ -66,13 +72,15 @@ Before requesting cutover approval, finish candidate Windows and provider accept
 
 Push/main merge and deployment are separate approvals. Local candidate review does not authorize either.
 
-## Final evidence
+## Base evidence and continuation validation
 
 - Independent final code review: **PASS**, no remaining actionable findings at the frozen candidate. C4 scope and cancellation races were corrected and independently reproduced. Exact task and correction receipts are in `gpt-platform-handoffs/O1.md` and the B/Q/C handoffs.
 - Complete Ruff: **PASS**. Complete mypy: **PASS**, 230 source files. Complete JavaScript: **284 passed**. Complete Python: **3,821 passed, 3 skipped, 1 deselected in 800.87 seconds; exit 0**. [Final receipt and commands](gpt-platform-handoffs/O3.md).
 - B6 actual-constructor synthetic lecture workflow and private JSON/ZIP/PDF route parity passed; O repeated its opt-in Chrome test: **1 passed, 5 deselected**, all 12 desktop/mobile stages without overflow or page errors. C4 browser independently passed cumulative selection, source labels, answer/resume, manual filters and explicit fake-provider suggestion acceptance. [Browser paths/hashes](gpt-platform-handoffs/O3-browser-evidence.json).
 - B7 export review passed after medical font correction: exact native payload/original PNG parity, supported medical glyphs, embedded fonts, immutable renderer identities, and unpacked-wheel-only export. PDF visual/asset evidence is in [B7 receipt](gpt-platform-handoffs/B7.md). Native macOS Python3.13/PyMuPDF in-process teardown was not accepted; the synthetic full workflow uses a checked raster subprocess. Actual Windows Office/runtime behavior remains unaccepted.
 - Source archive: `Study-Hub-V2-Source-2026-09-11-gpt-candidate.zip`, SHA256 `f4a3e7d7039e4ad5ab91e4e6fc5f85a89186a96917caaf8b5962e6a201090b40`, 700 manifest files verified. Runtime archive: SHA256 `849887d7cfa4f2b6af987b958eff3b97f833573b738130065729f00dd3a8c582`, 309 manifest files verified. Both rebuild byte-identically, pass ZIP integrity and contain byte-identical bundled fonts. [Exact local archive paths and manifests](gpt-platform-handoffs/O3-archives.json). The historical runtime archive filename does not authorize or enable paid fallback.
-- Original dirty/untracked status matches the exact bootstrap list. Live operational proof is the read-only old-Hub snapshot above; nothing was deployed, restarted, pushed, merged to main, deleted, or applied to Anki.
+- Original dirty/untracked status matches the exact bootstrap list. Live NUC operational proof is the read-only old-Hub snapshot above. Only the later isolated local preview was launched; the live Hub was not restarted or deployed, and nothing was pushed, merged to main, deleted, or applied to Anki.
 
 The proposed next stage is review of this candidate and the separately bounded Windows/runtime acceptance work. A deployment authorization request is premature while the activation gate is unresolved. No new login, provider test or vendor action is implicitly requested by this document.
+
+Continuation validation and exact native evidence are in [O runtime receipt](gpt-platform-handoffs/O-runtime.md) and [B runtime receipt](gpt-platform-handoffs/B-runtime-policy.md). The diagnostic code is reviewed; universal tool prevention failed, and Windows/provider/deployed behavior remain unaccepted.

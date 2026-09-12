@@ -2,8 +2,8 @@
   "schema_version": 1,
   "program": "gpt-study-platform-2026-09-11",
   "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2",
-  "integration_branch": "codex/gpt-study-platform",
-  "integration_worktree": "/Users/connor/Developer/worktrees/oms-gpt-study-platform",
+  "integration_branch": "codex/gpt-runtime-activation",
+  "integration_worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
   "orchestrator": {
     "thread_id": "01a09271-e627-7712-a2fc-ff675db23a8b",
     "host_id": "local"
@@ -11,11 +11,12 @@
   "workers": {
     "B": {
       "client_thread_id": "client-new-thread:f0c101c3-7b75-4c64-8aa6-60e6188860cb",
-      "state": "idle_local_complete",
+      "state": "idle_runtime_assessment_complete",
       "thread_id": "01a09273-0ad0-7ae1-902e-d24a1556741a",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/ca93/oms-study-automation",
-      "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2"
+      "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2",
+      "commit": "185e381baa60d5055c8b3bc8a47c426314ea0a46"
     },
     "Q": {
       "client_thread_id": "client-new-thread:ff914d7d-00ef-4079-8b4b-bdff39cf34b3",
@@ -282,8 +283,8 @@
     "uworld_sample": "not_supplied",
     "truelearn_sample": "not_supplied",
     "vendor_request": "Asked once for product and official per-question results/QID/notes export controls; answer pending.",
-    "managed_login": "issued once; timed out and cancelled; no account confirmation; no automatic retry",
-    "runtime_restrictions": "capability_unverified: universal pre-execution tool restriction not proven; generation remains disabled",
+    "managed_login": "Connected in isolated local preview via actual managed login; confirmed in OpenAI browser and Hub on2026-09-12T00:51:58Z",
+    "runtime_restrictions": "capability_unverified: actual pinned Astra async-input and agent-list handlers execute despite inspected controls; GPT5.5 retains untested apply_patch. Universaldenial notaccepted; generation disabled.",
     "anki_qid_rules": "fixture-tested; observed real source/product-qualified prefixes not configured",
     "amboss_last_checked_utc": "2026-09-12T00:42:22Z",
     "amboss_message_ids": [
@@ -292,21 +293,30 @@
     ]
   },
   "release": {
-    "candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
+    "candidate": "b556bd951201db03e07c90569b2866ca9379a33a",
     "live_authorized": false,
     "proposal": "docs/implementation/gpt-platform-release-proposal.md",
     "receipt": "docs/implementation/gpt-platform-handoffs/O3.md",
     "logs": [
       {
         "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/final-checks/pytest.log",
-        "sha256": "3886254055b512738e473d1986acde224e447e23ed9d1347065b166fc50e54cd"
+        "sha256": "3886254055b512738e473d1986acde224e447e23ed9d1347065b166fc50e54cd",
+        "scope": "prior full core acceptance at9e54da41"
       },
       {
         "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/final-checks/node.log",
-        "sha256": "65e8de6d73a461c8a0b9f6469b10b9075131344dc78d4b5d265e64ad92d23ab5"
+        "sha256": "65e8de6d73a461c8a0b9f6469b10b9075131344dc78d4b5d265e64ad92d23ab5",
+        "scope": "prior full core acceptance at9e54da41"
+      },
+      {
+        "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/runtime-continuation/pytest-final.log",
+        "sha256": "3223366eac223f39bcae691d54e4f390aa4f5eb589913ad072555f20333b3cb7",
+        "scope": "74passed2skips for diagnostic continuation atb556bd95"
       }
     ],
-    "code_tree": "35aae67a78ab911608b378b924345df9467ae1cc"
+    "code_tree": "ffae60116f6dbcb308cb3d0bbe00286937475aa7",
+    "archive_candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
+    "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-runtime.md"
   },
   "provider_verified": false,
   "windows_verified": false,
@@ -330,9 +340,43 @@
   ],
   "helper": {
     "owner": "O",
-    "task": "final code review passed",
+    "task": "runtime diagnostic and evidence review passed",
     "state": "idle",
     "agent": "/root/review_o1_schema",
     "no_grandchildren": true
-  }
+  },
+  "runtime_activation": {
+    "state": "accepted_local_diagnostics",
+    "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
+    "branch": "codex/gpt-runtime-activation",
+    "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
+    "worker": "B",
+    "task": "native tool-policy evidence and fail-closed activation",
+    "provider_generation_authorized": false,
+    "private_source_tests_authorized": false,
+    "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
+    "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
+    "handoff": "docs/implementation/gpt-platform-handoffs/O-runtime.md",
+    "native_progress": "UniversaldenialFAIL: Astraasyncinput+agentlist execute; GPT5.5apply_patch remainsuntested",
+    "candidate": "b556bd951201db03e07c90569b2866ca9379a33a",
+    "code_tree": "ffae60116f6dbcb308cb3d0bbe00286937475aa7",
+    "review": "PASS independent diagnostic/code/evidence review; activation remains blocked",
+    "tests": [
+      "74 passed, 2 skipped in combined offline suite",
+      "Ruff and mypy for both probes passed",
+      "Native Astra counterexample regression passed; restriction gate FAILED"
+    ],
+    "worker_implementation": "ff0f0e9477021ea518a61e0536ba64515db0ed76",
+    "worker_receipt": "185e381baa60d5055c8b3bc8a47c426314ea0a46"
+  },
+  "local_preview": {
+    "url": "http://127.0.0.1:56460",
+    "pid": 79067,
+    "commit": "159e529487d51c5f038bd492cba2c742105d5965",
+    "account_connected": true,
+    "generation_verified": false,
+    "evidence": "/Users/connor/Library/Application Support/OMSStudyHub/gpt-local-preview-7qai92rp/connection-evidence.json"
+  },
+  "previous_integration_branch": "codex/gpt-study-platform",
+  "previous_integration_worktree": "/Users/connor/Developer/worktrees/oms-gpt-study-platform"
 }
