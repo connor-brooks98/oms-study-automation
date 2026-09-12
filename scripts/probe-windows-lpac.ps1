@@ -49,6 +49,7 @@ using System.Text;
 public sealed class OmsLpacResult {
     public string Stage = "initial";
     public string Error;
+    public int? NativeErrorCode;
     public string StartedUtc = DateTime.UtcNow.ToString("o");
     public string FinishedUtc;
     public string ProfileSid;
@@ -114,7 +115,9 @@ public static class OmsLpacProbe {
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
 
     static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
-    static void Win32(bool ok, string operation) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(), operation); }
+    static void Win32(bool ok, int error, string operation) {
+        if (!ok) throw new Win32Exception(error, operation + " failed with Win32 error " + error);
+    }
     static IntPtr TokenData(IntPtr token, int kind) {
         int needed;
         bool first = GetTokenInformation(token, kind, IntPtr.Zero, 0, out needed);
@@ -154,12 +157,15 @@ public static class OmsLpacProbe {
         } finally { Marshal.FreeHGlobal(data); }
     }
     static void Attribute(IntPtr list, long key, IntPtr value, int size) {
-        Win32(UpdateProcThreadAttribute(list, 0, new IntPtr(key), value, new IntPtr(size), IntPtr.Zero, IntPtr.Zero), "UpdateProcThreadAttribute " + key);
+        bool ok = UpdateProcThreadAttribute(list, 0, new IntPtr(key), value, new IntPtr(size), IntPtr.Zero, IntPtr.Zero);
+        int error = Marshal.GetLastWin32Error();
+        Win32(ok, error, "UpdateProcThreadAttribute " + key);
     }
     static IntPtr StdioFile(string path, bool input) {
         SecurityAttributes security = new SecurityAttributes { Length = Marshal.SizeOf(typeof(SecurityAttributes)), Inherit = 1 };
         IntPtr handle = CreateFileW(path, input ? 0x80000000u : 0x40000000u, 1, ref security, 1, 0x80, IntPtr.Zero);
-        if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Create new stdio file");
+        int error = Marshal.GetLastWin32Error();
+        Win32(handle != new IntPtr(-1), error, "Create new stdio file");
         return handle;
     }
     static void GrantDirectory(string path, SecurityIdentifier sid, FileSystemRights rights, InheritanceFlags inheritance) {
@@ -182,7 +188,9 @@ public static class OmsLpacProbe {
         string outsideMarker = "OMS_LPAC_OUTSIDE_" + Guid.NewGuid().ToString("N");
         try {
             result.Stage = "caller";
-            Win32(OpenProcessToken(GetCurrentProcess(), 8, out callerToken), "Open caller token");
+            bool opened = OpenProcessToken(GetCurrentProcess(), 8, out callerToken);
+            int openError = Marshal.GetLastWin32Error();
+            Win32(opened, openError, "Open caller token");
             Require(TokenInt(callerToken, TokenElevation) == 0, "Elevated caller forbidden.");
             result.CallerSid = WindowsIdentity.GetCurrent().User.Value;
             result.Stage = "fixture";
@@ -209,9 +217,13 @@ public static class OmsLpacProbe {
             result.Stage = "attributes";
             IntPtr size = IntPtr.Zero;
             bool sized = InitializeProcThreadAttributeList(IntPtr.Zero, 4, 0, ref size);
-            Require(!sized && Marshal.GetLastWin32Error() == 122 && size.ToInt64() > 0, "Attribute size query failed.");
+            int sizeError = Marshal.GetLastWin32Error();
+            Require(!sized && sizeError == 122 && size.ToInt64() > 0,
+                "Attribute size query: return=" + sized + ", error=" + sizeError + ", needed=" + size);
             attributes = Marshal.AllocHGlobal(size);
-            Win32(InitializeProcThreadAttributeList(attributes, 4, 0, ref size), "Initialize attributes");
+            bool initialized = InitializeProcThreadAttributeList(attributes, 4, 0, ref size);
+            int initializeError = Marshal.GetLastWin32Error();
+            Win32(initialized, initializeError, "Initialize attributes");
             attributesInitialized = true;
             SecurityCapabilities caps = new SecurityCapabilities { Sid = sid };
             capsData = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(SecurityCapabilities)));
@@ -240,11 +252,15 @@ public static class OmsLpacProbe {
             startup.AttributeList = attributes;
             result.Stage = "create-suspended";
             // EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NO_WINDOW
-            Win32(CreateProcessW(result.Executable, new StringBuilder(result.CommandLine), IntPtr.Zero, IntPtr.Zero, true,
-                0x08080404, environment, inside, ref startup, out process), "Create LPAC cmd");
+            bool created = CreateProcessW(result.Executable, new StringBuilder(result.CommandLine), IntPtr.Zero, IntPtr.Zero, true,
+                0x08080404, environment, inside, ref startup, out process);
+            int createError = Marshal.GetLastWin32Error();
+            Win32(created, createError, "Create LPAC cmd");
             result.ProcessId = process.ProcessId;
             result.Stage = "verify-suspended-token";
-            Win32(OpenProcessToken(process.Process, 8, out childToken), "Open child token");
+            bool childOpened = OpenProcessToken(process.Process, 8, out childToken);
+            int childOpenError = Marshal.GetLastWin32Error();
+            Win32(childOpened, childOpenError, "Open child token");
             result.IsAppContainer = TokenInt(childToken, TokenIsAppContainer);
             result.IsLessPrivilegedAppContainer = TokenInt(childToken, TokenIsLessPrivilegedAppContainer);
             IntPtr capabilitiesInfo = TokenData(childToken, TokenCapabilities);
@@ -262,30 +278,51 @@ public static class OmsLpacProbe {
                 "Suspended token does not match the zero-capability LPAC profile.");
             result.Stage = "resume";
             uint previousCount = ResumeThread(process.Thread);
-            if (previousCount == INFINITE_ERROR) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread");
+            int resumeError = Marshal.GetLastWin32Error();
+            Win32(previousCount != INFINITE_ERROR, resumeError, "ResumeThread");
             Require(previousCount == 1, "Unexpected suspend count.");
             result.Resumed = true;
             result.Stage = "wait";
             uint wait = WaitForSingleObject(process.Process, 15000);
+            int waitError = Marshal.GetLastWin32Error();
+            Win32(wait != INFINITE_ERROR, waitError, "WaitForSingleObject");
             result.TimedOut = wait == WAIT_TIMEOUT;
             Require(wait == 0, "Child wait failed or exceeded 15 seconds: " + wait);
             result.Reaped = true;
             uint exit;
-            Win32(GetExitCodeProcess(process.Process, out exit), "Child exit code");
+            bool exited = GetExitCodeProcess(process.Process, out exit);
+            int exitError = Marshal.GetLastWin32Error();
+            Win32(exited, exitError, "Child exit code");
             result.ExitCode = exit;
-        } catch (Exception error) { result.Error = error.ToString(); }
+        } catch (Exception error) {
+            result.Error = error.ToString();
+            Win32Exception native = error as Win32Exception;
+            if (native != null) result.NativeErrorCode = native.NativeErrorCode;
+        }
         finally {
             if (process.Process != IntPtr.Zero && !result.Reaped) {
                 result.KillAttempted = true;
                 bool killed = TerminateProcess(process.Process, 0xe0000001);
                 int killError = Marshal.GetLastWin32Error();
-                result.Reaped = WaitForSingleObject(process.Process, 5000) == 0;
+                uint cleanupWait = WaitForSingleObject(process.Process, 5000);
+                int cleanupWaitError = Marshal.GetLastWin32Error();
+                result.Reaped = cleanupWait == 0;
                 uint exit;
-                if (result.Reaped && GetExitCodeProcess(process.Process, out exit)) result.ExitCode = exit;
-                if (!result.Reaped) result.Error += "\nOWNED CHILD NOT REAPED; TerminateProcess=" + killed + ", error=" + killError;
+                if (result.Reaped) {
+                    bool gotExit = GetExitCodeProcess(process.Process, out exit);
+                    int cleanupExitError = Marshal.GetLastWin32Error();
+                    if (gotExit) result.ExitCode = exit;
+                    else result.Error += "\nCleanup GetExitCodeProcess failed with Win32 error " + cleanupExitError;
+                }
+                if (!result.Reaped) result.Error += "\nOWNED CHILD NOT REAPED; TerminateProcess=" + killed + ", error=" + killError
+                    + ", wait=" + cleanupWait + ", wait error=" + cleanupWaitError;
             }
-            foreach (IntPtr handle in new IntPtr[] { childToken, callerToken, process.Thread, process.Process, stdin, stdout, stderr })
-                if (handle != IntPtr.Zero) CloseHandle(handle);
+            foreach (IntPtr handle in new IntPtr[] { childToken, callerToken, process.Thread, process.Process, stdin, stdout, stderr }) {
+                if (handle == IntPtr.Zero) continue;
+                bool closed = CloseHandle(handle);
+                int closeError = Marshal.GetLastWin32Error();
+                if (!closed) result.Error += "\nCloseHandle failed with Win32 error " + closeError;
+            }
             if (attributesInitialized) DeleteProcThreadAttributeList(attributes);
             foreach (IntPtr allocation in new IntPtr[] { attributes, capsData, policy, handlesData, environment })
                 if (allocation != IntPtr.Zero) Marshal.FreeHGlobal(allocation);
