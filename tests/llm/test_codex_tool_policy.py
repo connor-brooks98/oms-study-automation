@@ -135,3 +135,39 @@ def test_pinned_native_astra_records_denials_and_remaining_handler_execution(tmp
     assert outputs[13]["output"] == "code-mode host is disabled"
     assert report["canary_created"] is False and report["fixture_unchanged"] is True
     assert report["restrictions_verified"] is False and report["provider_verified"] is False
+
+
+@pytest.mark.skipif(
+    not os.environ.get("CODEX_TOOL_POLICY_NATIVE"), reason="explicit local native probe"
+)
+def test_pinned_native_gpt55_no_environments_rejects_apply_patch(tmp_path):
+    module = load_probe()
+    report = module["probe"](
+        Path(os.environ["CODEX_TOOL_POLICY_NATIVE"]),
+        mode="apply-patch",
+        explicit_tool_controls=True,
+        stable_thread=False,
+        model="gpt-5.5",
+    )
+    output = Path(
+        os.environ.get("CODEX_TOOL_POLICY_EVIDENCE", str(tmp_path / "native-evidence.json"))
+    )
+    with output.open("x") as stream:
+        json.dump(report, stream, indent=2)
+    assert report["error"] is None
+    assert report["terminal_status"] == "completed"
+    assert report["process_returncode"] == 0
+    start = next(f["params"] for f in report["sent_frames"] if f.get("method") == "thread/start")
+    assert start["environments"] == []
+    assert start["selectedCapabilityRoots"] == []
+    assert start["runtimeWorkspaceRoots"] == []
+    assert start["approvalPolicy"] == "untrusted"
+    assert len(report["request_summaries"]) == 2
+    assert all(r["offered_tools"] == [] for r in report["request_summaries"])
+    outputs = report["request_summaries"][1]["call_outputs"]
+    assert len(outputs) == 1
+    assert outputs[0]["type"] == "custom_tool_call_output"
+    assert outputs[0]["call_id"] == "call_policy_apply_patch"
+    assert outputs[0]["output"] == "unsupported custom tool call: apply_patch"
+    assert report["canary_created"] is False and report["fixture_unchanged"] is True
+    assert report["restrictions_verified"] is False and report["provider_verified"] is False

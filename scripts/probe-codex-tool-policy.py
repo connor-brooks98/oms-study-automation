@@ -73,7 +73,14 @@ def codex_tool_policy_args(binary_sha256: str) -> list[str]:
     ]
 
 
-MODES = ("registry", "skills-list", "thread-untrusted", "skills-list-untrusted", "denial-matrix")
+MODES = (
+    "registry",
+    "skills-list",
+    "thread-untrusted",
+    "skills-list-untrusted",
+    "denial-matrix",
+    "apply-patch",
+)
 
 
 def fixture_calls(work: Path) -> list[dict[str, Any]]:
@@ -222,6 +229,19 @@ def probe(
                     if mode == "denial-matrix" and len(requests) == 1
                     else [message]
                 )
+                if mode == "apply-patch" and len(requests) == 1:
+                    output = [
+                        {
+                            "type": "custom_tool_call",
+                            "id": "fc_fixture_apply_patch",
+                            "call_id": "call_policy_apply_patch",
+                            "name": "apply_patch",
+                            "input": (
+                                f"*** Begin Patch\n*** Add File: {work / 'tool-must-not-create'}\n"
+                                "+synthetic fixture only\n*** End Patch\n"
+                            ),
+                        }
+                    ]
                 response = {
                     "id": "resp_fixture",
                     "model": model,
@@ -375,7 +395,8 @@ def probe(
                         "sandbox": "read-only",
                         **(
                             {"approvalPolicy": "untrusted"}
-                            if mode.endswith("untrusted") or mode == "denial-matrix"
+                            if mode.endswith("untrusted")
+                            or mode in {"denial-matrix", "apply-patch"}
                             else {}
                         ),
                     },
