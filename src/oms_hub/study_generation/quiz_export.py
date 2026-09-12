@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import Annotated, Any
@@ -15,6 +16,8 @@ from pypdf import PdfReader
 from reportlab.lib import colors  # type: ignore[import-untyped]
 from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet  # type: ignore[import-untyped]
+from reportlab.pdfbase import pdfmetrics  # type: ignore[import-untyped]
+from reportlab.pdfbase.ttfonts import TTFont  # type: ignore[import-untyped]
 from reportlab.platypus import (  # type: ignore[import-untyped]
     Image,
     PageBreak,
@@ -35,6 +38,20 @@ from oms_hub.study_generation.quiz_images import (
 
 _Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
 _Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+_PDF_REGULAR = "OMSQuizDejaVuSans"
+_PDF_BOLD = "OMSQuizDejaVuSansBold"
+_PDF_RENDERER_VERSION = 2
+
+
+@lru_cache(maxsize=1)
+def _register_pdf_fonts() -> dict[str, str]:
+    root = Path(__file__).parent / "assets" / "quiz_fonts"
+    hashes = {}
+    for name, filename in ((_PDF_REGULAR, "DejaVuSans.ttf"), (_PDF_BOLD, "DejaVuSans-Bold.ttf")):
+        payload = (root / filename).read_bytes()
+        hashes[filename] = hashlib.sha256(payload).hexdigest()
+        pdfmetrics.registerFont(TTFont(name, BytesIO(payload)))
+    return hashes
 
 
 class _SourceRef(BaseModel):
@@ -91,7 +108,8 @@ def export_reviewed_quiz(
         images[key] = sanitized
     digest = hashlib.sha256(raw).hexdigest()
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
+        "pdf_renderer": {"version": _PDF_RENDERER_VERSION, "font_sha256": _register_pdf_fonts()},
         "accepted_payload_sha256": digest,
         "provenance": evidence.model_dump(mode="json"),
         "questions": [
@@ -134,9 +152,17 @@ def _render_pdf(
     evidence: _Provenance,
     digest: str,
 ) -> bytes:
+    _register_pdf_fonts()
     styles = getSampleStyleSheet()
+    for name in ("Title", "Heading1", "Heading2"):
+        styles[name].fontName = _PDF_BOLD
     body = ParagraphStyle(
-        "QuizBody", parent=styles["BodyText"], fontSize=10.5, leading=15, spaceAfter=8
+        "QuizBody",
+        parent=styles["BodyText"],
+        fontName=_PDF_REGULAR,
+        fontSize=10.5,
+        leading=15,
+        spaceAfter=8,
     )
     small = ParagraphStyle(
         "QuizSource", parent=body, fontSize=9, leading=13, textColor=colors.HexColor("#475569")
@@ -149,6 +175,11 @@ def _render_pdf(
     )
 
     def paragraph(text: str, style: Any = body) -> Any:
+        glyphs = pdfmetrics.getFont(style.fontName).face.charToGlyph
+        unsupported = sorted({ord(c) for c in text if c not in "\r\n" and not glyphs.get(ord(c))})
+        if unsupported:
+            codes = ", ".join(f"U+{code:04X}" for code in unsupported)
+            raise ValueError(f"quiz PDF font does not support characters: {codes}")
         return Paragraph(escape(text).replace("\n", "<br/>"), style)
 
     story = [
@@ -209,7 +240,7 @@ def _render_pdf(
 
     def footer(canvas: Any, document: Any) -> None:
         canvas.saveState()
-        canvas.setFont("Helvetica", 8)
+        canvas.setFont(_PDF_REGULAR, 8)
         canvas.setFillColor(colors.HexColor("#64748b"))
         canvas.drawString(54, 32, "Reviewed lecture quiz")
         canvas.drawRightString(558, 32, f"Page {document.page}")

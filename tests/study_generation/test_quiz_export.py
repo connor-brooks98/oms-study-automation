@@ -1,6 +1,7 @@
 import hashlib
 import json
 from dataclasses import replace
+from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
@@ -10,6 +11,79 @@ from pypdf import PdfReader
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.quiz_export import export_reviewed_quiz
 from oms_hub.study_generation.quiz_images import sanitize_quiz_image
+
+MEDICAL_TEXT = "Na⁺ K⁺ Ca²⁺ H₂O → α-synuclein β ≥ 2 – reassess"
+
+
+def test_medical_superscripts_subscripts_survive_all_pdf_text_styles(tmp_path):
+    quiz, images, provenance = export_fixture(tmp_path)
+    first = quiz.questions[0]
+    quiz = replace(
+        quiz,
+        title=MEDICAL_TEXT,
+        questions=(
+            replace(
+                first,
+                stem=MEDICAL_TEXT,
+                rationale=MEDICAL_TEXT,
+                choices=(replace(first.choices[0], text=MEDICAL_TEXT), first.choices[1]),
+                learning_objective=MEDICAL_TEXT,
+                image_ref=replace(first.image_ref, description=MEDICAL_TEXT),
+            ),
+            quiz.questions[1],
+        ),
+    )
+    provenance["questions"]["q1"]["source_refs"][0]["locator"] = MEDICAL_TEXT
+    raw, _, pdf = export_reviewed_quiz(quiz, images, provenance, tmp_path / "exports")
+    assert parse_native_quiz(raw.read_text()) == quiz
+    pages = PdfReader(pdf).pages
+    text = "\n".join(page.extract_text() for page in pages)
+    assert text.count(MEDICAL_TEXT) >= 7
+    assert "■" not in text and "�" not in text
+    embedded = {
+        str(font.get_object()["/BaseFont"]): font.get_object()
+        for page in pages
+        for font in page["/Resources"]["/Font"].values()
+        if "DejaVuSans" in str(font.get_object().get("/BaseFont", ""))
+    }
+    assert len(embedded) == 2
+    assert all(font["/FontDescriptor"]["/FontFile2"].get_data() for font in embedded.values())
+
+
+@pytest.mark.parametrize("field", ["title", "stem", "rationale", "source"])
+def test_unsupported_pdf_character_is_rejected_before_writing(tmp_path, field):
+    quiz, images, provenance = export_fixture(tmp_path)
+    unsupported = "Unsupported character: \u0378"
+    if field == "source":
+        provenance["questions"]["q1"]["source_refs"][0]["locator"] = unsupported
+    elif field == "title":
+        quiz = replace(quiz, title=unsupported)
+    else:
+        quiz = replace(
+            quiz, questions=(replace(quiz.questions[0], **{field: unsupported}), quiz.questions[1])
+        )
+    with pytest.raises(ValueError, match="U\\+0378"):
+        export_reviewed_quiz(quiz, images, provenance, tmp_path / "exports")
+    assert not (tmp_path / "exports").exists()
+
+
+def test_renderer_identity_changes_root_and_preserves_previous_exports(tmp_path, monkeypatch):
+    from oms_hub.study_generation import quiz_export
+
+    quiz, images, provenance = export_fixture(tmp_path)
+    original = export_reviewed_quiz(quiz, images, provenance, tmp_path / "exports")
+    original_bytes = [path.read_bytes() for path in original]
+    with ZipFile(original[1]) as archive:
+        identity = json.loads(archive.read("manifest.json"))["pdf_renderer"]
+    fonts = Path(quiz_export.__file__).parent / "assets" / "quiz_fonts"
+    assert identity["font_sha256"] == {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in fonts.glob("*.ttf")
+    }
+    monkeypatch.setattr(quiz_export, "_PDF_RENDERER_VERSION", identity["version"] + 1)
+    updated = export_reviewed_quiz(quiz, images, provenance, tmp_path / "exports")
+    assert [p.name for p in original] == [p.name for p in updated]
+    assert original[0].parent != updated[0].parent
+    assert [path.read_bytes() for path in original] == original_bytes
 
 
 def export_fixture(tmp_path, *, long=False):
