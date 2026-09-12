@@ -11,12 +11,12 @@
   "workers": {
     "B": {
       "client_thread_id": "client-new-thread:f0c101c3-7b75-4c64-8aa6-60e6188860cb",
-      "state": "idle_bounded_runtime_review_complete",
+      "state": "active_app_server_startup_source_audit",
       "thread_id": "01a09273-0ad0-7ae1-902e-d24a1556741a",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/ca93/oms-study-automation",
       "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2",
-      "commit": "d0b32afe938fd24105b8531e4e75d4c3c9f5319f"
+      "commit": "fa256ac4a52f961ad1a2f0ce55235cdf7cafeae6"
     },
     "Q": {
       "client_thread_id": "client-new-thread:ff914d7d-00ef-4079-8b4b-bdff39cf34b3",
@@ -284,7 +284,7 @@
     "truelearn_sample": "not_supplied",
     "vendor_request": "Asked once for product and official per-question results/QID/notes export controls; answer pending.",
     "managed_login": "Connected in isolated local preview via actual managed login; confirmed in OpenAI browser and Hub on2026-09-12T00:51:58Z",
-    "runtime_restrictions": "Generation stays capability_unverified. Pinned Mac GPT5.5 combined experimental shape denied apply_patch; Windows restricted identity/runtime and real provider acceptance pending.",
+    "runtime_restrictions": "Generation stays capability_unverified. MacGPT5.5 route passed native router denial; Windows caller helper entry passed under actual limited interactive identity. Sandbox-user loading, IPC, restricted roots and real provider acceptance remain pending; normal debug CLI can revoke prior deny-read ACLs and is rejected for this scope.",
     "anki_qid_rules": "fixture-tested; observed real source/product-qualified prefixes not configured",
     "amboss_last_checked_utc": "2026-09-12T00:42:22Z",
     "amboss_message_ids": [
@@ -350,13 +350,13 @@
   ],
   "helper": {
     "owner": "O",
-    "task": "final Windows artifact and release receipt review passed",
+    "task": "runner follow-up evidence and documentation review passed",
     "state": "idle",
     "agent": "/root/review_o1_schema",
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "bounded_windows_artifacts_accepted_runtime_blocked",
+    "state": "caller_context_accepted_restricted_runtime_pending",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-activation",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -367,10 +367,10 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "GPT5.5 no-environments route: empty registries and apply_patch rejected on pinned Mac runtime; Windows sandbox runner pipe-in timeout, not accepted.",
+    "native_progress": "GPT5.5 Mac route denied; Windows helper direct noargs passed in SSH and actual Limited InteractiveToken session1; original popup STATUS_DLL_INIT_FAILED; normal CLI retry rejected due shared ACL refresh",
     "candidate": "8de86582e1f9ca12bfc00119121c2628542fe43b",
     "code_tree": "7aa5bed47d3bb15d130088c13d81c9b3808b1073",
-    "review": "PASS independent final code,81file Windows evidence manifest,raw failures/postflight and release/status/receipt review; activation remains blocked",
+    "review": "PASS independent source/32file native loader evidence/task XML/Hub postflight and docs review; code unchanged8de86582",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
       "26 passed,1 skipped final export/atomic/routes at8de86582",
@@ -397,7 +397,7 @@
     "first_suite": "7failed11passed2deselected; export MAX_PATH rename failure; raw artifacts retained",
     "long_paths_enabled": false,
     "fix": "extended absolute export paths passed actual Windows >260-character tests; full hashes retained",
-    "runtime": "standalone0.153.4; corrected help passed; sandbox runner pipe-in timeout; no sandbox retry",
+    "runtime": "caller helper loading PASS under conbr/session1/nonadmin; no sandbox-account/IPC/enforcement proof; normal CLI retry not used because it reconciles shared deny-read ACLs",
     "receipt": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
     "final_suite": "18passed2deselected3.78s; retained native PDF image/export/grade continuation passed; zero Office relaunches",
     "postflight": "2026-09-12T03:08:53.2049179Z; originalHub8268 healthy/unchanged; Office0; dirty unchanged",
@@ -408,6 +408,17 @@
       "No Windows restricted runtime/session persistence/provider acceptance",
       "No UNC/junction/symlink acceptance"
     ],
-    "review": "PASS independent final evidence review; composed Office/export subset only"
+    "review": "PASS independent final evidence review; composed Office/export subset only",
+    "runner_followup": {
+      "evidence_root": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/windows-runner-followup",
+      "ssh_helper": "PASS; exit1 exact missing-pipe message; no args; no setup/credentials",
+      "interactive_helper": "PASS; conbr session1 adminfalse; exact missing-pipe message; owned PID13776 exited; taskLastResult0",
+      "diagnostic_task": "OMS GPT Helper Acceptance 8627d0cba8c8",
+      "diagnostic_task_state": "Disabled; no triggers; preserved",
+      "original_failure": "System popup26 names helper0.153.4 and0xc0000142 at2026-09-12T02:48:48.491Z; DLL/initialization cause unproven",
+      "next_action": "Review supported app-server restricted-identity path; do not retry normal debug CLI or weaken shared ACLs",
+      "manifest_sha256": "4893780df419b6b08c620f5a08d2f19080d7640ba42ac347d3767faf9b3ae3e4",
+      "postflight_utc": "2026-09-12T03:32:43.0392493Z"
+    }
   }
 }
