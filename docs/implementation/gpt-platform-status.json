@@ -11,7 +11,7 @@
   "workers": {
     "B": {
       "client_thread_id": "client-new-thread:f0c101c3-7b75-4c64-8aa6-60e6188860cb",
-      "state": "running_B6_then_B7",
+      "state": "running_B7",
       "thread_id": "01a09273-0ad0-7ae1-902e-d24a1556741a",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/ca93/oms-study-automation",
@@ -55,7 +55,7 @@
         "scoped Ruff passed",
         "mypy models/migrations passed"
       ],
-      "review": "PASS independent core publication/schema review; outline guard followup incremental review",
+      "review": "PASS core publication/schema, optional outline guard and C3 app; schema40 passed3tests/mypy",
       "blocker": null,
       "next_action": "review outline/helper and correctedpublication"
     },
@@ -66,7 +66,7 @@
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "review C3 integration and outline guard; B6/B7 and C4 run"
+      "next_action": "finish B7/C4; projection70119d4f accepted7independentchecks"
     },
     "O3": {
       "state": "running",
@@ -75,7 +75,7 @@
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "live read-onlypreflighthealthyf487c622/schema31; finalexactcandidateCIpending"
+      "next_action": "finalfreeze pending; broadpreflight caught package marker collision, fixed; regression run ongoing"
     },
     "B1": {
       "state": "accepted_local",
@@ -133,22 +133,26 @@
       "next_action": "integrated; external capabilities separately pending"
     },
     "B6": {
+      "state": "accepted_local",
+      "worker": "B",
+      "commit": "8e6c0de91f892f9f960a8ad368e56cad621c6050",
+      "tests": [
+        "5 independently reproduced",
+        "90 worker checks;1 opt-in browser skip",
+        "explicit browser1passed;12 desktop/mobile stages"
+      ],
+      "review": "PASS independent code/tests/browser evidence review",
+      "blocker": null,
+      "next_action": "integrated6736e1f4/receiptbe8ab93d"
+    },
+    "B7": {
       "state": "running",
       "worker": "B",
       "commit": null,
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "synthetic route tests exit0 with isolated native raster; desktop/mobile browser pending"
-    },
-    "B7": {
-      "state": "ready",
-      "worker": "B",
-      "commit": null,
-      "tests": [],
-      "review": null,
-      "blocker": null,
-      "next_action": "B authorized to proceed after B6 receipt"
+      "next_action": "export parity and PDF visual checks; O private download route integration"
     },
     "Q1": {
       "state": "accepted_local",
@@ -237,16 +241,16 @@
       "next_action": "integrated; external capabilities separately pending"
     },
     "C3": {
-      "state": "review_pending",
+      "state": "accepted_local",
       "worker": "C",
       "commit": "fd6922f2996cf58c2965f4f21616b0ce2631476b",
       "tests": [
         "12 independent server checks",
         "O integrated15Python+76Node passed"
       ],
-      "review": "server PASS; corrected player/app incremental review",
+      "review": "PASS independent117Python+76Node checks",
       "blocker": null,
-      "next_action": "independent app callback and corrected player review"
+      "next_action": "integrated; C4 active"
     },
     "C4": {
       "state": "running",
@@ -294,8 +298,8 @@
   ],
   "helper": {
     "owner": "O",
-    "task": "C3 app/player and outline guard review",
-    "state": "active_reviewer",
+    "task": "ready for B7/C4 review",
+    "state": "idle",
     "agent": "/root/review_o1_schema",
     "no_grandchildren": true
   }
