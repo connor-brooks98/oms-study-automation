@@ -246,3 +246,48 @@ live lecture audit, and a guarded production release. B6 supplies only the local
 pipeline/UI slice. Windows/provider capability, live source quality, optional
 outline promotion and deployment are not established by these tests. No live
 attempt was consumed; no retry or activation is implied.
+
+## Native tool-policy follow-up — activation still blocked
+
+The 2026-09-12 auth-free loopback probe uses the same pinned macOS executable,
+not an authenticated provider. `scripts/probe-codex-tool-policy.py` owns fresh
+HOME/CODEX_HOME/cwd, a fixed local Responses fixture, a macOS network sandbox,
+bounded requests/frames/timeouts and correlated raw evidence. Its CLI exit zero
+means the experiment completed; `restrictions_verified` and `provider_verified`
+remain false. No production command or activation behavior was changed.
+
+All 99 non-removed feature flags false plus web search/apps disabled are not a
+universal tool switch. On the fallback fixture model, skills.list/read and
+request_user_input remain offered; skills.list actually executes without a tool
+item event or approval request. The exact public controls
+`tools.experimental_request_user_input.enabled=false`,
+`orchestrator.skills.enabled=false`, and `orchestrator.mcp.enabled=false` suppress
+those tools in that fixture. The internal field
+`experimental_request_user_input_enabled` is not a valid public TOML key.
+
+The advertised `gpt-6-astra` slug changes the picture: with the same controls and
+production-shaped stable thread/start, native model metadata adds nine tools via
+`input[].type=additional_tools`. Inspecting only top-level `tools` is insufficient.
+Code Mode exec/wait fail before host use with `code-mode host is disabled`, but
+`functions.request_user_input_async` returns accepted:true and
+`collaboration.list_agents` returns the isolated root agent. This directly
+refutes universal pre-execution denial. Valid namespaced spawn/followup/send calls
+were not exercised. An unnamespaced unsupported spawn call does not prove that
+the advertised namespaced handler is disabled.
+
+One authorized `gpt-5.5` control omits those Astra helpers and rejects the fixed
+14-call matrix, but still offers `apply_patch`, which was not exercised. This is
+not a selected replacement model or an accepted restricted model.
+
+CLI config approval_policy=untrusted is rejected as obsolete, whereas the
+production per-thread approvalPolicy=untrusted is accepted and echoed by this
+same binary. Schema presence alone cannot settle runtime semantics. No production
+approval setting was changed.
+
+The blanket probe controls also set inverse skip_host_skill_discovery=false and
+secret_auth_storage=false. Blank fixture HOME differs from production's omitted
+HOME; ambient discovery and authenticated storage identity are unaccepted. This
+partial policy therefore stays entirely in the probe, not production launch code.
+Windows identity and actual selected-model text/image/schema/provider acceptance
+remain separate and pending. Exact hashes, tests and evidence paths are in the
+B runtime-policy handoff.
