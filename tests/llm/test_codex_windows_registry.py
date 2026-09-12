@@ -196,3 +196,62 @@ def test_loopback_fixed_completion_and_extra_request_failure(tmp_path):
         server.shutdown()
         worker.join(timeout=2)
         server.server_close()
+
+
+def test_apply_patch_fixture_requires_correlated_denial_and_absent_canary(tmp_path):
+    module = load_probe()
+    frames = queue.Queue()
+    report = {
+        "mode": "apply-patch",
+        "requests": [],
+        "fixture_responses": [],
+        "terminal_status": "completed",
+        "process_returncode": 0,
+        "error": None,
+        "canary_exists": False,
+    }
+    server = HTTPServer(("127.0.0.1", 0), module["fixture_handler"](report, frames, tmp_path))
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    client = HTTPConnection(*server.server_address, timeout=2)
+    try:
+        body = {"model": "gpt-5.5", "input": [], "tools": []}
+        client.request("POST", "/v1/responses", json.dumps(body))
+        response = client.getresponse()
+        assert response.status == 200
+        events = [
+            json.loads(line[6:])
+            for line in response.read().decode().splitlines()
+            if line.startswith("data: ")
+        ]
+        call = events[-1]["response"]["output"][0]
+        assert call["type"] == "custom_tool_call" and call["name"] == "apply_patch"
+        assert call["input"] == (
+            f"*** Begin Patch\n*** Add File: {tmp_path / 'work' / 'tool-must-not-create'}\n"
+            "+synthetic fixture only\n*** End Patch\n"
+        )
+        denial = {
+            "type": "custom_tool_call_output",
+            "call_id": call["call_id"],
+            "output": "unsupported custom tool call: apply_patch",
+        }
+        body["input"] = [call, denial]
+        client.request("POST", "/v1/responses", json.dumps(body))
+        response = client.getresponse()
+        assert response.status == 200
+        assert b"fixture complete" in response.read()
+        assert (tmp_path / "fixture-request-2.json").exists()
+        assert (tmp_path / "fixture-response-2.json").exists()
+        module["validate_result"](report)
+        report["canary_exists"] = True
+        with pytest.raises(ValueError, match="canary"):
+            module["validate_result"](report)
+        report["canary_exists"] = False
+        report["requests"][1]["body"]["input"][1]["call_id"] = "wrong-call"
+        with pytest.raises(ValueError, match="denial"):
+            module["validate_result"](report)
+    finally:
+        client.close()
+        server.shutdown()
+        worker.join(timeout=2)
+        server.server_close()

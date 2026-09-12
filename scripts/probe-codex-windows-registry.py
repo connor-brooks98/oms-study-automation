@@ -1,6 +1,6 @@
 """Windows-only, auth-free registry diagnostic. No OS network isolation is provided.
 
-One app-server launch; no tools, setup, readiness or account RPCs. Retains evidence.
+One app-server launch; registry or fixed apply_patch denial only. No account/setup RPCs.
 """
 
 import argparse
@@ -239,6 +239,19 @@ def capture(stream, path, frames, stdout):
             frames.put(None)
 
 
+def require_patch_denial(body, injected):
+    history = [item for item in body.get("input", []) if "call" in item.get("type", "")]
+    if len(history) != 2 or any(history[0].get(k) != v for k, v in injected.items()):
+        raise ValueError("unexpected injected-call denial history")
+    output = history[1]
+    if (
+        output.get("type") != "custom_tool_call_output"
+        or output.get("call_id") != injected["call_id"]
+        or output.get("output") != "unsupported custom tool call: apply_patch"
+    ):
+        raise ValueError("missing correlated apply_patch router denial")
+
+
 def fixture_handler(report, frames, root):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -259,7 +272,9 @@ def fixture_handler(report, frames, root):
 
         def do_POST(self):
             try:
-                if self.path != "/v1/responses" or report["requests"]:
+                patch_mode = report.get("mode", "registry") == "apply-patch"
+                index = len(report["requests"])
+                if self.path != "/v1/responses" or index >= (2 if patch_mode else 1):
                     raise ValueError("unexpected fixture path or extra request")
                 if self.headers.get("Authorization") or self.headers.get("api-key"):
                     raise ValueError("unexpected authentication header")
@@ -267,11 +282,25 @@ def fixture_handler(report, frames, root):
                 if not 0 < length <= OUTPUT_LIMIT:
                     raise ValueError("fixture request size limit exceeded")
                 raw_body = self.rfile.read(length)
-                (root / "fixture-request.json").write_bytes(raw_body)
+                suffix = "" if index == 0 else "-2"
+                (root / f"fixture-request{suffix}.json").write_bytes(raw_body)
                 body = json.loads(raw_body)
                 report["requests"].append({"path": self.path, "body": body})
                 if body.get("model") != MODEL:
                     raise ValueError("unexpected model")
+                if patch_mode:
+                    if body.get("tools") or any(
+                        item.get("tools")
+                        for item in body.get("input", [])
+                        if item.get("type") == "additional_tools"
+                    ):
+                        raise ValueError("refusing injection with nonempty registry")
+                    if index == 0 and any(
+                        "call" in item.get("type", "") for item in body.get("input", [])
+                    ):
+                        raise ValueError("unexpected tool history before injection")
+                    if index == 1:
+                        require_patch_denial(body, report["injected_call"])
                 message = {
                     "type": "message",
                     "id": "msg_fixture",
@@ -279,8 +308,21 @@ def fixture_handler(report, frames, root):
                     "status": "completed",
                     "content": [{"type": "output_text", "text": "fixture complete"}],
                 }
+                if patch_mode and index == 0:
+                    message = {
+                        "type": "custom_tool_call",
+                        "id": "fc_fixture_apply_patch",
+                        "call_id": "call_policy_apply_patch",
+                        "name": "apply_patch",
+                        "input": (
+                            "*** Begin Patch\n"
+                            f"*** Add File: {root / 'work' / 'tool-must-not-create'}\n"
+                            "+synthetic fixture only\n*** End Patch\n"
+                        ),
+                    }
+                    report["injected_call"] = message
                 response = {
-                    "id": "resp_fixture",
+                    "id": "resp_fixture" if index == 0 else "resp_fixture_2",
                     "model": MODEL,
                     "status": "completed",
                     "output": [message],
@@ -292,7 +334,9 @@ def fixture_handler(report, frames, root):
                     ("response.completed", {"response": response}),
                 ]
                 report["fixture_responses"].append(events)
-                (root / "fixture-response.json").write_text(json.dumps(events), encoding="utf-8")
+                (root / f"fixture-response{suffix}.json").write_text(
+                    json.dumps(events), encoding="utf-8"
+                )
                 payload = "".join(
                     f"event: {kind}\ndata: " + json.dumps({"type": kind, **data}) + "\n\n"
                     for kind, data in events
@@ -309,8 +353,9 @@ def fixture_handler(report, frames, root):
 
 
 def validate_result(report):
+    patch_mode = report.get("mode", "registry") == "apply-patch"
     summaries = []
-    for request in report["requests"]:
+    for index, request in enumerate(report["requests"]):
         body = request["body"]
         tools = list(body.get("tools", []))
         for item in body.get("input", []):
@@ -322,7 +367,8 @@ def validate_result(report):
                 "function_call_output",
                 "custom_tool_call_output",
             }:
-                raise ValueError("unexpected tool history in registry-only request")
+                if not patch_mode or index != 1:
+                    raise ValueError("unexpected tool history in request")
         names = []
         for tool in tools:
             if tool["type"] == "namespace":
@@ -331,10 +377,15 @@ def validate_result(report):
                 names.append(tool.get("name", tool["type"]))
         summaries.append({"offered_tools": names, "tool_choice": body.get("tool_choice")})
     report["request_summaries"] = summaries
-    if len(summaries) != 1 or summaries[0]["offered_tools"]:
-        raise ValueError("effective registry is not empty or request count is not one")
-    if len(report["fixture_responses"]) != 1:
-        raise ValueError("fixture response count is not one")
+    expected_count = 2 if patch_mode else 1
+    if len(summaries) != expected_count or any(s["offered_tools"] for s in summaries):
+        raise ValueError("effective registry is not empty or request count differs")
+    if len(report["fixture_responses"]) != expected_count:
+        raise ValueError("fixture response count differs")
+    if patch_mode:
+        require_patch_denial(report["requests"][1]["body"], report["injected_call"])
+        if report.get("canary_exists") is not False:
+            raise ValueError("canary absence not established")
     if (
         report["error"]
         or report["terminal_status"] != "completed"
@@ -343,7 +394,9 @@ def validate_result(report):
         raise ValueError("native run did not complete successfully")
 
 
-def probe(executable, output_dir):
+def probe(executable, output_dir, mode="registry"):
+    if mode not in {"registry", "apply-patch"}:
+        raise ValueError("unsupported diagnostic mode")
     if sys.platform != "win32":
         raise ValueError("Windows registry probe requires Windows; no platform override")
     if not executable.is_absolute() or not output_dir.is_absolute():
@@ -352,6 +405,8 @@ def probe(executable, output_dir):
     root = output_dir.resolve()
     report = {
         "binary_sha256": PIN,
+        "mode": mode,
+        "apply_patch_denial_passed": False,
         "native_pid": None,
         "process_returncode": None,
         "error": None,
@@ -474,9 +529,12 @@ def probe(executable, output_dir):
                 report["error"] = report["error"] or str(exc)
         report["cleanup_owned_process_exited"] = process is not None and process.poll() is not None
         report["descendant_cleanup_verified"] = False
+        report["canary_exists"] = os.path.lexists(root / "work" / "tool-must-not-create")
         try:
             validate_result(report)
-            report["registry_only_passed"] = True
+            report[
+                "apply_patch_denial_passed" if mode == "apply-patch" else "registry_only_passed"
+            ] = True
         except Exception as exc:
             report["error"] = report["error"] or str(exc)
         with (root / "result.json").open("x", encoding="utf-8") as stream:
@@ -488,9 +546,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--mode", choices=("registry", "apply-patch"), default="registry")
     args = parser.parse_args(argv)
     try:
-        report = probe(args.executable, args.output_dir)
+        report = probe(args.executable, args.output_dir, args.mode)
     except Exception as exc:
         print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
         return 1
@@ -499,11 +558,12 @@ def main(argv=None):
             {
                 "result": str(args.output_dir / "result.json"),
                 "registry_only_passed": report["registry_only_passed"],
+                "apply_patch_denial_passed": report["apply_patch_denial_passed"],
                 "error": report["error"],
             }
         )
     )
-    return 0 if report["registry_only_passed"] else 1
+    return 0 if report["registry_only_passed"] or report["apply_patch_denial_passed"] else 1
 
 
 if __name__ == "__main__":
