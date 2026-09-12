@@ -102,3 +102,71 @@ Use the `rust-v0.153.4/` snapshots; initial main-branch inspection is superseded
 B performed local artifact reads and public source retrieval only. No native
 launch, remote executable invocation, configuration/account/provider operation,
 or runtime test was performed. Production generation remains closed.
+
+## Pre-pipe startup follow-up
+
+The version-matched helper wrapper calls `win::main()` directly. Before opening
+pipe-in, that function only parses the two pipe arguments and checks that both
+exist. It does not initialize persistent logging, read a credential file, prepare
+sandbox state, select the child desktop, or create the child's restricted token.
+`open_pipe` performs one `CreateFileW` with `FILE_GENERIC_READ`, zero share mode,
+`OPEN_EXISTING`, and no retry. A failure returns its Win32 code in a Rust main
+error; it cannot yet send an IPC error frame. The parent does not configure
+`STARTF_USESTDHANDLES` or a runner stderr capture pipe. Therefore the recorded
+parent timeout can hide an early runner error, and missing helper log lines do
+not discriminate loader failure from pipe access failure. [Helper entrypoint](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/windows-sandbox-rs/src/bin/command_runner/main.rs),
+[first pipe open](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/windows-sandbox-rs/src/bin/command_runner/win.rs#L553).
+
+The initial helper CWD is the parent's resolved sandbox command CWD, passed
+directly to `CreateProcessWithLogonW`; it is not automatically the helper directory.
+The launch passes no profile-loading flag, a null environment pointer, and a
+zero-initialized `STARTUPINFOW` apart from its size. Child CWD fallback/junction
+logic runs only after the spawn request arrives. The original CWD is not present
+in O's retained snapshots, so its actual value remains unverified. [Launch parameters](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/windows-sandbox-rs/src/elevated/runner_client.rs#L340).
+
+Named-pipe access grants generic-all only to the selected sandbox account SID:
+`D:(A;;GA;;;<sandbox SID>)`. Pipe-in is parent-outbound/runner-read; pipe-out is
+parent-inbound/runner-write. The parent also checks the connected client PID.
+The administrator token does not substitute for that sandbox SID, and filesystem
+ACL metadata does not prove the transient pipe DACL. [Pipe security](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/windows-sandbox-rs/src/elevated/runner_pipe.rs#L55).
+
+For x64 MSVC the release build configuration requests `+crt-static`; installing a
+VC++ redistributable is not justified by this source evidence. The package build
+script embeds its explicit manifest only in the setup helper. Actual PE machine,
+imported DLL/API dependencies and loader events for the resolved runner remain
+authoritative; Cargo dependency names do not establish a DLL inventory. No
+Node/Python/provider initialization occurs on this pre-pipe path. [Build configuration](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/.cargo/config.toml#L1),
+[setup-only manifest](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/windows-sandbox-rs/build.rs).
+
+A future **direct, no-argument** invocation of the already identified and hashed
+runner would avoid the parent setup/credential path:
+
+```powershell
+& $verifiedRunnerPath 2>&1
+$LASTEXITCODE
+```
+
+Expected result is exit 1 with `Error: runner: no pipe-in provided`. There is no
+helper help/version mode. This proposal has not been executed: it would prove PE
+loading and reaching main under the caller (`conbr`) only. It cannot establish
+sandbox-account loading, pipe ACL correctness, or a successful runner handshake.
+Do not supply live pipe names, change identity, or invoke the setup helper.
+
+The safe existing parent-log subset is helper source/destination selection only.
+When O confirms the default CODEX_HOME, its path is
+`C:\Users\conbr\.codex\.sandbox\sandbox.2026-09-12.log`; otherwise use the same
+relative path under the verified CODEX_HOME. Filenames use UTC dates, while line
+timestamps use local time. Avoid whole-log output and command previews. [Log naming](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/windows-sandbox-rs/src/logging.rs#L34).
+
+```powershell
+Get-Content -LiteralPath $verifiedLogPath -Tail 400 |
+  Where-Object { $_ -match '^\[[^]]+\] helper (copy: (validating|reused|recopied) command-runner source=|launch resolution: using copied command-runner path )' } |
+  Select-Object -Last 12
+```
+
+These allowlisted lines identify the helper actually chosen; they do not explain
+its loader or pipe failure. No existing pre-pipe runner log or standalone command
+can distinguish both causes under the sandbox account without a new launch or
+instrumentation. O's bounded crash/loader-event and PE/ACL metadata checks are the
+next discriminator. New source files are retained alongside the prior release
+snapshots. This follow-up performs no Windows launch or remote mutation.
