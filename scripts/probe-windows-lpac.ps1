@@ -57,6 +57,7 @@ public sealed class OmsLpacResult {
     public string CallerSid;
     public string Executable;
     public string CommandLine;
+    public string ChildLocalAppData;
     public uint ProcessId;
     public int IsAppContainer;
     public int IsLessPrivilegedAppContainer;
@@ -193,6 +194,12 @@ public static class OmsLpacProbe {
             Win32(opened, openError, "Open caller token");
             Require(TokenInt(callerToken, TokenElevation) == 0, "Elevated caller forbidden.");
             result.CallerSid = WindowsIdentity.GetCurrent().User.Value;
+            result.Stage = "child-environment";
+            string localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+            Require(!String.IsNullOrWhiteSpace(localAppData) && localAppData.Length >= 3
+                && Char.IsLetter(localAppData[0]) && localAppData[1] == ':' && localAppData[2] == '\\'
+                && localAppData.IndexOf('\0') < 0, "Caller LOCALAPPDATA must be an absolute local path.");
+            result.ChildLocalAppData = Path.GetFullPath(localAppData);
             result.Stage = "fixture";
             Directory.CreateDirectory(inside);
             File.WriteAllText(Path.Combine(inside, "inside.txt"), insideMarker + "\r\n", Encoding.ASCII);
@@ -243,7 +250,10 @@ public static class OmsLpacProbe {
             // Fixed relative filenames avoid caller-controlled shell text. TYPE is a cmd builtin.
             result.CommandLine = "\"" + result.Executable + "\" /d /v:off /c \"type inside.txt & type ..\\outside.txt\"";
             string windows = Directory.GetParent(Environment.SystemDirectory).FullName;
-            string env = "COMSPEC=" + result.Executable + "\0SystemRoot=" + windows + "\0TEMP=" + inside + "\0TMP=" + inside + "\0WINDIR=" + windows + "\0\0";
+            // Single-variable hypothesis for error 203; Windows documents AppContainer LOCALAPPDATA rerouting.
+            // https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer
+            string env = "COMSPEC=" + result.Executable + "\0LOCALAPPDATA=" + result.ChildLocalAppData
+                + "\0SystemRoot=" + windows + "\0TEMP=" + inside + "\0TMP=" + inside + "\0WINDIR=" + windows + "\0\0";
             environment = Marshal.StringToHGlobalUni(env);
             StartupInfoEx startup = new StartupInfoEx();
             startup.StartupInfo.cb = Marshal.SizeOf(typeof(StartupInfoEx));
