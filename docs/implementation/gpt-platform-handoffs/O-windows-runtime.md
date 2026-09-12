@@ -1,10 +1,10 @@
 # O bounded Windows/runtime acceptance — September 11 ET / September 12 UTC
 
-Code candidate: `8de86582e1f9ca12bfc00119121c2628542fe43b`; tree `7aa5bed47d3bb15d130088c13d81c9b3808b1073`; branch `codex/gpt-runtime-activation`. Base for this turn: `e7c84c56bd56a6ad2de412718d38dfff1799d0ed`. Final receipt/status documentation follows the code candidate.
+Code candidate: `551339cb195c9c35eb77503c3b09b79ed723c7a6`; tree `da1db57b5a1990cffecd7deb22f22ced3d721816`; branch `codex/gpt-runtime-activation`. Base for this turn: `e7c84c56bd56a6ad2de412718d38dfff1799d0ed`. Final receipt/status documentation follows the code candidate.
 
 ## Scope and reviewed changes
 
-Connor authorized continuing review and bounded Windows/runtime acceptance. O used isolated candidate source and synthetic material only. No live Hub restart/deployment, provider generation, private-source test, Anki operation, paid fallback, reset, purchase, push/main merge or retained-resource cleanup occurred. No explicit account/ACL/firewall/registry mutation was issued. The later follow-up created, ran once and disabled only a new no-trigger diagnostic task; it did not change the live task. The unexpected initial sandbox invocation could perform internal preparation; its possible setup side effects were not independently audited.
+Connor authorized continuing review and bounded Windows/runtime acceptance. O used isolated candidate source and synthetic material only. No live Hub restart/deployment, provider generation, private-source test, Anki operation, paid fallback, reset, purchase, push/main merge or retained-resource cleanup occurred. No explicit account/ACL/firewall/registry mutation was issued. The later follow-ups created, ran each once and disabled only new no-trigger diagnostic tasks; it did not change the live task. The unexpected initial sandbox invocation could perform internal preparation; its possible setup side effects were not independently audited.
 
 - `38e3c179` / `477a06b3`: integrate B's exact GPT-5.5 no-environments diagnostic and receipt. Both effective model tool registries are empty; a valid custom `apply_patch` call is rejected by the native router before file creation. The combined experimental request shape and pinned macOS runtime passed this route. This is neither a real provider response nor Windows isolation proof. Existing Astra async-input/agent-list counterexamples remain valid. [B exact proof](B-gpt55-no-environments.md).
 - `f217e434`: nested Office cleanup always attempts Quit and CoUninitialize after Close/Quit errors; a Close failure previously skipped the remaining cleanup. Two regression cases failed before the fix. Extends the existing native Windows smoke to two slides, a visibly sized embedded red rectangle, a blue vector oval, exact image/ZIP/JSON/PDF parity, source labels and correct/incorrect grading.
@@ -42,7 +42,7 @@ Postflight `2026-09-12T03:08:53.2049179Z`: one old-Hub listener PID8268; commit 
 
 ## Windows Codex runtime — caller loading accepted, restrictions pending
 
-Follow-up base: `5ddefba39846b8becbc1c5bdb18ac193d1a76010`; B source findings integrated as `28723a02`, `b4f73d6b`, `009eda59`, `08f03f30`. Application source, tests, scripts and configuration remain byte-identical to code candidate8de86582. This follow-up adds source diagnosis and bounded native diagnostics, not production activation.
+Follow-up base: `5ddefba39846b8becbc1c5bdb18ac193d1a76010`; B source findings integrated as `28723a02`, `b4f73d6b`, `009eda59`, `08f03f30`. At that caller-loading checkpoint, application source, tests, scripts and configuration remained byte-identical to code candidate8de86582. The subsequent registry-only diagnostic below adds a separate script and tests; application source is still unchanged. This follow-up adds source diagnosis and bounded native diagnostics, not production activation.
 
 Working standalone `C:\Users\conbr\.local\bin\codex.exe`: `codex-cli0.153.4`, SHA256 `444a3f0008050605cae73cd9b7a2dcac61294062dfaab56dd20430fd6498518b`. MSIX launch separately returned access denied; no bypass was attempted. The signed helper at `C:\Users\conbr\.codex\.sandbox-bin\codex-command-runner-0.153.4.exe` hashes to `8d88f3e1749704937e735fe2b0311e939bd2873010243030a6f0c023d3d7296d`.
 
@@ -82,3 +82,55 @@ Evidence root: `/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-771
 Final local preservation check: original checkout remains at `96ceec56c4b8f9df0018fe090710631adb29a2a2` with the exact O0 dirty manifest; the unchanged port56460 preview is healthy, schema40, all three workers alive with start count1 and no current error.
 
 Next: review this candidate, then resolve the Windows runner startup/identity boundary before any account/session/provider activation. Windows login persistence, restricted readable roots, provider text/image/schema/cancellation/limit behavior and deployed behavior remain pending. The working Mac preview needs no new login. AMBOSS entitlement/reply, vendor samples and real Anki QID-prefix rules remain separate optional pending capabilities.
+
+
+## Windows app-server registry-only acceptance — September 12
+
+B implementation `f1f799af7a904752fd2822df83c9f50008519964` and receipt
+`a53f3d6af361c5893aba02668f867d7e84151bbd` were integrated as `551339cb` and
+`ac3e7c5d`. The separate stdlib probe preserves the macOS confinement guard and
+production `capability_unverified` gate. Source review found that this exact
+empty-environment startup path avoids the normal debug CLI's shared setup/ACL
+refresh. [Source scope and implementation receipt](B-windows-appserver-no-tools-scope.md).
+
+The independent review corrected early completion before the turn/start reply,
+incremental evidence retention, and the outer descendant-survivor check before
+launch. O independently passed **7 new offline tests in 0.54s** and Ruff; B's
+focused suite passed **77 tests with 3 opt-in skips**. Application source and the
+Mac probe remain byte-identical to `8de86582`. No full suite was rerun.
+
+One actual Windows run passed under `CONNORS_NUC\conbr`, session1, nonadministrator:
+
+- Exact pinned Windows Codex0.153.4, fresh private file-only auth home and minimal
+  environment; `windows.sandbox=elevated` retained as configuration.
+- Only initialize, ephemeral thread/start and turn/start RPCs, with GPT-5.5,
+  explicit empty environments/capability roots/workspace roots/dynamic tools.
+- One auth-free `/v1/responses` request to the loopback fixture; top-level tools
+  empty and no additional-tools registry; fixed assistant text only, no injected call.
+- Completed correlated turn; native PID15772 exited0, no error or inner timeout.
+- New no-trigger task `OMS GPT Registry Acceptance 3fb47f0f1105` returned0,
+  was disabled and retained. Inner and independent outer postflight passed;
+  no new Codex/Python/helper processes survived. Hub PID8268/build/tree/schema31
+  and healthy idle workers/start counts were unchanged.
+
+The local SSH caller timed out after125s. Its initial transport stdout/stderr
+were not saved by the launch wrapper, so no successful transport claim is made.
+The remote incremental/final files were recovered without rerunning the probe.
+Outer postflight was `2026-09-12T07:36:10.8375917Z`; independent reconciliation at
+`2026-09-12T08:03:45.7678533Z` confirmed task result0/disabled and healthy old Hub.
+Native acceptance is based on the recovered files and task definition.
+
+Evidence root: `/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/windows-registry-acceptance`. The43-file manifest SHA256 is `49ae84e8b5bbf8a37e4be08cad830d282e349d5ae8542b0a7cc2a1a177a67daa`;
+it includes raw protocol, fixture request/response, prelaunch settings, native PID,
+inner/outer pre/postflight, disabled task XML and reconciliation. Probe SHA256:
+`2c27997fba090aa496c37c7096c755b8db4cfeae83fcb8a80f9d4052c4afa339`.
+Independent reviewer `/root/review_windows_registry_final` returned PASS for the
+prelaunch code/task and all43 recovered manifest files, raw protocol correlation,
+empty registries, native exit, task definition and independent preservation checks.
+
+This proves the measured registry-only path on Windows. It does not prove
+injected-tool denial, universal feature coverage, OS network/read-root isolation,
+Offline-account execution, account persistence, provider quality or deployment.
+Those flags remain false; no real account/provider request occurred. Normal
+sandbox CLI retry remains rejected. The next runtime step must separately review
+any injected-tool or restricted-identity scope before execution.

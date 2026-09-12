@@ -11,12 +11,12 @@
   "workers": {
     "B": {
       "client_thread_id": "client-new-thread:f0c101c3-7b75-4c64-8aa6-60e6188860cb",
-      "state": "active_app_server_startup_source_audit",
+      "state": "idle_local_complete",
       "thread_id": "01a09273-0ad0-7ae1-902e-d24a1556741a",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/ca93/oms-study-automation",
       "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2",
-      "commit": "fa256ac4a52f961ad1a2f0ce55235cdf7cafeae6"
+      "commit": "a53f3d6af361c5893aba02668f867d7e84151bbd"
     },
     "Q": {
       "client_thread_id": "client-new-thread:ff914d7d-00ef-4079-8b4b-bdff39cf34b3",
@@ -284,7 +284,7 @@
     "truelearn_sample": "not_supplied",
     "vendor_request": "Asked once for product and official per-question results/QID/notes export controls; answer pending.",
     "managed_login": "Connected in isolated local preview via actual managed login; confirmed in OpenAI browser and Hub on2026-09-12T00:51:58Z",
-    "runtime_restrictions": "Generation stays capability_unverified. MacGPT5.5 route passed native router denial; Windows caller helper entry passed under actual limited interactive identity. Sandbox-user loading, IPC, restricted roots and real provider acceptance remain pending; normal debug CLI can revoke prior deny-read ACLs and is rejected for this scope.",
+    "runtime_restrictions": "Generation stays capability_unverified. Mac GPT5.5 valid apply_patch denied; Windows caller helper and registry-only fake completion passed. Restricted identity/roots/network, injected-tool Windows denial and provider acceptance remain pending. Normal debug CLI retry remains rejected for shared ACL mutation.",
     "anki_qid_rules": "fixture-tested; observed real source/product-qualified prefixes not configured",
     "amboss_last_checked_utc": "2026-09-12T00:42:22Z",
     "amboss_message_ids": [
@@ -293,7 +293,7 @@
     ]
   },
   "release": {
-    "candidate": "8de86582e1f9ca12bfc00119121c2628542fe43b",
+    "candidate": "551339cb195c9c35eb77503c3b09b79ed723c7a6",
     "live_authorized": false,
     "proposal": "docs/implementation/gpt-platform-release-proposal.md",
     "receipt": "docs/implementation/gpt-platform-handoffs/O3.md",
@@ -324,7 +324,7 @@
         "scope": "26passed1skip at8de86582"
       }
     ],
-    "code_tree": "7aa5bed47d3bb15d130088c13d81c9b3808b1073",
+    "code_tree": "da1db57b5a1990cffecd7deb22f22ced3d721816",
     "archive_candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
     "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md"
   },
@@ -350,13 +350,13 @@
   ],
   "helper": {
     "owner": "O",
-    "task": "runner follow-up evidence and documentation review passed",
+    "task": "Windows registry code/task and43file recovered evidence review PASS",
     "state": "idle",
-    "agent": "/root/review_o1_schema",
+    "agent": "/root/review_windows_registry_final",
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "caller_context_accepted_restricted_runtime_pending",
+    "state": "windows_registry_accepted_restrictions_pending",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-activation",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -367,15 +367,16 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "GPT5.5 Mac route denied; Windows helper direct noargs passed in SSH and actual Limited InteractiveToken session1; original popup STATUS_DLL_INIT_FAILED; normal CLI retry rejected due shared ACL refresh",
-    "candidate": "8de86582e1f9ca12bfc00119121c2628542fe43b",
-    "code_tree": "7aa5bed47d3bb15d130088c13d81c9b3808b1073",
-    "review": "PASS independent source/32file native loader evidence/task XML/Hub postflight and docs review; code unchanged8de86582",
+    "native_progress": "GPT5.5 Mac valid apply_patch router denied; Windows caller helper and registry-only fake-loopback completion passed; restricted identity/roots/network/provider remain unverified",
+    "candidate": "551339cb195c9c35eb77503c3b09b79ed723c7a6",
+    "code_tree": "da1db57b5a1990cffecd7deb22f22ced3d721816",
+    "review": "PASS independent code/task and43file recovered native evidence review; registry-only Windows acceptance; source unchanged8de86582",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
       "26 passed,1 skipped final export/atomic/routes at8de86582",
       "Ruff all source/tests/scripts and mypy231 files passed",
-      "Actual Windows18passed2symlink cases deselected; retained native-PDF export continuation passed"
+      "Actual Windows18passed2symlink cases deselected; retained native-PDF export continuation passed",
+      "Windows registry-only native completion passed; O7 focused offline tests and Ruff passed; B77passed3skips"
     ],
     "worker_implementation": "f3711eb33656785ead908bce6c1458e423b03511",
     "worker_receipt": "0c4d2ba6ef91c1f176760320483908b377027aff"
@@ -391,13 +392,13 @@
   "previous_integration_branch": "codex/gpt-study-platform",
   "previous_integration_worktree": "/Users/connor/Developer/worktrees/oms-gpt-study-platform",
   "windows_acceptance": {
-    "state": "artifact_subset_passed_runtime_blocked",
+    "state": "artifacts_and_registry_passed_restrictions_pending",
     "code_candidate": "8de86582e1f9ca12bfc00119121c2628542fe43b",
     "native_office": "one actual Windows conversion passed 2page PDF and embedded-image/vector color checks; no Office processes before/after",
     "first_suite": "7failed11passed2deselected; export MAX_PATH rename failure; raw artifacts retained",
     "long_paths_enabled": false,
     "fix": "extended absolute export paths passed actual Windows >260-character tests; full hashes retained",
-    "runtime": "caller helper loading PASS under conbr/session1/nonadmin; no sandbox-account/IPC/enforcement proof; normal CLI retry not used because it reconciles shared deny-read ACLs",
+    "runtime": "Windows registry-only path passed one fake-loopback completion under conbr1Limited; no injectedtool or sandbox-identity/enforcement proof",
     "receipt": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
     "final_suite": "18passed2deselected3.78s; retained native PDF image/export/grade continuation passed; zero Office relaunches",
     "postflight": "2026-09-12T03:08:53.2049179Z; originalHub8268 healthy/unchanged; Office0; dirty unchanged",
@@ -416,9 +417,29 @@
       "diagnostic_task": "OMS GPT Helper Acceptance 8627d0cba8c8",
       "diagnostic_task_state": "Disabled; no triggers; preserved",
       "original_failure": "System popup26 names helper0.153.4 and0xc0000142 at2026-09-12T02:48:48.491Z; DLL/initialization cause unproven",
-      "next_action": "Review supported app-server restricted-identity path; do not retry normal debug CLI or weaken shared ACLs",
+      "next_action": "Registry-only app-server path passed; separately review injected-tool and restricted-identity scope; normal debug CLI remains rejected",
       "manifest_sha256": "4893780df419b6b08c620f5a08d2f19080d7640ba42ac347d3767faf9b3ae3e4",
       "postflight_utc": "2026-09-12T03:32:43.0392493Z"
+    },
+    "registry_probe": {
+      "state": "accepted_native_registry_only",
+      "implementation": "f1f799af7a904752fd2822df83c9f50008519964",
+      "integrated": "551339cb195c9c35eb77503c3b09b79ed723c7a6",
+      "script_sha256": "2c27997fba090aa496c37c7096c755b8db4cfeae83fcb8a80f9d4052c4afa339",
+      "local_tests": "7 independent focused passed0.54s; B77passed3skips; Ruff passed",
+      "evidence_root": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/windows-registry-acceptance",
+      "scope": "registry-only fixed fake loopback response; no injected tools",
+      "native_pid": 15772,
+      "request_count": 1,
+      "terminal_status": "completed",
+      "native_exit": 0,
+      "task": "OMS GPT Registry Acceptance 3fb47f0f1105",
+      "task_state": "Disabled; no triggers; retained",
+      "postflight_utc": "2026-09-12T07:36:10.8375917Z",
+      "reconciliation_utc": "2026-09-12T08:03:45.7678533Z",
+      "manifest_sha256": "49ae84e8b5bbf8a37e4be08cad830d282e349d5ae8542b0a7cc2a1a177a67daa",
+      "transport": "SSH caller125s timeout; native files recovered without rerun; no new survivors",
+      "review": "PASS independent43file checksum/rawprotocol/task/process/Hub/reconciliation review"
     }
   }
 }
