@@ -11,7 +11,7 @@
   "workers": {
     "B": {
       "client_thread_id": "client-new-thread:f0c101c3-7b75-4c64-8aa6-60e6188860cb",
-      "state": "running_B7",
+      "state": "idle_local_complete",
       "thread_id": "01a09273-0ad0-7ae1-902e-d24a1556741a",
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/ca93/oms-study-automation",
@@ -66,7 +66,7 @@
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "finish B7/C4; projection70119d4f accepted7independentchecks"
+      "next_action": "C4 stable block slice then tags/routes integration and review"
     },
     "O3": {
       "state": "running",
@@ -75,7 +75,7 @@
       "tests": [],
       "review": null,
       "blocker": null,
-      "next_action": "finalfreeze pending; broadpreflight caught package marker collision, fixed; regression run ongoing"
+      "next_action": "29 preflight regressions traced to registry/hash; fixed100focusedtests; finalfrozen suite pendingC4"
     },
     "B1": {
       "state": "accepted_local",
@@ -146,13 +146,17 @@
       "next_action": "integrated6736e1f4/receiptbe8ab93d"
     },
     "B7": {
-      "state": "running",
+      "state": "accepted_local",
       "worker": "B",
-      "commit": null,
-      "tests": [],
-      "review": null,
+      "commit": "0a75b65f0335473f945ee60ead54f93b01e6e535",
+      "tests": [
+        "19 font/export tests independently passed",
+        "1 complete app/private download parity independently passed",
+        "7 integrated export routes/workflow checks passed"
+      ],
+      "review": "PASS after medical glyph correction and renderer/font identity binding",
       "blocker": null,
-      "next_action": "export parity and PDF visual checks; O private download route integration"
+      "next_action": "integrated e6a3ba35 +68cd6a2c; no remainingBtasks"
     },
     "Q1": {
       "state": "accepted_local",
@@ -298,7 +302,7 @@
   ],
   "helper": {
     "owner": "O",
-    "task": "ready for B7/C4 review",
+    "task": "ready for C4/final review",
     "state": "idle",
     "agent": "/root/review_o1_schema",
     "no_grandchildren": true
