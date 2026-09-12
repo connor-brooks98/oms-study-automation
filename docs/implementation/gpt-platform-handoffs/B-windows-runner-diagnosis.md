@@ -1,5 +1,37 @@
 # B read-only Windows runner diagnosis
 
+## Current disposition
+
+**Restricted-runtime acceptance is blocked by the setup/ACL mutation boundary.**
+O has rejected a normal `codex sandbox` retry. Its conditional command below is
+retained as analyzed history, not the next action. Existing shared controls must
+not be weakened or reset to make the test run.
+
+O reports that the exact helper's no-argument check under the SSH conbr context
+passed with the expected exit 1/message pair, and the Hub/helper postflight
+passed. This establishes helper loading to its early argument guard in that
+caller context only. B did not launch the check or independently re-read its raw
+result. The earlier DLL initialization failure remains observed; its root cause
+has not been identified by the passing diagnostic.
+
+The only next launch being independently considered by O is one direct
+no-argument check of that same pinned helper under conbr Limited InteractiveToken
+in session 1, using a new on-demand diagnostic task with no triggers, disabled
+afterward. No existing live task changes, sandbox CLI/setup path, sandbox account
+access, or ACL changes are part of that application-code path. Creating and
+disabling the new diagnostic task and writing its evidence are separate bounded
+mutations. Actual token/session metadata must be captured; matching scheduler
+settings alone is not acceptance. A pass would establish the helper's early
+startup in the Hub-equivalent caller context, not restricted execution under
+CodexSandboxOffline, pipe handshake success, or tool/file/network denial.
+
+The supported normal CLI cannot meet the preserved boundary: it decrypts the
+sandbox identity and always invokes setup refresh, which reconciles persistent
+ACLs and can launch the read-ACL helper. The release's empty deny-read override
+can revoke prior SID-owned entries. Full setup remains possible on incompatible
+state. Exact source and mutation extent appear in the session-1 section below.
+There is no identified supported state-only/no-setup replacement for this route.
+
 **The help invocation was parsed as a sandboxed command. The runner then failed
 before receiving that command. The cause of its missing pipe connection remains
 unknown; no retry or Windows change was performed by B.**
