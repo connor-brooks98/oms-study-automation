@@ -6,6 +6,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
@@ -390,6 +391,153 @@ class BankRepository:
                 )
             ).one()
             return _fact(*result_row)
+
+    def register_native_projection(
+        self,
+        *,
+        learner_id: str,
+        quiz_token: str,
+        quiz_version: int,
+        quiz_content_sha256: str,
+        question_id: str,
+        trusted_media_root: Path,
+    ) -> BankQuestion:
+        """Project an accepted publication, never a request-provided body or file path.
+
+        The trusted caller enforces private publication access and supplies the
+        configured media root. Active publications are the existing acceptance boundary.
+        """
+        from oms_hub.files.atomic import sha256_file
+        from oms_hub.files.trusted_paths import trusted_managed_path
+        from oms_hub.models import PublishedQuizMediaModel, PublishedQuizModel
+        from oms_hub.study_generation.native_quiz import serialize_native_quiz
+        from oms_hub.study_generation.repository import GenerationRepository
+        from oms_hub.study_progress.sessions import _hash as publication_hash
+        from oms_hub.study_progress.sessions import question_key
+
+        _owner(learner_id)
+        if (
+            type(quiz_version) is not int
+            or quiz_version < 1
+            or not isinstance(quiz_token, str)
+            or not 1 <= len(quiz_token) <= 64
+            or not isinstance(question_id, str)
+            or not 1 <= len(question_id) <= 200
+        ):
+            raise ValueError("Invalid native publication reference")
+        expected = {
+            "quiz_token": quiz_token,
+            "quiz_version": quiz_version,
+            "quiz_content_sha256": quiz_content_sha256,
+            "question_id": question_id,
+        }
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            model = session.get(PublishedQuizModel, quiz_token)
+            if model is None or not model.active:
+                raise ValueError("Publication is unavailable")
+            publication = GenerationRepository._published_quiz(model)
+            if (
+                publication.version != quiz_version
+                or publication_hash(publication) != quiz_content_sha256
+            ):
+                raise ValueError("Publication changed")
+            position = next(
+                (i for i, q in enumerate(publication.quiz.questions) if q.id == question_id), None
+            )
+            if position is None:
+                raise ValueError("Question was not published")
+            question = publication.quiz.questions[position]
+            media_evidence = []
+            if question.image_ref is not None:
+                media = session.scalar(
+                    select(PublishedQuizMediaModel).where(
+                        PublishedQuizMediaModel.quiz_token == quiz_token,
+                        PublishedQuizMediaModel.image_key == question.image_ref.key,
+                    )
+                )
+                if (
+                    media is None
+                    or not trusted_managed_path(
+                        Path(media.path), trusted_media_root, require_regular_file=True
+                    )
+                    or sha256_file(Path(media.path)) != media.sha256
+                ):
+                    raise ValueError("Required publication media is unavailable")
+                media_evidence.append({"image_key": media.image_key, "sha256": media.sha256})
+            key = question_key(publication, question_id)
+            body = json.loads(serialize_native_quiz(publication.quiz))["questions"][position]
+            body_json = _json(body)
+            body_hash = _hash(body_json)
+            provenance = _json(
+                {"kind": "study_hub_publication", "reference": expected, "media": media_evidence}
+            )
+            digest = _hash(_json([key.model_dump(), body_hash, provenance]))
+            export_id = "native-projection:" + key.question_id
+            existing = session.scalar(
+                select(BankImportModel).where(
+                    BankImportModel.learner_id == learner_id,
+                    BankImportModel.source == key.source,
+                    BankImportModel.product == key.product,
+                    BankImportModel.export_id == export_id,
+                )
+            )
+            stored = _question(session, key)
+            if existing is not None:
+                if existing.digest != digest or stored is None or stored.content_hash != body_hash:
+                    raise ValueError("Projection replay conflict")
+                ready = _ready(stored)
+                if ready is None:
+                    raise ValueError("Projection is held")
+                return ready
+            inserted = stored is None
+            if stored is None:
+                stored = BankQuestionModel(
+                    source=key.source, product=key.product, external_question_id=key.question_id
+                )
+                session.add(stored)
+            elif stored.content_hash not in (None, body_hash):
+                raise ValueError("Projection body conflict")
+            # Enrichment only after current native/media validation. Preserve reviewed topics.
+            stored.native_question_json = body_json
+            stored.content_hash = body_hash
+            stored.body_ready = True
+            session.flush()
+            import_id = str(uuid4())
+            row = ImportRow(question_id=key.question_id, question=body)
+            row_json = _json(row.model_dump(mode="json"))
+            receipt = ImportReceipt(import_id, int(inserted), 0, 0, ())
+            session.add(
+                BankImportModel(
+                    id=import_id,
+                    learner_id=learner_id,
+                    source=key.source,
+                    product=key.product,
+                    export_id=export_id,
+                    digest=digest,
+                    provenance_json=provenance,
+                    receipt_json=_json(asdict(receipt)),
+                )
+            )
+            session.flush()
+            session.add(
+                BankImportRowModel(
+                    import_id=import_id,
+                    row_number=1,
+                    question_id=stored.id,
+                    canonical_row_hash=_hash(row_json),
+                    row_json=row_json,
+                    user_note="",
+                    tags_json="[]",
+                    topics_json="[]",
+                    issues_json="[]",
+                    body_ready=True,
+                )
+            )
+            session.flush()
+            ready = _ready(stored)
+            assert ready is not None
+            return ready
 
     def get_question(self, key: QuestionKey) -> BankQuestion | None:
         """Trusted internal lookup; owner-facing consumers use list_ready_questions."""
