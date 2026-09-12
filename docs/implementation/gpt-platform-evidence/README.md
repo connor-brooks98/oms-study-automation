@@ -26,3 +26,5 @@ the LPAC token check only; it does not prove successful child initialization.
 The original profiles, fixtures, tasks and unbundled files remain retained.
 
 Read-only console diagnosis: `windows-lpac-startup-diagnosis.zip`, SHA256 `2ecbb668182fcb80c71c869b519eceb34f0910f4ef4c703e77d26265ad9b4158`. Existing conbr LowBoxConsoleEnabled value was absent; no registry mutation occurred. This is a diagnostic lead, not a proven startup fix.
+
+Read-only deeper diagnosis: `windows-lpac-deep-diagnosis.zip`, SHA256 `b9759b07f349c38d482db30617be1d5d165103edeef8eda137f95ca47a932297`. Contains pinned Microsoft capability requirements, actual cmd/Codex PE import metadata and bounded debugger inventory; no target launch or configuration change.

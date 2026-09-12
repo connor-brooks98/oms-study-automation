@@ -2,8 +2,10 @@
 
 2026-09-12. **Runtime-policy fixes are reviewed and locally tested. Actual Windows
 LPAC identity verification now passes; child initialization still fails with
-`0xC0000142`, before either synthetic read. Read-isolation acceptance has not passed.**
+`0xC0000142` with empty stdout/stderr; no canary read was established. Read-isolation acceptance has not passed.**
 Production generation remains `capability_unverified`.
+
+Current interpretation: [independent startup review](O-windows-startup-review.md) identifies a documented cmd.exe/zero-capability mismatch. The exact failing DLL remains unproven.
 
 ## Implemented corrections
 

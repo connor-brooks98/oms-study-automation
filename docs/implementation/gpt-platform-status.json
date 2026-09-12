@@ -396,7 +396,7 @@
       "child_exit_code": "0xC0000142",
       "preservation": "passed",
       "postflight_utc": "2026-09-12T15:50:39.4735015Z",
-      "next_action": "Identify failing DLL/initialization operation; temporary console setting did not resolve startup; no second mutation or launch approved",
+      "next_action": "Obtain scoped per-target loader evidence without changing token or shared settings; do not treat zero-capability cmd as a valid positive read oracle",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -406,7 +406,10 @@
         "archive": "docs/implementation/gpt-platform-evidence/windows-lpac-console.zip",
         "archive_sha256": "94a596db0f57387fbde32418c1d919820184f2f46dfecb738fa0cf3a2c65c441",
         "review": "PASS independent wrapper and native/restoration evidence review"
-      }
+      },
+      "diagnosis": "Documented payload/policy mismatch: Microsoft requires lpacCom and registryRead for LPAC cmd; probe grantszero. Exact failed DLL unproven.",
+      "independent_review": "docs/implementation/gpt-platform-handoffs/O-windows-startup-review.md",
+      "reviewer": "/root/independent_lpac_diagnosis"
     }
   },
   "local_preview": {
