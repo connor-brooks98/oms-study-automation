@@ -2,6 +2,7 @@ import os
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType
 
@@ -144,9 +145,7 @@ def test_office_window_handle_uses_explicit_property_get_after_member_not_found(
             invoke_type: int,
             result_wanted: int,
         ) -> int:
-            self.calls.append(
-                ("Invoke", dispid, lcid, invoke_type, result_wanted)
-            )
+            self.calls.append(("Invoke", dispid, lcid, invoke_type, result_wanted))
             return 987654
 
     class FakePowerPoint:
@@ -190,7 +189,8 @@ def test_office_window_handle_reraises_non_member_not_found_errors():
         )
 
 
-def test_powerpoint_conversion_does_not_probe_hwnd(monkeypatch, tmp_path):
+@pytest.mark.parametrize("cleanup_failure", [None, "close", "quit"])
+def test_powerpoint_conversion_does_not_probe_hwnd(monkeypatch, tmp_path, cleanup_failure):
     calls: list[tuple[object, ...]] = []
 
     class FakeDocument:
@@ -199,6 +199,8 @@ def test_powerpoint_conversion_does_not_probe_hwnd(monkeypatch, tmp_path):
 
         def Close(self) -> None:
             calls.append(("Close",))
+            if cleanup_failure == "close":
+                raise RuntimeError("close failed")
 
     class FakePresentations:
         @staticmethod
@@ -223,15 +225,15 @@ def test_powerpoint_conversion_does_not_probe_hwnd(monkeypatch, tmp_path):
 
         def Quit(self) -> None:
             calls.append(("Quit",))
+            if cleanup_failure == "quit":
+                raise RuntimeError("quit failed")
 
     pythoncom = ModuleType("pythoncom")
     pythoncom.CoInitialize = lambda: calls.append(("CoInitialize",))
     pythoncom.CoUninitialize = lambda: calls.append(("CoUninitialize",))
     win32com = ModuleType("win32com")
     client = ModuleType("win32com.client")
-    client.DispatchEx = lambda progid: (
-        calls.append(("DispatchEx", progid)) or FakePowerPoint()
-    )
+    client.DispatchEx = lambda progid: calls.append(("DispatchEx", progid)) or FakePowerPoint()
     win32com.client = client
 
     monkeypatch.setattr(office_worker.sys, "platform", "win32")
@@ -243,7 +245,12 @@ def test_powerpoint_conversion_does_not_probe_hwnd(monkeypatch, tmp_path):
     destination = tmp_path / "lecture.pdf"
     reported: list[int] = []
 
-    office_worker.convert_office_file(source, destination, reported.append)
+    with (
+        pytest.raises(RuntimeError, match=f"{cleanup_failure} failed")
+        if cleanup_failure
+        else nullcontext()
+    ):
+        office_worker.convert_office_file(source, destination, reported.append)
 
     assert reported == []
     assert calls == [

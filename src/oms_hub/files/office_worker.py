@@ -110,8 +110,12 @@ def convert_office_file(
             document = application.Documents.Open(str(source), ReadOnly=True)
             document.ExportAsFixedFormat(str(destination), 17)
     finally:
-        if document is not None:
-            document.Close()
-        if application is not None:
-            application.Quit()
-        pythoncom.CoUninitialize()
+        try:
+            if document is not None:
+                document.Close()
+        finally:
+            try:
+                if application is not None:
+                    application.Quit()
+            finally:
+                pythoncom.CoUninitialize()
