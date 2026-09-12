@@ -118,14 +118,32 @@ public static class OmsLpacProbe {
     static IntPtr TokenData(IntPtr token, int kind) {
         int needed;
         bool first = GetTokenInformation(token, kind, IntPtr.Zero, 0, out needed);
-        Require(!first && Marshal.GetLastWin32Error() == 122 && needed > 0 && needed <= 65536, "Token query size failed: " + kind);
+        int sizeError = Marshal.GetLastWin32Error();
+        int minimum = kind == TokenAppContainerSid ? IntPtr.Size : 4;
+        Require(!first && (sizeError == 24 || sizeError == 122) && needed >= minimum && needed <= 65536,
+            "Token size query: kind=" + kind + ", return=" + first + ", error=" + sizeError + ", needed=" + needed);
         IntPtr data = Marshal.AllocHGlobal(needed);
-        try { Win32(GetTokenInformation(token, kind, data, needed, out needed), "GetTokenInformation " + kind); return data; }
+        int capacity = needed;
+        try {
+            bool ok = GetTokenInformation(token, kind, data, capacity, out needed);
+            int error = Marshal.GetLastWin32Error();
+            Require(ok && needed >= minimum && needed <= capacity,
+                "Token data query: kind=" + kind + ", return=" + ok + ", error=" + error + ", needed=" + needed);
+            return data;
+        }
         catch { Marshal.FreeHGlobal(data); throw; }
     }
     static int TokenInt(IntPtr token, int kind) {
-        IntPtr data = TokenData(token, kind);
-        try { return Marshal.ReadInt32(data); } finally { Marshal.FreeHGlobal(data); }
+        // These information classes return a documented DWORD, not a variable TOKEN_GROUPS.
+        IntPtr data = Marshal.AllocHGlobal(4);
+        try {
+            int needed;
+            bool ok = GetTokenInformation(token, kind, data, 4, out needed);
+            int error = Marshal.GetLastWin32Error();
+            Require(ok && needed == 4,
+                "Token DWORD query: kind=" + kind + ", return=" + ok + ", error=" + error + ", needed=" + needed);
+            return Marshal.ReadInt32(data);
+        } finally { Marshal.FreeHGlobal(data); }
     }
     static string TokenSid(IntPtr token) {
         IntPtr data = TokenData(token, TokenAppContainerSid);
@@ -229,7 +247,9 @@ public static class OmsLpacProbe {
             Win32(OpenProcessToken(process.Process, 8, out childToken), "Open child token");
             result.IsAppContainer = TokenInt(childToken, TokenIsAppContainer);
             result.IsLessPrivilegedAppContainer = TokenInt(childToken, TokenIsLessPrivilegedAppContainer);
-            result.CapabilityCount = TokenInt(childToken, TokenCapabilities);
+            IntPtr capabilitiesInfo = TokenData(childToken, TokenCapabilities);
+            try { result.CapabilityCount = Marshal.ReadInt32(capabilitiesInfo); }
+            finally { Marshal.FreeHGlobal(capabilitiesInfo); }
             result.SessionId = TokenInt(childToken, 12);
             result.ChildSid = TokenSid(childToken);
             File.WriteAllText(Path.Combine(fixture, "token.txt"), "pid=" + result.ProcessId
