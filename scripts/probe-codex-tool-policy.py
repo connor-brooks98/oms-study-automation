@@ -14,6 +14,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 from oms_hub.llm.codex_session import (
     INSPECTED_MACOS_BINARY_SHA256 as PIN,
@@ -75,7 +76,7 @@ def codex_tool_policy_args(binary_sha256: str) -> list[str]:
 MODES = ("registry", "skills-list", "thread-untrusted", "skills-list-untrusted", "denial-matrix")
 
 
-def fixture_calls(work: Path) -> list[dict]:
+def fixture_calls(work: Path) -> list[dict[str, Any]]:
     """Fixed synthetic calls only; never accept caller-provided commands or paths."""
     canary = str(work / "tool-must-not-create")
     calls = [
@@ -126,7 +127,7 @@ def probe(
     explicit_tool_controls: bool = False,
     stable_thread: bool = False,
     model: str = "fixture-model",
-) -> dict:
+) -> dict[str, Any]:
     if mode not in MODES:
         raise ValueError("unsupported fixture mode")
     if model not in {"fixture-model", "gpt-6-astra", "gpt-5.5"}:
@@ -185,22 +186,22 @@ def probe(
                     for arg in ("-c", f"{key}={json.dumps(value)}")
                 ),
             ]
-        requests = []
+        requests: list[dict[str, Any]] = []
         fixture_responses = []
         sent_frames = []
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args):
+            def log_message(self, format: str, *args: object) -> None:
                 pass
 
-            def do_POST(self):
+            def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 8 * 1024 * 1024 or len(requests) >= 2:
                     self.send_error(400)
                     return
                 body = json.loads(self.rfile.read(length))
                 requests.append({"path": self.path, "body": body})
-                message = {
+                message: dict[str, Any] = {
                     "type": "message",
                     "id": "msg_fixture",
                     "role": "assistant",
@@ -228,7 +229,7 @@ def probe(
                     "output": output,
                     "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
                 }
-                events = [
+                events: list[tuple[str, dict[str, Any]]] = [
                     ("response.created", {"response": {**response, "status": "in_progress"}}),
                     *(
                         ("response.output_item.done", {"output_index": i, "item": item})
@@ -276,7 +277,7 @@ def probe(
             "stdio://",
             *policy_args,
         ]
-        frames = queue.Queue()
+        frames: queue.Queue[dict[str, Any] | Exception] = queue.Queue()
         events = []
         error = None
         process = None
@@ -291,7 +292,8 @@ def probe(
                     stderr=stderr,
                 )
 
-                def read_frames():
+                def read_frames() -> None:
+                    assert process.stdout is not None
                     total = 0
                     while line := process.stdout.readline(1024 * 1024 + 1):
                         total += len(line)
@@ -309,12 +311,13 @@ def probe(
                 reader.start()
                 deadline = time.monotonic() + 30
 
-                def send(value):
+                def send(value: dict[str, Any]) -> None:
+                    assert process.stdin is not None
                     sent_frames.append(value)
                     process.stdin.write(json.dumps(value).encode() + b"\n")
                     process.stdin.flush()
 
-                def receive():
+                def receive() -> dict[str, Any]:
                     frame = frames.get(timeout=max(0.01, deadline - time.monotonic()))
                     if isinstance(frame, Exception):
                         raise frame
@@ -328,7 +331,7 @@ def probe(
                         )
                     return frame
 
-                def rpc(number, method, params):
+                def rpc(number: int, method: str, params: dict[str, Any]) -> Any:
                     send({"id": number, "method": method, "params": params})
                     while True:
                         frame = receive()
@@ -392,6 +395,7 @@ def probe(
                 error = f"{type(exc).__name__}: {exc}"
             finally:
                 if process is not None:
+                    assert process.stdin is not None and process.stdout is not None
                     process.stdin.close()
                     try:
                         process.wait(timeout=3)
@@ -442,7 +446,7 @@ def probe(
         }
 
 
-def summarize_requests(requests: list[dict]) -> list[dict]:
+def summarize_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
     summaries = []
     for request in requests:
         body = request["body"]
@@ -450,7 +454,7 @@ def summarize_requests(requests: list[dict]) -> list[dict]:
         for item in body.get("input", []):
             if item.get("type") == "additional_tools":
                 tools.extend(item.get("tools", []))
-        names = []
+        names: list[str] = []
         for tool in tools:
             if tool["type"] == "namespace":
                 names.extend(f"{tool['name']}.{child['name']}" for child in tool["tools"])
@@ -471,7 +475,7 @@ def summarize_requests(requests: list[dict]) -> list[dict]:
     return summaries
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
