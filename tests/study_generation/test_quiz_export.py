@@ -50,7 +50,7 @@ def test_medical_superscripts_subscripts_survive_all_pdf_text_styles(tmp_path):
     )
     provenance["questions"]["q1"]["source_refs"][0]["locator"] = MEDICAL_TEXT
     raw, _, pdf = export_reviewed_quiz(quiz, images, provenance, tmp_path / "exports")
-    assert parse_native_quiz(raw.read_text()) == quiz
+    assert parse_native_quiz(raw.read_text(encoding="utf-8")) == quiz
     pages = PdfReader(pdf).pages
     text = "\n".join(page.extract_text() for page in pages)
     assert text.count(MEDICAL_TEXT) >= 7
@@ -176,7 +176,7 @@ def test_export_reopens_same_reviewed_payload_images_provenance_and_explanations
     quiz, images, provenance = export_fixture(tmp_path)
     paths = export_reviewed_quiz(quiz, images, provenance, tmp_path / "exports")
     raw, bundle, pdf = paths
-    assert parse_native_quiz(raw.read_text()) == quiz
+    assert parse_native_quiz(raw.read_text(encoding="utf-8")) == quiz
     digest = hashlib.sha256(raw.read_bytes()).hexdigest()
     assert all(digest in path.name for path in paths)
     with ZipFile(bundle) as archive:
@@ -309,7 +309,7 @@ def test_matching_question_exports_answers_only_in_answer_section(tmp_path):
         "image_sha256": {},
     }
     raw, _, pdf = export_reviewed_quiz(quiz, {}, provenance, tmp_path / "exports")
-    assert parse_native_quiz(raw.read_text()) == quiz
+    assert parse_native_quiz(raw.read_text(encoding="utf-8")) == quiz
     pages = [p.extract_text() for p in PdfReader(pdf).pages]
     assert "1: A. Probe A" not in pages[0]
     assert "1: A. Probe A" in pages[1] and "2: B. Probe B" in pages[1]
