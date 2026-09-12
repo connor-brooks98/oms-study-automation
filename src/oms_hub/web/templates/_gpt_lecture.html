@@ -3,6 +3,9 @@
   <p class="field-help">Build questions from this lecture’s approved slides and cleaned transcript, then review them before publication. An outline is optional.</p>
   {% for quiz in gpt_quizzes %}
   <p><a href="/public/quizzes/{{ quiz.token }}">{{ quiz.title }}</a></p>
+  <p class="file-actions" aria-label="Download {{ quiz.title }}">
+    {% for format in ('json', 'zip', 'pdf') %}<a class="sh-btn sh-btn--secondary" href="/studio/runs/{{ quiz.studio_run_id }}/exports/{{ format }}">Download {{ format|upper }}</a>{% endfor %}
+  </p>
   {% endfor %}
   <form data-gpt-quiz-form>
     <div class="provider-field">

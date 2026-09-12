@@ -24,6 +24,11 @@
     <div class="studio-preview-copy">
       <p class="sh-eyebrow">Final check</p>
       <p><strong>Private preview</strong> · work through the questions below before releasing them.</p>
+      {% if run.backend == 'codex_subscription' %}
+      <p class="file-actions" aria-label="Download reviewed quiz">
+        {% for format in ('json', 'zip', 'pdf') %}<a class="sh-btn sh-btn--secondary" href="/studio/runs/{{ run.id }}/exports/{{ format }}">Download {{ format|upper }}</a>{% endfor %}
+      </p>
+      {% endif %}
       <p data-publish-message data-toast-source aria-live="polite"></p>
     </div>
     <button class="quiz-primary sh-btn sh-btn--primary sh-btn--stateful" data-state="idle" type="button" data-publish-quiz>Publish quiz</button>
