@@ -203,3 +203,75 @@ Follow-up evidence root:
 The Microsoft header and immutable-source manifest are retained in B's source
 evidence root; header SHA-256:
 `1d128c5f745ee87e3e6bba6fc1b00617245bd54ef500c4766fe13a0c6c48274a`.
+
+## Session-1 proposal and mutation boundary
+
+O's `session-context.stdout` shows the SSH caller in session 0 and Hub PID 8268
+and Explorer in session 1. The Hub task principal is conbr, InteractiveToken
+(LogonType 3), Limited/LUA (RunLevel 0). This establishes a launch-context mismatch,
+not the cause of the popup. The snapshot, under O's follow-up evidence root, has
+SHA-256 `400dfec8995428d79c1e5b841434cd2c294798ec4c1ba32a85c3dc681838b039`.
+
+The builtin `:read-only` maps to managed read-only filesystem permissions and
+`NetworkSandboxPolicy::Restricted`. The Windows selector chooses the Offline
+identity for that policy. The debug CLI sets `proxy_enforced=false` and proxy
+settings mode `Preserve`; a matching marker preserves stored offline proxy ports
+and local-binding settings. Thus this profile requests restricted networking,
+but an echo test does not establish zero connectivity or inspect existing
+exceptions. [Profile definition](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/protocol/src/models.rs#L480),
+[identity selection](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/windows-sandbox-rs/src/setup.rs#L706).
+
+**Existing managed state does not make a normal CLI launch setup-free.** The
+release loads/decrypts the selected sandbox identity, conditionally invokes full
+elevated setup when state is missing/incompatible, and unconditionally invokes
+non-elevated setup refresh for current roots. `Preserve` is a proxy-setting mode,
+not a no-mutation switch. The coarse setup-complete check reads setup/user records
+and does not bypass runtime preparation. [Identity preparation](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/windows-sandbox-rs/src/identity.rs#L146).
+
+Refresh-only skips user provisioning and firewall configuration, but reconciles
+deny-read ACLs, can spawn a read-ACL helper, adjusts runtime path readability and
+locks `.sandbox-bin`. It also writes logs/state and clears setup-error reports.
+Parent preparation can create/migrate capability SIDs, grant null-device access,
+and materialize the runner; configured private-desktop preparation is another
+conditional branch. Limited task privilege does not suppress those code paths.
+[Refresh implementation](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/windows-sandbox-rs/src/bin/setup_main/win.rs#L756).
+
+A specific preservation risk exists in 0.153.4: the debug CLI supplies empty
+deny-read overrides. Refresh passes that empty desired set to persistent ACL
+reconciliation, which revokes previously recorded paths for the same principal
+and rewrites its state. The actual existing path list was not read; no claim is
+made that it is nonempty or that O's earlier launch changed it. [CLI overrides](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/cli/src/debug_sandbox.rs#L479),
+[reconciliation](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/windows-sandbox-rs/src/deny_read_state.rs#L32).
+
+No supported no-setup/no-credential execution switch was found on this path.
+`--sandbox-state-json` replaces the permission input but still loads configuration
+and enters the same Windows preparation path. It is not a serialized runner or
+account session, and is not a way around these operations.
+
+The concrete **conditional** session-1 CLI test would use one new on-demand task
+under conbr InteractiveToken/Limited, no password or scheduled trigger, and a new
+fixture directory such as
+`C:\Users\conbr\AppData\Local\Temp\oms-codex-session1-20260912` (fail if it already
+exists). After checking the pinned codex hash and actual task token/session, its
+only command would be:
+
+```powershell
+& 'C:\Users\conbr\.local\bin\codex.exe' sandbox -P ':read-only' -C 'C:\Users\conbr\AppData\Local\Temp\oms-codex-session1-20260912' -- 'C:\Windows\System32\cmd.exe' /d /c 'echo CODEX_SANDBOX_FIXTURE_OK'
+```
+
+Capture argv, cwd, principal/session/token metadata, raw stdout/stderr, exit,
+timestamps, owned process identities and unchanged live Hub health. Use no retry,
+an outer deadline, and disable only the new task afterward while retaining its
+definition and evidence. Task creation/staging/disable are explicit new mutations;
+the existing Hub task remains untouched. These task controls do **not** contain
+the CLI's shared sandbox setup/ACL changes. The above launch therefore requires
+an explicitly reviewed expansion of that mutation scope; it is not approved by
+the current state-preservation boundary.
+
+If that boundary remains, the smaller session-1 discriminator is the same new
+InteractiveToken/Limited task running only the verified runner with **no args**,
+after O's session-0 no-argument result. Require the expected exit/message pair.
+That compares helper startup under the intended caller session without the
+parent's credential/setup path; it does not test the Offline identity or sandbox
+enforcement. No task, directory, helper, CLI, or Windows configuration was created
+or launched by B in this assessment.
