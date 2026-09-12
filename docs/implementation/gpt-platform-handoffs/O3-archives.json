@@ -1,0 +1,24 @@
+{
+  "code_commit": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
+  "tree": "35aae67a78ab911608b378b924345df9467ae1cc",
+  "archives": [
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/release/Study-Hub-V2-Multi-Provider-Hotfix-2026-09-11-gpt-candidate.zip",
+      "sha256": "849887d7cfa4f2b6af987b958eff3b97f833573b738130065729f00dd3a8c582",
+      "bytes": 1877897,
+      "zip_integrity": "passed",
+      "font_assets": "byte_identical",
+      "manifest_files_verified": 309,
+      "repeat_build": "byte_identical"
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/release/Study-Hub-V2-Source-2026-09-11-gpt-candidate.zip",
+      "sha256": "f4a3e7d7039e4ad5ab91e4e6fc5f85a89186a96917caaf8b5962e6a201090b40",
+      "bytes": 3436049,
+      "zip_integrity": "passed",
+      "font_assets": "byte_identical",
+      "manifest_files_verified": 700,
+      "repeat_build": "byte_identical"
+    }
+  ]
+}

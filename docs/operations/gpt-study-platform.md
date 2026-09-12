@@ -28,7 +28,9 @@ Once activated, the owner workflow is:
    Cleaning and quiz generation use the approved current sources. An outline is
    optional; the GPT path does not require a Google notebook.
 2. On the lecture page, enter one learning objective per line, choose whether
-   original lecture images are required, and create the quiz for review.
+   original lecture images are required, and create the quiz for review. Full
+   evidence exceeding 20 images or 100,000 serialized source characters stops
+   with affected-objective diagnostics; sources are never silently truncated.
 3. Review every generated answer and required image. Publication and downloads
    reject incomplete review, missing images, changed sources and lost objective
    coverage. Cancellation/usage limits retain work; resume is explicit and an
@@ -42,6 +44,11 @@ Once activated, the owner workflow is:
    mode explicitly reports unavailable until documented entitlement exists.
    **Study with progress** in the owner quiz library starts a server-recorded
    session. Anonymous public grading does not write personal performance.
+6. Open **Personal progress → Build or resume a study block**, select a course
+   and one or more exams, and preview the selection. Reviewed categories are
+   optional filters. Starting fixes the question versions; resume preserves answers.
+   Use **Review categories** for manual labels or a separately generated and
+   explicitly accepted suggestion. Pending model labels never enter progress.
 
 [Question-bank imports](../question-bank-import-format.md) accept the documented
 normalized format, with separate results-only and authorized-content handling.

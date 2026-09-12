@@ -31,7 +31,7 @@
       "host_id": "local",
       "cwd": "/Users/connor/.codex/worktrees/5b09/oms-study-automation",
       "base_commit": "c09c44e75f9ad405823f2a5134265036745dcbfb",
-      "state": "running_C4"
+      "state": "idle_local_complete"
     }
   },
   "tasks": {
@@ -57,25 +57,31 @@
       ],
       "review": "PASS core publication/schema, optional outline guard and C3 app; schema40 passed3tests/mypy",
       "blocker": null,
-      "next_action": "review outline/helper and correctedpublication"
+      "next_action": "integrated and reviewed"
     },
     "O2": {
-      "state": "running",
+      "state": "accepted_local",
       "worker": "O",
-      "commit": null,
+      "commit": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
       "tests": [],
-      "review": null,
+      "review": "PASS independent final scoped integration review; no remaining actionable code findings",
       "blocker": null,
-      "next_action": "C4 stable block slice then tags/routes integration and review"
+      "next_action": "all local integrations accepted"
     },
     "O3": {
-      "state": "running",
+      "state": "accepted_local",
       "worker": "O",
-      "commit": null,
-      "tests": [],
-      "review": null,
+      "commit": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
+      "tests": [
+        "3821 Python passed,3 skipped,1 deselected;800.87s;exit0",
+        "284 Node passed;exit0",
+        "Ruff passed; mypy230 source files passed",
+        "B6 desktop/mobile1passed;C4 browser passed",
+        "Two deterministic archives independently manifest/hash verified"
+      ],
+      "review": "PASS independent final code and documentation review",
       "blocker": null,
-      "next_action": "29 preflight regressions traced to registry/hash; fixed100focusedtests; finalfrozen suite pendingC4"
+      "next_action": "candidate review; Windows/provider activation separately pending"
     },
     "B1": {
       "state": "accepted_local",
@@ -257,13 +263,17 @@
       "next_action": "integrated; C4 active"
     },
     "C4": {
-      "state": "running",
+      "state": "accepted_local",
       "worker": "C",
-      "commit": null,
-      "tests": [],
-      "review": null,
+      "commit": "527b3158a0e55d9d3a53b3dad4f36f42643c8b14",
+      "tests": [
+        "33 integrated progress/owner checks passed",
+        "284 all JS checks passed",
+        "Independent synthetic C4 Chrome desktop/mobile passed"
+      ],
+      "review": "PASS independent correction and final integration review at9e54da41;9 tag regressions passed",
       "blocker": null,
-      "next_action": "accepted native blocks and topic review from fd6922f2"
+      "next_action": "integrated9e54da41; actual model acceptance external"
     }
   },
   "external": {
@@ -274,11 +284,29 @@
     "vendor_request": "Asked once for product and official per-question results/QID/notes export controls; answer pending.",
     "managed_login": "issued once; timed out and cancelled; no account confirmation; no automatic retry",
     "runtime_restrictions": "capability_unverified: universal pre-execution tool restriction not proven; generation remains disabled",
-    "anki_qid_rules": "fixture-tested; observed real source/product-qualified prefixes not configured"
+    "anki_qid_rules": "fixture-tested; observed real source/product-qualified prefixes not configured",
+    "amboss_last_checked_utc": "2026-09-12T00:42:22Z",
+    "amboss_message_ids": [
+      "1a0924aab334e5da",
+      "1a0924ac6f289fe0"
+    ]
   },
   "release": {
-    "candidate": null,
-    "live_authorized": false
+    "candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
+    "live_authorized": false,
+    "proposal": "docs/implementation/gpt-platform-release-proposal.md",
+    "receipt": "docs/implementation/gpt-platform-handoffs/O3.md",
+    "logs": [
+      {
+        "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/final-checks/pytest.log",
+        "sha256": "3886254055b512738e473d1986acde224e447e23ed9d1347065b166fc50e54cd"
+      },
+      {
+        "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/final-checks/node.log",
+        "sha256": "65e8de6d73a461c8a0b9f6469b10b9075131344dc78d4b5d265e64ad92d23ab5"
+      }
+    ],
+    "code_tree": "35aae67a78ab911608b378b924345df9467ae1cc"
   },
   "provider_verified": false,
   "windows_verified": false,
@@ -302,7 +330,7 @@
   ],
   "helper": {
     "owner": "O",
-    "task": "ready for C4/final review",
+    "task": "final code review passed",
     "state": "idle",
     "agent": "/root/review_o1_schema",
     "no_grandchildren": true

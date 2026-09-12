@@ -1,0 +1,94 @@
+{
+  "code_commit": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
+  "basis": "B6 and C4 browser run on a880754c; final9e54 changes only suggestion failure locking and race tests; browser assets/routes identical",
+  "provider": "synthetic fake only; no private sources",
+  "B6": "1 passed,5 deselected;12 stages;zerooverflow/pageerrors",
+  "C4": "cumulative blocks, answer/resume, manual review/filter, explicit fake suggestions/accept;zeroJSerrors/mobileoverflow",
+  "files": [
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/desktop-graded.png",
+      "sha256": "c932c87f2736614d932934dced0b56a400417375668cc32e7ac5bd6c1abfc5e8",
+      "bytes": 76765
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/desktop-lecture.png",
+      "sha256": "2fd1dccd1755da9805a320d49b61bc5a3ad3329b3a129b20fb6b5350a09a297c",
+      "bytes": 183841
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/desktop-progress.png",
+      "sha256": "a1667861b7ad547bfb3afb9375c10bbbda493414a6238a227fc2719ec344de2c",
+      "bytes": 46114
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/desktop-public.png",
+      "sha256": "333b6dd78d6f075ab12f3fae330a9496fc2e7d003f59f550a20aaa57cea3b6df",
+      "bytes": 84564
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/desktop-readiness.png",
+      "sha256": "af2a741ba4b01ce7a276c96764715880907ae1decdd17420f300eb39f110c341",
+      "bytes": 299573
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/desktop-review.png",
+      "sha256": "52df36e11dbb00e1443e8bc15d08e7578d36708fb13d84701a4373cd12f25b2d",
+      "bytes": 353696
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/mobile-graded.png",
+      "sha256": "c54d053149cc0c94b96213b6163aa158fed20cf5ea5cd30aac684b35944d70ef",
+      "bytes": 69464
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/mobile-lecture.png",
+      "sha256": "9fe8ad61b1016b7e880b343a62824442954f90565be888f8e01561e8c707537d",
+      "bytes": 176736
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/mobile-progress.png",
+      "sha256": "984ac3c48a7a504023fb65b64570009485f5ee43f8f4d7820748805fba36f378",
+      "bytes": 32443
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/mobile-public.png",
+      "sha256": "ead6a80bb32ab2c00bcaa48d5430b82342d37fcb7ccaaebba02d975b784cc518",
+      "bytes": 71882
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/mobile-readiness.png",
+      "sha256": "a847373c50087720d0ec1051674d70a13c4622e3a8c78141f496c41035080827",
+      "bytes": 288758
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/mobile-review.png",
+      "sha256": "70905ef29b9eba1a140de53e8e738479894a1fe3000f568d85494046d50cd4d4",
+      "bytes": 317073
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/b6-final/observations.json",
+      "sha256": "428a6038f42ff6c14595d109c2f39fb60b55f33385c87431ad72b2c45087bacf",
+      "bytes": 980
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/c4/c4-block-mobile.png",
+      "sha256": "46d4bdf6aa5ac7fd9b0314677c42e915de0846e4d3e43448d2457ef039e26075",
+      "bytes": 123143
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/c4/c4-block-preview.png",
+      "sha256": "2807f9811f85d0f205b9ef443e5f8825c8c9b6ed85ecf52b3d74310209e797ae",
+      "bytes": 146588
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/c4/c4-pending-review.png",
+      "sha256": "6b49298035b05199dc824ad708dfbcdd9cd3a42e74a8d0dd484a862f76a1e3a6",
+      "bytes": 95428
+    },
+    {
+      "path": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/c4/c4-player-source.png",
+      "sha256": "eeb6488371731c87772ccdfbdb23e2da2af60a597aaca6961fab57e10e564aa6",
+      "bytes": 70842
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 # GPT Study Hub candidate — release proposal
 
-Status: implementation and local acceptance in progress. No deployment is authorized or performed. The final commit, check results and export hashes will be frozen below after B7/C4 integration and independent review.
+Status: all planned local implementation is integrated and independently reviewed. Complete local verification passed: 3,821 Python tests and 284 JavaScript tests. No deployment is authorized or performed.
+
+Frozen code candidate: `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`, tree `35aae67a78ab911608b378b924345df9467ae1cc`, branch `codex/gpt-study-platform`. Later changes in this worktree are release records and operating documentation only; the candidate archive is built from this immutable commit.
 
 ## Intended release and limits
 
@@ -10,15 +12,17 @@ This replaces the required Google path for new lecture quizzes with an explicitl
 
 | Capability | Local candidate scope | External/operational limit |
 | --- | --- | --- |
-| Full lecture-image quiz | Full approved slides and cleaned transcript, frozen objective coverage, source locators, original sanitized images, native review and publication | Actual Windows Office conversion and subscription generation not accepted |
+| Full lecture-image quiz | Full approved slides and cleaned transcript, frozen objective coverage, source locators, original sanitized images, native review and publication | Actual Windows Office conversion and subscription generation not accepted; conservative request ceiling: 20 images and 100,000 serialized source characters |
 | Optional outline | Current-source validation through filing/commit; durable raw result; PDF filing with Codex provenance | GPT replacement of any retained imported NotebookLM outline is explicitly unavailable; historical legacy review is preserved |
 | Native JSON/ZIP/PDF exports | Same native payload and original PNGs; source/objective manifest; embedded-font PDF with unsupported-text rejection; private download parity reviewed | No private lecture evidence used |
 | Lecture/general chat | Owner-scoped current source snapshots, citations, durable history, cancellation/ambiguous-turn protection | Same runtime/account activation gate |
 | Question-bank imports | Normalized results-only or explicitly authorized content, preview/confirm, identity conflicts and review | Exact supported UWorld and TrueLearn samples still needed; no guessed proprietary parsers |
 | Anki candidates | Exact observed source/product-qualified QIDs and allowlisted pasted NIDs against an existing local index | Real prefix rules/index setup pending; no live Anki changes or full curation |
 | Private progress | Server-issued attempt identity, durable exact replay, first/repeat and omitted/unknown counts | Descriptive counts only; no pass prediction or invented chronology |
-| Custom/cumulative blocks | C4 implementation pending | Results-only vendor entries cannot become playable content |
+| Custom/cumulative blocks | Accepted native questions across selected course/exams, reviewed topic filters, immutable source/version identity and resume; grounded suggestions require explicit acceptance | Results-only vendor entries cannot become playable content; model suggestions share runtime activation gate |
 | AMBOSS reference mode | Explicit unavailable state and official link; manual NID route | Specific sent thread has an automatic acknowledgement only; account/subscription does not prove MCP entitlement |
+
+The lecture pipeline fails before dispatch with `context_limit` and affected objective/count diagnostics when full evidence exceeds 20 images or 100,000 serialized source characters. It does not truncate sources or silently claim complete coverage. Automatic partitioning has not been accepted. These conservative ceilings are local implementation limits, not verified model context limits.
 
 ## Retained state and UX
 
@@ -64,4 +68,11 @@ Push/main merge and deployment are separate approvals. Local candidate review do
 
 ## Final evidence
 
-Pending final freeze: exact code/receipt commits, complete CI-equivalent checks, independent review, desktop/mobile synthetic browser evidence, export parity/PDF visual evidence and deterministic source archive checksum.
+- Independent final code review: **PASS**, no remaining actionable findings at the frozen candidate. C4 scope and cancellation races were corrected and independently reproduced. Exact task and correction receipts are in `gpt-platform-handoffs/O1.md` and the B/Q/C handoffs.
+- Complete Ruff: **PASS**. Complete mypy: **PASS**, 230 source files. Complete JavaScript: **284 passed**. Complete Python: **3,821 passed, 3 skipped, 1 deselected in 800.87 seconds; exit 0**. [Final receipt and commands](gpt-platform-handoffs/O3.md).
+- B6 actual-constructor synthetic lecture workflow and private JSON/ZIP/PDF route parity passed; O repeated its opt-in Chrome test: **1 passed, 5 deselected**, all 12 desktop/mobile stages without overflow or page errors. C4 browser independently passed cumulative selection, source labels, answer/resume, manual filters and explicit fake-provider suggestion acceptance. [Browser paths/hashes](gpt-platform-handoffs/O3-browser-evidence.json).
+- B7 export review passed after medical font correction: exact native payload/original PNG parity, supported medical glyphs, embedded fonts, immutable renderer identities, and unpacked-wheel-only export. PDF visual/asset evidence is in [B7 receipt](gpt-platform-handoffs/B7.md). Native macOS Python3.13/PyMuPDF in-process teardown was not accepted; the synthetic full workflow uses a checked raster subprocess. Actual Windows Office/runtime behavior remains unaccepted.
+- Source archive: `Study-Hub-V2-Source-2026-09-11-gpt-candidate.zip`, SHA256 `f4a3e7d7039e4ad5ab91e4e6fc5f85a89186a96917caaf8b5962e6a201090b40`, 700 manifest files verified. Runtime archive: SHA256 `849887d7cfa4f2b6af987b958eff3b97f833573b738130065729f00dd3a8c582`, 309 manifest files verified. Both rebuild byte-identically, pass ZIP integrity and contain byte-identical bundled fonts. [Exact local archive paths and manifests](gpt-platform-handoffs/O3-archives.json). The historical runtime archive filename does not authorize or enable paid fallback.
+- Original dirty/untracked status matches the exact bootstrap list. Live operational proof is the read-only old-Hub snapshot above; nothing was deployed, restarted, pushed, merged to main, deleted, or applied to Anki.
+
+The proposed next stage is review of this candidate and the separately bounded Windows/runtime acceptance work. A deployment authorization request is premature while the activation gate is unresolved. No new login, provider test or vendor action is implicitly requested by this document.
