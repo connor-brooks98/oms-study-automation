@@ -8,8 +8,10 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import asdict
 from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +28,8 @@ from oms_hub.document_processing.presentation_render import (
 )
 from oms_hub.llm.codex_session import SessionError, SessionLifecycle, SessionResult, SessionStatus
 from oms_hub.repositories import LectureInput
+from oms_hub.study_generation.native_quiz import parse_native_quiz
+from oms_hub.study_generation.quiz_export import export_reviewed_quiz
 
 LECTURE_TEXT = (
     "Synthetic teaching fixture: structure A is the large blue ring and binds probe A. "
@@ -296,6 +300,14 @@ def test_upload_clean_generate_review_publish_and_public_grade_without_google(
         _verify(client, run_id)
         preview = client.get(f"/studio/runs/{run_id}/preview/content")
         assert preview.status_code == 200, preview.text
+        drafts = app.state.practice_review.review(run_id)
+        stored = {
+            q.chosen_image.key: app.state.studio_repository.import_review_image(
+                run_id, q.chosen_image.key
+            )
+            for q in drafts
+            if q.chosen_image
+        }
         publication = client.post(f"/studio/runs/{run_id}/publication")
         assert publication.status_code == 200, publication.text
         token = publication.json()["token"]
@@ -319,6 +331,38 @@ def test_upload_clean_generate_review_publish_and_public_grade_without_google(
         assert answer.status_code == 200 and answer.json()["correct"] is True
         assert "rationale" in answer.json()
         assert len(session.requests) == 2  # One cleaning turn and one quiz turn; no outline.
+        published = app.state.generation_repository.published_quiz(token)
+        reviewed = app.state.practice_review.to_native_quiz(run_id, title=published.quiz.title)
+        assert reviewed == published.quiz
+        drafts = app.state.practice_review.review(run_id)
+        provenance = {
+            "questions": {
+                q.id: {
+                    "objective_ids": draft.learning_objective.split(", "),
+                    "source_refs": [asdict(ref) for ref in draft.draft.source_refs],
+                }
+                for q, draft in zip(reviewed.questions, drafts, strict=True)
+            },
+            "image_sha256": {key: value.sha256 for key, value in stored.items()},
+        }
+        raw, bundle, pdf = export_reviewed_quiz(
+            reviewed,
+            {key: value.path for key, value in stored.items()},
+            provenance,
+            Path(os.environ.get("OMS_B7_EVIDENCE_DIR", str(tmp_path / "exports"))),
+        )
+        assert parse_native_quiz(raw.read_text()) == published.quiz
+        with ZipFile(bundle) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            assert manifest["provenance"] == provenance
+            assert archive.read(next(iter(manifest["images"].values()))["path"]) == media.content
+        from pypdf import PdfReader
+
+        pdf_pages = [page.extract_text() for page in PdfReader(pdf).pages]
+        assert all(len(text.split()) > 8 for text in pdf_pages), "blank export page"
+        pdf_text = "\n".join(pdf_pages)
+        assert all(q.stem in pdf_text for q in reviewed.questions)
+        assert "lo-1" in pdf_text and "lo-2" in pdf_text
     finally:
         client.close()
         app.state.database.close()
