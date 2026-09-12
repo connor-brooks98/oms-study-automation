@@ -2,7 +2,7 @@
 
 Status: core implementation and bounded Windows artifact acceptance are ready for review. Actual Windows PowerPoint conversion preserved the embedded image and vector shape; a discovered long-path export defect was fixed, reviewed and passed18 Windows export checks plus retained-slide export/grade parity. The working local preview has a connected ChatGPT account. Generation activation and live NUC deployment remain pending.
 
-Reviewed code candidate: `551339cb195c9c35eb77503c3b09b79ed723c7a6`, tree `da1db57b5a1990cffecd7deb22f22ced3d721816`, branch `codex/gpt-runtime-activation`. Final status/receipt documentation follows that code commit. Production changes since the frozen base are Office cleanup and Windows export-path handling; runtime policy and JavaScript remain unchanged. The later standalone Windows registry probe adds diagnostic code/tests only; production source still matches `8de86582e1f9ca12bfc00119121c2628542fe43b`. The existing full release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`. The separate353-member Windows acceptance archive is exact-source test staging, not a deployment package. [Current bounded acceptance receipt](gpt-platform-handoffs/O-windows-runtime.md).
+Reviewed code candidate: `a699f7a39f4da562bf057ffc941961cbd7b3dd8f`, tree `7f3fb7930c381805938a0440463305d3afd4c107`, branch `codex/gpt-runtime-activation`. Final status/receipt documentation follows that code commit. Production changes since the frozen base are Office cleanup and Windows export-path handling; runtime policy and JavaScript remain unchanged. The later standalone Windows registry probe adds diagnostic code/tests only; production source still matches `8de86582e1f9ca12bfc00119121c2628542fe43b`. The existing full release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`. The separate353-member Windows acceptance archive is exact-source test staging, not a deployment package. [Current bounded acceptance receipt](gpt-platform-handoffs/O-windows-runtime.md).
 
 ## Intended release and limits
 
@@ -92,3 +92,19 @@ Caller-context follow-up: two native direct-helper checks passed; the conbr/sess
 Windows registry continuation: standalone probe code `551339cb` adds no production activation. O7 focused offline checks/Ruff and B77 checks with3 opt-in skips passed. Actual Windows completed one fake response with empty tool registries and exit0; full native evidence and transport limits are in the current bounded receipt. Provider generation and deployment remain pending.
 
 Independent continuation review: **PASS** for exact probe/task bindings and all43 manifest files, native request/terminal evidence, disabled task and unchanged Hub/process postflight.
+
+
+Latest continuation: **one valid Windows `apply_patch` call was rejected before
+its handler**, with no fixture file created. Both native requests had empty tool
+registries; the turn, native process and SSH transport completed successfully.
+The task is disabled, no diagnostic processes survived, and Hub8268 remained
+unchanged. Code `a699f7a39f4da562bf057ffc941961cbd7b3dd8f` changes only the diagnostic and its tests;
+78 focused checks passed with3 opt-in skips. [Exact evidence and limits](gpt-platform-handoffs/O-windows-runtime.md).
+
+All-tool-class prevention, restricted OS identity/readable roots, Windows managed
+session persistence and actual provider acceptance are still required before
+activation. AMBOSS's specific inquiry thread was rechecked: it still contains
+only the sent inquiry and automatic acknowledgement; no follow-up was sent.
+Vendor export samples and Anki prefix configuration remain separately pending.
+
+Latest single-call source/code/task and all43-file native evidence review: **PASS**. Original dirty manifest and frozen Mac preview health were checked again and remain unchanged.

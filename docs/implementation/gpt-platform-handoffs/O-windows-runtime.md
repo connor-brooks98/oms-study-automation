@@ -1,6 +1,6 @@
 # O bounded Windows/runtime acceptance — September 11 ET / September 12 UTC
 
-Code candidate: `551339cb195c9c35eb77503c3b09b79ed723c7a6`; tree `da1db57b5a1990cffecd7deb22f22ced3d721816`; branch `codex/gpt-runtime-activation`. Base for this turn: `e7c84c56bd56a6ad2de412718d38dfff1799d0ed`. Final receipt/status documentation follows the code candidate.
+Code candidate: `a699f7a39f4da562bf057ffc941961cbd7b3dd8f`; tree `7f3fb7930c381805938a0440463305d3afd4c107`; branch `codex/gpt-runtime-activation`. Base for this turn: `e7c84c56bd56a6ad2de412718d38dfff1799d0ed`. Final receipt/status documentation follows the code candidate.
 
 ## Scope and reviewed changes
 
@@ -134,3 +134,62 @@ Offline-account execution, account persistence, provider quality or deployment.
 Those flags remain false; no real account/provider request occurred. Normal
 sandbox CLI retry remains rejected. The next runtime step must separately review
 any injected-tool or restricted-identity scope before execution.
+
+
+## Windows single-call patch denial — September 12
+
+Code `a699f7a39f4da562bf057ffc941961cbd7b3dd8f` adds `--mode apply-patch` to the existing standalone
+probe. The default registry mode remains available. The mode sends one fixed,
+valid Add File patch aimed solely at the fresh fixture's `work/tool-must-not-create`.
+It refuses to inject when either effective registry is populated; accepts a
+second fixture request only with the exact echoed call and correlated
+`unsupported custom tool call: apply_patch` output; and requires `lexists` to
+confirm the canary is absent. It retains both requests/responses and reports a
+separate `apply_patch_denial_passed` flag. Production source, Mac probe, account
+configuration and all activation flags remain unchanged.
+
+Independent pinned-source review found registration gated by available
+environments, and missing-runtime rejection before hooks or the handler in
+[spec_plan.rs](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/tools/spec_plan.rs#L1239)
+and [registry.rs](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/tools/registry.rs#L516).
+The correlated error return has no executor fallback on the reviewed route:
+[parallel.rs](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/tools/parallel.rs#L219).
+Source, implementation and exact wrapper review passed before launch.
+
+Local test-first fixture failed before implementation. Final candidate-source
+checks passed **78 tests, 3 opt-in skips in4.77s**; Ruff and diff checks passed.
+An initial broader collection attempt resolved the original checkout's installed
+package and failed before tests; explicitly selecting candidate `PYTHONPATH=src`
+corrected the harness. Both outputs are retained. No full application suite or
+real provider call was repeated.
+
+One Windows native run passed as `CONNORS_NUC\conbr`, session1/nonadministrator,
+with the same pinned Codex0.153.4, fresh file-only auth home, empty environments
+and roots, explicit controls and elevated Windows setting. Native PID16132 exited0
+with a correlated completed turn. Both actual requests offered no tools; the
+second contained the exact injected custom call and rejection. The canary was
+absent. This is actual pre-handler rejection for this call, not a model choosing
+to refrain from using tools.
+
+New task `OMS GPT Patch Acceptance cdf2b00b33fc` ran once, returned0, and is disabled
+with no triggers. Inner and independent outer postflight passed; no new
+Codex/Python/helper processes survived. Hub PID8268, build/tree/schema31 and
+healthy idle worker start counts remained unchanged. Outer postflight:
+`2026-09-12T12:36:11.3881979Z`; independent reconciliation:
+`2026-09-12T12:36:58.3106219Z`. SSH transport also exited0 without timeout; the
+launch wrapper now streams raw transport output to retained files from launch.
+
+Evidence root: `/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/windows-apply-patch-acceptance`. Manifest43-file SHA256:
+`f777d374c779c3d548e2997084eb2b7f7a9d380e4aa50504b56ff49d4b8b0c1c`. Script SHA256:
+`773d0fabc29438d0e1cdc1815e1fac187892aa2fd7f45aa826c7facc8aeaff1e`.
+Independent reviewer `/root/windows_patch_scope` returned PASS for all43 files,
+raw protocol and call correlation, exact task definition, native/transport exit,
+and corroborated identity/process/Hub postflight.
+
+Remaining B1 gates are all-tool-class prevention, restricted OS identity/readable
+roots/default-platform-root exclusion, managed Windows login persistence and
+real synthetic provider text/image/schema/interruption/limit acceptance. This
+single-call result does not satisfy those gates. Normal sandbox CLI retry still
+crosses the rejected shared ACL/setup boundary. No live Hub restart/deployment,
+private source, paid fallback, reset, purchase, Anki mutation or retained-resource
+removal occurred.
