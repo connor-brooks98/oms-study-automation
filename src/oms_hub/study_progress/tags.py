@@ -383,6 +383,7 @@ class TopicService:
                 row.suggestions_json, row.state = _json({"tags": tags}), "completed"
         except (SessionError, ValueError, KeyError, OSError, PermissionError) as error:
             with self.sessions() as session:
+                session.execute(text("BEGIN IMMEDIATE"))
                 row = self._owned(session, owner_id, identity)
                 if row.state != "completed":
                     code = error.code if isinstance(error, SessionError) else "invalid_output"

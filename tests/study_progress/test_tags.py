@@ -203,3 +203,59 @@ def test_source_change_during_generation_retains_raw_without_acceptance(blocks, 
     with pytest.raises(ValueError):
         service.run("owner", pending.id)
     assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize("cancel_before_read", [False, True])
+def test_failure_handler_serializes_cancellation_and_preserves_reset(
+    blocks, tmp_path, monkeypatch, cancel_before_read  # noqa: F811
+):
+    import sqlite3
+    from contextlib import closing
+
+    from oms_hub.llm.codex_session import SessionError
+
+    block_service, _, _, _ = blocks
+    key = block_service.catalog("owner").questions[0].key
+    service = service_for(block_service, tmp_path, None)
+    handling_failure = False
+    cancellation_blocked = False
+    original_owned = service._owned
+
+    class LimitedClient:
+        def generate(self, request, **kwargs):
+            nonlocal handling_failure
+            if cancel_before_read:
+                service.cancel("owner", request.request_id)
+            handling_failure = True
+            raise SessionError("rate_limited", reset_at="2026-09-12T12:30:00+00:00")
+
+    def race_after_read(session, owner, identity):
+        nonlocal handling_failure, cancellation_blocked
+        row = original_owned(session, owner, identity)
+        if handling_failure:
+            handling_failure = False
+            if not cancel_before_read:
+                # A separate cancellation writer attempts to commit after the handler's read.
+                with closing(sqlite3.connect(tmp_path / "sessions.db", timeout=0)) as connection:
+                    try:
+                        connection.execute(
+                            "UPDATE study_topic_suggestions SET state='interrupted', "
+                            "error_code='interrupted' WHERE id=? AND state='running'",
+                            (identity,),
+                        )
+                        connection.commit()
+                    except sqlite3.OperationalError as error:
+                        assert "locked" in str(error)
+                        cancellation_blocked = True
+        return row
+
+    service.client = LimitedClient()
+    prepared = service.prepare("owner", key.question_id)
+    monkeypatch.setattr(service, "_owned", race_after_read)
+    result = service.run("owner", prepared.id)
+    if cancel_before_read:
+        assert result.state == "interrupted" and result.error_code == "interrupted"
+    else:
+        assert cancellation_blocked
+        assert result.state == "failed" and result.error_code == "rate_limited"
+    assert result.reset_at == "2026-09-12T12:30:00+00:00"
