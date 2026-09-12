@@ -5,8 +5,12 @@ PowerPoints and Panopto transcript downloads. It imports an Excel exam tracker,
 groups lectures by course and Exam, matches uploads, quarantines uncertain
 matches, converts PowerPoints to PDF, cleans transcripts with the approved
 Obsidian prompt, and files the resulting artifacts on the NUC and in iCloud.
-It can also build lecture-specific NotebookLM outlines and native Study Hub
-quizzes from exactly the current lecture PDF and cleaned transcript.
+The GPT candidate adds reviewed lecture-image quizzes, optional outlines and
+private study chat through a managed ChatGPT subscription. Activation remains
+blocked until target-runtime and provider acceptance; see the
+[GPT workflow and configuration](docs/operations/gpt-study-platform.md) and
+[release proposal](docs/implementation/gpt-platform-release-proposal.md).
+Existing NotebookLM artifacts and legacy workflows remain retained.
 
 Canvas polling, Panopto polling, Outlook synchronization, and the browser
 extension are intentionally not part of V2. The NUC must be online for remote
@@ -47,10 +51,12 @@ Edit the prompt in Obsidian, copy the printed fingerprint into
 `OMS_HUB_TRANSCRIPT_PROMPT_SHA256`, and restart the Hub. A prompt change pauses
 cleaning until its new fingerprint is explicitly configured.
 
-Open **Settings → AI providers** to save OpenAI, Google Gemini, and Anthropic
-Claude credentials in Windows Credential Manager. Select a model, run
+For the explicitly selected `legacy_api` backend only, **Settings → AI providers**
+stores OpenAI, Google Gemini, and Anthropic Claude credentials in Windows
+Credential Manager. Select a model, run
 **Test connection**, and choose the active provider. Stored credentials are
-never returned to the browser or written to `.env` or SQLite.
+never returned to the browser or written to `.env` or SQLite. The subscription
+backend does not automatically fall back to these paid APIs.
 
 ## Transcript cost safeguard and download
 
