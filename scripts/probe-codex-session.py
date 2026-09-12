@@ -3,16 +3,21 @@
 import argparse
 import hashlib
 import json
+import tempfile
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from oms_hub.files.atomic import verified_atomic_write
+from oms_hub.files.trusted_paths import prepare_trusted_directory
 from oms_hub.llm.codex_session import (
     INSPECTED_MACOS_BINARY_SHA256,
     PINNED_SCHEMA_SHA256,
     PINNED_VERSION,
     CodexSessionClient,
     SessionError,
+    SessionLifecycle,
     SessionRequest,
     model_ready,
 )
@@ -277,6 +282,8 @@ def live_probe(args: argparse.Namespace) -> int:
         args.executable, args.session_home, args.work_root, binary_sha256=args.binary_sha256
     )
     challenge = None
+    evidence = None
+    report: dict[str, Any] = {"live_ready": False}
     try:
         if args.login:
             challenge = client.start_login(device_code=not args.browser_login)
@@ -301,9 +308,30 @@ def live_probe(args: argparse.Namespace) -> int:
                     raise SessionError(status.error_code or "protocol_error")
                 time.sleep(0.25)
             raise SessionError("timeout")
+        if not prepare_trusted_directory(client.work_root):
+            raise OSError("untrusted evidence root")
+        evidence = Path(tempfile.mkdtemp(prefix="smoke-", dir=client.work_root))
+        report["evidence"] = str(evidence)
+        request_id = evidence.name
+        verified_atomic_write(
+            json.dumps(
+                {"request_id": request_id, "model": args.model, "binary_sha256": args.binary_sha256}
+            ).encode(),
+            evidence / "request.json",
+        )
+        event_count = 0
+
+        def record_lifecycle(event: SessionLifecycle) -> None:
+            nonlocal event_count
+            payload = json.dumps(asdict(event))
+            verified_atomic_write(payload.encode(), evidence / f"event-{event_count:03}.json")
+            event_count += 1
+            print(payload, flush=True)
+
+        print(json.dumps(report), flush=True)
         result = client.generate(
             SessionRequest(
-                "synthetic-probe",
+                request_id,
                 args.model,
                 "Return a JSON object with ok=true.",
                 "Synthetic transport check; no source material.",
@@ -315,34 +343,35 @@ def live_probe(args: argparse.Namespace) -> int:
                 },
             ),
             cancelled=lambda: False,
-            on_lifecycle=lambda event: print(
-                json.dumps(
-                    {"phase": event.phase, "thread_id": event.thread_id, "turn_id": event.turn_id}
-                ),
-                flush=True,
-            ),
+            on_lifecycle=record_lifecycle,
         )
-        if json.loads(result.text) != {"ok": True}:
+        report.update(thread_id=result.thread_id, turn_id=result.turn_id)
+        report["raw_sha256"] = verified_atomic_write(result.text.encode(), evidence / "raw.txt")
+        try:
+            parsed = json.loads(result.text)
+        except ValueError as error:
+            raise SessionError("invalid_output") from error
+        if not isinstance(parsed, dict) or set(parsed) != {"ok"} or parsed["ok"] is not True:
             raise SessionError("invalid_output")
-        print(
-            json.dumps(
-                {
-                    "synthetic_smoke": "passed",
-                    "thread_id": result.thread_id,
-                    "turn_id": result.turn_id,
-                }
-            )
-        )
+        report["synthetic_smoke"] = "passed"
+        verified_atomic_write(json.dumps(report).encode(), evidence / "result.json")
+        print(json.dumps(report))
         return 0
-    except (SessionError, KeyboardInterrupt) as error:
-        print(
-            json.dumps(
-                {
-                    "error_code": error.code if isinstance(error, SessionError) else "interrupted",
-                    "live_ready": False,
-                }
-            )
+    except (SessionError, KeyboardInterrupt, OSError) as error:
+        report["error_code"] = (
+            error.code
+            if isinstance(error, SessionError)
+            else "interrupted"
+            if isinstance(error, KeyboardInterrupt)
+            else "evidence_write_failed"
         )
+        if evidence is not None:
+            report["synthetic_smoke"] = "failed"
+            try:
+                verified_atomic_write(json.dumps(report).encode(), evidence / "result.json")
+            except OSError:
+                report["evidence_write_failed"] = True
+        print(json.dumps(report))
         return 1
     finally:
         if challenge is not None:
