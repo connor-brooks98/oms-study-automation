@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 from zipfile import ZipFile
@@ -13,6 +14,20 @@ from oms_hub.study_generation.quiz_export import export_reviewed_quiz
 from oms_hub.study_generation.quiz_images import sanitize_quiz_image
 
 MEDICAL_TEXT = "Na⁺ K⁺ Ca²⁺ H₂O → α-synuclein β ≥ 2 – reassess"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows extended absolute paths")
+def test_windows_export_reopens_full_hash_paths_beyond_max_path(tmp_path):
+    quiz, images, provenance = export_fixture(tmp_path)
+    output = tmp_path / ("long-export-root-" * 5)
+    paths = export_reviewed_quiz(quiz, images, provenance, output)
+    assert all(len(str(path)) > 260 for path in paths)
+    assert all(str(path).startswith("\\\\?\\") for path in paths)
+    assert parse_native_quiz(paths[0].read_text(encoding="utf-8")) == quiz
+    assert export_reviewed_quiz(quiz, images, provenance, output) == paths
+    with ZipFile(paths[1]) as archive:
+        assert archive.read("quiz.json") == paths[0].read_bytes()
+    assert PdfReader(paths[2]).pages
 
 
 def test_medical_superscripts_subscripts_survive_all_pdf_text_styles(tmp_path):

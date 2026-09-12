@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -122,6 +123,16 @@ def export_reviewed_quiz(
         },
     }
     manifest_bytes = _json_bytes(manifest)
+    # Windows may retain MAX_PATH even with a modern Python. Keep full hashes
+    # and use its extended absolute spelling for validation, writes and reads.
+    if sys.platform == "win32" and output_dir.is_absolute():
+        spelling = str(output_dir)
+        if not spelling.startswith("\\\\?\\"):
+            output_dir = Path(
+                "\\\\?\\UNC\\" + spelling[2:]
+                if spelling.startswith("\\\\")
+                else "\\\\?\\" + spelling
+            )
     root = output_dir / hashlib.sha256(manifest_bytes).hexdigest()
     paths = tuple(root / f"quiz-{digest}.{suffix}" for suffix in ("json", "zip", "pdf"))
     pdf = _render_pdf(quiz, images, evidence, digest)
