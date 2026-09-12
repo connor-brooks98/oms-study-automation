@@ -41,6 +41,9 @@ def test_chat_app_wiring_shares_client_and_enforces_source_owner(tmp_path, monke
         codex_model="fixture"))
     assert app.state.study_chat_service.client is app.state.codex_session is fake
     assert app.state.gpt_transcript_cleaner.client is fake
+    assert app.state.study_topic_service.client is fake
+    app.state.codex_model = "new-fixture"
+    assert app.state.study_topic_service.model() == "new-fixture"
     repository = app.state.study_chat_repository
     with pytest.raises(PermissionError):
         repository.sources.snapshot("other", (1,))
@@ -102,4 +105,48 @@ def test_personal_session_app_wiring_and_public_isolation(tmp_path):
                 media_type="image/png", width=1, height=1, alt_text="Image"))
         assert client.post("/study/sessions", json={"quiz_token": token},
             headers={"X-CSRF-Token": csrf}).status_code == 409
+    app.state.database.close()
+
+
+def test_block_app_callback_recovers_legacy_lecture_scope_without_mutation(tmp_path):
+    import pytest
+
+    from oms_hub.models import PublishedQuizModel
+    from oms_hub.repositories import LectureInput
+    from oms_hub.study_generation.domain import NativeQuiz, QuizChoice, QuizQuestion
+    from oms_hub.study_generation.native_quiz import serialize_native_quiz
+
+    app = create_app(Settings(_env_file=None, data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}", study_root=tmp_path / "study"))
+    lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Heme/Lymph", 3, 1, "Fixture", "", None))
+    quiz = NativeQuiz("Fixture", (QuizQuestion("q1", "Which?",
+        tuple(QuizChoice(f"c{i}", str(i)) for i in range(1, 5)), "c1", "Because one."),))
+    with app.state.database.session() as session:
+        session.add(PublishedQuizModel(token="legacy", lecture_id=lecture_id,
+            title=quiz.title, payload_json=serialize_native_quiz(quiz)))
+    service = app.state.study_block_service
+    with pytest.raises(PermissionError):
+        service.publications_for("other")
+    catalog = service.catalog("local-owner")
+    assert len(catalog.questions) == 1
+    assert (catalog.questions[0].course, catalog.questions[0].exam_number) == ("heme/lymph", 3)
+    with app.state.database.session() as session:
+        stored = session.get(PublishedQuizModel, "legacy")
+        assert stored.destination_subject == ""
+        assert stored.payload_json == serialize_native_quiz(quiz)
+    topics = app.state.study_topic_service
+    assert topics.media_root == tmp_path.resolve()
+    key = catalog.questions[0].key.question_id
+    with TestClient(app) as client:
+        page = client.get("/study/blocks?course=heme/lymph&exam=3&count=1")
+        assert page.status_code == 200 and "1 questions selected" in page.text
+        assert client.get("/study/blocks/questions/" + key).status_code == 200
+        csrf = client.cookies.get("study_hub_csrf")
+        started = client.post("/study/blocks", json={"course": "heme/lymph",
+            "exam_numbers": [3], "count": 1, "selected_keys": [key]},
+            headers={"X-CSRF-Token": csrf})
+        assert started.status_code == 200
+        content = client.get(started.json()["url"] + "/content").json()
+        assert "Heme/Lymph" in content["questions"][0]["source_label"]
     app.state.database.close()

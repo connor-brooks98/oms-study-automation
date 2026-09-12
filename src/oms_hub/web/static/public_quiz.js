@@ -822,6 +822,9 @@
         );
 
         const body = element(documentRef, "div", "quiz-body");
+        if (personalSession && typeof question.source_label === "string") {
+          body.append(element(documentRef, "p", "quiz-source-label", question.source_label));
+        }
         const stem = element(documentRef, "h2", "quiz-question");
         renderHighlightedText(
           documentRef,

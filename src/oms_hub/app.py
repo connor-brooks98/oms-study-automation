@@ -6,6 +6,7 @@ import os
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import UUID
@@ -142,6 +143,7 @@ from oms_hub.study_generation.path_picker import (
     SystemPromptPathPicker,
 )
 from oms_hub.study_generation.practice_answers import PracticeAnswerResolver
+from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.practice_extraction import PracticeQuestionExtractor
 from oms_hub.study_generation.practice_review import PracticeReviewService
 from oms_hub.study_generation.prompts import PromptFileService
@@ -153,9 +155,11 @@ from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.study_generation.studio_service import StudioService
 from oms_hub.study_generation.studio_worker import StudioWorker
 from oms_hub.study_generation.worker import GenerationWorker
+from oms_hub.study_progress.blocks import BlockService
 from oms_hub.study_progress.routes import router as study_progress_router
 from oms_hub.study_progress.service import ProgressService
 from oms_hub.study_progress.sessions import StudySessionService
+from oms_hub.study_progress.tags import TopicService
 from oms_hub.transcripts.codex_cleaner import CodexTranscriptCleaner
 from oms_hub.transcripts.pipeline import (
     TranscriptPipeline as V2TranscriptPipeline,
@@ -538,6 +542,9 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.study_chat_repository.interrupt_pending(
             owner_id=(app.state.settings.cloudflare_access_allowed_email
                       or "local-owner").casefold()
+        )
+        app.state.study_topic_service.interrupt_pending(
+            (app.state.settings.cloudflare_access_allowed_email or "local-owner").casefold()
         )
         supervisor.start()
     try:
@@ -1193,6 +1200,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         publication = app.state.generation_repository.published_quiz(token)
         if publication is None or not publication.active:
             raise PermissionError("publication unavailable")
+        if publication.lecture_id is not None:
+            lecture = app.state.catalog_repository.get_lecture(publication.lecture_id)
+            if lecture is None:
+                raise PermissionError("publication lecture unavailable")
+            publication = replace(publication, destination_subject=lecture.subject,
+                destination_subject_key=" ".join(lecture.subject.casefold().split()),
+                destination_exam_number=lecture.exam_number)
         return cast(PublishedQuizRecord, publication)
 
     def study_topics(owner_id: str, key: QuestionKey) -> tuple[TopicLabel, ...]:
@@ -1217,6 +1231,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         topics_for=study_topics, media_for=study_media,
     )
     app.state.study_progress_service = ProgressService(app.state.question_bank)
+
+    def study_publications(owner_id: str) -> tuple[PublishedQuizRecord, ...]:
+        if owner_id != study_owner:
+            raise PermissionError("publication owner mismatch")
+        return cast(tuple[PublishedQuizRecord, ...],
+            app.state.generation_repository.published_quizzes(frozenset(QuizContentKind)))
+
+    app.state.study_block_service = BlockService(
+        sessions=app.state.study_session_service, bank=app.state.question_bank,
+        publications_for=study_publications,
+    )
+    app.state.study_topic_service = TopicService(
+        blocks=app.state.study_block_service, media_root=resolved.data_dir.resolve(),
+        client=app.state.codex_session, model=lambda: app.state.codex_model,
+    )
     app.state.quiz_import_worker = QuizImportWorker(
         app.state.studio_repository,
         app.state.document_processor_router,

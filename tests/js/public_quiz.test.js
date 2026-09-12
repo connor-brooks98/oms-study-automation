@@ -1176,3 +1176,21 @@ for (const closed of [false, true]) {
     });
   }
 }
+
+
+test("personal source labels render as plain text without changing public quizzes", async () => {
+  for (const personal of [false, true]) {
+    const { documentRef, app } = buildQuizApp();
+    app.dataset.personalSession = String(personal);
+    const label = "Neuro · Exam 2 · <img onerror=alert(1)> · q1";
+    const rendered = { ...mixedContent(), questions: [
+      { ...mixedContent().questions[0], source_label: label, attempt_id: "server" },
+    ] };
+    await quiz.initialize(documentRef, async () => ({ ok: true, async json() { return rendered; } }));
+    const source = findByClass(app, "quiz-source-label");
+    if (personal) {
+      assert.equal(source.textContent, label);
+      assert.equal(source.children.length, 0);
+    } else assert.equal(source, null);
+  }
+});
