@@ -52,6 +52,11 @@ _PATH_COLUMNS[28] = _PATH_COLUMNS[27]
 _PATH_COLUMNS[29] = _PATH_COLUMNS[28]
 _PATH_COLUMNS[30] = _PATH_COLUMNS[29]
 _PATH_COLUMNS[31] = _PATH_COLUMNS[30]
+# GPT schemas add bank/chat/session evidence and backend/model metadata, but no
+# new path columns in the job-scoped Anki export. Private GPT rows stay excluded;
+# unregistered embedded Windows paths still fail the existing materializer scan.
+for _schema in (32, 33, 34, 35, 36, 37, 38, 39, 40):
+    _PATH_COLUMNS[_schema] = _PATH_COLUMNS[31]
 
 
 @dataclass(frozen=True, slots=True)

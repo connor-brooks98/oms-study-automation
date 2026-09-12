@@ -166,6 +166,7 @@ def test_materializer_path_registry_tracks_and_supports_current_schema(tmp_path:
     assert _PATH_COLUMNS[28] == _PATH_COLUMNS[27]
     assert _PATH_COLUMNS[29] == _PATH_COLUMNS[28]
     assert _PATH_COLUMNS[30] == _PATH_COLUMNS[29]
+    assert all(_PATH_COLUMNS[v] == _PATH_COLUMNS[31] for v in range(32, 41))
     root = _capsule(tmp_path, database_schema=LATEST_SCHEMA_VERSION)
     overlay = materialize_capsule(root, tmp_path / "overlay")
     assert overlay.path_audit

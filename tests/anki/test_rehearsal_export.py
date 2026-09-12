@@ -630,6 +630,17 @@ def test_export_omits_sensitive_rows_and_scrubs_outline_generation_details(tmp_p
                 "https://quiz.example/secret",
             ),
         )
+        connection.execute(
+            "INSERT INTO study_chat_conversations (id,owner_id,mode,source_snapshot_json,"
+            "created_at,updated_at) VALUES ('private-chat','owner','lecture',?, 'now','now')",
+            (json.dumps({"path": r"C:\private\lecture.txt"}),),
+        )
+        connection.execute(
+            "INSERT INTO study_topic_suggestions (id,owner_id,key_json,question_content_hash,"
+            "evidence_json,taxonomy_json,model,state,lifecycle_json,raw_response_text,"
+            "created_at,updated_at) VALUES ('private-tag','owner','{}',?,'[]','[]',"
+            "'fixture','completed','[]',?,'now','now')", ("a" * 64, "private fixture output"),
+        )
         connection.commit()
     finally:
         connection.close()
@@ -645,6 +656,9 @@ def test_export_omits_sensitive_rows_and_scrubs_outline_generation_details(tmp_p
         f"file:{(capsule / 'hub/hub.db').as_posix()}?mode=ro&immutable=1", uri=True
     )
     try:
+        for table in ("study_chat_conversations", "study_topic_suggestions", "bank_questions",
+                      "bank_attempts", "study_sessions"):
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM google_connection").fetchone() == (0,)
         assert connection.execute(
             "SELECT error, prompt_path, notebook_id, notebook_answer, gemini_quiz_id, quiz_url "
