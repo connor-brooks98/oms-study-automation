@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Review question categories · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell sh-container sh-container--narrow sh-stack">
+  <h1 class="sh-title">Review question categories</h1>
+  <p><a href="/study/blocks">Study blocks</a> · <a href="/study/progress">Personal progress</a></p>
+  {% if not suggestion %}
+  <section class="sh-card"><h2>{{ question.candidate.source_label }}</h2>
+    <p>{{ question.evidence.slices.stem }}</p>
+    {% if question.evidence.slices.objective %}<p><strong>Source objective:</strong> {{ question.evidence.slices.objective }}</p>{% endif %}
+    <p>These are source excerpts. Categories become available for progress and filtering only after you save an explicit review.</p>
+  </section>
+  <form class="sh-card sh-stack" method="post" action="/study/blocks/questions/{{ question.candidate.key.question_id }}/topics">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="content_hash" value="{{ question.content_hash }}">
+    {% for taxonomy in taxonomies %}<details><summary>{{ taxonomy.title }} · {{ taxonomy.version }}</summary>
+      <p><a href="{{ taxonomy.source_url }}">Official category source</a>. {{ taxonomy.applicability }}</p>
+      {% for category in taxonomy.categories %}<p><label class="sh-check"><input type="checkbox" name="category" value="{{ category.canonical_id }}" {% if category.canonical_id in accepted_ids %}checked{% endif %}> {{ category.label }}</label></p>{% endfor %}
+    </details>{% endfor %}
+    <p>Saving replaces the reviewed selections for these taxonomy versions. Leaving every box empty removes those selections. Other labels and attempt history are preserved.</p>
+    <button class="sh-btn sh-btn--primary" type="submit">Save reviewed categories</button>
+  </form>
+  <section class="sh-card"><h2>Optional suggestions</h2>
+    {% if configured %}<p>Prepare a request using the displayed source excerpts and a fixed copy of these official categories. Generation requires a separate explicit action; suggestions are never accepted automatically.</p>
+    <form method="post" action="/study/blocks/questions/{{ question.candidate.key.question_id }}/suggestions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="sh-btn sh-btn--secondary" type="submit">Prepare suggestions</button>
+    </form>
+    {% else %}<p>Model suggestions are unavailable because the shared GPT client or selected model is not configured. Manual category review is available.</p>{% endif %}
+    {% for item in recent %}<p><a href="/study/blocks/suggestions/{{ item.id }}">Suggestion request · {{ item.state }}</a></p>{% endfor %}
+  </section>
+  {% else %}
+  <section class="sh-card"><h2>{{ suggestion.evidence.source }}</h2>
+    <p>{{ suggestion.evidence.slices.stem }}</p>
+    {% if suggestion.evidence.slices.objective %}<p><strong>Source objective:</strong> {{ suggestion.evidence.slices.objective }}</p>{% endif %}
+    <p role="status">Request state: {{ suggestion.state }}{% if suggestion.error_code %} ({{ suggestion.error_code }}){% endif %}.</p>
+    {% if suggestion.reset_at %}<p>Provider-supplied reset time: {{ suggestion.reset_at }}. This request will not resubmit automatically.</p>{% endif %}
+    <p><a href="/study/blocks/questions/{{ suggestion.key.question_id }}">Current source and manual category review</a></p>
+    {% if suggestion.state == 'pending' %}
+    <form method="post" action="/study/blocks/suggestions/{{ suggestion.id }}/run">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="sh-btn sh-btn--primary" type="submit">Generate suggestions</button>
+    </form>
+    {% elif suggestion.state == 'running' %}<p>This request has already started and will not be dispatched again. Reload to check its state, or interrupt it before preparing a new request.</p>
+    {% elif suggestion.state in ['failed', 'interrupted'] %}<p>This request will not replay. Inspect the current source before preparing a new request.</p>{% endif %}
+    {% if suggestion.state in ['pending', 'running'] %}
+    <form method="post" action="/study/blocks/suggestions/{{ suggestion.id }}/cancel">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="sh-btn sh-btn--secondary" type="submit">Interrupt request</button>
+    </form>{% endif %}
+  </section>
+  {% if suggestion.state == 'completed' %}<section class="sh-card"><h2>Pending suggestions</h2>
+    {% if suggestion.tags %}
+    <form method="post" action="/study/blocks/suggestions/{{ suggestion.id }}/accept">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% for tag in suggestion.tags %}<p><label class="sh-check"><input type="checkbox" name="category" value="{{ tag.topic.canonical_id }}"> {{ tag.topic.label }}</label><br>
+        Source quote: “{{ tag.evidence_quote }}”<br>Model confidence: {{ '%.0f'|format(100 * tag.topic.confidence) }}% (not independently calibrated).</p>{% endfor %}
+      <p>Check only categories supported by the source. Acceptance adds them to reviewed metadata; it does not change questions, answers, or attempts.</p>
+      <button class="sh-btn sh-btn--primary" type="submit">Accept selected suggestions</button>
+    </form>
+    {% else %}<p>No supported category suggestions were returned.</p>{% endif %}
+  </section>{% endif %}
+  {% endif %}
+</section>
+{% endblock %}

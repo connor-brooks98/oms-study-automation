@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Study blocks · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell sh-container sh-stack">
+  <header class="sh-header"><h1 class="sh-title">Study blocks</h1>
+    <p>Choose exams and reviewed categories, then practice a saved selection of accepted questions.</p>
+    <a href="/study/progress">Personal progress</a>
+  </header>
+  <form class="sh-card sh-stack" method="get" action="/study/blocks">
+    <p><label for="block-course">Course</label>
+      <select class="sh-select" id="block-course" name="course" required>
+        {% for value, label in courses %}<option value="{{ value }}" {% if filters and filters.course == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </p>
+    <fieldset><legend>Exams — select several for cumulative practice</legend>
+      {% for exam in exams %}<label class="sh-check"><input type="checkbox" name="exam" value="{{ exam }}" {% if filters and exam in filters.exam_numbers %}checked{% endif %}> Exam {{ exam }}</label> {% endfor %}
+    </fieldset>
+    <p><label for="block-topics">Reviewed categories (optional)</label>
+      <select class="sh-select" id="block-topics" name="topic" multiple size="4">
+        {% for value, label in topics %}<option value="{{ value }}" {% if filters and value in filters.topic_ids %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      <br><span>Selecting several includes questions with any selected category. Leave empty to include all topics.</span>
+    </p>
+    <p><label for="block-count">Up to this many questions</label>
+      <input class="sh-input" id="block-count" type="number" name="count" min="1" max="500" value="{{ filters.count if filters else 20 }}" required>
+    </p>
+    <button class="sh-btn sh-btn--primary" type="submit">Preview block</button>
+  </form>
+  <section class="sh-card sh-stack"><h2>Selected questions</h2>
+    <p>Questions without graded attempts come first, then lower sample accuracy, fewer graded attempts, and a stable question identifier. This is a study heuristic, not an exam-readiness estimate.</p>
+    {% if chosen %}
+    <p>{{ chosen|length }} questions selected. Source versions are fixed when you start; resume keeps this selection.</p>
+    <ol>{% for candidate in chosen %}<li>
+      <p><strong>{{ candidate.source_label }}</strong><br>
+        {{ candidate.performance.graded_attempts }} graded attempts;
+        {% if candidate.performance.accuracy is not none %}{{ '%.1f'|format(100 * candidate.performance.accuracy) }}% correct{% else %}no graded sample{% endif %}.
+        <a href="/study/blocks/questions/{{ candidate.key.question_id }}">Review categories</a>
+      </p>
+    </li>{% endfor %}</ol>
+    <form method="post" action="/study/blocks/start">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="course" value="{{ filters.course }}">
+      <input type="hidden" name="count" value="{{ filters.count }}">
+      {% for exam in filters.exam_numbers %}<input type="hidden" name="exam" value="{{ exam }}">{% endfor %}
+      {% for topic in filters.topic_ids %}<input type="hidden" name="topic" value="{{ topic }}">{% endfor %}
+      {% for candidate in chosen %}<input type="hidden" name="selected_key" value="{{ candidate.key.question_id }}">{% endfor %}
+      <button class="sh-btn sh-btn--primary" type="submit">Start {{ chosen|length }}-question block</button>
+    </form>
+    {% elif filters %}<p>No accepted questions match this scope. Change the exams or reviewed categories.</p>
+    {% else %}<p>Choose a course and at least one exam to preview a block.</p>{% endif %}
+    <p>Only accepted published native questions are playable. Results-only vendor entries stay in your results history.
+      {{ catalog.unavailable_publications }} publications are currently excluded because their source or required media is unavailable.</p>
+  </section>
+  <section class="sh-card"><h2>Resume a saved session</h2>
+    {% for session in recent %}<p><a href="/study/sessions/{{ session.id }}">{{ session.count }} questions · {{ session.created_at[:16]|replace('T', ' ') }} UTC</a>{% if session.closed %} · Closed{% endif %}</p>
+    {% else %}<p>No saved sessions yet.</p>{% endfor %}
+  </section>
+</section>
+{% endblock %}
