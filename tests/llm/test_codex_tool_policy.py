@@ -40,7 +40,7 @@ def test_partial_preparation_is_pinned_and_does_not_open_generation(tmp_path):
         load_probe()["codex_tool_policy_args"]("0" * 64)
     with pytest.raises(SessionError, match="not verified"):
         client.generate(
-            SessionRequest("fixture", "gpt-6-astra", "Fixture", "Fixture"),
+            SessionRequest("fixture", "gpt-5.5", "Fixture", "Fixture"),
             cancelled=lambda: False,
             on_lifecycle=lambda _: None,
         )

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -153,12 +154,14 @@ def fake_session(tmp_path, monkeypatch):
             startup_timeout=startup_timeout,
             shutdown_timeout=0.2,
         )
+        monkeypatch.setitem(codex_session._RUNTIME_PINS, sys.platform, client.binary_sha256)
         trace = root / "wire.jsonl"
         client._command = [
             sys.executable,
             str(Path(__file__).parent / "fixtures/codex_fake_server.py"),
             scenario,
             str(trace),
+            *client._command[1:],
         ]
         if ready:
             monkeypatch.setattr(client, "_require_generation_ready", lambda request: None)
@@ -180,7 +183,7 @@ def wire_records(trace):
 def request():
     return SessionRequest(
         "run-fixture:batch-1",
-        "chosen",
+        "gpt-5.5",
         "Return JSON.",
         "Synthetic source.",
         output_schema={"type": "object"},
@@ -566,7 +569,7 @@ def test_cli_smoke_cannot_bypass_live_restriction_gate(fake_session, capsys):
                 "--work-root",
                 str(client.work_root),
                 "--model",
-                "chosen",
+                "gpt-5.5",
             ]
         )
         == 1
@@ -635,3 +638,135 @@ def test_wrong_executable_pin_never_starts_and_is_not_an_account_connection(fake
     assert status.account_connected is False
     assert status.error_code == "capability_unverified"
     assert not trace.exists() and not wires
+
+
+def test_generation_sends_pinned_empty_environment_policy(fake_session):
+    client, trace, _ = fake_session()
+    client.generate(request(), cancelled=lambda: False, on_lifecycle=lambda event: None)
+    rows = wire_records(trace)
+    args = rows[0]["args"]
+    assert "--strict-config" in args
+    config = dict(arg.split("=", 1) for i, arg in enumerate(args) if args[i - 1] == "-c")
+    parsed = {key: tomllib.loads("value=" + value)["value"] for key, value in config.items()}
+    controls = {
+        key: value
+        for key, value in parsed.items()
+        if key.startswith("features.")
+        or key
+        in {
+            "web_search",
+            "apps._default.enabled",
+            "tools.experimental_request_user_input.enabled",
+            "orchestrator.skills.enabled",
+            "orchestrator.mcp.enabled",
+        }
+    }
+    assert hashlib.sha256(
+        json.dumps(controls, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest() == ("fcbfc7fb17a33a0a4306a782c57a1b13b618d894589338272e34e0a3be2473c0")
+    assert parsed["cli_auth_credentials_store"] == "file"
+    assert parsed["model_provider"] == "openai"
+    assert parsed["windows.sandbox"] == "elevated"
+    assert parsed["sandbox_mode"] == "read-only"
+    assert parsed["analytics.enabled"] is False
+    initialized = next(row["params"] for row in rows if row.get("method") == "initialize")
+    assert initialized["capabilities"] == {"experimentalApi": True}
+    start = next(row["params"] for row in rows if row.get("method") == "thread/start")
+    for key, value in {
+        "model": "gpt-5.5",
+        "modelProvider": "openai",
+        "allowProviderModelFallback": False,
+        "ephemeral": True,
+        "dynamicTools": [],
+        "environments": [],
+        "selectedCapabilityRoots": [],
+        "runtimeWorkspaceRoots": [],
+        "sandbox": "read-only",
+        "approvalPolicy": "untrusted",
+        "approvalsReviewer": "user",
+    }.items():
+        assert start[key] == value
+    turn = next(row["params"] for row in rows if row.get("method") == "turn/start")
+    assert turn["model"] == "gpt-5.5"
+    assert "environments" not in turn
+
+
+def test_login_uses_private_home_and_excludes_ambient_config(fake_session, monkeypatch):
+    for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "HTTP_PROXY", "CODEX_CONFIG", "PYTHONPATH"):
+        monkeypatch.setenv(key, "must-not-be-inherited")
+    client, trace, _ = fake_session(ready=False)
+    client.session_home.mkdir()
+    auth = client.session_home / "auth.json"
+    auth.write_bytes(b'{"synthetic":true}')
+    before = auth.stat()
+    client.start_login()
+    assert auth.stat().st_mtime_ns == before.st_mtime_ns
+    assert auth.read_bytes() == b'{"synthetic":true}'
+    startup = wire_records(trace)[0]
+    assert startup["codex_home"] == str(client.session_home)
+    assert Path(startup["env"]["HOME"]).is_relative_to(client.session_home)
+    assert startup["env"]["USERPROFILE"] == startup["env"]["HOME"]
+    assert not {
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "HTTP_PROXY",
+        "CODEX_CONFIG",
+        "PYTHONPATH",
+    }.intersection(startup["env"])
+
+
+def test_generation_rejects_model_outside_accepted_policy(fake_session):
+    client, trace, wires = fake_session()
+    with pytest.raises(SessionError) as error:
+        client.generate(
+            replace(request(), model="gpt-6-astra"),
+            cancelled=lambda: False,
+            on_lifecycle=lambda event: None,
+        )
+    assert error.value.code == "model_unavailable"
+    assert not trace.exists() and not wires
+
+
+def test_matching_but_uninspected_binary_hash_cannot_start(tmp_path, monkeypatch):
+    executable = Path(sys.executable).resolve()
+    client = CodexSessionClient(
+        executable,
+        tmp_path / "home",
+        tmp_path / "work",
+        binary_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(codex_session, "_Stdio", lambda *a, **kw: pytest.fail("uninspected launch"))
+    assert client.status().error_code == "capability_unverified"
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "wrong_home",
+        "malformed_home",
+        "policy_drift",
+        "policy_drift:model",
+        "policy_drift:modelProvider",
+        "policy_drift:runtimeWorkspaceRoots",
+        "policy_drift:approvalPolicy",
+        "policy_drift:approvalsReviewer",
+    ],
+)
+def test_native_policy_echo_drift_blocks_turn(fake_session, scenario):
+    client, trace, wires = fake_session(scenario)
+    with pytest.raises(SessionError) as error:
+        client.generate(request(), cancelled=lambda: False, on_lifecycle=lambda event: None)
+    assert error.value.code == "capability_unverified"
+    assert "turn/start" not in [row.get("method") for row in wire_records(trace)]
+    assert wires[-1].process.poll() is not None
+
+
+def test_redirected_private_home_is_rejected_before_process(fake_session, tmp_path):
+    client, trace, wires = fake_session(ready=False)
+    client.session_home.mkdir()
+    outside = tmp_path / "outside-home"
+    outside.mkdir()
+    (client.session_home / "host-home").symlink_to(outside, target_is_directory=True)
+    assert client.status().error_code == "capability_unverified"
+    assert not trace.exists() and not wires
+    assert list(outside.iterdir()) == []

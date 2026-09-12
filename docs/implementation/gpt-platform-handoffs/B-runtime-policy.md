@@ -156,3 +156,26 @@ are not proven safe by a network-only sandbox. Windows runtime identity, real
 provider/model text/image/schema capabilities, source quality and deployment
 acceptance remain pending. No package installation, saved model switch, live
 Anki action, service restart, activation or further probe is part of this handoff.
+
+## Production policy correction — September 12
+
+On `codex/gpt-runtime-fix-2026-09-12`, the managed session now uses the accepted
+0.153.4 experimental protocol and fixed 99-feature policy. Platform-specific
+binary pins are mandatory before startup. Generation admits GPT-5.5 only and
+requests empty environments, dynamic tools and capability/workspace roots;
+returned model/provider/sandbox/approval/root drift is rejected before a turn.
+The existing CODEX_HOME remains the auth location; HOME, profile and temporary
+paths are private children, with inherited credential variables excluded.
+Login/status and full model enumeration remain available.
+
+The original failure was not a failed login: generation was deliberately blocked,
+and its dormant path still lacked the accepted diagnostic controls. This change
+corrects that path; `_require_generation_ready` remains closed because registry
+controls do not establish Windows read isolation or provider acceptance.
+
+Independent review: PASS, no actionable findings, 83 passed and 3 opt-in skips.
+O verification: 97 passed, 3 opt-in skips in 9.93 seconds across session, text,
+tool-policy/registry, owner boundary and settings routes. Ruff passed for all
+five changed Python files; strict mypy passed for both production modules.
+Real-pipe fake-server tests cover policy hash, private environment and rejection
+before dispatch. No native/provider test or preview/live service restart occurred.

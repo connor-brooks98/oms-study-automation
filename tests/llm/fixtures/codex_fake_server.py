@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-scenario, trace_path = sys.argv[1:]
+scenario, trace_path = sys.argv[1:3]
 trace = Path(trace_path)
 pending_login = False
 
@@ -33,6 +33,8 @@ def completed(status):
 log(
     {
         "startup": True,
+        "args": sys.argv[3:],
+        "env": dict(os.environ),
         "cwd": os.getcwd(),
         "api_key_inherited": "OPENAI_API_KEY" in os.environ,
         "codex_home": os.environ.get("CODEX_HOME"),
@@ -55,11 +57,13 @@ for raw in sys.stdin:
         if scenario == "no_initialize":
             continue
         result = {
-            "codexHome": os.environ["CODEX_HOME"],
+            "codexHome": "wrong" if scenario == "wrong_home" else os.environ["CODEX_HOME"],
             "platformFamily": "unix",
             "platformOs": "macos",
             "userAgent": "codex-cli/0.153.4",
         }
+        if scenario == "malformed_home":
+            result["codexHome"] = None
     elif method == "account/read":
         if pending_login and scenario != "logged_out":
             emit(
@@ -102,7 +106,17 @@ for raw in sys.stdin:
     elif method == "account/login/cancel":
         result = {"status": "canceled"}
     elif method == "thread/start":
-        result = {"thread": {"id": "thread-fixture"}}
+        result = {
+            "thread": {"id": "thread-fixture"},
+            "model": request["params"].get("model"),
+            "modelProvider": "openai",
+            "runtimeWorkspaceRoots": [],
+            "approvalPolicy": "untrusted",
+            "approvalsReviewer": "user",
+            "sandbox": {"type": "readOnly", "networkAccess": scenario == "policy_drift"},
+        }
+        if scenario.startswith("policy_drift:"):
+            result[scenario.split(":", 1)[1]] = None
     elif method == "turn/interrupt":
         emit({"id": request_id, "result": {}})
         emit(completed("interrupted"))

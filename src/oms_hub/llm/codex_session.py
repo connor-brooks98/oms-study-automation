@@ -6,6 +6,7 @@ import math
 import os
 import queue
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -17,9 +18,16 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
+from oms_hub.llm.codex_policy import policy_args
+
 PINNED_VERSION = "codex-cli 0.153.4"
 PINNED_SCHEMA_SHA256 = "e8284c5cb8157554a3dd1e035aadbd4325aea501af56887e9c2e12eb1b9b9448"
 INSPECTED_MACOS_BINARY_SHA256 = "87a08119b8effa519f0ecb552dc98043f58a8200bf2ec5da60f76890c33e9c3a"
+INSPECTED_WINDOWS_BINARY_SHA256 = "444a3f0008050605cae73cd9b7a2dcac61294062dfaab56dd20430fd6498518b"
+PINNED_EXPERIMENTAL_SCHEMA_SHA256 = (
+    "b06f77062369d481a59cc70720c12b89cb9dd49c385863923262102d3ad6c978"
+)
+_RUNTIME_PINS = {"darwin": INSPECTED_MACOS_BINARY_SHA256, "win32": INSPECTED_WINDOWS_BINARY_SHA256}
 
 
 @dataclass(frozen=True)
@@ -380,7 +388,7 @@ class CodexSessionClient:
             raise ValueError("session and staging roots must be separate dedicated directories")
         self.startup_timeout, self.turn_timeout = startup_timeout, turn_timeout
         self.shutdown_timeout, self.binary_sha256 = shutdown_timeout, binary_sha256
-        self._command = [str(self.executable), "app-server", "--listen", "stdio://"]
+        self._command = [str(self.executable), "app-server", "--listen", "stdio://", *policy_args()]
         self._lock = threading.Lock()
         self._closed = threading.Event()
         self._cancel_requested = threading.Event()
@@ -415,10 +423,25 @@ class CodexSessionClient:
         if self._wire is not None:
             return
         try:
+            if self.binary_sha256 != _RUNTIME_PINS.get(sys.platform):
+                raise SessionError("capability_unverified")
             with self.executable.open("rb") as binary:
                 if hashlib.file_digest(binary, "sha256").hexdigest() != self.binary_sha256:
                     raise SessionError("capability_unverified")
-            for directory in (self.session_home, self.work_root, cwd):
+            home = self.session_home / "host-home"
+            temporary = home / "tmp"
+            roaming, local = home / "AppData" / "Roaming", home / "AppData" / "Local"
+            for directory in (
+                self.session_home,
+                self.work_root,
+                cwd,
+                home,
+                temporary,
+                roaming,
+                local,
+            ):
+                if directory.resolve() != directory:
+                    raise SessionError("capability_unverified")
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                 if os.name != "nt":
                     directory.chmod(0o700)
@@ -433,24 +456,40 @@ class CodexSessionClient:
                     "WINDIR",
                     "COMSPEC",
                     "PATHEXT",
-                    "TMP",
-                    "TEMP",
-                    "TMPDIR",
                     "LANG",
                     "LC_ALL",
                 }
             }
-            env["CODEX_HOME"] = str(self.session_home)
+            env.update(
+                {
+                    "CODEX_HOME": str(self.session_home),
+                    "HOME": str(home),
+                    "USERPROFILE": str(home),
+                    "APPDATA": str(roaming),
+                    "LOCALAPPDATA": str(local),
+                    "TMP": str(temporary),
+                    "TEMP": str(temporary),
+                    "TMPDIR": str(temporary),
+                }
+            )
             self._wire = _Stdio(
                 self._command, cwd=cwd, env=env, shutdown_timeout=self.shutdown_timeout
             )
             self._events = []
-            self._rpc(
+            initialized = self._rpc(
                 "initialize",
-                {"clientInfo": {"name": "oms-study-hub", "version": "1"}},
+                {
+                    "clientInfo": {"name": "oms-study-hub", "version": "1"},
+                    "capabilities": {"experimentalApi": True},
+                },
                 deadline,
                 cancelled,
             )
+            actual_home = initialized.get("codexHome")
+            if not isinstance(actual_home, str) or os.path.normcase(
+                actual_home
+            ) != os.path.normcase(str(self.session_home)):
+                raise SessionError("capability_unverified")
             self._wire.send({"method": "initialized"}, deadline, cancelled)
         except OSError:
             raise SessionError("protocol_error") from None
@@ -623,8 +662,9 @@ class CodexSessionClient:
                 raise
 
     def _require_generation_ready(self, request: SessionRequest) -> None:
-        # No config boolean may bypass the unproved tool boundary. Tests replace this method
-        # only for their owned fake executable; live policy implementation needs separate proof.
+        # The fixed registry controls do not prove OS isolation or real provider acceptance.
+        # No config boolean may bypass those remaining gates. Tests replace this method only
+        # for their owned fake executable; native activation needs separate accepted evidence.
         raise SessionError("capability_unverified")
 
     def _stage_images(self, request: SessionRequest, directory: Path) -> list[dict[str, str]]:
@@ -667,7 +707,6 @@ class CodexSessionClient:
         on_lifecycle: Callable[[SessionLifecycle], None],
     ) -> SessionResult:
         with self._operation(cancelled), ExitStack() as staging:
-            self._require_generation_ready(request)
             if (
                 not all(
                     isinstance(value, str)
@@ -686,6 +725,11 @@ class CodexSessionClient:
                 )
             ):
                 raise SessionError("invalid_output")
+            if request.model != "gpt-5.5":
+                raise SessionError("model_unavailable")
+            if self.binary_sha256 != _RUNTIME_PINS.get(sys.platform):
+                raise SessionError("capability_unverified")
+            self._require_generation_ready(request)
             self._cancel_requested.clear()
             self._active_ids = (None, None)
             dispatching = False
@@ -744,6 +788,12 @@ class CodexSessionClient:
                     "thread/start",
                     {
                         "model": request.model,
+                        "modelProvider": "openai",
+                        "allowProviderModelFallback": False,
+                        "dynamicTools": [],
+                        "environments": [],
+                        "selectedCapabilityRoots": [],
+                        "runtimeWorkspaceRoots": [],
                         "cwd": str(directory),
                         "ephemeral": True,
                         "developerInstructions": request.instructions,
@@ -756,6 +806,16 @@ class CodexSessionClient:
                 )
                 self._active_ids = (_identifier(_object(thread.get("thread")).get("id")), None)
                 emit("thread_created")
+                for key, expected in {
+                    "model": request.model,
+                    "modelProvider": "openai",
+                    "runtimeWorkspaceRoots": [],
+                    "approvalPolicy": "untrusted",
+                    "approvalsReviewer": "user",
+                    "sandbox": {"type": "readOnly", "networkAccess": False},
+                }.items():
+                    if thread.get(key) != expected:
+                        raise SessionError("capability_unverified")
                 self._turn_observer = observe
                 turn = self._rpc(
                     "turn/start",
