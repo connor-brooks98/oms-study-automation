@@ -60,7 +60,10 @@ public sealed class OmsLpacResult {
     public string ChildLocalAppData;
     public uint ProcessId;
     public int IsAppContainer;
-    public int IsLessPrivilegedAppContainer;
+    public bool CallerAccessCheckReturned, CallerAccessStatus;
+    public uint CallerGrantedAccess;
+    public bool ChildAccessCheckReturned, ChildAccessStatus;
+    public uint ChildGrantedAccess;
     public int CapabilityCount;
     public int SessionId;
     public bool ProfileCreated;
@@ -75,13 +78,16 @@ public sealed class OmsLpacResult {
 public static class OmsLpacProbe {
     // Documented TOKEN_INFORMATION_CLASS values (winnt.h).
     const int TokenElevation = 20, TokenIsAppContainer = 29, TokenCapabilities = 30;
-    const int TokenAppContainerSid = 31, TokenIsLessPrivilegedAppContainer = 46;
+    const int TokenAppContainerSid = 31;
     const uint WAIT_TIMEOUT = 258, INFINITE_ERROR = 0xffffffff;
     [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes {
         public int Length; public IntPtr Descriptor; public int Inherit;
     }
     [StructLayout(LayoutKind.Sequential)] struct SecurityCapabilities {
         public IntPtr Sid, Capabilities; public uint Count, Reserved;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct GenericMapping {
+        public uint Read, Write, Execute, All;
     }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo {
         public int cb; public string Reserved, Desktop, Title;
@@ -100,6 +106,11 @@ public static class OmsLpacProbe {
     [DllImport("advapi32.dll")] static extern IntPtr FreeSid(IntPtr sid);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr data, int length, out int needed);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateTokenEx(
+        IntPtr token, uint access, IntPtr attributes, int level, int type, out IntPtr duplicate);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool AccessCheck(
+        IntPtr descriptor, IntPtr token, uint desired, ref GenericMapping mapping,
+        IntPtr privileges, ref uint privilegeLength, out uint granted, out bool status);
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, uint flags, ref IntPtr size);
@@ -157,6 +168,37 @@ public static class OmsLpacProbe {
             return new SecurityIdentifier(sid).Value;
         } finally { Marshal.FreeHGlobal(data); }
     }
+    static void DuplicateForAccessCheck(IntPtr token, out IntPtr duplicate) {
+        // TOKEN_QUERY, SecurityIdentification, TokenImpersonation; never impersonate a thread.
+        bool ok = DuplicateTokenEx(token, 8, IntPtr.Zero, 1, 2, out duplicate);
+        int error = Marshal.GetLastWin32Error();
+        Win32(ok, error, "Duplicate token for AccessCheck");
+    }
+    static void CheckLpacAccess(IntPtr token, out bool returned, out bool status, out uint granted) {
+        // Chromium CheckLpacToken: in-memory descriptor only, never applied to a filesystem object.
+        // https://chromium.googlesource.com/chromium/src/+/04d774d3827c8532b1b7d3966629f9193a35dd0e/sandbox/win/src/app_container_test.cc
+        RawSecurityDescriptor descriptor = new RawSecurityDescriptor(
+            "O:SYG:SYD:(A;;0x3;;;WD)(A;;0x1;;;S-1-15-2-1)(A;;0x2;;;S-1-15-2-2)");
+        byte[] bytes = new byte[descriptor.BinaryLength];
+        descriptor.GetBinaryForm(bytes, 0);
+        IntPtr data = IntPtr.Zero, privileges = IntPtr.Zero;
+        try {
+            data = Marshal.AllocHGlobal(bytes.Length);
+            Marshal.Copy(bytes, 0, data, bytes.Length);
+            // Bounded privilege buffer; an insufficient buffer fails closed without replay.
+            uint privilegeLength = 1024;
+            privileges = Marshal.AllocHGlobal((int)privilegeLength);
+            GenericMapping mapping = new GenericMapping();
+            returned = AccessCheck(data, token, 0x02000000, ref mapping, privileges,
+                ref privilegeLength, out granted, out status); // MAXIMUM_ALLOWED
+            int error = Marshal.GetLastWin32Error();
+            Win32(returned, error, "LPAC AccessCheck");
+            Require(privilegeLength <= 1024, "AccessCheck privilege result exceeds its buffer.");
+        } finally {
+            if (privileges != IntPtr.Zero) Marshal.FreeHGlobal(privileges);
+            if (data != IntPtr.Zero) Marshal.FreeHGlobal(data);
+        }
+    }
     static void Attribute(IntPtr list, long key, IntPtr value, int size) {
         bool ok = UpdateProcThreadAttribute(list, 0, new IntPtr(key), value, new IntPtr(size), IntPtr.Zero, IntPtr.Zero);
         int error = Marshal.GetLastWin32Error();
@@ -178,6 +220,7 @@ public static class OmsLpacProbe {
     public static OmsLpacResult Run(string fixture, string profileName) {
         OmsLpacResult result = new OmsLpacResult();
         IntPtr sid = IntPtr.Zero, callerToken = IntPtr.Zero, childToken = IntPtr.Zero;
+        IntPtr callerCheckToken = IntPtr.Zero, childCheckToken = IntPtr.Zero;
         IntPtr attributes = IntPtr.Zero, capsData = IntPtr.Zero, policy = IntPtr.Zero, handlesData = IntPtr.Zero, environment = IntPtr.Zero;
         IntPtr stdin = IntPtr.Zero, stdout = IntPtr.Zero, stderr = IntPtr.Zero;
         ProcessInformation process = new ProcessInformation();
@@ -189,11 +232,18 @@ public static class OmsLpacProbe {
         string outsideMarker = "OMS_LPAC_OUTSIDE_" + Guid.NewGuid().ToString("N");
         try {
             result.Stage = "caller";
-            bool opened = OpenProcessToken(GetCurrentProcess(), 8, out callerToken);
+            bool opened = OpenProcessToken(GetCurrentProcess(), 10, out callerToken); // QUERY | DUPLICATE
             int openError = Marshal.GetLastWin32Error();
             Win32(opened, openError, "Open caller token");
             Require(TokenInt(callerToken, TokenElevation) == 0, "Elevated caller forbidden.");
             result.CallerSid = WindowsIdentity.GetCurrent().User.Value;
+            result.Stage = "caller-access-control";
+            Require(TokenInt(callerToken, TokenIsAppContainer) == 0, "Caller control must not be an AppContainer.");
+            DuplicateForAccessCheck(callerToken, out callerCheckToken);
+            CheckLpacAccess(callerCheckToken, out result.CallerAccessCheckReturned,
+                out result.CallerAccessStatus, out result.CallerGrantedAccess);
+            Require(result.CallerAccessStatus && result.CallerGrantedAccess == 3,
+                "Ordinary caller AccessCheck control must grant exactly mask 3.");
             result.Stage = "child-environment";
             string localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
             Require(!String.IsNullOrWhiteSpace(localAppData) && localAppData.Length >= 3
@@ -268,23 +318,31 @@ public static class OmsLpacProbe {
             Win32(created, createError, "Create LPAC cmd");
             result.ProcessId = process.ProcessId;
             result.Stage = "verify-suspended-token";
-            bool childOpened = OpenProcessToken(process.Process, 8, out childToken);
+            bool childOpened = OpenProcessToken(process.Process, 10, out childToken); // QUERY | DUPLICATE
             int childOpenError = Marshal.GetLastWin32Error();
             Win32(childOpened, childOpenError, "Open child token");
             result.IsAppContainer = TokenInt(childToken, TokenIsAppContainer);
-            result.IsLessPrivilegedAppContainer = TokenInt(childToken, TokenIsLessPrivilegedAppContainer);
             IntPtr capabilitiesInfo = TokenData(childToken, TokenCapabilities);
             try { result.CapabilityCount = Marshal.ReadInt32(capabilitiesInfo); }
             finally { Marshal.FreeHGlobal(capabilitiesInfo); }
             result.SessionId = TokenInt(childToken, 12);
             result.ChildSid = TokenSid(childToken);
+            DuplicateForAccessCheck(childToken, out childCheckToken);
+            CheckLpacAccess(childCheckToken, out result.ChildAccessCheckReturned,
+                out result.ChildAccessStatus, out result.ChildGrantedAccess);
             File.WriteAllText(Path.Combine(fixture, "token.txt"), "pid=" + result.ProcessId
                 + "\r\nTokenIsAppContainer=" + result.IsAppContainer
-                + "\r\nTokenIsLessPrivilegedAppContainer=" + result.IsLessPrivilegedAppContainer
+                + "\r\nCallerAccessCheck.Returned=" + result.CallerAccessCheckReturned
+                + "\r\nCallerAccessCheck.AccessStatus=" + result.CallerAccessStatus
+                + "\r\nCallerAccessCheck.GrantedMask=" + result.CallerGrantedAccess
+                + "\r\nChildAccessCheck.Returned=" + result.ChildAccessCheckReturned
+                + "\r\nChildAccessCheck.AccessStatus=" + result.ChildAccessStatus
+                + "\r\nChildAccessCheck.GrantedMask=" + result.ChildGrantedAccess
                 + "\r\nTokenCapabilities.Count=" + result.CapabilityCount
                 + "\r\nTokenSessionId=" + result.SessionId
                 + "\r\nTokenAppContainerSid=" + result.ChildSid + "\r\n", Encoding.ASCII);
-            Require(result.IsAppContainer == 1 && result.IsLessPrivilegedAppContainer == 1 && result.CapabilityCount == 0 && result.ChildSid == result.ProfileSid,
+            Require(result.IsAppContainer == 1 && result.ChildAccessStatus && result.ChildGrantedAccess == 2
+                && result.CapabilityCount == 0 && result.ChildSid == result.ProfileSid && result.SessionId == 1,
                 "Suspended token does not match the zero-capability LPAC profile.");
             result.Stage = "resume";
             uint previousCount = ResumeThread(process.Thread);
@@ -327,7 +385,7 @@ public static class OmsLpacProbe {
                 if (!result.Reaped) result.Error += "\nOWNED CHILD NOT REAPED; TerminateProcess=" + killed + ", error=" + killError
                     + ", wait=" + cleanupWait + ", wait error=" + cleanupWaitError;
             }
-            foreach (IntPtr handle in new IntPtr[] { childToken, callerToken, process.Thread, process.Process, stdin, stdout, stderr }) {
+            foreach (IntPtr handle in new IntPtr[] { childCheckToken, callerCheckToken, childToken, callerToken, process.Thread, process.Process, stdin, stdout, stderr }) {
                 if (handle == IntPtr.Zero) continue;
                 bool closed = CloseHandle(handle);
                 int closeError = Marshal.GetLastWin32Error();
