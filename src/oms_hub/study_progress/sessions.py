@@ -51,6 +51,23 @@ class AnswerSelection(BaseModel):
         return self
 
 
+class NativeQuestionRef(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    quiz_token: Annotated[str, Field(min_length=1, max_length=64)]
+    quiz_version: Annotated[int, Field(ge=1)]
+    quiz_content_sha256: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+    question_id: SelectionId
+
+
+def native_reference(publication: PublishedQuizRecord, question_id: str) -> NativeQuestionRef:
+    return NativeQuestionRef(
+        quiz_token=publication.token,
+        quiz_version=publication.version,
+        quiz_content_sha256=_hash(publication),
+        question_id=question_id,
+    )
+
+
 @dataclass(frozen=True)
 class SessionView:
     id: str
@@ -158,25 +175,41 @@ class StudySessionService:
         return questions
 
     def create(self, owner_id: str, quiz_token: str) -> SessionView:
+        publication = self.load_quiz(owner_id, quiz_token)
+        return self.create_block(
+            owner_id, tuple(native_reference(publication, q.id) for q in publication.quiz.questions)
+        )
+
+    def create_block(self, owner_id: str, references: tuple[NativeQuestionRef, ...]) -> SessionView:
         TypeAdapter(OwnerId).validate_python(owner_id)
+        references = tuple(NativeQuestionRef.model_validate(r.model_dump()) for r in references)
+        if not 1 <= len(references) <= 500 or len(set(references)) != len(references):
+            raise ValueError("Select 1-500 distinct versioned questions")
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
-            publication = self._publication(session, owner_id, quiz_token)
-            self._content(owner_id, publication)  # Missing images must fail before delivery.
+            publications = {}
+            for ref in references:
+                if ref.quiz_token not in publications:
+                    publication = self._publication(session, owner_id, ref.quiz_token)
+                    self._content(owner_id, publication)
+                    publications[ref.quiz_token] = publication
+                publication = publications[ref.quiz_token]
+                if (
+                    ref.quiz_version != publication.version
+                    or ref.quiz_content_sha256 != _hash(publication)
+                    or ref.question_id not in {q.id for q in publication.quiz.questions}
+                ):
+                    raise ValueError("Selected question changed")
             session_id = str(uuid4())
             session.add(StudySessionModel(id=session_id, owner_id=owner_id))
             session.flush()
-            digest = _hash(publication)
-            for position, question in enumerate(publication.quiz.questions):
+            for position, ref in enumerate(references):
                 session.add(
                     StudySessionQuestionModel(
                         attempt_id=str(uuid4()),
                         session_id=session_id,
                         position=position,
-                        quiz_token=quiz_token,
-                        quiz_version=publication.version,
-                        quiz_content_sha256=digest,
-                        question_id=question.id,
+                        **ref.model_dump(),
                     )
                 )
         return self.load(session_id, owner_id=owner_id)
@@ -191,13 +224,23 @@ class StudySessionService:
             ).all()
             if not rows:
                 raise ValueError("Empty session")
-            publication = self._publication(session, owner_id, rows[0].quiz_token)
-            questions = self._content(owner_id, publication)
-            by_id = {q["id"]: q for q in questions}
+            publications = {}
+            for token in dict.fromkeys(row.quiz_token for row in rows):
+                publication = self._publication(session, owner_id, token)
+                questions = self._content(owner_id, publication)
+                publications[token] = (publication, {q["id"]: q for q in questions})
             delivered = []
             for row in rows:
+                publication, by_id = publications[row.quiz_token]
                 self._unchanged(row, publication)
                 question = dict(by_id[row.question_id])
+                # Delivery IDs are unique across publications; grading retains the original row ID.
+                question["id"] = f"q{row.position + 1}"
+                question["source_label"] = (
+                    f"{publication.destination_subject} · "
+                    f"Exam {publication.destination_exam_number}"
+                    f" · {publication.label or publication.title} · {row.question_id}"
+                )
                 question["attempt_id"] = row.attempt_id
                 # A staged selection survives a crash; feedback requires a bank receipt.
                 if row.selected_answer_json:
@@ -207,11 +250,16 @@ class StudySessionService:
                     if row.bank_attempt_id is not None:
                         question["feedback"] = staged["feedback"]
                 delivered.append(question)
+            title = (
+                publication.title
+                if len(publications) == 1 and len(rows) == len(publication.quiz.questions)
+                else f"Study block · {len(rows)} questions"
+            )
             return SessionView(
                 owned.id,
-                publication.token,
-                publication.version,
-                publication.title,
+                rows[0].quiz_token,
+                rows[0].quiz_version if len(publications) == 1 else 1,
+                title,
                 owned.closed_at is not None,
                 tuple(delivered),
             )
