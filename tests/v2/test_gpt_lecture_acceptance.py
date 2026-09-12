@@ -300,6 +300,8 @@ def test_upload_clean_generate_review_publish_and_public_grade_without_google(
         _verify(client, run_id)
         preview = client.get(f"/studio/runs/{run_id}/preview/content")
         assert preview.status_code == 200, preview.text
+        preview_page = client.get(f"/studio/runs/{run_id}/preview")
+        assert all(f"/exports/{suffix}" in preview_page.text for suffix in ("json", "zip", "pdf"))
         drafts = app.state.practice_review.review(run_id)
         stored = {
             q.chosen_image.key: app.state.studio_repository.import_review_image(
@@ -352,6 +354,11 @@ def test_upload_clean_generate_review_publish_and_public_grade_without_google(
             Path(os.environ.get("OMS_B7_EVIDENCE_DIR", str(tmp_path / "exports"))),
         )
         assert parse_native_quiz(raw.read_text()) == published.quiz
+        for suffix, exported in zip(("json", "zip", "pdf"), (raw, bundle, pdf), strict=True):
+            download = client.get(f"/studio/runs/{run_id}/exports/{suffix}")
+            assert download.status_code == 200, download.text
+            assert download.content == exported.read_bytes()
+            assert download.headers["cache-control"] == "private, no-store"
         with ZipFile(bundle) as archive:
             manifest = json.loads(archive.read("manifest.json"))
             assert manifest["provenance"] == provenance
