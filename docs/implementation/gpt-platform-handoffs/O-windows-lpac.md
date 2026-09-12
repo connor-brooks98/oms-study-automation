@@ -61,17 +61,17 @@ and after, and bounds cleanup to recorded process identities.
 | windows-lpac-localappdata | Environment correction created child17664. Unsupported token46 check stopped it before resume; owned child terminated/reaped. Both postflights passed. |
 | windows-lpac-accesscheck | Caller3/child2, AppContainer1, exact SID, zero capabilities and session1 passed. Child3424 resumed and exited3221225794 (`0xC0000142`) with empty stdout/stderr. Read oracle failed. Both postflights passed. |
 
-Latest task: `OMS GPT LPAC AccessCheck 3092ba4a06da`, disabled, last result1.
+Previous task: `OMS GPT LPAC AccessCheck 3092ba4a06da`, disabled, last result1.
 Profile: `oms-lpac-3092ba4a06da4dcabb6e9e3943257907`.
 Remote root: `C:/Users/conbr/AppData/Local/OMSStudyHub/acceptance/lpac-3092ba4a06da`.
 Native run: `2026-09-12T14:27:10.9826022Z` to `14:27:11.0368589Z`.
-No timeout or kill was needed; child reaped. Latest outer postflight
+No timeout or kill was needed; child reaped. Previous outer postflight
 `2026-09-12T14:27:17.0931795Z`: no new/missing monitored processes, cleanup error
 null, task disabled, same healthy Hub listener PID8268/buildf487c622/schema31 and
 three workers alive with start count1. A narrow read-only System/Application event
 query for14:26:50–14:27:30Z found no matching events. It does not identify the DLL.
 
-Latest archive manifest:46 files, SHA256
+Previous archive manifest:46 files, SHA256
 `9701b1ba9b662ee852dc6f22f964b6a3f2e1466396bf9bcef6114dd03b89d612`.
 [Archive hashes and retained failures](../gpt-platform-evidence/README.md).
 Original raw evidence remains under O's visualization directory.
@@ -91,24 +91,47 @@ launcher; the production readiness guard remains closed.
 - [Chromium CheckLpacToken](https://chromium.googlesource.com/chromium/src/%2B/04d774d3827c8532b1b7d3966629f9193a35dd0e/sandbox/win/src/app_container_test.cc): in-memory descriptor and required mask2.
 - [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw): suspended launch, explicit environment and retained handles.
 
-## Concrete next diagnostic — not executed
+## Approved console-setting experiment — completed once
 
-Read-only inspection at `2026-09-12T14:30:43.3890405Z` found no
-`LowBoxConsoleEnabled` value in conbr's existing Console key. Microsoft's
-[LaunchAppContainer sample](https://github.com/microsoft/SandboxSecurityTools/blob/main/LaunchAppContainer/LaunchAppContainer/LaunchAppContainer.cpp#L423)
-sets this DWORD to1 to enable lowbox console processes. That is a supported lead,
-not proof that it causes this failure with CREATE_NO_WINDOW.
+Connor explicitly approved the temporary LowBoxConsoleEnabled diagnostic. The
+single run used the same probe source SHA above and fresh identities:
 
-The proposed experiment is one fresh synthetic LPAC probe with the same reviewed
-source/hash/identity/oracle while temporarily setting only
+- Task: `OMS GPT LPAC Console f4eb50a9ed74`.
+- Profile: `oms-lpac-f4eb50a9ed744117be1580815b357fe4`.
+- Remote root: `C:/Users/conbr/AppData/Local/OMSStudyHub/acceptance/lpac-f4eb50a9ed74`.
+- Inner wrapper SHA256: `e23a2cd6e70c22fec38b6c5e2e30bbfce1de3a3b0a6a5d2e8e69be38b1a3f833`.
+- Outer wrapper SHA256: `a6b9e629dcef7f723dc41c319d60bbac26421607915886c8378e4200d49fae87`.
+
+Independent wrapper review passed before execution. Both the existing conbr SID
+and original value absence were checked before setting only
 `HKEY_USERS\S-1-5-21-2532054349-1599019584-1571196523-1004\Console\LowBoxConsoleEnabled`
-to DWORD1. Check that it is still absent immediately beforehand, retain the
-before/after value/type, run the existing bounded watchdog, then restore absence
-in unconditional cleanup and verify restoration plus Hub/process preservation.
-If it exists or changes concurrently, stop rather than overwrite it. Retain the
-fresh task/profile/fixture and raw failed or successful output. No provider,
-credential, ACL, firewall or live Hub change is included.
+to DWORD1. The value was recorded enabled at `2026-09-12T15:50:24.7832281Z`.
 
-This changes an account-wide Windows setting, beyond the prior fixture-only
-mutation boundary. Approval is required before executing that mutation. No such setting was changed during this investigation. The diagnosis
-archive retains the exact read-only query and its result.
+**The setting did not resolve this startup failure.** The unchanged probe passed
+caller3/child2, AppContainer1, exact SID, zero capabilities and session1. Child21176
+resumed and exited `0xC0000142` with empty stdout/stderr, then was reaped normally.
+Native run: `15:50:31.8539749Z`–`15:50:31.9016430Z`. No timeout or kill occurred.
+The synthetic read-boundary oracle correctly failed; no provider was called.
+
+Unconditional cleanup restored original absence at
+`2026-09-12T15:50:39.0049967Z`. A separate read-only SSH query confirmed absence at
+`2026-09-12T15:51:05.3547495Z`. Independent review confirmed both results.
+Both inner and outer preservation checks passed. Latest outer postflight
+`2026-09-12T15:50:39.4735015Z` found no new/missing monitored processes, no cleanup
+errors, task disabled, and the same healthy Hub PID8268/buildf487c622/schema31 with
+all three workers alive/start count1. The task's last result1 reflects failed
+acceptance, not failed restoration. A narrow read-only System/Application query
+for15:50:15–15:50:45Z returned no events and did not identify a failing DLL.
+
+Archive: `windows-lpac-console.zip`, 52 manifest-bound files; SHA256
+`94a596db0f57387fbde32418c1d919820184f2f46dfecb738fa0cf3a2c65c441`.
+Manifest SHA256: `8649bba51f07715adc7d389f2223014c2cab62b800a1259c3ab5e6b0011ab5f7`.
+The exact scripts, before/enabled/after registry values, independent restoration
+read, raw output, token results, task definition and preservation checks are
+retained. All archive manifest hashes and CRCs passed O's verification.
+
+This one-shot approval is consumed. No persistent registry setting, ACL change,
+weaker token, second launch, provider acceptance or live deployment followed.
+The next useful evidence is the actual failing DLL/initialization operation;
+another broad setting change is not justified by the exit code alone. Runtime
+activation remains closed. The production source is unchanged by this experiment.

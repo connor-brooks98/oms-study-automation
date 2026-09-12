@@ -390,13 +390,23 @@
     "lpac": {
       "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-lpac.md",
       "source_sha256": "e04780505e9e8ad42b7eb52792cfd89b9b3fac09653719f9977f8516154fe4d1",
-      "task": "OMS GPT LPAC AccessCheck 3092ba4a06da",
+      "task": "OMS GPT LPAC Console f4eb50a9ed74",
       "token_verification": "passed",
       "read_boundary": "failed_child_dll_initialization",
       "child_exit_code": "0xC0000142",
       "preservation": "passed",
-      "postflight_utc": "2026-09-12T14:27:17.0931795Z",
-      "next_action": "Review account-wide LowBoxConsoleEnabled diagnostic proposal; no registry mutation authorized or executed"
+      "postflight_utc": "2026-09-12T15:50:39.4735015Z",
+      "next_action": "Identify failing DLL/initialization operation; temporary console setting did not resolve startup; no second mutation or launch approved",
+      "console_experiment": {
+        "authorization": "explicit user approval, one shot consumed",
+        "state": "completed_failure_unchanged",
+        "enabled_value": "DWORD1",
+        "restored_original_absence": true,
+        "independent_restore_utc": "2026-09-12T15:51:05.3547495Z",
+        "archive": "docs/implementation/gpt-platform-evidence/windows-lpac-console.zip",
+        "archive_sha256": "94a596db0f57387fbde32418c1d919820184f2f46dfecb738fa0cf3a2c65c441",
+        "review": "PASS independent wrapper and native/restoration evidence review"
+      }
     }
   },
   "local_preview": {

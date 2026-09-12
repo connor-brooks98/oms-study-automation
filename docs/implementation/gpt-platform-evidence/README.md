@@ -21,6 +21,7 @@ the LPAC token check only; it does not prove successful child initialization.
 | `windows-lpac-create-error.zip` | Retained actual CreateProcessW error203; no child; both postflights passed and task disabled | `e6b9fb69c4c8b4398240b5bbd28f38c39b3c7a646e94a0d98a5b995bf8905854` |
 | `windows-lpac-localappdata.zip` | LOCALAPPDATA fixed process creation; unsupported token46 stopped suspended child, which was terminated/reaped; both postflights passed | `be57c5b51eb3972c8e5ea96b4da2ed0562d5d29d567d226d6dcb35f27d570029` |
 | `windows-lpac-accesscheck.zip` | LPAC token proof passed; resumed child exited0xc0000142 before reads; both postflights passed | `29ddc228b677d75e29d8b0eaad8a244d2d2164acab2286520b1f8355e6328ae4` |
+| `windows-lpac-console.zip` | Approved temporary DWORD1 test: startup failure unchanged; original absence independently verified restored; both postflights passed | `94a596db0f57387fbde32418c1d919820184f2f46dfecb738fa0cf3a2c65c441` |
 
 The original profiles, fixtures, tasks and unbundled files remain retained.
 
