@@ -1,5 +1,7 @@
 # O runtime continuation — September 11, 2026
 
+Historical receipt: candidate and GPT-5.5 pending statements below are superseded by [O bounded Windows/runtime acceptance](O-windows-runtime.md). Earlier raw failures remain valid evidence.
+
 Base: `159e529487d51c5f038bd492cba2c742105d5965`. Continuation branch: `codex/gpt-runtime-activation`, worktree `/Users/connor/Developer/worktrees/oms-gpt-runtime-activation`.
 
 ## Authorization and retained preview

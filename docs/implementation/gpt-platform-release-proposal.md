@@ -1,8 +1,8 @@
 # GPT Study Hub candidate — release proposal
 
-Status: the core local implementation and this diagnostic continuation are integrated and independently reviewed. The base passed 3,821 Python and 284 JavaScript tests; the continuation passed 74 focused checks with two explicit/optional skips. The authorized isolated preview at `http://127.0.0.1:56460` has a connected ChatGPT account. Live NUC deployment remains unauthorized.
+Status: core implementation and bounded Windows artifact acceptance are ready for review. Actual Windows PowerPoint conversion preserved the embedded image and vector shape; a discovered long-path export defect was fixed, reviewed and passed18 Windows export checks plus retained-slide export/grade parity. The working local preview has a connected ChatGPT account. Generation activation and live NUC deployment remain pending.
 
-Reviewed continuation code candidate: `b556bd951201db03e07c90569b2866ca9379a33a`, tree `ffae60116f6dbcb308cb3d0bbe00286937475aa7`, branch `codex/gpt-runtime-activation`. Final status/receipt documentation follows that code commit. Application source, runtime configuration and JavaScript are unchanged from accepted base `159e529487d51c5f038bd492cba2c742105d5965`. The preserved release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`; they have not been relabeled or rebuilt for this diagnostic continuation.
+Reviewed code candidate: `8de86582e1f9ca12bfc00119121c2628542fe43b`, tree `7aa5bed47d3bb15d130088c13d81c9b3808b1073`, branch `codex/gpt-runtime-activation`. Final status/receipt documentation follows that code commit. Production changes since the frozen base are Office cleanup and Windows export-path handling; runtime policy and JavaScript remain unchanged. The existing full release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`. The separate353-member Windows acceptance archive is exact-source test staging, not a deployment package. [Current bounded acceptance receipt](gpt-platform-handoffs/O-windows-runtime.md).
 
 ## Intended release and limits
 
@@ -12,9 +12,9 @@ This replaces the required Google path for new lecture quizzes with an explicitl
 
 | Capability | Local candidate scope | External/operational limit |
 | --- | --- | --- |
-| Full lecture-image quiz | Full approved slides and cleaned transcript, frozen objective coverage, source locators, original sanitized images, native review and publication | Actual Windows Office conversion and subscription generation not accepted; conservative request ceiling: 20 images and 100,000 serialized source characters |
+| Full lecture-image quiz | Full approved slides and cleaned transcript, frozen objective coverage, source locators, original sanitized images, native review and publication | Synthetic Windows Office/image/export subset accepted; subscription generation and forced-timeout cleanup pending; conservative request ceiling: 20 images and 100,000 serialized source characters |
 | Optional outline | Current-source validation through filing/commit; durable raw result; PDF filing with Codex provenance | GPT replacement of any retained imported NotebookLM outline is explicitly unavailable; historical legacy review is preserved |
-| Native JSON/ZIP/PDF exports | Same native payload and original PNGs; source/objective manifest; embedded-font PDF with unsupported-text rejection; private download parity reviewed | No private lecture evidence used |
+| Native JSON/ZIP/PDF exports | Same native payload and original PNGs; source/objective manifest; embedded-font PDF with unsupported-text rejection; private download parity reviewed | Actual Windows18 export checks passed; no private lecture evidence used; UNC and symlink/junction cases unaccepted |
 | Lecture/general chat | Owner-scoped current source snapshots, citations, durable history, cancellation/ambiguous-turn protection | Same runtime/account activation gate |
 | Question-bank imports | Normalized results-only or explicitly authorized content, preview/confirm, identity conflicts and review | Exact supported UWorld and TrueLearn samples still needed; no guessed proprietary parsers |
 | Anki candidates | Exact observed source/product-qualified QIDs and allowlisted pasted NIDs against an existing local index | Real prefix rules/index setup pending; no live Anki changes or full curation |
@@ -26,9 +26,11 @@ The lecture pipeline fails before dispatch with `context_limit` and affected obj
 
 ## Runtime continuation after local login
 
-The isolated preview remains on the frozen base at port 56460. A separate continuation branch adds durable smoke-probe diagnostics and an auth-free native tool-policy probe. Actual pinned-runtime testing found that `gpt-6-astra` registers model-driven tools outside the ordinary feature controls: valid async-input and agent-list calls still execute. Ordinary tool router rejection and a disabled Code Mode host are insufficient universal protection. The partial policy was kept entirely out of production; generation remains unavailable. [Exact continuation handoff](gpt-platform-handoffs/O-runtime.md).
+The preview remains on the frozen base at port56460. The diagnostic branch preserves raw smoke output before validation. The pinned macOS runtime accepted a combined GPT-5.5 experimental request with `environments: []`, empty capability/workspace roots and explicit controls: both effective tool registries were empty, and a valid custom `apply_patch` call was rejected before any write. This is a bounded native-router result against a synthetic loopback endpoint. It does not prove authenticated model behavior, Windows isolation or a minimal production configuration. [Exact B proof](gpt-platform-handoffs/B-gpt55-no-environments.md).
 
-The native probe uses blank synthetic roots and a loopback model endpoint. It proves neither subscription generation nor Windows isolation. Optional AMBOSS and vendor sample blockers remain separate from this runtime blocker.
+Earlier Astra async-input and agent-list calls still execute under the inspected partial controls; those failures are retained. Production generation therefore remains unavailable. On Windows, standalone Codex0.153.4 runs, but an attempted sandbox launch timed out connecting its runner pipe before target-command delivery. The initially incorrect help syntax was diagnosed from version-matched official source; corrected help passed. The signed helper inventory is recorded, but runner startup cause, restricted identity/readable roots and account persistence remain unresolved. No explicit setup, ACL, account or registry repair was attempted; possible internal preparation by the unexpected first sandbox invocation has not been audited. [Windows diagnosis and exact next proposal](gpt-platform-handoffs/B-windows-runner-diagnosis.md).
+
+Optional AMBOSS and vendor sample blockers remain separate. [Prior runtime receipt](gpt-platform-handoffs/O-runtime.md) records the earlier failed configurations; the current bounded receipt above supersedes its candidate and GPT-5.5 pending status.
 
 ## Retained state and UX
 
@@ -36,9 +38,9 @@ Original checkout `/Users/connor/Developer/oms-study-automation` remains dirty a
 
 The sixteen-item September 9 resolution record is retained in `docs/implementation/handoffs/2026-09-09-ux-audit-fixes.md`. Existing local route/JS regressions cover validated Home resume, lecture search, answer metadata hiding, source/destination context, material/study labels, selected-source controls, owner/public navigation, seven-pass target versus configured slots, global/local publication diagnostics, Anki Advanced controls, dated run history, compact library/player controls and upload language. The later lecture-action removal supersedes that record's M2 action row. Cloudflare's prior beacon configuration receipt is historical; no live configuration was changed or reverified here.
 
-## Read-only Windows operational snapshot
+## Windows operational preservation
 
-Exact receipt: `gpt-platform-handoffs/live-preflight.json`, observed `2026-09-11T23:30:15Z`.
+Fresh before/after evidence is retained in the current bounded receipt. Final postflight: `2026-09-12T03:08:53.2049179Z`. The earlier full task/owner inventory remains in `gpt-platform-handoffs/live-preflight.json`.
 
 - Root `C:\Services\oms-study-automation-v2`, commit `f487c6229b91d2b1ac11729e465561f6c1ffe997`, schema 31.
 - Scheduled task `OMS Study Hub V2`, principal `conbr`, Running.
@@ -46,7 +48,7 @@ Exact receipt: `gpt-platform-handoffs/live-preflight.json`, observed `2026-09-11
 - Health OK, DB reachable, generation/ingestion/studio workers alive, idle, start count one, no reported errors.
 - Live tracked `public_quiz.css` edit and untracked environment backup, inbox/import/script paths must be retained. Contents were not read.
 
-This proves only the observed running old Hub. It is not candidate Windows, provider, deployment, or rollback acceptance. Recheck exact identities immediately before an approved operation; PIDs and state can change.
+These snapshots prove preservation of the observed old Hub. The separate synthetic Windows Office and export tests establish their stated artifact subset only; provider, deployment and rollback acceptance remain pending. Recheck exact identities immediately before an approved operation; PIDs and state can change.
 
 ## Bounded provider acceptance proposal — not executed
 
@@ -77,10 +79,10 @@ Push/main merge and deployment are separate approvals. Local candidate review do
 - Independent final code review: **PASS**, no remaining actionable findings at the frozen candidate. C4 scope and cancellation races were corrected and independently reproduced. Exact task and correction receipts are in `gpt-platform-handoffs/O1.md` and the B/Q/C handoffs.
 - Complete Ruff: **PASS**. Complete mypy: **PASS**, 230 source files. Complete JavaScript: **284 passed**. Complete Python: **3,821 passed, 3 skipped, 1 deselected in 800.87 seconds; exit 0**. [Final receipt and commands](gpt-platform-handoffs/O3.md).
 - B6 actual-constructor synthetic lecture workflow and private JSON/ZIP/PDF route parity passed; O repeated its opt-in Chrome test: **1 passed, 5 deselected**, all 12 desktop/mobile stages without overflow or page errors. C4 browser independently passed cumulative selection, source labels, answer/resume, manual filters and explicit fake-provider suggestion acceptance. [Browser paths/hashes](gpt-platform-handoffs/O3-browser-evidence.json).
-- B7 export review passed after medical font correction: exact native payload/original PNG parity, supported medical glyphs, embedded fonts, immutable renderer identities, and unpacked-wheel-only export. PDF visual/asset evidence is in [B7 receipt](gpt-platform-handoffs/B7.md). Native macOS Python3.13/PyMuPDF in-process teardown was not accepted; the synthetic full workflow uses a checked raster subprocess. Actual Windows Office/runtime behavior remains unaccepted.
+- B7 export review passed after medical font correction: exact native payload/original PNG parity, supported medical glyphs, embedded fonts, immutable renderer identities, and unpacked-wheel-only export. PDF visual/asset evidence is in [B7 receipt](gpt-platform-handoffs/B7.md). Native macOS Python3.13/PyMuPDF in-process teardown was not accepted; the synthetic full workflow uses a checked raster subprocess. Actual Windows conversion/image retention and export checks now passed in the bounded continuation; runtime isolation and forced-timeout/reaping behavior remain unaccepted.
 - Source archive: `Study-Hub-V2-Source-2026-09-11-gpt-candidate.zip`, SHA256 `f4a3e7d7039e4ad5ab91e4e6fc5f85a89186a96917caaf8b5962e6a201090b40`, 700 manifest files verified. Runtime archive: SHA256 `849887d7cfa4f2b6af987b958eff3b97f833573b738130065729f00dd3a8c582`, 309 manifest files verified. Both rebuild byte-identically, pass ZIP integrity and contain byte-identical bundled fonts. [Exact local archive paths and manifests](gpt-platform-handoffs/O3-archives.json). The historical runtime archive filename does not authorize or enable paid fallback.
-- Original dirty/untracked status matches the exact bootstrap list. Live NUC operational proof is the read-only old-Hub snapshot above. Only the later isolated local preview was launched; the live Hub was not restarted or deployed, and nothing was pushed, merged to main, deleted, or applied to Anki.
+- Original dirty/untracked status matches the exact bootstrap list. Live NUC operational proof is the read-only old-Hub snapshot above. The isolated local preview and one bounded Windows Office conversion were launched; the live Hub was not restarted or deployed, and nothing was pushed, merged to main, deleted, or applied to Anki.
 
-The proposed next stage is review of this candidate and the separately bounded Windows/runtime acceptance work. A deployment authorization request is premature while the activation gate is unresolved. No new login, provider test or vendor action is implicitly requested by this document.
+Current continuation checks: **197 local regression tests passed with5 skips**, then **26 final export/atomic/private-route checks passed with1 Windows skip**; complete Ruff and mypy231 files passed. Windows export verification passed18 tests, with2 symlink cases explicitly excluded, and the retained native PDF passed image/export/grade parity without another Office launch. The initial7 failing export tests and the PowerShell transport parser failure are retained alongside the correction evidence. These are scoped results, not a repeat of the base full suite.
 
-Continuation validation and exact native evidence are in [O runtime receipt](gpt-platform-handoffs/O-runtime.md) and [B runtime receipt](gpt-platform-handoffs/B-runtime-policy.md). The diagnostic code is reviewed; universal tool prevention failed, and Windows/provider/deployed behavior remain unaccepted.
+The proposed next stage is candidate review and a separately reviewed Windows runner/identity correction. The concrete runner command in B's handoff can trigger sandbox preparation; its scope must be settled before launch. Do not infer permission to alter accounts, ACLs, firewall, runtime setup or deployment from the passing artifact tests. No new Mac login is needed. Provider acceptance and eventual cutover retain the separate bounded proposals above.
