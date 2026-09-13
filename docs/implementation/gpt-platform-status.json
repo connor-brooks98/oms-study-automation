@@ -357,7 +357,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "private_windows_build_passed_native_startup_pending",
+    "state": "private_windows_version_passed_initialize_hostname_failed",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -368,7 +368,7 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Native path red/green PASS. Reviewed private Codex release build succeeded with LTO=false, j1 and 9.5 GiB cap; exact executable frozen. All 144 Hub/986 memory checks and independent cleanup/preservation PASS. Native version/initialize, arg0, provider and deployment acceptance remain pending.",
+    "native_progress": "Private Windows build and exact LPAC --version PASS. Fixed initialize failed before response: gethostname1.1.0 panicked at GetComputerNameExW; native15-second deadline then owned kill/reap. Both postflights and independent task/process/runtime/Hub preservation PASS. Root-cause diagnosis in progress; no retry or arg0 execution.",
     "candidate": "f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3",
     "code_tree": "5e05f29df4c120c98ae9f7e76560266c99ffd157",
     "review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr",
@@ -399,7 +399,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Review exact successful-build and artifact bindings, then native version and fixed initialize checks serially; targeted arg0 tests only after both pass.",
+      "next_action": "Diagnose hostname discovery failure across shared startup callers, implement the smallest reviewed correction and retest under unchanged isolation; no blind initialize retry.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -517,7 +517,7 @@
             "actual_quote_verified": false
           },
           "resume": {
-            "state": "build_passed_native_startup_pending",
+            "state": "version_passed_initialize_failed_hostname",
             "authorization": "2026-09-13 user reports disabling Smart App Control and requests continuation",
             "policy_verified": true,
             "signing_or_purchase_authorized": false,
@@ -545,7 +545,7 @@
               "postflight_utc": "2026-09-13T13:46:14.460994Z",
               "cleanup_errors": []
             },
-            "next_action": "Review exact successful-build and artifact bindings, then native version and fixed initialize checks serially; targeted arg0 tests only after both pass.",
+            "next_action": "Diagnose hostname discovery failure across shared startup callers, implement the smallest reviewed correction and retest under unchanged isolation; no blind initialize retry.",
             "corrected_build": {
               "task": "OMS GPT Private Runtime Build 734bbdfad4a9 fetch 20260913",
               "cargo_pid": 6876,
@@ -757,9 +757,42 @@
               "codex_executable_produced": true,
               "executable_sha256": "74d7706f403336b693853eb8582e0424d9f765ac6c2d98e408206bf03e5ecf4f",
               "executable_bytes": 293978624,
-              "runtime_acceptance": "pending",
+              "runtime_acceptance": "version_passed_initialize_failed_hostname",
               "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-lto-false-build-success.zip",
               "evidence_archive_sha256": "24a842bb9b83a305851fbf70eb5c35aab1f3c5dc9266445a101e5c4a7aaf1128"
+            },
+            "native_acceptance": {
+              "runtime_sha256": "74d7706f403336b693853eb8582e0424d9f765ac6c2d98e408206bf03e5ecf4f",
+              "version": {
+                "state": "passed",
+                "child_pid": 26168,
+                "stdout_exact": "codex-cli 0.153.4\n",
+                "stderr_bytes": 0,
+                "exit_code": 0,
+                "timed_out": false,
+                "kill_attempted": false,
+                "independent_postflight_utc": "2026-09-13T21:29:13.2310035Z"
+              },
+              "initialize": {
+                "state": "failed_hostname_panic",
+                "child_pid": 3020,
+                "stderr_finding": "gethostname-1.1.0/src/lib.rs:85: GetComputerNameExW did not provide buffer size",
+                "stdout_bytes": 0,
+                "response_observed": false,
+                "native_timed_out": true,
+                "owned_kill_attempted": true,
+                "reaped": true,
+                "exit_code": 3758096385,
+                "wrapper_exit_code": 1,
+                "outer_timed_out": false,
+                "independent_postflight_utc": "2026-09-13T21:34:11.3729403Z",
+                "retry_performed": false
+              },
+              "preservation": "Both probes inner/outer/independent checks passed; tasks disabled, all owned processes gone, installed runtime hash and exact Hub unchanged",
+              "review": "PASS independent exact raw outputs/token/hash/preservation; initialize remains FAILED",
+              "arg0_execution": "not_run_pending_initialize",
+              "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-version-initialize.zip",
+              "evidence_archive_sha256": "47d3e7123b79d840e5341514f5533fdb6f47fce846ffbb68e79c91bfaf424482"
             }
           },
           "record_scope": "Original application-control failure; current successor state and evidence are in resume."

@@ -1,6 +1,6 @@
 # O: Windows canonicalization fix
 
-2026-09-13. **Native path regression PASS; compiler-path fix passed; private Windows release build PASS; native startup pending.**
+2026-09-13. **Native path regression PASS; compiler-path fix passed; private Windows build/version PASS; initialize hostname panic.**
 Independent source, fixed-wrapper and raw-result review passed by
 `/root/review_production_policy`. Production generation remains closed.
 
@@ -86,8 +86,8 @@ disabled, owned processes absent and exact Hub preservation.
 
 The custom executable is 293,978,624 bytes, SHA256
 `74d7706f403336b693853eb8582e0424d9f765ac6c2d98e408206bf03e5ecf4f`.
-The frozen local copy matches the native receipt. The full build passed; native
-version/initialize and targeted arg0 acceptance remain pending. This is a private
+The frozen local copy matches the native receipt. The full build and exact native LPAC version check passed. Initialize failed
+with a hostname API panic; dependent arg0 execution remains pending. This is a private
 patched build, not the official release binary. Generation remains closed.
 
 A prior attempt to copy the entire old cache was abandoned after its control-call
@@ -146,6 +146,32 @@ SHA256 `24a842bb9b83a305851fbf70eb5c35aab1f3c5dc9266445a101e5c4a7aaf1128`,
 The executable is retained separately at the exact local path in
 `frozen-artifact.json`; this archive contains its provenance and receipts.
 Native runtime and provider acceptance are excluded.
+
+## Native rebuilt-runtime acceptance
+
+The exact custom executable passed LPAC `--version` with raw stdout
+`codex-cli 0.153.4\n`, empty stderr, normal exit 0, and no timeout/kill.
+Child PID 26168 passed the fixed token/profile/capability/session oracles.
+Independent `2026-09-13T21:29:13.2310035Z` reconciliation and both postflights
+passed; all owned processes were gone, task disabled, original installed Codex
+hash and exact Hub unchanged.
+
+The subsequent fixed initialize probe failed. Child PID 3020 passed the same
+pre-resume LPAC gates but returned no stdout/initialize response. Stderr records
+`gethostname-1.1.0/src/lib.rs:85: GetComputerNameExW did not provide buffer size`.
+The 15-second child handshake deadline triggered owned kill/reap (exit
+`0xe0000001`); the wrapper exited 1 without its own timeout. Only the fixed
+initialize request was sent; no initialized notification or provider call ran.
+Both postflights and independent `2026-09-13T21:34:11.3729403Z` reconciliation
+passed, with all three owned PIDs gone, task disabled, original runtime pin and
+exact Hub unchanged. Independent raw-output, token, manifest and preservation
+review passed for this failure classification. No retry or arg0 tests ran.
+
+Version/initialize evidence: [windows-runtime-version-initialize.zip](../gpt-platform-evidence/windows-runtime-version-initialize.zip),
+SHA256 `47d3e7123b79d840e5341514f5533fdb6f47fce846ffbb68e79c91bfaf424482`,
+126 manifest files, 218,012 bytes; CRC and all manifest hashes/sizes passed.
+Root-cause diagnosis must precede any fresh reviewed retry; build/version success
+does not establish initialize, provider or deployment acceptance.
 
 ## Change and provenance
 
