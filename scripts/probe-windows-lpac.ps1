@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$FixtureParent,
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^oms-lpac-[0-9a-f]{32}$')][string]$ProfileName
+    [ValidatePattern('^oms-lpac-[0-9a-f]{32}$')][string]$ProfileName,
+    [switch]$CodexVersion
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -44,9 +45,12 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Security.Cryptography;
 using System.Text;
 
 public sealed class OmsLpacResult {
+    public string Mode;
+    public string ExecutableSha256;
     public string Stage = "initial";
     public string Error;
     public int? NativeErrorCode;
@@ -78,6 +82,8 @@ public sealed class OmsLpacResult {
 }
 
 public static class OmsLpacProbe {
+    const string CodexSource = @"C:\Users\conbr\.local\bin\codex.exe";
+    const string CodexSha256 = "444a3f0008050605cae73cd9b7a2dcac61294062dfaab56dd20430fd6498518b";
     // Documented TOKEN_INFORMATION_CLASS values (winnt.h).
     const int TokenElevation = 20, TokenIsAppContainer = 29, TokenCapabilities = 30;
     const int TokenAppContainerSid = 31;
@@ -264,8 +270,15 @@ public static class OmsLpacProbe {
         Directory.SetAccessControl(path, acl);
     }
 
-    public static OmsLpacResult Run(string fixture, string profileName) {
+    static string FileSha256(string path) {
+        using (var file = File.OpenRead(path))
+        using (var hash = SHA256.Create())
+            return BitConverter.ToString(hash.ComputeHash(file)).Replace("-", "").ToLowerInvariant();
+    }
+
+    public static OmsLpacResult Run(string fixture, string profileName, bool codexVersion) {
         OmsLpacResult result = new OmsLpacResult();
+        result.Mode = codexVersion ? "codex-version" : "read-boundary";
         IntPtr sid = IntPtr.Zero, callerToken = IntPtr.Zero, childToken = IntPtr.Zero;
         IntPtr callerCheckToken = IntPtr.Zero, childCheckToken = IntPtr.Zero;
         IntPtr attributes = IntPtr.Zero, capsData = IntPtr.Zero, policy = IntPtr.Zero, handlesData = IntPtr.Zero, environment = IntPtr.Zero;
@@ -301,6 +314,15 @@ public static class OmsLpacProbe {
             result.ChildLocalAppData = Path.GetFullPath(localAppData);
             result.Stage = "fixture";
             Directory.CreateDirectory(inside);
+            if (codexVersion) {
+                result.Stage = "stage-pinned-codex";
+                Require(FileSha256(CodexSource) == CodexSha256, "Source Codex hash mismatch.");
+                result.Executable = Path.Combine(inside, "codex.exe");
+                File.Copy(CodexSource, result.Executable, false);
+                result.ExecutableSha256 = FileSha256(result.Executable);
+                Require(result.ExecutableSha256 == CodexSha256, "Staged Codex hash mismatch.");
+                Directory.CreateDirectory(Path.Combine(inside, "home", "temp"));
+            }
             File.WriteAllText(Path.Combine(inside, "inside.txt"), insideMarker + "\r\n", Encoding.ASCII);
             File.WriteAllText(Path.Combine(fixture, "outside.txt"), outsideMarker + "\r\n", Encoding.ASCII);
             result.Stage = "profile";
@@ -316,6 +338,11 @@ public static class OmsLpacProbe {
             result.Stage = "new-fixture-grants";
             GrantDirectory(fixture, packageSid, FileSystemRights.Traverse, InheritanceFlags.None);
             GrantDirectory(inside, packageSid, FileSystemRights.ReadAndExecute, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit);
+            if (codexVersion) {
+                // Codex may initialize its own temporary state; only this new empty home is writable.
+                GrantDirectory(Path.Combine(inside, "home"), packageSid, FileSystemRights.Modify,
+                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit);
+            }
             result.Stage = "stdio";
             stdin = StdioFile(Path.Combine(fixture, "child.stdin"), true);
             stdout = StdioFile(stdoutPath, false);
@@ -358,14 +385,24 @@ public static class OmsLpacProbe {
             Marshal.WriteIntPtr(handlesData, IntPtr.Size, stdout);
             Marshal.WriteIntPtr(handlesData, IntPtr.Size * 2, stderr);
             Attribute(attributes, 0x20002, handlesData, IntPtr.Size * 3);
-            result.Executable = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+            if (!codexVersion) result.Executable = Path.Combine(Environment.SystemDirectory, "cmd.exe");
             // Fixed relative filenames avoid caller-controlled shell text. TYPE is a cmd builtin.
-            result.CommandLine = "\"" + result.Executable + "\" /d /v:off /c \"type inside.txt & type ..\\outside.txt\"";
+            result.CommandLine = "\"" + result.Executable + (codexVersion
+                ? "\" --version" : "\" /d /v:off /c \"type inside.txt & type ..\\outside.txt\"");
             string windows = Directory.GetParent(Environment.SystemDirectory).FullName;
             // Single-variable hypothesis for error 203; Windows documents AppContainer LOCALAPPDATA rerouting.
             // https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer
             string env = "COMSPEC=" + result.Executable + "\0LOCALAPPDATA=" + result.ChildLocalAppData
                 + "\0SystemRoot=" + windows + "\0TEMP=" + inside + "\0TMP=" + inside + "\0WINDIR=" + windows + "\0\0";
+            if (codexVersion) {
+                // No ambient auth/config home: only this new empty fixture is named.
+                string home = Path.Combine(inside, "home");
+                string temp = Path.Combine(home, "temp");
+                env = "APPDATA=" + home + "\0CODEX_HOME=" + home + "\0HOME=" + home
+                    + "\0LOCALAPPDATA=" + result.ChildLocalAppData + "\0SystemRoot=" + windows
+                    + "\0TEMP=" + temp + "\0TMP=" + temp + "\0USERPROFILE=" + home
+                    + "\0WINDIR=" + windows + "\0\0";
+            }
             environment = Marshal.StringToHGlobalUni(env);
             StartupInfoEx startup = new StartupInfoEx();
             startup.StartupInfo.cb = Marshal.SizeOf(typeof(StartupInfoEx));
@@ -380,7 +417,7 @@ public static class OmsLpacProbe {
             bool created = CreateProcessW(result.Executable, new StringBuilder(result.CommandLine), IntPtr.Zero, IntPtr.Zero, true,
                 0x0008040c, environment, inside, ref startup, out process);
             int createError = Marshal.GetLastWin32Error();
-            Win32(created, createError, "Create LPAC cmd");
+            Win32(created, createError, "Create LPAC child");
             result.ProcessId = process.ProcessId;
             result.Stage = "verify-suspended-token";
             bool childOpened = OpenProcessToken(process.Process, 10, out childToken); // QUERY | DUPLICATE
@@ -464,11 +501,17 @@ public static class OmsLpacProbe {
         }
         if (result.Error == null) {
             try {
-                result.Stage = "assert-read-boundary";
+                result.Stage = codexVersion ? "assert-codex-version" : "assert-read-boundary";
                 string output = File.ReadAllText(stdoutPath, Encoding.ASCII);
                 string errors = File.ReadAllText(stderrPath, Encoding.ASCII);
-                Require(result.ExitCode == 1 && output == insideMarker + "\r\n" && !output.Contains(outsideMarker)
-                    && errors.Trim() == "Access is denied.", "Expected inside-only stdout, English Access is denied stderr and cmd exit 1.");
+                if (codexVersion) {
+                    Require(result.ExitCode == 0 && output.Replace("\r\n", "\n") == "codex-cli 0.153.4\n"
+                        && errors.Length == 0, "Expected exact Codex version, empty stderr and exit 0.");
+                    Require(FileSha256(result.Executable) == CodexSha256, "Staged Codex changed.");
+                } else {
+                    Require(result.ExitCode == 1 && output == insideMarker + "\r\n" && !output.Contains(outsideMarker)
+                        && errors.Trim() == "Access is denied.", "Expected inside-only stdout, English Access is denied stderr and cmd exit 1.");
+                }
                 Require(File.ReadAllText(Path.Combine(inside, "inside.txt"), Encoding.ASCII) == insideMarker + "\r\n"
                     && File.ReadAllText(Path.Combine(fixture, "outside.txt"), Encoding.ASCII) == outsideMarker + "\r\n", "Canary content changed.");
                 result.Passed = true;
@@ -480,7 +523,7 @@ public static class OmsLpacProbe {
     }
 }
 '@
-    $report.native_result = [OmsLpacProbe]::Run($fixture, $ProfileName)
+    $report.native_result = [OmsLpacProbe]::Run($fixture, $ProfileName, $CodexVersion.IsPresent)
     if ($report.native_result.Passed) { $report.status = 'passed' }
 } catch { $report.error = $_.Exception.ToString() }
 finally {
