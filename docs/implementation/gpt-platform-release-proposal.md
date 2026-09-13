@@ -4,20 +4,9 @@ Status: core implementation and bounded Windows artifact acceptance are ready fo
 
 Reviewed production-policy commit: `0aa11c7ee40021ede773f6ddc3c9c6e063b557fc`, tree `0614b7a5c19b791e8ca30bd8dafe906ed613236e`, branch `codex/gpt-runtime-fix-2026-09-12`. The requested pre-change snapshot was pushed at `274da9d74108e0e8a4f6b6b51ecec5a9550fdd0b`; `b5d19cd5` additionally backs up both completed Windows raw evidence bundles in Git. The production client now applies the accepted experimental protocol and fixed policy, private process home and platform binary pins, and rejects policy drift before `turn/start`. Independent review passed; O retest passed 97 checks with three opt-in skips, Ruff and strict mypy. The generation readiness guard remains closed. The subsequently approved single temporary LowBoxConsoleEnabled experiment did not resolve `0xC0000142`; the setting was restored to its original absence and independently verified. No production source or activation change followed. [Exact policy handoff](gpt-platform-handoffs/B-runtime-policy.md).
 
-Current source candidate: `f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3`. The reviewed Rust path-resolution patch now passes native Windows LPAC red/green tests, including canonical reopen and unchanged read/write denial boundaries. The Codex temp-containment correction is independently reviewed; the private build reached compilation but Application Control rejected an unsigned dependency helper. No rebuilt Codex was produced; runtime acceptance remains pending. Production generation stays closed. [Current fix and native receipt](gpt-platform-handoffs/O-windows-canonicalize.md). Earlier restricted Codex startup failed with a confirmed MountPointManager denial during DOS canonicalization; [that failed proof remains retained](gpt-platform-handoffs/O-windows-codex-startup.md). Existing release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`, not rebuilt packages for this candidate.
+Current source candidate: `f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3`. The Rust path-resolution patch passed native Windows LPAC red/green tests, including canonical reopen and preserved read/write denial boundaries. The Codex temp-containment correction is independently reviewed. Connor disabled Smart App Control himself; fresh verification confirmed that change. A separate compiler include-path defect was reproduced and fixed. Serial compilation then passed the previously failing core/app-server crates, but final CLI compilation hit LLVM out-of-memory at both 8 and 9.5 GiB job caps. A proposed 10 GiB attempt stopped before launch when fresh headroom was insufficient. The latest 109 memory checks, 18 Hub checks and independent cleanup/preservation passed. A minimal compiler-profile adjustment is being investigated; no rebuilt Codex startup or provider acceptance is claimed, and generation remains closed. [Current fix and exact evidence](gpt-platform-handoffs/O-windows-canonicalize.md). Existing release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`, not rebuilt packages for this candidate.
 
 ## Intended release and limits
-
-**September 13 continuation:** Connor disabled Smart App Control himself; fresh
-read-only verification confirms the former policy is not enforced. Paid signing
-is set aside. A later AWS-LC compiler failure was reproduced and fixed by a shorter
-private Cargo cache, without changing source or the dependency lock. The corrected
-full build passed AWS-LC compilation but later stopped on compiler memory
-allocation failures. Cleanup and all 116 Hub checks passed; a serial build
-adjustment passed the earlier crates but failed final CLI compilation, with
-measured job commitment reaching the same 8 GiB cap. Its 121 health checks and
-independent cleanup/preservation checks passed. A bounded memory adjustment is
-under review; no rebuilt Codex startup or provider acceptance is claimed. [Current runtime handoff](gpt-platform-handoffs/O-windows-canonicalize.md).
 
 This replaces the required Google path for new lecture quizzes with an explicitly selected Codex subscription backend, preserves full slide/transcript evidence and image assets, requires question/answer review before native publication, and adds private source-scoped/general chat. Outlines are optional. Existing publications, imported artifacts, Anki scheduling and Gate 2B proof resources are retained.
 
@@ -53,7 +42,7 @@ The sixteen-item September 9 resolution record is retained in `docs/implementati
 
 ## Windows operational preservation
 
-Fresh before/after evidence is retained in the current bounded receipt. Latest LPAC path-proof postflight: `2026-09-13T04:22:18.3348634Z` (both preservation checks passed). The later private-build health postflight passed at `2026-09-13T04:48:36.416719+00:00`; that is build preservation, not LPAC runtime acceptance. The earlier full task/owner inventory remains in `gpt-platform-handoffs/live-preflight.json`.
+Fresh before/after evidence is retained in the current bounded receipt. Latest compiler-run independent preservation passed at `2026-09-13T16:42:50.6894697Z`; this proves preservation after the failed build, not Codex runtime acceptance. Latest LPAC path-proof postflight: `2026-09-13T04:22:18.3348634Z` (both preservation checks passed). The later private-build health postflight passed at `2026-09-13T04:48:36.416719+00:00`; that is build preservation, not LPAC runtime acceptance. The earlier full task/owner inventory remains in `gpt-platform-handoffs/live-preflight.json`.
 
 - Root `C:\Services\oms-study-automation-v2`, commit `f487c6229b91d2b1ac11729e465561f6c1ffe997`, schema 31.
 - Scheduled task `OMS Study Hub V2`, principal `conbr`, Running.

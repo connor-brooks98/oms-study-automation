@@ -517,7 +517,7 @@
             "actual_quote_verified": false
           },
           "resume": {
-            "state": "serial_build_failed_cli_memory_allocation",
+            "state": "cap95_build_failed_cli_memory_allocation",
             "authorization": "2026-09-13 user reports disabling Smart App Control and requests continuation",
             "policy_verified": true,
             "signing_or_purchase_authorized": false,
@@ -545,7 +545,7 @@
               "postflight_utc": "2026-09-13T13:46:14.460994Z",
               "cleanup_errors": []
             },
-            "next_action": "Review measured final CLI memory failure and host headroom before a bounded corrected build",
+            "next_action": "Review minimal compiler-profile adjustment for final CLI memory use; preserve source/compiler/lock and host reserve floors",
             "corrected_build": {
               "task": "OMS GPT Private Runtime Build 734bbdfad4a9 fetch 20260913",
               "cargo_pid": 6876,
@@ -609,6 +609,51 @@
               "interpretation": "Measured peak commitment reached job cap; system commit contribution not ruled out",
               "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-serial-build-oom.zip",
               "evidence_archive_sha256": "723c9040e0ec1b5463b6327e55c0281f0a27686fe5fd47120c276d87b0bc0094"
+            },
+            "cap10_preflight": {
+              "state": "stopped_before_compiler_launch",
+              "commit_headroom_bytes": 12830498816,
+              "required_commit_headroom_bytes": 12884901888,
+              "compiler_or_job_created": false,
+              "task_disabled": true,
+              "owned_process_reconciliation": "empty",
+              "independent_postflight_utc": "2026-09-13T16:29:58.7598436Z",
+              "preservation": "passed",
+              "evidence_root": "windows-runtime-resume-20260913/cap10-cache-build",
+              "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-cap10-preflight.zip",
+              "evidence_archive_sha256": "db37479cadcd5355efb73fc62cc253e89f525fc8857974aea4b1b8d368d3e7f8"
+            },
+            "cap95_build": {
+              "state": "failed_cli_memory_allocation",
+              "task": "OMS GPT Private Runtime Build 734bbdfad4a9 cap95 20260913",
+              "cargo_pid": 26216,
+              "started_utc": "2026-09-13T16:33:54.101386Z",
+              "deadline_utc": "2026-09-13T18:03:54.101386Z",
+              "job_memory_limit_bytes": 10200547328,
+              "emergency_commit_headroom_bytes": 2147483648,
+              "emergency_available_physical_bytes": 4294967296,
+              "memory_guard_interval_seconds": 5,
+              "review": "PASS /root/review_production_policy",
+              "unchanged": "Serial Cargo, source/compiler/lock/patches/profile, retained private cache/target, 90-minute bound, owned cleanup and Hub guards",
+              "evidence_root": "windows-runtime-resume-20260913/cap95-cache-build",
+              "preflight_required_commit_headroom_bytes": 12348030976,
+              "preflight_required_available_physical_bytes": 14495514624,
+              "exit_code": 101,
+              "finished_utc": "2026-09-13T16:41:29.912131Z",
+              "timed_out": false,
+              "cleanup_errors": [],
+              "peak_job_memory_bytes": 10256633856,
+              "peak_process_memory_bytes": 10021965824,
+              "memory_checks_passed": 109,
+              "hub_checks_passed": 18,
+              "minimum_commit_headroom_bytes": 2785030144,
+              "minimum_available_physical_bytes": 16848773120,
+              "independent_postflight_utc": "2026-09-13T16:42:50.6894697Z",
+              "task_disabled": true,
+              "owned_process_reconciliation": "empty",
+              "codex_executable_produced": false,
+              "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-cap95-build-oom.zip",
+              "evidence_archive_sha256": "2d9473e9e9e6fee539ab9739f94ea59b9e3eaa846d9f1f1dd3429fd03181c2d9"
             }
           }
         }

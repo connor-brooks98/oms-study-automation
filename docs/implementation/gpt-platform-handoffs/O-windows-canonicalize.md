@@ -35,7 +35,22 @@ supports limit pressure but does not exclude system commit pressure. Cargo exite
 postflight at `2026-09-13T16:20:00.7999856Z` confirmed task disabled, owned processes
 absent and exact Hub preservation. No executable was produced; native
 version/initialize remain pending. Host headroom and the smallest bounded
-adjustment are under review.
+adjustment were reviewed. A 10 GiB attempt stopped before compiler/job creation
+when fresh commit headroom fell below the required 12 GiB; independent
+`2026-09-13T16:29:58.7598436Z` reconciliation and preservation passed. A smaller
+9.5 GiB attempt passed independent review and fresh native preflight, then started
+at `2026-09-13T16:33:54.101386Z` (Cargo PID 26216), reusing completed artifacts.
+The preflight requires cap plus 2 GiB commit/4 GiB physical reserve; five-second
+memory guards stop only the owned job below the same 2/4 GiB emergency floors.
+Source, compiler, dependency lock, profile and serial execution remain unchanged.
+The final CLI again failed with LLVM OOM, with peak job memory 10,256,633,856
+bytes versus the 10,200,547,328-byte cap. All 109 memory checks and 18 Hub guards
+passed; minimum commit headroom was 2,785,030,144 bytes. Cargo exited 101 without
+timeout or cleanup errors. Independent postflight at
+`2026-09-13T16:42:50.6894697Z` confirmed task disabled, owned processes absent and
+exact Hub preservation. No executable was accepted or runtime probe launched.
+A minimal compiler-profile adjustment is under investigation; reserve floors
+and host settings remain unchanged.
 
 A prior attempt to copy the entire old cache was abandoned after its control-call
 timeout. The exact owned worker was terminated and reaped; process reconciliation
@@ -60,6 +75,16 @@ SHA256 `723c9040e0ec1b5463b6327e55c0281f0a27686fe5fd47120c276d87b0bc0094`,
 237 manifest files, 256,482 bytes. ZIP integrity and all manifest
 hashes/sizes passed. The snapshot excludes any successor run and contains no
 native Codex startup acceptance.
+
+Completed 10 GiB preflight stop: [windows-runtime-cap10-preflight.zip](../gpt-platform-evidence/windows-runtime-cap10-preflight.zip),
+SHA256 `db37479cadcd5355efb73fc62cc253e89f525fc8857974aea4b1b8d368d3e7f8`,
+58 manifest files, 58,839 bytes; CRC and all manifest hashes/sizes
+passed. No compiler/job launched. The later 9.5 GiB run is excluded.
+
+Completed 9.5 GiB final CLI failure: [windows-runtime-cap95-build-oom.zip](../gpt-platform-evidence/windows-runtime-cap95-build-oom.zip),
+SHA256 `2d9473e9e9e6fee539ab9739f94ea59b9e3eaa846d9f1f1dd3429fd03181c2d9`,
+86 manifest files, 122,560 bytes; CRC and all manifest hashes/sizes
+passed. The snapshot contains no successful Codex build or native startup.
 
 ## Change and provenance
 
