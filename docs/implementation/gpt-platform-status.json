@@ -517,7 +517,7 @@
             "actual_quote_verified": false
           },
           "resume": {
-            "state": "release_lto_false_build_running",
+            "state": "release_lto_false_continuation_running",
             "authorization": "2026-09-13 user reports disabling Smart App Control and requests continuation",
             "policy_verified": true,
             "signing_or_purchase_authorized": false,
@@ -545,7 +545,7 @@
               "postflight_utc": "2026-09-13T13:46:14.460994Z",
               "cleanup_errors": []
             },
-            "next_action": "Finish reviewed serial release build with cross-crate ThinLTO disabled; freeze artifact and review bound native probes before launch",
+            "next_action": "Finish reviewed unchanged-profile continuation, then freeze exact artifact and review native acceptance bindings",
             "corrected_build": {
               "task": "OMS GPT Private Runtime Build 734bbdfad4a9 fetch 20260913",
               "cargo_pid": 6876,
@@ -666,7 +666,7 @@
               "evidence_archive_sha256": "b25e7141a618022b7504ad9d1e9cb0ecb53d4c0110d0f89b6652f27054b7c921"
             },
             "release_lto_false_build": {
-              "state": "running",
+              "state": "time_bound_reached",
               "task": "OMS GPT Private Runtime Build 734bbdfad4a9 nolto 20260913",
               "cargo_pid": 26340,
               "started_utc": "2026-09-13T16:58:16.080448Z",
@@ -678,7 +678,36 @@
               "reserve_guards": "Same 2 GiB commit/4 GiB physical emergency reserves checked every five seconds; cap-plus-reserve fresh preflight",
               "review": "PASS /root/review_production_policy",
               "source_compiler_lock": "unchanged",
-              "evidence_root": "windows-runtime-resume-20260913/no-lto-cache-build"
+              "evidence_root": "windows-runtime-resume-20260913/no-lto-cache-build",
+              "exit_code": 124,
+              "timed_out": true,
+              "finished_utc": "2026-09-13T18:28:16.252540Z",
+              "cleanup_errors": [],
+              "compiler_errors_observed": false,
+              "peak_job_memory_bytes": 3568472064,
+              "peak_process_memory_bytes": 3208544256,
+              "hub_checks_passed": 183,
+              "memory_checks_passed": 1260,
+              "minimum_commit_headroom_bytes": 9385844736,
+              "minimum_available_physical_bytes": 19278123008,
+              "independent_postflight_utc": "2026-09-13T18:29:17.3470206Z",
+              "task_disabled": true,
+              "owned_process_reconciliation": "empty",
+              "codex_executable_produced": false,
+              "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-lto-false-build-window.zip",
+              "evidence_archive_sha256": "e734f380afd2a455d5862efa9aa4ccedf8cb330f6d6c73af578f31f82b357427"
+            },
+            "release_lto_false_continuation": {
+              "state": "running",
+              "task": "OMS GPT Private Runtime Build 734bbdfad4a9 nolto2 20260913",
+              "cargo_pid": 22100,
+              "started_utc": "2026-09-13T18:34:37.702748Z",
+              "deadline_utc": "2026-09-13T20:04:37.702748Z",
+              "review": "PASS /root/review_production_policy; bound to independently reviewed clean timeout receipts",
+              "fresh_preflight": "passed policy/ownership/Hub/memory/disk; nine old tasks disabled",
+              "free_disk_bytes": 61115301888,
+              "unchanged": "Source/compiler/lock/release profile LTO=false/target/cache/j1/9.5 GiB/reserve floors/90-minute bound",
+              "evidence_root": "windows-runtime-resume-20260913/no-lto-continuation-build"
             }
           }
         }

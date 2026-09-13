@@ -57,8 +57,18 @@ settings. Both metadata calls and independent cleanup/preservation passed.
 The reviewed full rebuild started at `2026-09-13T16:58:16.080448Z` (Cargo PID 26340)
 in fresh `target/codex-no-lto-20260913`, with unchanged source/compiler/lock,
 serial execution, 9.5 GiB cap and reserve guards. Earlier targets are retained.
-The build is in progress; this profile change has not yet established memory
-success or Codex startup.
+The run stopped at its 90-minute watchdog at `2026-09-13T18:28:16.252540Z`:
+Cargo exit 124, timed out, no cleanup errors or observed compiler errors.
+Peak job memory was 3,568,472,064 bytes; all 183 Hub guards and 1,260 memory checks
+passed. Independent `2026-09-13T18:29:17.3470206Z` reconciliation confirmed task
+disabled, owned processes absent and exact Hub preservation. Compilation reached
+app-server protocol but produced no executable. A fresh continuation with the same profile, source and limits passed final
+receipt-binding review and fresh native preflight. It started at
+`2026-09-13T18:34:37.702748Z` (Cargo PID 22100), immediately reusing completed
+artifacts at app-server protocol. The new task/log identity retains the same
+90-minute bound and resource guards; all nine prior tasks were disabled and
+free disk was 61,115,301,888 bytes at preflight. Final compiler-memory success and Codex
+startup remain unproven.
 
 A prior attempt to copy the entire old cache was abandoned after its control-call
 timeout. The exact owned worker was terminated and reaped; process reconciliation
@@ -98,6 +108,12 @@ Completed profile-resolution proof: [windows-runtime-lto-profile-proof.zip](../g
 SHA256 `b25e7141a618022b7504ad9d1e9cb0ecb53d4c0110d0f89b6652f27054b7c921`,
 68 manifest files, 499,349 bytes; CRC and all manifest hashes/sizes
 passed. The full rebuild is excluded.
+
+Completed release LTO=false build window: [windows-runtime-lto-false-build-window.zip](../gpt-platform-evidence/windows-runtime-lto-false-build-window.zip),
+SHA256 `e734f380afd2a455d5862efa9aa4ccedf8cb330f6d6c73af578f31f82b357427`,
+419 manifest files, 1,215,823 bytes; CRC and all manifest hashes/sizes
+passed. Includes the completed profile proof; excludes the continuation and any
+native Codex startup acceptance.
 
 ## Change and provenance
 
