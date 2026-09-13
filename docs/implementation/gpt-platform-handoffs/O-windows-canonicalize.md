@@ -173,7 +173,7 @@ SHA256 `47d3e7123b79d840e5341514f5533fdb6f47fce846ffbb68e79c91bfaf424482`,
 Root-cause diagnosis must precede any fresh reviewed retry; build/version success
 does not establish initialize, provider or deployment acceptance.
 
-## Hostname correction — reviewed, Windows rebuild pending
+## Hostname correction — reviewed, Windows rebuild running
 
 Source candidate `146df998b88cd31c561cf8339b8c90abc95369ea` adds
 `codex-0.153.4-remote-control-name.patch`, SHA256
@@ -198,8 +198,18 @@ Three exact-helper local tests passed for valid Unicode/trimmed names, errors an
 empty names. Formatting, warning-free harness compilation, fresh patch-application
 identity and semantic lock comparison passed. Independent exact source and native
 API evidence review passed. This is not a full Cargo module test or fixed Windows
-runtime proof. The guarded incremental rebuild and fresh version/initialize remain
-pending; earlier executable `74d7706f…5ecf4f` does not contain this correction.
+runtime proof. The incremental rebuild passed final source/lock/dependency/backup
+and wrapper review, then fresh native preflight. Cargo PID 22660 started at
+`2026-09-13T22:09:51.068074Z`, deadline 23:39:51Z, with the same no-LTO target,
+cache, compiler and resource guards. Initial Hub/memory checks passed. Exact
+source originals and old executable were retained before the four-file update;
+stale old output is rejected as build success. An oversized staging query failed
+before upload/dispatch; reviewed lossless transport compression corrected it.
+
+Fresh version/initialize and unchanged targeted arg0 preparations passed static
+review with new identities; actual artifact/outcome bindings remain empty.
+Earlier executable `74d7706f…5ecf4f` does not contain this correction, and no fixed
+Windows startup acceptance is claimed.
 
 Diagnosis/fix preparation: [windows-runtime-hostname-fix.zip](../gpt-platform-evidence/windows-runtime-hostname-fix.zip),
 SHA256 `06a93a99636a838da655e2a904ba5a22c8dffe1e55b375190f2b0b6fd19dbcf5`,

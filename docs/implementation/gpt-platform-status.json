@@ -357,7 +357,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "hostname_display_fix_reviewed_windows_rebuild_pending",
+    "state": "hostname_display_fix_windows_rebuild_running",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -368,7 +368,7 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Prior private Windows build/version PASS; initialize failed because gethostname asserted after LPAC API access denial. API-only native discriminator confirms caller error234/size12 versus LPAC error5/size0; cleanup/preservation PASS. Narrow Windows remote-control display-label fix reviewed,3 exact-helper local tests PASS; fixed rebuild/initialize acceptance pending.",
+    "native_progress": "Prior private Windows build/version PASS; initialize failed because gethostname asserted after LPAC API access denial. API-only native discriminator confirms caller error234/size12 versus LPAC error5/size0; cleanup/preservation PASS. Narrow Windows remote-control display-label fix reviewed,3 exact-helper local tests PASS; reviewed incremental Windows rebuild running, fixed initialize acceptance pending.",
     "candidate": "146df998b88cd31c561cf8339b8c90abc95369ea",
     "code_tree": "add98dfa84a008ba988bea7894c4bfb671d87603",
     "review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr",
@@ -399,7 +399,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Finish exact staged source/lock/dependency provenance review, run guarded incremental Windows rebuild, then fresh hash-bound version and fixed initialize probes.",
+      "next_action": "Finish guarded hostname-fix rebuild, freeze and review exact new artifact/provenance, then fresh version and fixed initialize probes serially.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -799,7 +799,7 @@
         }
       },
       "hostname_fix": {
-        "state": "reviewed_pending_windows_rebuild",
+        "state": "reviewed_windows_rebuild_running",
         "source_commit": "146df998b88cd31c561cf8339b8c90abc95369ea",
         "patch": "scripts/runtime-patches/codex-0.153.4-remote-control-name.patch",
         "patch_sha256": "d3de282dc3839ad69aca064eb6882fa071a267b09c01b16d4cbd9f95152ccb51",
@@ -828,7 +828,28 @@
           "preservation": "passed; all owned processes gone, task disabled, original runtime pin and exact Hub unchanged"
         },
         "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-hostname-fix.zip",
-        "evidence_archive_sha256": "06a93a99636a838da655e2a904ba5a22c8dffe1e55b375190f2b0b6fd19dbcf5"
+        "evidence_archive_sha256": "06a93a99636a838da655e2a904ba5a22c8dffe1e55b375190f2b0b6fd19dbcf5",
+        "build": {
+          "state": "running",
+          "task": "OMS GPT Private Runtime Build 734bbdfad4a9 hostname1 20260913",
+          "cargo_pid": 22660,
+          "started_utc": "2026-09-13T22:09:51.068074Z",
+          "deadline_utc": "2026-09-13T23:39:51.068074Z",
+          "review": "PASS exact staged source/lock/dependency/backup/driver/action chain",
+          "fresh_preflight_utc": "2026-09-13T22:09:26Z",
+          "controls": "Same LTO=false target/cache/patched compiler/std/arg0; j1,9.5 GiB,90 minutes,unchanged reserve/Hub/owned cleanup guards",
+          "prior_artifact": "Exact74d binary and four original source files retained before source update; stale old executable cannot count as success",
+          "staging_transport": "First oversized query failed before upload/dispatch; reviewed lossless compression preserves exact query, fresh staging succeeded",
+          "evidence_root": "windows-runtime-resume-20260913/hostname-fix-build"
+        },
+        "acceptance_preparation": {
+          "state": "static_review_passed_actual_outcomes_unbound",
+          "version_profile": "oms-lpac-da5dfc8c88a84dc1b9c5058ace13df99",
+          "initialize_profile": "oms-lpac-479d1248e92e4204b8f3cadcb3fbd7d5",
+          "manifest_sha256": "64c95ff7a6078aa3efd2d1843ef131133bfc3ff4f7e4dc12e0371151540269ae",
+          "arg0_manifest_sha256": "9712d27d1b1d23e6746e5f131c8c6f9534b0f365b99b6284a0fbb2c7cc0c5e96",
+          "requirements": "Actual new executable/provenance and final bound review; same-SHA fresh version then initialize PASS before two targeted arg0 tests"
+        }
       }
     }
   },
