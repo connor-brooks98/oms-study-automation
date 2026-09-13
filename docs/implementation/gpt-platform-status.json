@@ -357,7 +357,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "private_windows_version_passed_initialize_hostname_failed",
+    "state": "hostname_display_fix_reviewed_windows_rebuild_pending",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -368,9 +368,9 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Private Windows build and exact LPAC --version PASS. Fixed initialize failed before response: gethostname1.1.0 panicked at GetComputerNameExW; native15-second deadline then owned kill/reap. Both postflights and independent task/process/runtime/Hub preservation PASS. Root-cause diagnosis in progress; no retry or arg0 execution.",
-    "candidate": "f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3",
-    "code_tree": "5e05f29df4c120c98ae9f7e76560266c99ffd157",
+    "native_progress": "Prior private Windows build/version PASS; initialize failed because gethostname asserted after LPAC API access denial. API-only native discriminator confirms caller error234/size12 versus LPAC error5/size0; cleanup/preservation PASS. Narrow Windows remote-control display-label fix reviewed,3 exact-helper local tests PASS; fixed rebuild/initialize acceptance pending.",
+    "candidate": "146df998b88cd31c561cf8339b8c90abc95369ea",
+    "code_tree": "add98dfa84a008ba988bea7894c4bfb671d87603",
     "review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
@@ -399,7 +399,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Diagnose hostname discovery failure across shared startup callers, implement the smallest reviewed correction and retest under unchanged isolation; no blind initialize retry.",
+      "next_action": "Finish exact staged source/lock/dependency provenance review, run guarded incremental Windows rebuild, then fresh hash-bound version and fixed initialize probes.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -797,6 +797,38 @@
           },
           "record_scope": "Original application-control failure; current successor state and evidence are in resume."
         }
+      },
+      "hostname_fix": {
+        "state": "reviewed_pending_windows_rebuild",
+        "source_commit": "146df998b88cd31c561cf8339b8c90abc95369ea",
+        "patch": "scripts/runtime-patches/codex-0.153.4-remote-control-name.patch",
+        "patch_sha256": "d3de282dc3839ad69aca064eb6882fa071a267b09c01b16d4cbd9f95152ccb51",
+        "scope": "Windows remote-control display label only; fallible existing winapi-util lookup, actual trimmed nonempty name or contextual Codex app-server label",
+        "unchanged": "Config hostname policy, OTEL, non-Windows production expression, remote-control auth/routing/persistence keys, std/arg0 patches/compiler/release profile",
+        "lock_change": "Only existing winapi-util edge added to codex-app-server-transport; no package version/checksum change",
+        "new_lock_sha256": "4a662fefd012e445ac8789f3a4376550acaa7ba901b6c62f2309078dca8fe8c6",
+        "local_tests": "3 exact extracted pure-helper tests PASS; -D warnings, formatting, fresh patch application identity and semantic lock delta PASS; not Windows module/runtime proof",
+        "review": "PASS independent client-source semantics/exact patch/pure tests/API diagnosis evidence",
+        "api_diagnostic": {
+          "caller": {
+            "returned": false,
+            "size": 12,
+            "last_error": 234
+          },
+          "lpac_child": {
+            "returned": false,
+            "size": 0,
+            "last_error": 5,
+            "pid": 18804,
+            "exit_code": 0,
+            "timed_out": false,
+            "kill_attempted": false
+          },
+          "independent_postflight_utc": "2026-09-13T21:53:04.9008234Z",
+          "preservation": "passed; all owned processes gone, task disabled, original runtime pin and exact Hub unchanged"
+        },
+        "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-hostname-fix.zip",
+        "evidence_archive_sha256": "06a93a99636a838da655e2a904ba5a22c8dffe1e55b375190f2b0b6fd19dbcf5"
       }
     }
   },

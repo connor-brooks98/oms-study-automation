@@ -1,6 +1,6 @@
 # O: Windows canonicalization fix
 
-2026-09-13. **Native path regression PASS; compiler-path fix passed; private Windows build/version PASS; initialize hostname panic.**
+2026-09-13. **Native path regression PASS; compiler-path fix passed; private Windows build/version PASS; initialize hostname panic reproduced; narrow fix reviewed.**
 Independent source, fixed-wrapper and raw-result review passed by
 `/root/review_production_policy`. Production generation remains closed.
 
@@ -172,6 +172,40 @@ SHA256 `47d3e7123b79d840e5341514f5533fdb6f47fce846ffbb68e79c91bfaf424482`,
 126 manifest files, 218,012 bytes; CRC and all manifest hashes/sizes passed.
 Root-cause diagnosis must precede any fresh reviewed retry; build/version success
 does not establish initialize, provider or deployment acceptance.
+
+## Hostname correction — reviewed, Windows rebuild pending
+
+Source candidate `146df998b88cd31c561cf8339b8c90abc95369ea` adds
+`codex-0.153.4-remote-control-name.patch`, SHA256
+`d3de282dc3839ad69aca064eb6882fa071a267b09c01b16d4cbd9f95152ccb51`.
+A tiny API-only native probe confirmed the failure: ordinary Limited caller
+returned false/size 12/error 234 (`ERROR_MORE_DATA`), while the same LPAC token
+returned false/size 0/error 5 (`ACCESS_DENIED`). Child PID 18804 exited normally
+with exact JSON and empty stderr, no timeout/kill. Both postflights and independent
+`2026-09-13T21:53:04.9008234Z` reconciliation/preservation passed. No hostname
+value was collected and no provider call or Codex retry was performed.
+
+The patch changes only Windows remote-control display-name lookup to the existing
+fallible `winapi-util` API. An available name retains prior trimming/conversion;
+a failed or empty lookup yields the descriptive label `Codex app-server`.
+Client-source review confirms this value is display/enrollment metadata, separate
+from routing, authentication and persistence keys. No backend behavior is claimed.
+Config hostname policy, OTEL and non-Windows production behavior remain unchanged.
+Only one existing-package lock edge is added; new lock SHA256 is
+`4a662fefd012e445ac8789f3a4376550acaa7ba901b6c62f2309078dca8fe8c6`.
+
+Three exact-helper local tests passed for valid Unicode/trimmed names, errors and
+empty names. Formatting, warning-free harness compilation, fresh patch-application
+identity and semantic lock comparison passed. Independent exact source and native
+API evidence review passed. This is not a full Cargo module test or fixed Windows
+runtime proof. The guarded incremental rebuild and fresh version/initialize remain
+pending; earlier executable `74d7706f…5ecf4f` does not contain this correction.
+
+Diagnosis/fix preparation: [windows-runtime-hostname-fix.zip](../gpt-platform-evidence/windows-runtime-hostname-fix.zip),
+SHA256 `06a93a99636a838da655e2a904ba5a22c8dffe1e55b375190f2b0b6fd19dbcf5`,
+187 manifest files, 583,779 bytes; CRC and all manifest hashes/sizes passed.
+Includes exact dependency source and native API-only evidence; excludes the Mac
+test executable and subsequent Windows rebuild/acceptance.
 
 ## Change and provenance
 
