@@ -8,6 +8,13 @@ Current source candidate: `f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3`. The review
 
 ## Intended release and limits
 
+**September 13 continuation:** Connor disabled Smart App Control himself; fresh
+read-only verification confirms the former policy is not enforced. Paid signing
+is set aside. A later AWS-LC compiler failure was reproduced and fixed by a shorter
+private Cargo cache, without changing source or the dependency lock. The corrected
+full build has passed AWS-LC compilation and is continuing; no rebuilt Codex
+startup or provider acceptance is claimed yet. [Current runtime handoff](gpt-platform-handoffs/O-windows-canonicalize.md).
+
 This replaces the required Google path for new lecture quizzes with an explicitly selected Codex subscription backend, preserves full slide/transcript evidence and image assets, requires question/answer review before native publication, and adds private source-scoped/general chat. Outlines are optional. Existing publications, imported artifacts, Anki scheduling and Gate 2B proof resources are retained.
 
 **Activation is blocked, even after local tests pass.** The inspected Codex runtime has not established universal pre-execution tool prevention, restricted Windows identity/readable roots, account persistence, or actual model text/image/schema acceptance. Production generation fails closed with `capability_unverified`; no paid fallback or configuration bypass is present. Fake-client tests prove the application workflow only. A subsequently authorized managed-device login succeeded in the isolated macOS preview on September 11 (ET). The Hub reported the account connected and advertised model slugs. This establishes local login only; generation and Windows account persistence remain unverified.

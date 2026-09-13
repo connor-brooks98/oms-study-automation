@@ -1,8 +1,37 @@
 # O: Windows canonicalization fix
 
-2026-09-13. **Native path regression PASS; private Codex build blocked by Windows Application Control.**
+2026-09-13. **Native path regression PASS; corrected private Codex build running after user policy change.**
 Independent source, fixed-wrapper and raw-result review passed by
 `/root/review_production_policy`. Production generation remains closed.
+
+## Current resumed build — 2026-09-13
+
+The user-disabled Smart App Control state was verified before the fresh run.
+That run passed the previous policy barrier, then failed compiling AWS-LC:
+`tree_drbg_jitter_entropy.c:17` could not resolve its nested `jitterentropy.h`
+include. The header exists and matches the locked crate. A bounded native
+syntax-only comparison reproduced C1083 at the original path (exit 2) and passed
+at a shorter path (exit 0), with all 1,935 source files byte-identical. Both
+processes reaped without timeout; the exact Hub postflight passed at
+`2026-09-13T13:46:14.460994Z`. Independent evidence review passed.
+
+The correction uses a fresh, shorter private Cargo cache and ordinary `--locked`
+dependency fetching. Source, Rust toolchain, patches, V8 inputs and dependency lock
+remain pinned and unchanged. The full rebuild produced the AWS-LC Rust libraries
+at `2026-09-13T14:26:46.837786Z`, confirming the compiler-path fix; the rest of the
+Codex build and native version/initialize checks are still pending.
+
+A prior attempt to copy the entire old cache was abandoned after its control-call
+timeout. The exact owned worker was terminated and reaped; process reconciliation
+was empty and the Hub postflight passed at `2026-09-13T14:08:59.398506Z`.
+Its partial cache and all failed artifacts are retained and unused. No agent
+changed Windows policy, installed a signing service or purchased anything.
+
+Completed diagnostic snapshot: [windows-runtime-build-path-fix.zip](../gpt-platform-evidence/windows-runtime-build-path-fix.zip),
+SHA256 `c300963743eb1d860281887f87381386bf72c8c322a76b8d3d0277f31e4ed3d2`,
+251 manifest files, 597,372 bytes. ZIP integrity and all manifest hashes/sizes
+passed. This snapshot excludes the still-running corrected build and contains
+unbound acceptance preparations only; it does not prove Codex startup.
 
 ## Change and provenance
 
@@ -54,6 +83,17 @@ extraction, unexposed Rust NT constant, and missing rebuilt panic_abort runtime.
 The final build corrects these without shared configuration/registry changes.
 
 ## Next exact handoff
+
+Connor subsequently disabled Smart App Control himself and authorized continued
+bounded work. Read-only preflight at `2026-09-13T13:24:38.9479483Z` confirms the
+previously blocking policy and its evaluation counterpart are not enforced.
+Other Windows policies remain active. The exact live Hub and worker identities
+are unchanged, both old tasks are disabled, and no owned build process remains.
+Independent review passed the fresh build invocation with the same source pins,
+two jobs, 8 GiB job cap, 90-minute bound and recurring health guards. Its task,
+logs and target directory are fresh; all earlier failed bytes remain retained.
+No agent changed policy and no signing purchase is requested. The historical
+barrier and prior restriction below describe the earlier host state.
 
 The canonicalization and Windows alias-containment patches are implemented and
 reviewed. Actual Codex building stopped at host Application Control before a

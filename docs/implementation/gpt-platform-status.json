@@ -399,7 +399,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Approved build/signing/execution route required before fresh rebuilt Codex startup; preserve host policy and failed artifacts.",
+      "next_action": "Fresh guarded private build after verified user-disabled Smart App Control; then hash-bound version and initialize acceptance. No agent policy changes or purchases.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -517,11 +517,55 @@
             "actual_quote_verified": false
           },
           "resume": {
-            "state": "preflight",
+            "state": "corrected_build_running",
             "authorization": "2026-09-13 user reports disabling Smart App Control and requests continuation",
-            "policy_verified": false,
+            "policy_verified": true,
             "signing_or_purchase_authorized": false,
-            "agent_policy_changes_authorized": false
+            "agent_policy_changes_authorized": false,
+            "policy_preflight_utc": "2026-09-13T13:24:38.9479483Z",
+            "smart_app_control_enforced": false,
+            "live_hub_preservation": "passed_exact_existing_identity",
+            "prelaunch_review": "PASS /root/review_production_policy",
+            "evidence_root": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/windows-runtime-resume-20260913",
+            "task": "OMS GPT Private Runtime Build 734bbdfad4a9 resume 20260913",
+            "cargo_pid": 20968,
+            "started_utc": "2026-09-13T13:28:15.800371Z",
+            "exit_code": 101,
+            "timed_out": false,
+            "codex_executable_produced": false,
+            "prior_application_control_gate": "passed",
+            "postflight_utc": "2026-09-13T13:33:44.123699+00:00",
+            "task_disabled": true,
+            "cleanup_errors": [],
+            "diagnostic": "Same compiler/source: original nested include path fails C1083; shorter byte-identical crate passes syntax-only compilation",
+            "path_comparison": {
+              "original_exit": 2,
+              "short_exit": 0,
+              "source_files_hash_equal": 1935,
+              "postflight_utc": "2026-09-13T13:46:14.460994Z",
+              "cleanup_errors": []
+            },
+            "next_action": "Finish reviewed bounded rebuild in fresh shorter private Cargo cache; freeze artifact and review hash-bound native acceptance before launch",
+            "corrected_build": {
+              "task": "OMS GPT Private Runtime Build 734bbdfad4a9 fetch 20260913",
+              "cargo_pid": 6876,
+              "started_utc": "2026-09-13T14:12:19.432765Z",
+              "preflight_utc": "2026-09-13T14:12:14.234965Z",
+              "change": "Fresh shorter private Cargo cache; ordinary locked dependency fetch; original source/compiler/lock unchanged",
+              "review": "PASS /root/review_production_policy",
+              "aws_lc_compilation": "passed",
+              "aws_lc_artifacts_observed_utc": "2026-09-13T14:26:46.837786Z"
+            },
+            "cache_copy": {
+              "state": "stopped_after_control_call_timeout",
+              "partial_cache_retained_unused": true,
+              "worker_pid": 10108,
+              "worker_reaped": true,
+              "owned_process_reconciliation": "empty",
+              "postflight_utc": "2026-09-13T14:08:59.398506Z"
+            },
+            "diagnostic_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-build-path-fix.zip",
+            "diagnostic_archive_sha256": "c300963743eb1d860281887f87381386bf72c8c322a76b8d3d0277f31e4ed3d2"
           }
         }
       }
