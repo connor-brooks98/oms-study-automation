@@ -125,22 +125,22 @@ remain pending; generation
 stays closed. No installed runtime or live Hub was replaced.
 
 
-## Ready-to-review runtime fix and required build route
+## Ready-to-review runtime fix and remaining acceptance
 
 The implementation commit above contains the minimal Rust shared resolver patch,
 the reviewed Windows Codex containment correction, and the native red/green fixture.
-Accept the patch/source and stated proof subset for review; retain generation's
-closed gate. Actual Codex artifact construction requires an explicitly approved
-build/signing/execution route after Windows Application Control rejected the
-unsigned parking_lot_core build helper. The matched policy event and complete
-cleanup/health evidence are in the current receipt. No runtime deployment,
-policy exception, account change or alternate execution workaround is proposed.
-The fixed initialize probe is prepared/reviewed and C#-compiled, not executed.
+The source and stated proof subset are ready for review; generation remains closed.
+After Connor disabled Smart App Control, fresh native verification and guarded
+compilation passed the earlier unsigned build-helper barrier. No signing setup
+or purchase is required for the current authorized build route.
 
-The read-only signing inventory found no code-signing certificate in either
-CurrentUser/My or LocalMachine/My. Approval/input for a supported signing/build
-setup is required before this host can continue the blocked construction step;
-the current evidence does not establish a usable signer or an accepted executable.
+The current build uses the reviewed LTO-only profile adjustment, one Cargo job,
+a 9.5 GiB owned-job cap, reserve guards and a 90-minute window. Its completed
+predecessors and current identity are recorded in the linked runtime handoff.
+The rebuilt executable, exact version/initialize checks and two Windows arg0
+tests remain pending. The fixed initialize probe is prepared and reviewed, but has
+not executed against a rebuilt Codex artifact. Provider and deployment acceptance
+remain separate.
 
 
 ## Signing setup decision — 2026-09-13
