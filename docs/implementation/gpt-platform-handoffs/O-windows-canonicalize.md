@@ -1,6 +1,6 @@
 # O: Windows canonicalization fix
 
-2026-09-13. **Native path regression PASS; compiler-path fix passed; full private build stopped on memory allocation.**
+2026-09-13. **Native path regression PASS; compiler-path fix passed; LTO-adjusted build awaiting completion.**
 Independent source, fixed-wrapper and raw-result review passed by
 `/root/review_production_policy`. Production generation remains closed.
 
@@ -67,8 +67,16 @@ receipt-binding review and fresh native preflight. It started at
 `2026-09-13T18:34:37.702748Z` (Cargo PID 22100), immediately reusing completed
 artifacts at app-server protocol. The new task/log identity retains the same
 90-minute bound and resource guards; all nine prior tasks were disabled and
-free disk was 61,115,301,888 bytes at preflight. Final compiler-memory success and Codex
-startup remain unproven.
+free disk was 61,115,301,888 bytes at preflight. This continuation passed core and
+app-server compilation, then reached its normal deadline during TUI compilation
+at `2026-09-13T20:04:37.876860Z` (exit 124, timed out, cleanup errors empty).
+No compiler errors were observed. Peak job memory was 7,354,302,464 bytes;
+all 183 Hub and 1,260 memory checks passed. Independent reconciliation at
+`2026-09-13T20:05:34.4223002Z` confirmed the task disabled, owned processes absent
+and exact Hub preservation. The retained target had no executable at 20:06:05Z.
+A second fresh continuation passed final receipt-binding review and awaits fresh
+native preflight with the same source, profile, target and resource controls.
+Final compiler-memory success and Codex startup remain unproven.
 
 A prior attempt to copy the entire old cache was abandoned after its control-call
 timeout. The exact owned worker was terminated and reaped; process reconciliation
@@ -114,6 +122,11 @@ SHA256 `e734f380afd2a455d5862efa9aa4ccedf8cb330f6d6c73af578f31f82b357427`,
 419 manifest files, 1,215,823 bytes; CRC and all manifest hashes/sizes
 passed. Includes the completed profile proof; excludes the continuation and any
 native Codex startup acceptance.
+
+Completed first LTO=false continuation: [windows-runtime-lto-false-continuation-window.zip](../gpt-platform-evidence/windows-runtime-lto-false-continuation-window.zip),
+SHA256 `17f810b3d2936e7d0127c61d1e6bf34eaa888d22791357c65ebb9871ad01b782`,
+323 manifest files, 578,490 bytes; CRC and all manifest hashes/sizes passed.
+Excludes the successor continuation and any native Codex startup acceptance.
 
 ## Change and provenance
 
