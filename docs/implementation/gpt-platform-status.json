@@ -293,7 +293,7 @@
     ]
   },
   "release": {
-    "candidate": "844fb9ec37f2add912090c354f8e5d91d558ba61",
+    "candidate": "0ec321f90d95658aec7e8b4b712e434870339cbd",
     "live_authorized": false,
     "proposal": "docs/implementation/gpt-platform-release-proposal.md",
     "receipt": "docs/implementation/gpt-platform-handoffs/O3.md",
@@ -324,9 +324,9 @@
         "scope": "26passed1skip at8de86582"
       }
     ],
-    "code_tree": "7cae1b564acac7368004d7cdf6d3ddc47d94e8ea",
+    "code_tree": "776e5033c1958d2a4ab7cf7bef4ac0730cecd1ab",
     "archive_candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
-    "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md"
+    "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-codex-startup.md"
   },
   "provider_verified": false,
   "windows_verified": false,
@@ -356,7 +356,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "policy_fixed_lpac_read_probe_accepted_runtime_pending",
+    "state": "policy_fixed_lpac_read_passed_codex_mount_manager_blocked",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -367,10 +367,10 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Detached synthetic cmd startup and inside-read/outside-denial passed on Windows without debugger; actual Codex runtime and provider acceptance remain pending",
-    "candidate": "844fb9ec37f2add912090c354f8e5d91d558ba61",
-    "code_tree": "7cae1b564acac7368004d7cdf6d3ddc47d94e8ea",
-    "review": "PASS independent root-cause, source, wrapper and successful native read-oracle evidence review",
+    "native_progress": "Native trace confirms home opens successfully; DOS path canonicalization fails when MountPointManager open is denied. Codex exits0/version correct but startup oracle fails. Read-boundary regression passed.",
+    "candidate": "0ec321f90d95658aec7e8b4b712e434870339cbd",
+    "code_tree": "776e5033c1958d2a4ab7cf7bef4ac0730cecd1ab",
+    "review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
       "26 passed,1 skipped final export/atomic/routes at8de86582",
@@ -378,7 +378,8 @@
       "Actual Windows18passed2symlink cases deselected; retained native-PDF export continuation passed",
       "Windows registry-only native completion passed; O7 focused offline tests and Ruff passed; B77passed3skips",
       "78passed3opt-inskip4.77s; Ruff passed; native Windows single apply_patch denial PASS",
-      "Policy O retest97passed3opt-inskip9.93s; Rufffivefiles and strictmypytwomodulesPASS"
+      "Policy O retest97passed3opt-inskip9.93s; Rufffivefiles and strictmypytwomodulesPASS",
+      "Same-source Windows read-boundary regression passed; CodexVersion startup FAIL with exact version/exit0 and home warning"
     ],
     "worker_implementation": "f3711eb33656785ead908bce6c1458e423b03511",
     "worker_receipt": "0c4d2ba6ef91c1f176760320483908b377027aff",
@@ -396,7 +397,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Prepare bounded source-free actual Codex startup/transport proof under restricted identity before enabling generation; no provider proof or live deployment is implied.",
+      "next_action": "Resolve pinned Codex home canonicalization compatibility before app-server/credential/provider acceptance; preserve explicit home and security boundary.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -439,6 +440,29 @@
         "wrapper_exit": 0,
         "transport_exit": 0,
         "review": "PASS independent raw-output/canary/token/cleanup/preservation review"
+      },
+      "codex_startup": {
+        "source_commit": "0ec321f90d95658aec7e8b4b712e434870339cbd",
+        "source_sha256": "4dbcd2e33311689bf9d8f06c86d76809260b0f4dd32950a4b726408a816ff294",
+        "state": "failed_home_canonicalization",
+        "child_exit_code": 0,
+        "stdout": "codex-cli 0.153.4\n",
+        "stderr": "AccessDenied canonicalizing explicit fresh CODEX_HOME",
+        "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-codex-startup.md",
+        "provider_request": false,
+        "credentials_used": false,
+        "default_read_regression": "passed",
+        "regression_task": "OMS GPT LPAC Read Regression bf68b23436db",
+        "diagnosis": "GetFinalPathNameByHandleW flags0 fails because nested MountPointManager open is denied; home CreateFileW succeeds",
+        "trace_task": "OMS GPT LPAC Codex Home MASM 1c725e6b7d86",
+        "trace_child_pid": 11628,
+        "trace_completed_without_timeout": true,
+        "postflight_utc": "2026-09-13T03:27:04.7507589Z",
+        "preservation": "passed",
+        "next_action": "Compatible runtime canonicalization change with new binary pin and fresh acceptance; no shared ACL/security bypass",
+        "archive": "docs/implementation/gpt-platform-evidence/windows-lpac-codex-startup.zip",
+        "archive_sha256": "42635dd74c3efc827caa80d1faee8469458ff1b4aeb633a56e1fda11111e60a1",
+        "review": "PASS independent source/wrapper and native diagnosis review; startup acceptance FAIL"
       }
     }
   },

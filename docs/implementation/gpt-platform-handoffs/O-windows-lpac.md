@@ -103,7 +103,7 @@ launcher; the production readiness guard remains closed.
 ## Approved console-setting experiment — completed once
 
 Connor explicitly approved the temporary LowBoxConsoleEnabled diagnostic. The
-single run used the same probe source SHA above and fresh identities:
+single run used probe source SHA `e04780505e9e8ad42b7eb52792cfd89b9b3fac09653719f9977f8516154fe4d1` and fresh identities:
 
 - Task: `OMS GPT LPAC Console f4eb50a9ed74`.
 - Profile: `oms-lpac-f4eb50a9ed744117be1580815b357fe4`.
