@@ -173,7 +173,7 @@ SHA256 `47d3e7123b79d840e5341514f5533fdb6f47fce846ffbb68e79c91bfaf424482`,
 Root-cause diagnosis must precede any fresh reviewed retry; build/version success
 does not establish initialize, provider or deployment acceptance.
 
-## Hostname correction — reviewed, Windows rebuild running
+## Hostname correction — Windows build passed, startup pending
 
 Source candidate `146df998b88cd31c561cf8339b8c90abc95369ea` adds
 `codex-0.153.4-remote-control-name.patch`, SHA256
@@ -206,10 +206,26 @@ source originals and old executable were retained before the four-file update;
 stale old output is rejected as build success. An oversized staging query failed
 before upload/dispatch; reviewed lossless transport compression corrected it.
 
+The rebuild succeeded at `2026-09-13T23:30:50.492462Z`: Cargo exit 0,
+no timeout/cleanup errors, all 165 Hub and 1,134 memory checks passed. Peak job
+memory was 9,361,584,128 bytes, below the unchanged cap. Independent reconciliation
+at `2026-09-13T23:31:48.9038151Z` confirmed task disabled, owned processes absent
+and exact Hub preservation. Current source and retained source/executable backups
+were hash-verified. The new executable is 294,002,688 bytes, SHA256
+`d6eb90b7409dc22f407a9dfa44ec629a8a5a6bf3ca001493aef13dd85a75dbda`.
+Its complete local copy matches the native hash; a timed-out first copy remains
+retained as a partial artifact and is not accepted.
+
 Fresh version/initialize and unchanged targeted arg0 preparations passed static
-review with new identities; actual artifact/outcome bindings remain empty.
-Earlier executable `74d7706f…5ecf4f` does not contain this correction, and no fixed
-Windows startup acceptance is claimed.
+review with new identities. Actual startup outcomes remain pending final binding
+review and execution. Earlier executable `74d7706f…5ecf4f` does not contain this
+correction; the new build alone does not establish fixed startup acceptance.
+
+Completed hostname-fix build: [windows-runtime-hostname-build.zip](../gpt-platform-evidence/windows-runtime-hostname-build.zip),
+SHA256 `a78fa2f077c8186e4ff5804c9087a03f759ea6833e44d11465f8be47b5fa7102`,
+349 manifest files, 869,847 bytes; CRC and all manifest hashes/sizes passed.
+The full executable and partial transfer are retained separately with exact
+hashes; native runtime and later acceptance are excluded.
 
 Diagnosis/fix preparation: [windows-runtime-hostname-fix.zip](../gpt-platform-evidence/windows-runtime-hostname-fix.zip),
 SHA256 `06a93a99636a838da655e2a904ba5a22c8dffe1e55b375190f2b0b6fd19dbcf5`,

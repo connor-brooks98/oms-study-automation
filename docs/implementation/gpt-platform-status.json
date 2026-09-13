@@ -357,7 +357,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "hostname_display_fix_windows_rebuild_running",
+    "state": "hostname_fixed_windows_build_passed_startup_pending",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -368,7 +368,7 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Prior private Windows build/version PASS; initialize failed because gethostname asserted after LPAC API access denial. API-only native discriminator confirms caller error234/size12 versus LPAC error5/size0; cleanup/preservation PASS. Narrow Windows remote-control display-label fix reviewed,3 exact-helper local tests PASS; reviewed incremental Windows rebuild running, fixed initialize acceptance pending.",
+    "native_progress": "Hostname display-label fix source146df998 rebuilt successfully as exactd6eb90 executable. All165Hub/1134memory checks and independent cleanup/preservation PASS. Prior nativeAPI denial reproduced; newversion/initialize and dependentarg0 acceptance pending.",
     "candidate": "146df998b88cd31c561cf8339b8c90abc95369ea",
     "code_tree": "add98dfa84a008ba988bea7894c4bfb671d87603",
     "review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr",
@@ -399,7 +399,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Finish guarded hostname-fix rebuild, freeze and review exact new artifact/provenance, then fresh version and fixed initialize probes serially.",
+      "next_action": "Finish actual new artifact/bound-wrapper review, run fresh version then fixed initialize serially, then two targeted arg0 tests after both pass.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -799,7 +799,7 @@
         }
       },
       "hostname_fix": {
-        "state": "reviewed_windows_rebuild_running",
+        "state": "windows_build_passed_startup_pending",
         "source_commit": "146df998b88cd31c561cf8339b8c90abc95369ea",
         "patch": "scripts/runtime-patches/codex-0.153.4-remote-control-name.patch",
         "patch_sha256": "d3de282dc3839ad69aca064eb6882fa071a267b09c01b16d4cbd9f95152ccb51",
@@ -830,7 +830,7 @@
         "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-hostname-fix.zip",
         "evidence_archive_sha256": "06a93a99636a838da655e2a904ba5a22c8dffe1e55b375190f2b0b6fd19dbcf5",
         "build": {
-          "state": "running",
+          "state": "passed_private_build",
           "task": "OMS GPT Private Runtime Build 734bbdfad4a9 hostname1 20260913",
           "cargo_pid": 22660,
           "started_utc": "2026-09-13T22:09:51.068074Z",
@@ -840,7 +840,28 @@
           "controls": "Same LTO=false target/cache/patched compiler/std/arg0; j1,9.5 GiB,90 minutes,unchanged reserve/Hub/owned cleanup guards",
           "prior_artifact": "Exact74d binary and four original source files retained before source update; stale old executable cannot count as success",
           "staging_transport": "First oversized query failed before upload/dispatch; reviewed lossless compression preserves exact query, fresh staging succeeded",
-          "evidence_root": "windows-runtime-resume-20260913/hostname-fix-build"
+          "evidence_root": "windows-runtime-resume-20260913/hostname-fix-build",
+          "finished_utc": "2026-09-13T23:30:50.492462Z",
+          "exit_code": 0,
+          "timed_out": false,
+          "cleanup_errors": [],
+          "compiler_errors_observed": false,
+          "hub_checks_passed": 165,
+          "memory_checks_passed": 1134,
+          "peak_job_memory_bytes": 9361584128,
+          "peak_process_memory_bytes": 9116200960,
+          "minimum_commit_headroom_bytes": 4722372608,
+          "minimum_available_physical_bytes": 15385935872,
+          "independent_postflight_utc": "2026-09-13T23:31:48.9038151Z",
+          "task_disabled": true,
+          "owned_process_reconciliation": "empty",
+          "executable_sha256": "d6eb90b7409dc22f407a9dfa44ec629a8a5a6bf3ca001493aef13dd85a75dbda",
+          "executable_bytes": 294002688,
+          "local_native_artifact_hash_equal": true,
+          "source_and_old_backup_verified": true,
+          "artifact_transfer": "Initial120second copy timed out; partial retained, compressed read-only copy completed and exact hash verified",
+          "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-hostname-build.zip",
+          "evidence_archive_sha256": "a78fa2f077c8186e4ff5804c9087a03f759ea6833e44d11465f8be47b5fa7102"
         },
         "acceptance_preparation": {
           "state": "static_review_passed_actual_outcomes_unbound",
