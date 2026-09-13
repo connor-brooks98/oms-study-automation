@@ -357,7 +357,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "hostname_fixed_windows_build_passed_startup_pending",
+    "state": "hostname_fixed_windows_startup_passed_arg0_pending",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -368,10 +368,10 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Hostname display-label fix source146df998 rebuilt successfully as exactd6eb90 executable. All165Hub/1134memory checks and independent cleanup/preservation PASS. Prior nativeAPI denial reproduced; newversion/initialize and dependentarg0 acceptance pending.",
+    "native_progress": "Fixed private Windows executable d6eb90 passed fresh strict LPAC VERSION and INITIALIZE: exact output/one response, empty stderr, normal exits, token/profile/capability/session checks and independent cleanup/preservation PASS. Targeted Windows arg0 tests remain pending; production generation/provider/deployment acceptance remain separate.",
     "candidate": "146df998b88cd31c561cf8339b8c90abc95369ea",
     "code_tree": "add98dfa84a008ba988bea7894c4bfb671d87603",
-    "review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr",
+    "review": "PASS independent source/wrapper/native review for exact d6eb90 fixed Windows VERSION and INITIALIZE; prior failed-artifact results retained as history",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
       "26 passed,1 skipped final export/atomic/routes at8de86582",
@@ -399,7 +399,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Finish actual new artifact/bound-wrapper review, run fresh version then fixed initialize serially, then two targeted arg0 tests after both pass.",
+      "next_action": "Bind and review the minimal targeted arg0 compile/test wrappers, compile without running, review exact test artifact, then run only two targeted Windows tests serially.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -799,7 +799,7 @@
         }
       },
       "hostname_fix": {
-        "state": "windows_build_passed_startup_pending",
+        "state": "windows_version_initialize_passed_arg0_pending",
         "source_commit": "146df998b88cd31c561cf8339b8c90abc95369ea",
         "patch": "scripts/runtime-patches/codex-0.153.4-remote-control-name.patch",
         "patch_sha256": "d3de282dc3839ad69aca064eb6882fa071a267b09c01b16d4cbd9f95152ccb51",
@@ -864,15 +864,45 @@
           "evidence_archive_sha256": "a78fa2f077c8186e4ff5804c9087a03f759ea6833e44d11465f8be47b5fa7102"
         },
         "acceptance_preparation": {
-          "state": "static_review_passed_actual_outcomes_unbound",
+          "state": "original_static_preparation_snapshot_followed_by_accepted_startup",
           "version_profile": "oms-lpac-da5dfc8c88a84dc1b9c5058ace13df99",
           "initialize_profile": "oms-lpac-479d1248e92e4204b8f3cadcb3fbd7d5",
           "manifest_sha256": "64c95ff7a6078aa3efd2d1843ef131133bfc3ff4f7e4dc12e0371151540269ae",
           "arg0_manifest_sha256": "9712d27d1b1d23e6746e5f131c8c6f9534b0f365b99b6284a0fbb2c7cc0c5e96",
-          "requirements": "Actual new executable/provenance and final bound review; same-SHA fresh version then initialize PASS before two targeted arg0 tests"
+          "requirements": "Actual new executable/provenance and final bound review; same-SHA fresh version then initialize PASS before two targeted arg0 tests",
+          "current_outcomes": "See startup_acceptance for completed actual bindings/results; arg0 compile/test artifact and outcomes remain pending"
+        },
+        "startup_acceptance": {
+          "state": "passed_native_lpac_version_and_initialize",
+          "runtime_sha256": "d6eb90b7409dc22f407a9dfa44ec629a8a5a6bf3ca001493aef13dd85a75dbda",
+          "version": {
+            "child_pid": 18000,
+            "normal_exit": true,
+            "exit_code": 0,
+            "stdout_exact": "codex-cli 0.153.4\n",
+            "stderr_bytes": 0,
+            "independent_postflight_utc": "2026-09-13T23:45:23.8134585Z"
+          },
+          "initialize": {
+            "child_pid": 10632,
+            "normal_exit": true,
+            "exit_code": 0,
+            "response_frames": 1,
+            "response_id": 1,
+            "result_fields": "Exact userAgent/private GLOBALROOT codexHome/platformFamily/platformOs",
+            "stderr_bytes": 0,
+            "independent_postflight_utc": "2026-09-13T23:50:02.5922177Z"
+          },
+          "token_and_preservation": "Both fixed LPAC oracles and inner/outer/independent preservation passed; tasks disabled, owned processes absent, original installed runtime and exact Hub unchanged",
+          "review": "PASS independent raw protocol/all59version+63initialize evidence hashes/token/normalexit/preservation",
+          "arg0_tests": "not_run",
+          "provider_thread_turn": "not_run",
+          "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-hostname-startup.zip",
+          "evidence_archive_sha256": "19c5e6db465721bcdacf9032529d1fc361660ff6863ad1a5dbe78efc5daf693d"
         }
       }
-    }
+    },
+    "historical_startup_review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr"
   },
   "local_preview": {
     "url": "http://127.0.0.1:56460",

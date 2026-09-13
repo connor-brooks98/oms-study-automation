@@ -6,7 +6,7 @@ Reviewed production-policy commit: `0aa11c7ee40021ede773f6ddc3c9c6e063b557fc`, t
 
 Current source candidate: `146df998b88cd31c561cf8339b8c90abc95369ea`. The Windows runtime includes the reviewed shared path-resolution, temp-containment and remote-control display-name fixes. The hostname fix handles denied optional metadata without changing hostname-based policy, telemetry, authentication or routing. Three focused local tests passed, and the exact API denial was reproduced under LPAC.
 
-The new private Windows build succeeded: executable SHA256 `d6eb90b7409dc22f407a9dfa44ec629a8a5a6bf3ca001493aef13dd85a75dbda` (294,002,688 bytes). All 165 Hub and 1,134 memory checks passed, with independent cleanup and preservation verified. Fresh version/initialize and targeted arg0 acceptance remain pending; generation remains closed. [Current fix and exact evidence](gpt-platform-handoffs/O-windows-canonicalize.md).
+The new private Windows build succeeded: executable SHA256 `d6eb90b7409dc22f407a9dfa44ec629a8a5a6bf3ca001493aef13dd85a75dbda` (294,002,688 bytes). All 165 Hub and 1,134 memory checks passed, with independent cleanup and preservation verified. Fresh strict LPAC version and initialize checks now passed on that exact executable: expected output/response, empty stderr, normal exits, token checks and independent cleanup/preservation. The hostname panic did not recur. The two targeted Windows arg0 tests remain pending; generation remains closed. [Current fix and exact evidence](gpt-platform-handoffs/O-windows-canonicalize.md).
 
 Existing release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`; they are not rebuilt packages for this source candidate. Historical diagnostics below are retained; the current state above and linked handoff supersede their earlier blockers.
 
@@ -14,7 +14,7 @@ Existing release archives below remain bound to original core code `9e54da4188ab
 
 This replaces the required Google path for new lecture quizzes with an explicitly selected Codex subscription backend, preserves full slide/transcript evidence and image assets, requires question/answer review before native publication, and adds private source-scoped/general chat. Outlines are optional. Existing publications, imported artifacts, Anki scheduling and Gate 2B proof resources are retained.
 
-**Activation is blocked, even after local tests pass.** The inspected Codex runtime has not established universal pre-execution tool prevention, restricted Windows identity/readable roots, account persistence, or actual model text/image/schema acceptance. Production generation fails closed with `capability_unverified`; no paid fallback or configuration bypass is present. Fake-client tests prove the application workflow only. A subsequently authorized managed-device login succeeded in the isolated macOS preview on September 11 (ET). The Hub reported the account connected and advertised model slugs. This establishes local login only; generation and Windows account persistence remain unverified.
+**Activation is blocked, even after local tests pass.** The private runtime has proven bounded LPAC identity and startup, but complete production tool prevention/read-root enforcement, account persistence and actual model text/image/schema acceptance remain unverified. Production generation fails closed with `capability_unverified`; no paid fallback or configuration bypass is present. Fake-client tests prove the application workflow only. A subsequently authorized managed-device login succeeded in the isolated macOS preview on September 11 (ET). The Hub reported the account connected and advertised model slugs. This establishes local login only; generation and Windows account persistence remain unverified.
 
 | Capability | Local candidate scope | External/operational limit |
 | --- | --- | --- |
@@ -143,9 +143,9 @@ a 9.5 GiB owned-job cap, reserve guards and a 90-minute window. Its completed
 predecessors and exact artifact identity are recorded in the linked runtime handoff.
 The executable is frozen and its exact LPAC version check passed. The fixed
 initialize probe executed but failed at hostname discovery. The narrow display-name
-correction is implemented, reviewed and rebuilt successfully; fresh startup
-checks remain required before accepting it. The two Windows arg0 tests remain
-gated on initialize acceptance. Provider and deployment acceptance remain separate.
+correction is implemented, reviewed and rebuilt successfully; fresh strict LPAC
+version and initialize checks passed. The two Windows arg0 tests remain pending
+their separate compile/artifact/run verification. Provider and deployment acceptance remain separate.
 
 
 ## Signing setup decision — 2026-09-13

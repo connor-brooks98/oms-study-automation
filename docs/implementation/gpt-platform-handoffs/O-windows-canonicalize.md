@@ -173,7 +173,7 @@ SHA256 `47d3e7123b79d840e5341514f5533fdb6f47fce846ffbb68e79c91bfaf424482`,
 Root-cause diagnosis must precede any fresh reviewed retry; build/version success
 does not establish initialize, provider or deployment acceptance.
 
-## Hostname correction — Windows build passed, startup pending
+## Hostname correction — Windows build and startup passed
 
 Source candidate `146df998b88cd31c561cf8339b8c90abc95369ea` adds
 `codex-0.153.4-remote-control-name.patch`, SHA256
@@ -216,10 +216,28 @@ were hash-verified. The new executable is 294,002,688 bytes, SHA256
 Its complete local copy matches the native hash; a timed-out first copy remains
 retained as a partial artifact and is not accepted.
 
-Fresh version/initialize and unchanged targeted arg0 preparations passed static
-review with new identities. Actual startup outcomes remain pending final binding
-review and execution. Earlier executable `74d7706f…5ecf4f` does not contain this
-correction; the new build alone does not establish fixed startup acceptance.
+Fresh native LPAC version and initialize checks now independently passed on
+`d6eb90b7…75dbda`. Version child PID 18000 returned the exact expected line and
+empty stderr, normal exit 0 without timeout/kill. Initialize child PID 10632
+returned exactly one id 1 success with the four expected fields and exact fresh
+private GLOBALROOT home, empty stderr and normal exit 0. Only initialize and the
+subsequent initialized notification were sent. Both probes passed the fixed
+LPAC token/profile/capability/session oracles and both postflights. Independent
+reconciliations at `2026-09-13T23:45:23.8134585Z` and
+`2026-09-13T23:50:02.5922177Z` found all owned processes gone, tasks disabled,
+original installed runtime hash and exact Hub unchanged. The hostname panic did
+not recur. All 59 version and 63 initialize completion hashes and raw protocol
+checks passed independent review.
+
+The two targeted Windows arg0 tests remain pending separate compile/artifact/run
+reviews. This startup proof does not establish full production read/network policy,
+account persistence, provider generation or deployed behavior. Earlier executable
+`74d7706f…5ecf4f` does not contain the correction; its initialize failure is retained.
+
+Fresh startup proof: [windows-runtime-hostname-startup.zip](../gpt-platform-evidence/windows-runtime-hostname-startup.zip),
+SHA256 `19c5e6db465721bcdacf9032529d1fc361660ff6863ad1a5dbe78efc5daf693d`,
+126 manifest files, 217,661 bytes; CRC and all manifest hashes/sizes passed.
+No thread, turn, provider request or arg0 test ran in these probes.
 
 Completed hostname-fix build: [windows-runtime-hostname-build.zip](../gpt-platform-evidence/windows-runtime-hostname-build.zip),
 SHA256 `a78fa2f077c8186e4ff5804c9087a03f759ea6833e44d11465f8be47b5fa7102`,
