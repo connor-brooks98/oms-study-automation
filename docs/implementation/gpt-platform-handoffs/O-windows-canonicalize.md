@@ -74,8 +74,10 @@ No compiler errors were observed. Peak job memory was 7,354,302,464 bytes;
 all 183 Hub and 1,260 memory checks passed. Independent reconciliation at
 `2026-09-13T20:05:34.4223002Z` confirmed the task disabled, owned processes absent
 and exact Hub preservation. The retained target had no executable at 20:06:05Z.
-A second fresh continuation passed final receipt-binding review and awaits fresh
-native preflight with the same source, profile, target and resource controls.
+A second fresh continuation passed final receipt-binding review and native
+preflight, then started at `2026-09-13T20:11:04.150898Z` (Cargo PID 24776),
+reusing completed core/app-server artifacts. Its deadline is 21:41:04Z, with the
+same source, profile, target and resource controls. Initial guards passed.
 Final compiler-memory success and Codex startup remain unproven.
 
 A prior attempt to copy the entire old cache was abandoned after its control-call

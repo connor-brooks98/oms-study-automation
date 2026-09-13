@@ -517,7 +517,7 @@
             "actual_quote_verified": false
           },
           "resume": {
-            "state": "release_lto_false_second_continuation_preflight",
+            "state": "release_lto_false_second_continuation_running",
             "authorization": "2026-09-13 user reports disabling Smart App Control and requests continuation",
             "policy_verified": true,
             "signing_or_purchase_authorized": false,
@@ -728,10 +728,18 @@
               "evidence_archive_sha256": "17f810b3d2936e7d0127c61d1e6bf34eaa888d22791357c65ebb9871ad01b782"
             },
             "release_lto_false_second_continuation": {
-              "state": "reviewed_pending_fresh_preflight",
+              "state": "running",
               "review": "PASS /root/review_production_policy; bound to reviewed clean nolto2 timeout and no-executable receipts",
               "unchanged": "Source/compiler/lock/release profile LTO=false/target/cache/j1/9.5 GiB/reserve floors/90-minute bound",
-              "evidence_root": "windows-runtime-resume-20260913/no-lto-continuation2-build"
+              "evidence_root": "windows-runtime-resume-20260913/no-lto-continuation2-build",
+              "task": "OMS GPT Private Runtime Build 734bbdfad4a9 nolto3 20260913",
+              "cargo_pid": 24776,
+              "started_utc": "2026-09-13T20:11:04.150898Z",
+              "deadline_utc": "2026-09-13T21:41:04.150898Z",
+              "fresh_preflight": "passed native stage/hash/policy/ownership/Hub/memory/disk",
+              "free_disk_bytes": 59699490816,
+              "preflight_commit_headroom_bytes": 13377105920,
+              "preflight_available_physical_bytes": 21814255616
             }
           }
         }
