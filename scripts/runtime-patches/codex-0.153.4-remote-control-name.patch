@@ -1,0 +1,112 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -2270,6 +2270,7 @@
+  "tracing",
+  "url",
+  "uuid",
++ "winapi-util",
+ ]
+ 
+ [[package]]
+diff --git a/codex-rs/app-server-transport/Cargo.toml b/codex-rs/app-server-transport/Cargo.toml
+--- a/codex-rs/app-server-transport/Cargo.toml
++++ b/codex-rs/app-server-transport/Cargo.toml
+@@ -55,6 +55,9 @@
+ url = { workspace = true }
+ uuid = { workspace = true, features = ["serde", "v7"] }
+ 
++[target.'cfg(windows)'.dependencies]
++winapi-util = { workspace = true }
++
+ [dev-dependencies]
+ chrono = { workspace = true }
+ codex-config = { workspace = true }
+diff --git a/codex-rs/app-server-transport/src/transport/remote_control/mod.rs b/codex-rs/app-server-transport/src/transport/remote_control/mod.rs
+--- a/codex-rs/app-server-transport/src/transport/remote_control/mod.rs
++++ b/codex-rs/app-server-transport/src/transport/remote_control/mod.rs
+@@ -43,6 +43,7 @@
+ use codex_login::AuthManager;
+ use codex_state::StateRuntime;
+ use futures::FutureExt;
++#[cfg(not(windows))]
+ use gethostname::gethostname;
+ use std::error::Error;
+ use std::fmt;
+@@ -930,6 +931,29 @@
+         && left.environment_id == right.environment_id
+ }
+ 
++#[cfg(not(windows))]
++fn remote_control_server_name() -> String {
++    gethostname().to_string_lossy().trim().to_string()
++}
++
++#[cfg(windows)]
++fn remote_control_server_name() -> String {
++    use winapi_util::sysinfo::ComputerNameKind;
++    use winapi_util::sysinfo::get_computer_name;
++
++    remote_control_display_name(get_computer_name(ComputerNameKind::PhysicalDnsHostname))
++}
++
++#[cfg(any(windows, test))]
++fn remote_control_display_name(hostname: io::Result<std::ffi::OsString>) -> String {
++    // This is a display label, not the hostname used to select configuration policy.
++    hostname
++        .ok()
++        .map(|name| name.to_string_lossy().trim().to_string())
++        .filter(|name| !name.is_empty())
++        .unwrap_or_else(|| "Codex app-server".to_string())
++}
++
+ pub async fn start_remote_control(
+     config: RemoteControlStartConfig,
+     state_db: Option<Arc<StateRuntime>>,
+@@ -977,7 +1001,7 @@
+     let websocket_pairing_persistence_key = pairing_persistence_key.clone();
+     let handle_auth_manager = auth_manager.clone();
+     let handle_state_db = state_db.clone();
+-    let server_name = gethostname().to_string_lossy().trim().to_string();
++    let server_name = remote_control_server_name();
+     let remote_control_url = config.remote_control_url;
+     let installation_id = config.installation_id;
+     let initial_status = RemoteControlStatusChangedNotification {
+diff --git a/codex-rs/app-server-transport/src/transport/remote_control/tests.rs b/codex-rs/app-server-transport/src/transport/remote_control/tests.rs
+--- a/codex-rs/app-server-transport/src/transport/remote_control/tests.rs
++++ b/codex-rs/app-server-transport/src/transport/remote_control/tests.rs
+@@ -75,6 +75,34 @@
+ const TEST_REFRESHED_REMOTE_CONTROL_SERVER_TOKEN: &str = "Refreshed Remote Control Token";
+ const TEST_REMOTE_CONTROL_SERVER_TOKEN_EXPIRES_AT: &str = "2999-01-01T00:00:00Z";
+ 
++#[test]
++fn remote_control_display_name_preserves_hostname() {
++    assert_eq!(
++        remote_control_display_name(Ok(std::ffi::OsString::from("  WORKSTATION-Ω  "))),
++        "WORKSTATION-Ω",
++    );
++}
++
++#[test]
++fn remote_control_display_name_handles_hostname_errors() {
++    for error in [5, 87] {
++        assert_eq!(
++            remote_control_display_name(Err(io::Error::from_raw_os_error(error))),
++            "Codex app-server",
++        );
++    }
++}
++
++#[test]
++fn remote_control_display_name_handles_empty_hostname() {
++    for name in ["", "  "] {
++        assert_eq!(
++            remote_control_display_name(Ok(std::ffi::OsString::from(name))),
++            "Codex app-server",
++        );
++    }
++}
++
+ fn remote_control_auth_manager() -> Arc<AuthManager> {
+     auth_manager_from_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+ }
