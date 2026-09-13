@@ -373,9 +373,12 @@ public static class OmsLpacProbe {
             startup.StartupInfo.StdInput = stdin; startup.StartupInfo.StdOutput = stdout; startup.StartupInfo.StdError = stderr;
             startup.AttributeList = attributes;
             result.Stage = "create-suspended";
-            // EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NO_WINDOW
+            // DETACHED_PROCESS avoids console allocation during KERNELBASE initialization.
+            // CREATE_NO_WINDOW still attempted allocation, which returned 0xc000049d during startup.
+            // Explicit file stdio remains inherited; no console or descendant process is needed.
+            // EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | DETACHED_PROCESS
             bool created = CreateProcessW(result.Executable, new StringBuilder(result.CommandLine), IntPtr.Zero, IntPtr.Zero, true,
-                0x08080404, environment, inside, ref startup, out process);
+                0x0008040c, environment, inside, ref startup, out process);
             int createError = Marshal.GetLastWin32Error();
             Win32(created, createError, "Create LPAC cmd");
             result.ProcessId = process.ProcessId;
