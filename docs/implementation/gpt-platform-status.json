@@ -293,7 +293,7 @@
     ]
   },
   "release": {
-    "candidate": "67c58784042601d958d1e86879f96c71a8365bda",
+    "candidate": "844fb9ec37f2add912090c354f8e5d91d558ba61",
     "live_authorized": false,
     "proposal": "docs/implementation/gpt-platform-release-proposal.md",
     "receipt": "docs/implementation/gpt-platform-handoffs/O3.md",
@@ -324,7 +324,7 @@
         "scope": "26passed1skip at8de86582"
       }
     ],
-    "code_tree": "32cbe21722dacc21d93e3ec07bbd3aece563332f",
+    "code_tree": "7cae1b564acac7368004d7cdf6d3ddc47d94e8ea",
     "archive_candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
     "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md"
   },
@@ -356,7 +356,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "policy_fixed_lpac_startup_pending",
+    "state": "policy_fixed_lpac_read_probe_accepted_runtime_pending",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -367,10 +367,10 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Two documented cmd capabilities implemented and verified; native loader trace identifies KERNELBASE.dll DLL_PROCESS_ATTACH failure; read boundary and Codex runtime acceptance pending",
-    "candidate": "67c58784042601d958d1e86879f96c71a8365bda",
-    "code_tree": "32cbe21722dacc21d93e3ec07bbd3aece563332f",
-    "review": "PASS independent capability source, wrapper and final native loader evidence review; read acceptance failed",
+    "native_progress": "Detached synthetic cmd startup and inside-read/outside-denial passed on Windows without debugger; actual Codex runtime and provider acceptance remain pending",
+    "candidate": "844fb9ec37f2add912090c354f8e5d91d558ba61",
+    "code_tree": "7cae1b564acac7368004d7cdf6d3ddc47d94e8ea",
+    "review": "PASS independent root-cause, source, wrapper and successful native read-oracle evidence review",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
       "26 passed,1 skipped final export/atomic/routes at8de86582",
@@ -389,14 +389,14 @@
     "production_policy_commit": "0aa11c7ee40021ede773f6ddc3c9c6e063b557fc",
     "lpac": {
       "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-lpac.md",
-      "source_sha256": "e0f721e87a521cedb8100bd682badee0c8220082c372cb02d69e1174a4a05123",
-      "task": "OMS GPT LPAC Native Loader 213490c1ead3",
+      "source_sha256": "c3a6831cba9295e7e233f2e0125d18a62cb5a0e60cfd71fb254978287f69a1bd",
+      "task": "OMS GPT LPAC Detached 88db6b957b31",
       "token_verification": "passed",
-      "read_boundary": "failed_child_dll_initialization",
-      "child_exit_code": "0xC0000142",
+      "read_boundary": "passed_synthetic_inside_read_outside_denied",
+      "child_exit_code": "0x00000001",
       "preservation": "passed",
-      "postflight_utc": "2026-09-12T21:19:05.5724365Z",
-      "next_action": "Use matching KERNELBASE symbols and a bounded cmd-only debugger trace to identify the failing initialization operation; no guessed ACL/capability/registry changes.",
+      "postflight_utc": "2026-09-13T02:27:39.3408783Z",
+      "next_action": "Prepare bounded source-free actual Codex startup/transport proof under restricted identity before enabling generation; no provider proof or live deployment is implied.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -407,7 +407,7 @@
         "archive_sha256": "94a596db0f57387fbde32418c1d919820184f2f46dfecb738fa0cf3a2c65c441",
         "review": "PASS independent wrapper and native/restoration evidence review"
       },
-      "diagnosis": "Missing documented cmd capabilities corrected; KERNELBASE.dll initialization fails during DLL_PROCESS_ATTACH. Internal failed operation remains unknown.",
+      "diagnosis": "ConsoleAllocate returned0xc000049d, causing initialization failure. Replacing CREATE_NO_WINDOW with DETACHED_PROCESS resolved startup and passed the unchanged read oracle.",
       "independent_review": "docs/implementation/gpt-platform-handoffs/O-windows-startup-review.md",
       "reviewer": "/root/independent_lpac_diagnosis",
       "capabilities": [
@@ -418,7 +418,7 @@
         4,
         4
       ],
-      "source_commit": "67c58784042601d958d1e86879f96c71a8365bda",
+      "source_commit": "844fb9ec37f2add912090c354f8e5d91d558ba61",
       "loader_trace": {
         "instrumentation": "passed; matching public ntdll PDB and NtGlobalFlag0->2 verified",
         "failed_dll": "KERNELBASE.dll",
@@ -427,6 +427,18 @@
         "archive": "docs/implementation/gpt-platform-evidence/windows-lpac-native-loader.zip",
         "archive_sha256": "0261961bea28d0854c93352f06b83dc3e4a53897141c38d6eab48ddffa8d6bfe",
         "provider_request": false
+      },
+      "detached_fix": {
+        "archive": "docs/implementation/gpt-platform-evidence/windows-lpac-detached-fix.zip",
+        "archive_sha256": "e8326e70542e26594d320c97e7e3a1e8db0c97973f8b8035100553886366a74c",
+        "child_pid": 3556,
+        "debugger": false,
+        "stdout": "exact inside canary plus CRLF",
+        "stderr": "Access is denied. plus CRLF",
+        "child_exit": 1,
+        "wrapper_exit": 0,
+        "transport_exit": 0,
+        "review": "PASS independent raw-output/canary/token/cleanup/preservation review"
       }
     }
   },

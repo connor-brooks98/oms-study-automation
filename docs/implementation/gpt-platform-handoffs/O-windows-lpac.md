@@ -1,13 +1,20 @@
 # O: bounded Windows LPAC investigation
 
-2026-09-12. **Runtime-policy fixes are reviewed and locally tested. Actual Windows
-LPAC identity verification now passes; child initialization still fails with
-`0xC0000142` with empty stdout/stderr; no canary read was established. Read-isolation acceptance has not passed.**
-Production generation remains `capability_unverified`.
+2026-09-13. **Actual Windows synthetic LPAC startup and read isolation now pass.**
+Detached cmd reads the inside canary, is denied the outside file, and exits1
+normally. Independent raw evidence review passed; the live Hub was preserved.
+Actual Codex runtime/provider acceptance remains pending and production generation
+remains `capability_unverified`.
 
-Current interpretation: [independent startup review](O-windows-startup-review.md) identified the documented missing cmd capabilities. Both are now supplied and verified, but startup still fails. A matched-symbol native trace identifies KERNELBASE.dll failure during DLL_PROCESS_ATTACH; the internal failed operation remains unknown.
+The failed startup was traced to ConsoleAllocate returning0xc000049d during
+KERNELBASE initialization. DETACHED_PROCESS avoids that unnecessary console path.
+[Exact diagnosis and passing receipt](O-windows-startup-review.md#detached-start-fix-and-passing-native-acceptance).
 
 ## Implemented corrections
+
+- Use DETACHED_PROCESS instead of CREATE_NO_WINDOW for the fixed file-stdio child.
+  Native console allocation failed; the detached rerun passes unchanged security
+  checks and the existing read oracle.
 
 - Query scalar token values using exact four-byte buffers. The original zero-size
   query for class20 returned error24 and size4, not the assumed error122.
@@ -22,7 +29,7 @@ Current interpretation: [independent startup review](O-windows-startup-review.md
   It changes no filesystem ACL and does not impersonate a thread.
 
 Current probe source SHA256:
-`e0f721e87a521cedb8100bd682badee0c8220082c372cb02d69e1174a4a05123`.
+`c3a6831cba9295e7e233f2e0125d18a62cb5a0e60cfd71fb254978287f69a1bd`.
 Independent source and wrapper review passed. Native PowerShell parsing and C#
 compilation passed. Exact sources and raw results are retained in the archives.
 
@@ -140,5 +147,5 @@ activation remains closed. The production source is unchanged by this experiment
 
 The implemented two-capability rerun and subsequent CDB evidence are recorded in
 [the startup review](O-windows-startup-review.md#loader-evidence-after-the-implemented-correction).
-Latest task OMS GPT LPAC Native Loader 213490c1ead3: token checks passed; read
+Historical pre-fix task OMS GPT LPAC Native Loader 213490c1ead3: token checks passed; read
 oracle failed0xc0000142. Both preservation checks passed21:19:05.5724365Z.

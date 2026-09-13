@@ -37,3 +37,5 @@ Portable CDB traces (Microsoft tool/PDB binaries remain in private diagnostic di
 - `windows-lpac-loader-symbols.zip`: SHA256 `6d50811d7d6e91dc917a9872f798218a3a18f0d3686525af216627d3c148d0b1`; 61 manifest files. Instrumentation expression failed in compiler child; watchdog timeout and inner reap error retained. Outer cleanup passed; independent reconciliation confirms all four owned PIDs absent and Hub preserved. No LPAC child result.
 
 - `windows-lpac-native-loader.zip`: SHA256 `0261961bea28d0854c93352f06b83dc3e4a53897141c38d6eab48ddffa8d6bfe`; 57 manifest files. Matching symbols and loader flag verified. KERNELBASE.dll fails DLL_PROCESS_ATTACH; read oracle failed. Both postflights passed without timeout/cleanup error.
+
+Detached startup fix: `windows-lpac-detached-fix.zip`, SHA256 `e8326e70542e26594d320c97e7e3a1e8db0c97973f8b8035100553886366a74c`; 248 manifest files/CRCs verified. Contains matching-symbol KERNELBASE return tracing and the successful undebugged LPAC cmd read oracle. Only the console flag changed; actual Codex/provider/deployment acceptance remains separate.

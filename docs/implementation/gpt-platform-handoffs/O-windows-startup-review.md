@@ -160,3 +160,55 @@ Verified exact probe/PID, matching symbols and sls transition, two capabilities,
 DLL/phase propagation, normal reap, empty outputs and preservation. No actionable
 evidence findings; internal failed operation and actual Codex compatibility remain
 unproven.
+
+## Detached-start fix and passing native acceptance
+
+2026-09-13. Source commit **844fb9ec37f2add912090c354f8e5d91d558ba61**.
+
+Matched KERNELBASE symbols exposed its actual initialization functions. The first
+inspection used an absent symbol name and retained that command failure. A fresh
+entry-point/function inspection identified the exact call-return RVAs; thirteen
+one-shot breakpoints in a new cmd process then recorded their return values.
+NtQuerySystemInformation, CsrClientConnectToServer and critical-section setup
+returned success; BaseNls returned AL1. ConsoleShouldAllocateConsole returned AL1,
+**ConsoleAllocate returned EAX0xc000049d**, ConsoleInitialize returned AL0 and
+its caller returned AL0. The selected post-call status establishes the failing
+operation; !gle values were stale even at successful calls and were not treated
+as the cause. No symbolic name for0xc000049d is asserted.
+
+The minimal fix changes only the creation flags from0x08080404 to0x0008040c:
+replace CREATE_NO_WINDOW with DETACHED_PROCESS. This file-stdio worker needs no
+console. LPAC opt-out, exact two enabled capabilities, prohibited descendants,
+explicit three inherited file handles, suspended-token checks and file oracle
+remain unchanged. [Microsoft creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags).
+
+Fresh **undebugged** task OMS GPT LPAC Detached 88db6b957b31 ran as conbr/session1/
+Limited. Probe SHA256 `c3a6831cba9295e7e233f2e0125d18a62cb5a0e60cfd71fb254978287f69a1bd`. Inner SHA256
+`97dcde81423eee427e554c73ae32c4f3ffccb69098f45e87ef72072e52654bd5`;
+outer `01accc691b44097ec7b65e05decc251439c5eac7439e2c977b30d2b8756cc120`.
+Native PowerShell parsing and C# compilation passed. Child3556 verified exact
+LPAC identity and both capability SIDs/attributes4, resumed and was reaped without
+timeout or termination. Raw stdout exactly equals the inside canary with CRLF;
+raw stderr is exactly `Access is denied.` plus CRLF. Outside canary content is
+absent from stdout. Child exit1 satisfies the fixed oracle; wrapper and transport
+exited0. Native result Passed=true, Stage=passed.
+
+Both preservation checks passed at **2026-09-13T02:27:39.3408783Z**: live Hub8268,
+buildf487c622/treea9f7cc7/schema31, monitored process identities and all three
+healthy workers unchanged; diagnostic task disabled and cleanup errors null.
+Independent source/flag, wrapper/hash-chain and final raw canary/token/output/
+preservation reviews all **PASS**, with no actionable findings.
+
+Archive `windows-lpac-detached-fix.zip`, SHA256 **e8326e70542e26594d320c97e7e3a1e8db0c97973f8b8035100553886366a74c**,
+contains248 SHA256/size-verified files and passes all ZIP CRCs. It retains all
+three fresh KERNELBASE investigations, the successful detached rerun and symbol
+acquisition provenance. Public PDB binaries remain in retained private diagnostic
+directories and are listed by hash/size in the archive manifest.
+
+This closes synthetic cmd startup and the tested inside/outside read boundary.
+It does not prove arbitrary-path denial, actual Codex startup/transport, account
+persistence, all-tool prevention, provider acceptance or deployed behavior.
+The next capability is bounded source-free actual Codex startup under the same
+required restrictions. No production generation, shared Windows policy/registry/
+ACL/account repair, live Hub deployment, provider request or Anki mutation was
+performed. Earlier failed receipts remain historical evidence.
