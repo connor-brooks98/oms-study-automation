@@ -357,7 +357,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "native_canonicalize_fix_passed_codex_build_appcontrol_blocked",
+    "state": "private_windows_build_passed_native_startup_pending",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -368,7 +368,7 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Native path fix red/green PASS. Private pinned Codex build reached compilation, then Windows Application Control rejected unsigned parking_lot_core helper (os4551/event3077); no Codex executable. Cleanup/taskdisabled/preservation PASS.",
+    "native_progress": "Native path red/green PASS. Reviewed private Codex release build succeeded with LTO=false, j1 and 9.5 GiB cap; exact executable frozen. All 144 Hub/986 memory checks and independent cleanup/preservation PASS. Native version/initialize, arg0, provider and deployment acceptance remain pending.",
     "candidate": "f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3",
     "code_tree": "5e05f29df4c120c98ae9f7e76560266c99ffd157",
     "review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr",
@@ -399,7 +399,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Fresh guarded private build after verified user-disabled Smart App Control; then hash-bound version and initialize acceptance. No agent policy changes or purchases.",
+      "next_action": "Review exact successful-build and artifact bindings, then native version and fixed initialize checks serially; targeted arg0 tests only after both pass.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -517,7 +517,7 @@
             "actual_quote_verified": false
           },
           "resume": {
-            "state": "release_lto_false_second_continuation_running",
+            "state": "build_passed_native_startup_pending",
             "authorization": "2026-09-13 user reports disabling Smart App Control and requests continuation",
             "policy_verified": true,
             "signing_or_purchase_authorized": false,
@@ -545,7 +545,7 @@
               "postflight_utc": "2026-09-13T13:46:14.460994Z",
               "cleanup_errors": []
             },
-            "next_action": "Finish reviewed unchanged-profile continuation, then freeze exact artifact and review native acceptance bindings",
+            "next_action": "Review exact successful-build and artifact bindings, then native version and fixed initialize checks serially; targeted arg0 tests only after both pass.",
             "corrected_build": {
               "task": "OMS GPT Private Runtime Build 734bbdfad4a9 fetch 20260913",
               "cargo_pid": 6876,
@@ -728,7 +728,7 @@
               "evidence_archive_sha256": "17f810b3d2936e7d0127c61d1e6bf34eaa888d22791357c65ebb9871ad01b782"
             },
             "release_lto_false_second_continuation": {
-              "state": "running",
+              "state": "passed_private_build",
               "review": "PASS /root/review_production_policy; bound to reviewed clean nolto2 timeout and no-executable receipts",
               "unchanged": "Source/compiler/lock/release profile LTO=false/target/cache/j1/9.5 GiB/reserve floors/90-minute bound",
               "evidence_root": "windows-runtime-resume-20260913/no-lto-continuation2-build",
@@ -739,9 +739,30 @@
               "fresh_preflight": "passed native stage/hash/policy/ownership/Hub/memory/disk",
               "free_disk_bytes": 59699490816,
               "preflight_commit_headroom_bytes": 13377105920,
-              "preflight_available_physical_bytes": 21814255616
+              "preflight_available_physical_bytes": 21814255616,
+              "exit_code": 0,
+              "timed_out": false,
+              "finished_utc": "2026-09-13T21:21:27.770259Z",
+              "cleanup_errors": [],
+              "compiler_errors_observed": false,
+              "peak_job_memory_bytes": 9299189760,
+              "peak_process_memory_bytes": 9055531008,
+              "hub_checks_passed": 144,
+              "memory_checks_passed": 986,
+              "minimum_commit_headroom_bytes": 4279328768,
+              "minimum_available_physical_bytes": 16109522944,
+              "independent_postflight_utc": "2026-09-13T21:22:58.6803676Z",
+              "task_disabled": true,
+              "owned_process_reconciliation": "empty",
+              "codex_executable_produced": true,
+              "executable_sha256": "74d7706f403336b693853eb8582e0424d9f765ac6c2d98e408206bf03e5ecf4f",
+              "executable_bytes": 293978624,
+              "runtime_acceptance": "pending",
+              "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-lto-false-build-success.zip",
+              "evidence_archive_sha256": "24a842bb9b83a305851fbf70eb5c35aab1f3c5dc9266445a101e5c4a7aaf1128"
             }
-          }
+          },
+          "record_scope": "Original application-control failure; current successor state and evidence are in resume."
         }
       }
     }

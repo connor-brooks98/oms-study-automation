@@ -1,6 +1,6 @@
 # O: Windows canonicalization fix
 
-2026-09-13. **Native path regression PASS; compiler-path fix passed; LTO-adjusted build awaiting completion.**
+2026-09-13. **Native path regression PASS; compiler-path fix passed; private Windows release build PASS; native startup pending.**
 Independent source, fixed-wrapper and raw-result review passed by
 `/root/review_production_policy`. Production generation remains closed.
 
@@ -77,8 +77,18 @@ and exact Hub preservation. The retained target had no executable at 20:06:05Z.
 A second fresh continuation passed final receipt-binding review and native
 preflight, then started at `2026-09-13T20:11:04.150898Z` (Cargo PID 24776),
 reusing completed core/app-server artifacts. Its deadline is 21:41:04Z, with the
-same source, profile, target and resource controls. Initial guards passed.
-Final compiler-memory success and Codex startup remain unproven.
+same source, profile, target and resource controls. It succeeded at
+`2026-09-13T21:21:27.770259Z` (Cargo exit 0, no timeout or cleanup errors),
+finishing the release build in 70m22s. All 144 Hub and 986 memory checks passed;
+peak job memory was 9,299,189,760 bytes, below the 10,200,547,328-byte cap.
+Independent reconciliation at `2026-09-13T21:22:58.6803676Z` confirmed task
+disabled, owned processes absent and exact Hub preservation.
+
+The custom executable is 293,978,624 bytes, SHA256
+`74d7706f403336b693853eb8582e0424d9f765ac6c2d98e408206bf03e5ecf4f`.
+The frozen local copy matches the native receipt. The full build passed; native
+version/initialize and targeted arg0 acceptance remain pending. This is a private
+patched build, not the official release binary. Generation remains closed.
 
 A prior attempt to copy the entire old cache was abandoned after its control-call
 timeout. The exact owned worker was terminated and reaped; process reconciliation
@@ -129,6 +139,13 @@ Completed first LTO=false continuation: [windows-runtime-lto-false-continuation-
 SHA256 `17f810b3d2936e7d0127c61d1e6bf34eaa888d22791357c65ebb9871ad01b782`,
 323 manifest files, 578,490 bytes; CRC and all manifest hashes/sizes passed.
 Excludes the successor continuation and any native Codex startup acceptance.
+
+Successful release build: [windows-runtime-lto-false-build-success.zip](../gpt-platform-evidence/windows-runtime-lto-false-build-success.zip),
+SHA256 `24a842bb9b83a305851fbf70eb5c35aab1f3c5dc9266445a101e5c4a7aaf1128`,
+309 manifest files, 483,229 bytes; CRC and all manifest hashes/sizes passed.
+The executable is retained separately at the exact local path in
+`frozen-artifact.json`; this archive contains its provenance and receipts.
+Native runtime and provider acceptance are excluded.
 
 ## Change and provenance
 
