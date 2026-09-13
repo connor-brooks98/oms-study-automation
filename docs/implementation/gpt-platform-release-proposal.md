@@ -141,3 +141,58 @@ The read-only signing inventory found no code-signing certificate in either
 CurrentUser/My or LocalMachine/My. Approval/input for a supported signing/build
 setup is required before this host can continue the blocked construction step;
 the current evidence does not establish a usable signer or an accepted executable.
+
+
+## Signing setup decision — 2026-09-13
+
+**Prepared, not authorized or provisioned.** The next proposed route is Azure
+Artifact Signing Basic with a Public Trust profile. Microsoft documents trusted
+RSA signatures as compatible with Smart App Control; this preserves the current
+NUC policy. Self-signing is not the documented trust route, and Smart App Control
+has no individual-app exception. [Signing requirements](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/code-signing-for-smart-app-control),
+[Microsoft FAQ](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions).
+
+Requested purchase scope: one Basic signing account, approximately US$9.99/month,
+with a proposed ceiling of US$10/month before applicable taxes and no signature
+overage. Confirm the actual subscription quote before account creation; stop if
+it exceeds the ceiling. The live pricing page currently lists 5,000 included
+signatures/month but does not expose a dollar quote to this read-only fetch.
+Billing begins at account creation, including while identity validation is
+pending. No account, subscription, certificate or signing request has been
+created. Existing subscription entitlements have not been inspected.
+[Microsoft cost comparison](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options),
+[Service pricing and billing](https://azure.microsoft.com/en-us/pricing/details/artifact-signing/).
+
+Once Connor approves the paid setup:
+
+1. Use his Microsoft sign-in to inspect/reuse an eligible Azure subscription and
+   signer before creating anything. If new enrollment or a billing commitment
+   beyond this signing account is required, surface the exact requirement first.
+   Public Trust individuals require US/Canada eligibility and an Individual
+   billing account. Connor completes Microsoft's identity verification directly;
+   no password, identification document or private key is requested in chat.
+2. Confirm the quote and create only the approved Basic account and Public Trust
+   profile, using the portal if no existing CLI is available. Scope signing
+   permission to that profile. Record the actual region, endpoint and profile;
+   do not install trust roots or modify the host's application-control policy.
+3. Prepare a bounded signing/build invocation for the existing pinned Codex and
+   Rust patches, normalized lock and public dependencies. Preserve unsigned
+   artifacts and record each unsigned/signed hash, signer and verification result
+   before any signed artifact is executed. First target is the retained
+   parking_lot_core helper with SHA256
+   `20818708ed2329feb709538181338894244de14db08ba509c3b8acd5c3226a5a`.
+   Sign only this pinned build's compiler/runtime artifacts, with a usage count
+   below the account's remaining included quota. Signing failure or another policy
+   rejection stops the run; signature verification alone is not runtime acceptance.
+4. Resume under the same two-job/8GiB/90-minute bounds and live-Hub guards. Bind
+   any completed Codex artifact to fresh version and initialize acceptance. The
+   generation/provider/deployment gates remain separate.
+
+The portal requires identity validation before signing becomes available;
+account access, validation success and timing remain unverified. If an existing
+trusted signing service is available, use that instead of buying a second one.
+[Setup and individual eligibility](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart).
+
+This approval concerns Windows code signing only. The GPT backend remains the
+approved Codex subscription route. No paid model fallback, reset credits,
+private-source provider tests, live Hub cutover or Anki changes are included.

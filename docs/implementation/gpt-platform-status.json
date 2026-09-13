@@ -503,7 +503,19 @@
             "CurrentUser/My": 0,
             "LocalMachine/My": 0
           },
-          "initialize_probe": "reviewed_and_csharp_compiled_only"
+          "initialize_probe": "reviewed_and_csharp_compiled_only",
+          "signing_proposal": {
+            "state": "awaiting_purchase_approval",
+            "provider": "Azure Artifact Signing",
+            "sku": "Basic",
+            "trust": "Public Trust",
+            "proposed_monthly_ceiling_usd_before_tax": 10,
+            "overage_authorized": false,
+            "identity_validation": "required_not_started",
+            "resource_created": false,
+            "source": "docs/implementation/gpt-platform-release-proposal.md",
+            "actual_quote_verified": false
+          }
         }
       }
     }
