@@ -39,3 +39,8 @@ Portable CDB traces (Microsoft tool/PDB binaries remain in private diagnostic di
 - `windows-lpac-native-loader.zip`: SHA256 `0261961bea28d0854c93352f06b83dc3e4a53897141c38d6eab48ddffa8d6bfe`; 57 manifest files. Matching symbols and loader flag verified. KERNELBASE.dll fails DLL_PROCESS_ATTACH; read oracle failed. Both postflights passed without timeout/cleanup error.
 
 Detached startup fix: `windows-lpac-detached-fix.zip`, SHA256 `e8326e70542e26594d320c97e7e3a1e8db0c97973f8b8035100553886366a74c`; 248 manifest files/CRCs verified. Contains matching-symbol KERNELBASE return tracing and the successful undebugged LPAC cmd read oracle. Only the console flag changed; actual Codex/provider/deployment acceptance remains separate.
+
+- `windows-canonicalize-fix.zip`: native Rust LPAC baseline error5 and patched path-proof PASS,
+  source/build provenance and both postflights. SHA256
+  `c4f7b0fe31c5bb5dbdf0508fc741130ae78a9e25fca349094b760738a9a98a21`;
+  307 manifest files, 1,499,078 bytes. Actual Codex acceptance remains pending.

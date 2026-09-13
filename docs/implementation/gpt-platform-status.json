@@ -356,7 +356,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "policy_fixed_lpac_read_passed_codex_mount_manager_blocked",
+    "state": "native_canonicalize_fix_passed_codex_rebuild_pending",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -367,7 +367,7 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Native trace confirms home opens successfully; DOS path canonicalization fails when MountPointManager open is denied. Codex exits0/version correct but startup oracle fails. Read-boundary regression passed.",
+    "native_progress": "Tiny Rust native baseline reproduced canonicalize error5; same fixture with patched std passed path reopen, Unicode private-home write, outside read and inside write boundaries. Actual rebuilt Codex not yet accepted.",
     "candidate": "0ec321f90d95658aec7e8b4b712e434870339cbd",
     "code_tree": "776e5033c1958d2a4ab7cf7bef4ac0730cecd1ab",
     "review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr",
@@ -379,7 +379,8 @@
       "Windows registry-only native completion passed; O7 focused offline tests and Ruff passed; B77passed3skips",
       "78passed3opt-inskip4.77s; Ruff passed; native Windows single apply_patch denial PASS",
       "Policy O retest97passed3opt-inskip9.93s; Rufffivefiles and strictmypytwomodulesPASS",
-      "Same-source Windows read-boundary regression passed; CodexVersion startup FAIL with exact version/exit0 and home warning"
+      "Same-source Windows read-boundary regression passed; CodexVersion startup FAIL with exact version/exit0 and home warning",
+      "Native Rust canonicalize red/green: baseline error5; patched same fixture all assertions passed; both tasks disabled/preservation passed"
     ],
     "worker_implementation": "f3711eb33656785ead908bce6c1458e423b03511",
     "worker_receipt": "0c4d2ba6ef91c1f176760320483908b377027aff",
@@ -397,7 +398,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Resolve pinned Codex home canonicalization compatibility before app-server/credential/provider acceptance; preserve explicit home and security boundary.",
+      "next_action": "Rebuild pinned private Codex with reviewed canonicalize and arg0 containment corrections, then fresh startup acceptance.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -463,6 +464,22 @@
         "archive": "docs/implementation/gpt-platform-evidence/windows-lpac-codex-startup.zip",
         "archive_sha256": "42635dd74c3efc827caa80d1faee8469458ff1b4aeb633a56e1fda11111e60a1",
         "review": "PASS independent source/wrapper and native diagnosis review; startup acceptance FAIL"
+      },
+      "canonicalize_fix": {
+        "state": "passed_native_fixture",
+        "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-canonicalize.md",
+        "patch_sha256": "90f7ef88a479fc6621d0329d11f62d3e7b7bdced7f69dbe639dee4c02294c9ff",
+        "baseline_task": "OMS GPT Canonicalize baseline b82d75827f74",
+        "patched_task": "OMS GPT Canonicalize patched 8d17cd127e5e",
+        "baseline_exit": 3221226505,
+        "patched_exit": 0,
+        "patched_executable_sha256": "699dfda6b5f1fe953f43504536d171c89f4643f364da0b763fa730fc1bc3901b",
+        "postflight_utc": "2026-09-13T04:22:18.3348634Z",
+        "preservation": "passed_both_runs",
+        "review": "PASS independent source/wrapper/native evidence review",
+        "codex_acceptance": false,
+        "archive": "docs/implementation/gpt-platform-evidence/windows-canonicalize-fix.zip",
+        "archive_sha256": "c4f7b0fe31c5bb5dbdf0508fc741130ae78a9e25fca349094b760738a9a98a21"
       }
     }
   },

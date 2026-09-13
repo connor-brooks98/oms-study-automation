@@ -1,0 +1,36 @@
+--- a/library/std/src/sys/fs/windows.rs
++++ b/library/std/src/sys/fs/windows.rs
+@@ -1572,12 +1572,31 @@
+ }
+ 
+ fn get_path(f: impl AsRawHandle) -> io::Result<PathBuf> {
+-    fill_utf16_buf(
++    let result = fill_utf16_buf(
+         |buf, sz| unsafe {
+             c::GetFinalPathNameByHandleW(f.as_raw_handle(), buf, sz, c::VOLUME_NAME_DOS)
+         },
+         |buf| PathBuf::from(OsString::from_wide(buf)),
+-    )
++    );
++    match result {
++        // LPAC can open the file while DOS volume-name lookup is denied.
++        // Resolve the same handle; never replace a failed file open with a lexical path.
++        Err(error) if error.raw_os_error() == Some(c::ERROR_ACCESS_DENIED as i32) => {
++            const VOLUME_NAME_NT: u32 = 2;
++            fill_utf16_buf(
++                |buf, sz| unsafe {
++                    c::GetFinalPathNameByHandleW(f.as_raw_handle(), buf, sz, VOLUME_NAME_NT)
++                },
++                |buf| {
++                    let mut path = OsString::from(r"\\?\GLOBALROOT");
++                    path.push(OsString::from_wide(buf));
++                    PathBuf::from(path)
++                },
++            )
++            .or(Err(error))
++        }
++        result => result,
++    }
+ }
+ 
+ pub fn canonicalize(p: &WCStr) -> io::Result<PathBuf> {

@@ -110,3 +110,15 @@ only the sent inquiry and automatic acknowledgement; no follow-up was sent.
 Vendor export samples and Anki prefix configuration remain separately pending.
 
 Latest single-call source/code/task and all43-file native evidence review: **PASS**. Original dirty manifest and frozen Mac preview health were checked again and remain unchanged.
+
+
+## Native canonicalization correction — 2026-09-13
+
+The minimal Rust1.95.0 NT-name fallback now passes the actual Windows LPAC path
+fixture. Baseline reproduced error5; patched build passed canonical reopen,
+Unicode home write and existing read/write denial assertions. Both fresh tasks
+were disabled with exact live-Hub preservation and no cleanup error. Independent
+review passed. [Exact native red/green receipt](gpt-platform-handoffs/O-windows-canonicalize.md).
+This proves the path correction only. Rebuilt pinned Codex startup, app-server,
+Windows login persistence and provider acceptance remain pending; generation
+stays closed. No installed runtime or live Hub was replaced.

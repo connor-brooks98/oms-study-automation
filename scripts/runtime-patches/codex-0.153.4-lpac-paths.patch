@@ -1,0 +1,101 @@
+diff --git a/codex-rs/arg0/src/lib.rs b/codex-rs/arg0/src/lib.rs
+--- a/codex-rs/arg0/src/lib.rs
++++ b/codex-rs/arg0/src/lib.rs
+@@ -322,6 +322,26 @@
+     }
+ }
+ 
++#[cfg(all(windows, any(not(debug_assertions), test)))]
++fn prepare_windows_home_for_aliases(codex_home: &Path, temp_root: &Path) -> std::io::Result<()> {
++    use codex_utils_absolute_path::AbsolutePathBuf;
++
++    // find_codex_home already rejects missing explicit overrides. Preserve first-use
++    // default-home creation, but create no helper files before the containment check.
++    std::fs::create_dir_all(codex_home)?;
++    let codex_home = AbsolutePathBuf::from_absolute_path(codex_home.canonicalize()?)?;
++    let temp_root = AbsolutePathBuf::from_absolute_path(temp_root.canonicalize()?)?;
++    if codex_home.starts_with(temp_root.as_path()) {
++        return Err(std::io::Error::new(
++            std::io::ErrorKind::InvalidInput,
++            format!(
++                "Refusing to create helper binaries under temporary dir {temp_root:?} (codex_home: {codex_home:?})"
++            ),
++        ));
++    }
++    Ok(())
++}
++
+ /// Creates a temporary directory with either:
+ ///
+ /// - UNIX: `apply_patch` symlink to the current executable
+@@ -343,6 +363,9 @@
+     {
+         // Guard against placing helpers in system temp directories outside debug builds.
+         let temp_root = std::env::temp_dir();
++        #[cfg(windows)]
++        prepare_windows_home_for_aliases(codex_home.as_path(), &temp_root)?;
++        #[cfg(not(windows))]
+         if codex_home.starts_with(&temp_root) {
+             return Err(std::io::Error::new(
+                 std::io::ErrorKind::InvalidInput,
+@@ -353,6 +376,7 @@
+         }
+     }
+ 
++    #[cfg(any(not(windows), debug_assertions))]
+     std::fs::create_dir_all(&codex_home)?;
+     // Use a CODEX_HOME-scoped temp root to avoid cluttering the top-level directory.
+     let temp_root = codex_home.join("tmp").join("arg0");
+@@ -554,6 +578,52 @@
+     use std::path::PathBuf;
+     use tempfile::TempDir;
+ 
++    #[cfg(windows)]
++    #[test]
++    fn windows_alias_home_rejects_resolved_temp_containment() -> std::io::Result<()> {
++        let fixture = tempfile::tempdir()?;
++        let temp_root = fixture.path().join("temp");
++        let home = temp_root.join("home");
++        fs::create_dir_all(&home)?;
++        let canonical_home = fs::canonicalize(&home)?;
++
++        // Raw drive paths and canonical verbatim/device paths can name the same tree.
++        for home in [
++            canonical_home.as_path(),
++            home.as_path(),
++            temp_root.as_path(),
++        ] {
++            assert_eq!(
++                super::prepare_windows_home_for_aliases(home, &temp_root)
++                    .expect_err("homes within temp must not permit helper creation")
++                    .kind(),
++                std::io::ErrorKind::InvalidInput,
++            );
++        }
++        assert!(!home.join("tmp").exists());
++        Ok(())
++    }
++
++    #[cfg(windows)]
++    #[test]
++    fn windows_alias_home_preserves_first_use_and_resolution_errors() -> std::io::Result<()> {
++        let fixture = tempfile::tempdir()?;
++        let temp_root = fixture.path().join("temp");
++        let home = fixture.path().join(".codex");
++        fs::create_dir(&temp_root)?;
++        assert!(!home.exists());
++        super::prepare_windows_home_for_aliases(&home, &temp_root)?;
++        assert!(home.is_dir());
++        assert!(fs::read_dir(&home)?.next().is_none());
++        assert_eq!(
++            super::prepare_windows_home_for_aliases(&home, &fixture.path().join("missing"))
++                .expect_err("unresolved temp must not permit helper creation")
++                .kind(),
++            std::io::ErrorKind::NotFound,
++        );
++        Ok(())
++    }
++
+     struct PackagePathTestFixture {
+         _temp_dir: TempDir,
+         arg0_dir: PathBuf,
