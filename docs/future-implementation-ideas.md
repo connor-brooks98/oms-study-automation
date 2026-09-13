@@ -4,6 +4,22 @@ This is the running backlog for ideas to consider after the current work. An ent
 
 ## Ideas
 
+### 2026-09-13 — Optional Windows application control or app isolation
+
+**Status:** Consider later; not approved for installation or configuration
+
+Connor disabled Smart App Control himself after it blocked the private Codex build
+and asked to retain free, open-source alternatives as a future idea. Consider
+[AppControl Manager](https://github.com/HotCakeX/Harden-Windows-Security#appcontrol-manager)
+for explicit application policies using Windows' enforcement engine, or
+[Sandboxie](https://github.com/sandboxie-plus/Sandboxie) for isolating selected apps.
+These serve different purposes; neither is required for GPT login or Hub delivery.
+
+Decide during implementation: whether added protection is needed, current licensing
+and feature limits, compatibility with local builds and Hub workers, maintenance
+cost, and a reviewed audit/trial and rollback plan. Keep this separate from the
+current runtime acceptance work; do not install tools or change host policy now.
+
 ### 2026-09-02 — Board competency tracker (NBOME COMLEX / USMLE)
 
 **Status:** Idea

@@ -145,7 +145,13 @@ the current evidence does not establish a usable signer or an accepted executabl
 
 ## Signing setup decision — 2026-09-13
 
-**Prepared, not authorized or provisioned.** The next proposed route is Azure
+**Set aside by Connor on 2026-09-13; not authorized or provisioned.** Connor reports
+disabling Smart App Control himself and requests continued bounded runtime work.
+Fresh read-only policy verification and a new guarded build replace this proposal
+as the next step. The prior paid proposal is retained below as history; no signing
+account or purchase is requested now.
+
+The previously proposed route was Azure
 Artifact Signing Basic with a Public Trust profile. Microsoft documents trusted
 RSA signatures as compatible with Smart App Control; this preserves the current
 NUC policy. Self-signing is not the documented trust route, and Smart App Control
