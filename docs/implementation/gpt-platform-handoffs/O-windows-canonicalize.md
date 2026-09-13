@@ -49,8 +49,16 @@ passed; minimum commit headroom was 2,785,030,144 bytes. Cargo exited 101 withou
 timeout or cleanup errors. Independent postflight at
 `2026-09-13T16:42:50.6894697Z` confirmed task disabled, owned processes absent and
 exact Hub preservation. No executable was accepted or runtime probe launched.
-A minimal compiler-profile adjustment is under investigation; reserve floors
-and host settings remain unchanged.
+A native offline locked unit-graph comparison verified that setting
+`CARGO_PROFILE_RELEASE_LTO=false` changes only 1,281 LTO fields among 1,392 units;
+all other graph fields match exactly. This disables cross-crate ThinLTO while
+retaining local ThinLTO, optimization level 3, codegen units 4 and release debug
+settings. Both metadata calls and independent cleanup/preservation passed.
+The reviewed full rebuild started at `2026-09-13T16:58:16.080448Z` (Cargo PID 26340)
+in fresh `target/codex-no-lto-20260913`, with unchanged source/compiler/lock,
+serial execution, 9.5 GiB cap and reserve guards. Earlier targets are retained.
+The build is in progress; this profile change has not yet established memory
+success or Codex startup.
 
 A prior attempt to copy the entire old cache was abandoned after its control-call
 timeout. The exact owned worker was terminated and reaped; process reconciliation
@@ -85,6 +93,11 @@ Completed 9.5 GiB final CLI failure: [windows-runtime-cap95-build-oom.zip](../gp
 SHA256 `2d9473e9e9e6fee539ab9739f94ea59b9e3eaa846d9f1f1dd3429fd03181c2d9`,
 86 manifest files, 122,560 bytes; CRC and all manifest hashes/sizes
 passed. The snapshot contains no successful Codex build or native startup.
+
+Completed profile-resolution proof: [windows-runtime-lto-profile-proof.zip](../gpt-platform-evidence/windows-runtime-lto-profile-proof.zip),
+SHA256 `b25e7141a618022b7504ad9d1e9cb0ecb53d4c0110d0f89b6652f27054b7c921`,
+68 manifest files, 499,349 bytes; CRC and all manifest hashes/sizes
+passed. The full rebuild is excluded.
 
 ## Change and provenance
 

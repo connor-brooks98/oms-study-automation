@@ -517,7 +517,7 @@
             "actual_quote_verified": false
           },
           "resume": {
-            "state": "cap95_build_failed_cli_memory_allocation",
+            "state": "release_lto_false_build_running",
             "authorization": "2026-09-13 user reports disabling Smart App Control and requests continuation",
             "policy_verified": true,
             "signing_or_purchase_authorized": false,
@@ -545,7 +545,7 @@
               "postflight_utc": "2026-09-13T13:46:14.460994Z",
               "cleanup_errors": []
             },
-            "next_action": "Review minimal compiler-profile adjustment for final CLI memory use; preserve source/compiler/lock and host reserve floors",
+            "next_action": "Finish reviewed serial release build with cross-crate ThinLTO disabled; freeze artifact and review bound native probes before launch",
             "corrected_build": {
               "task": "OMS GPT Private Runtime Build 734bbdfad4a9 fetch 20260913",
               "cargo_pid": 6876,
@@ -654,6 +654,31 @@
               "codex_executable_produced": false,
               "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-cap95-build-oom.zip",
               "evidence_archive_sha256": "2d9473e9e9e6fee539ab9739f94ea59b9e3eaa846d9f1f1dd3429fd03181c2d9"
+            },
+            "profile_proof": {
+              "state": "passed_native_metadata_only",
+              "units": 1392,
+              "thin_to_false": 1281,
+              "unchanged_lto_fields": 111,
+              "other_graph_fields": "exactly_equal",
+              "review": "PASS /root/review_production_policy",
+              "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-lto-profile-proof.zip",
+              "evidence_archive_sha256": "b25e7141a618022b7504ad9d1e9cb0ecb53d4c0110d0f89b6652f27054b7c921"
+            },
+            "release_lto_false_build": {
+              "state": "running",
+              "task": "OMS GPT Private Runtime Build 734bbdfad4a9 nolto 20260913",
+              "cargo_pid": 26340,
+              "started_utc": "2026-09-13T16:58:16.080448Z",
+              "deadline_utc": "2026-09-13T18:28:16.080448Z",
+              "profile_change": "CARGO_PROFILE_RELEASE_LTO=false; disables cross-crate ThinLTO and retains local ThinLTO",
+              "target": "target/codex-no-lto-20260913",
+              "job_memory_limit_bytes": 10200547328,
+              "cargo_jobs": 1,
+              "reserve_guards": "Same 2 GiB commit/4 GiB physical emergency reserves checked every five seconds; cap-plus-reserve fresh preflight",
+              "review": "PASS /root/review_production_policy",
+              "source_compiler_lock": "unchanged",
+              "evidence_root": "windows-runtime-resume-20260913/no-lto-cache-build"
             }
           }
         }
