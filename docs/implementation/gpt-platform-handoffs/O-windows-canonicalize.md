@@ -1,6 +1,6 @@
 # O: Windows canonicalization fix
 
-2026-09-13. **Native path regression PASS; corrected private Codex build running after user policy change.**
+2026-09-13. **Native path regression PASS; compiler-path fix passed; full private build stopped on memory allocation.**
 Independent source, fixed-wrapper and raw-result review passed by
 `/root/review_production_policy`. Production generation remains closed.
 
@@ -18,8 +18,13 @@ processes reaped without timeout; the exact Hub postflight passed at
 The correction uses a fresh, shorter private Cargo cache and ordinary `--locked`
 dependency fetching. Source, Rust toolchain, patches, V8 inputs and dependency lock
 remain pinned and unchanged. The full rebuild produced the AWS-LC Rust libraries
-at `2026-09-13T14:26:46.837786Z`, confirming the compiler-path fix; the rest of the
-Codex build and native version/initialize checks are still pending.
+at `2026-09-13T14:26:46.837786Z`, confirming the compiler-path fix. The later `codex-app-server` and `codex-core`
+compilations failed with allocation/LLVM out-of-memory errors; Cargo exited 101
+without timeout or cleanup errors. All 116 health receipts passed; independent
+postflight at `2026-09-13T15:14:04.6788506Z` confirmed the task disabled, no owned
+processes and exact Hub preservation. The evidence does not yet distinguish the
+8 GiB job limit from system commit pressure. A serial build adjustment is under
+review. No executable was produced and native version/initialize remain pending.
 
 A prior attempt to copy the entire old cache was abandoned after its control-call
 timeout. The exact owned worker was terminated and reaped; process reconciliation
@@ -30,8 +35,14 @@ changed Windows policy, installed a signing service or purchased anything.
 Completed diagnostic snapshot: [windows-runtime-build-path-fix.zip](../gpt-platform-evidence/windows-runtime-build-path-fix.zip),
 SHA256 `c300963743eb1d860281887f87381386bf72c8c322a76b8d3d0277f31e4ed3d2`,
 251 manifest files, 597,372 bytes. ZIP integrity and all manifest hashes/sizes
-passed. This snapshot excludes the still-running corrected build and contains
+passed. This snapshot excludes the then-running corrected build and contains
 unbound acceptance preparations only; it does not prove Codex startup.
+
+Completed full-build failure: [windows-runtime-build-oom.zip](../gpt-platform-evidence/windows-runtime-build-oom.zip),
+SHA256 `682bf47301aded1ab534b70fb1e0ca1b0544f7d7b18250e90aa76cd10d05b976`,
+180 manifest files, 319,816 bytes. ZIP integrity and all manifest hashes/sizes
+passed. It includes the completed run, compiler failures and preservation evidence;
+it excludes any successor build and does not establish Codex startup.
 
 ## Change and provenance
 

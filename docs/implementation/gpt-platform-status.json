@@ -517,7 +517,7 @@
             "actual_quote_verified": false
           },
           "resume": {
-            "state": "corrected_build_running",
+            "state": "corrected_build_failed_memory_allocation",
             "authorization": "2026-09-13 user reports disabling Smart App Control and requests continuation",
             "policy_verified": true,
             "signing_or_purchase_authorized": false,
@@ -545,7 +545,7 @@
               "postflight_utc": "2026-09-13T13:46:14.460994Z",
               "cleanup_errors": []
             },
-            "next_action": "Finish reviewed bounded rebuild in fresh shorter private Cargo cache; freeze artifact and review hash-bound native acceptance before launch",
+            "next_action": "Review serial build adjustment with unchanged memory bound; retain completed failure evidence before fresh bounded retry",
             "corrected_build": {
               "task": "OMS GPT Private Runtime Build 734bbdfad4a9 fetch 20260913",
               "cargo_pid": 6876,
@@ -554,7 +554,23 @@
               "change": "Fresh shorter private Cargo cache; ordinary locked dependency fetch; original source/compiler/lock unchanged",
               "review": "PASS /root/review_production_policy",
               "aws_lc_compilation": "passed",
-              "aws_lc_artifacts_observed_utc": "2026-09-13T14:26:46.837786Z"
+              "aws_lc_artifacts_observed_utc": "2026-09-13T14:26:46.837786Z",
+              "state": "failed_memory_allocation",
+              "exit_code": 101,
+              "timed_out": false,
+              "cleanup_errors": [],
+              "codex_executable_produced": false,
+              "task_disabled": true,
+              "health_receipts_passed": 116,
+              "independent_postflight_utc": "2026-09-13T15:14:04.6788506Z",
+              "owned_process_reconciliation": "empty",
+              "failed_crates": [
+                "codex-app-server",
+                "codex-core"
+              ],
+              "cause_limit": "Allocation and LLVM OOM confirmed; job cap versus system commit pressure not yet established",
+              "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-build-oom.zip",
+              "evidence_archive_sha256": "682bf47301aded1ab534b70fb1e0ca1b0544f7d7b18250e90aa76cd10d05b976"
             },
             "cache_copy": {
               "state": "stopped_after_control_call_timeout",

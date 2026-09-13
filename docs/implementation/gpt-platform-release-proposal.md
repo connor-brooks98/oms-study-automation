@@ -12,8 +12,9 @@ Current source candidate: `f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3`. The review
 read-only verification confirms the former policy is not enforced. Paid signing
 is set aside. A later AWS-LC compiler failure was reproduced and fixed by a shorter
 private Cargo cache, without changing source or the dependency lock. The corrected
-full build has passed AWS-LC compilation and is continuing; no rebuilt Codex
-startup or provider acceptance is claimed yet. [Current runtime handoff](gpt-platform-handoffs/O-windows-canonicalize.md).
+full build passed AWS-LC compilation but later stopped on compiler memory
+allocation failures. Cleanup and all 116 Hub checks passed; a serial build
+adjustment is under review. No rebuilt Codex startup or provider acceptance is claimed. [Current runtime handoff](gpt-platform-handoffs/O-windows-canonicalize.md).
 
 This replaces the required Google path for new lecture quizzes with an explicitly selected Codex subscription backend, preserves full slide/transcript evidence and image assets, requires question/answer review before native publication, and adds private source-scoped/general chat. Outlines are optional. Existing publications, imported artifacts, Anki scheduling and Gate 2B proof resources are retained.
 
