@@ -278,7 +278,7 @@
     }
   },
   "external": {
-    "amboss": "automatic_acknowledgment_only; developer_reply_pending",
+    "amboss": "external_mcp_not_offered; supported_alternative_unconfirmed",
     "amboss_thread_id": "1a0924aab334e5da",
     "uworld_sample": "not_supplied",
     "truelearn_sample": "not_supplied",
@@ -286,14 +286,15 @@
     "managed_login": "Connected in isolated local preview via actual managed login; confirmed in OpenAI browser and Hub on2026-09-12T00:51:58Z",
     "runtime_restrictions": "Generation stays capability_unverified. Windows GPT5.5 single valid apply_patch call denied before handler with canary absent; all-tool/OS/read-root/login persistence/provider gates remain pending.",
     "anki_qid_rules": "fixture-tested; observed real source/product-qualified prefixes not configured",
-    "amboss_last_checked_utc": "2026-09-12T12:40:12.790694+00:00",
+    "amboss_last_checked_utc": "2026-09-13T04:32:47.510371+00:00",
     "amboss_message_ids": [
       "1a0924aab334e5da",
-      "1a0924ac6f289fe0"
+      "1a0924ac6f289fe0",
+      "1a095e1d699eb171"
     ]
   },
   "release": {
-    "candidate": "0ec321f90d95658aec7e8b4b712e434870339cbd",
+    "candidate": "f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3",
     "live_authorized": false,
     "proposal": "docs/implementation/gpt-platform-release-proposal.md",
     "receipt": "docs/implementation/gpt-platform-handoffs/O3.md",
@@ -324,9 +325,9 @@
         "scope": "26passed1skip at8de86582"
       }
     ],
-    "code_tree": "776e5033c1958d2a4ab7cf7bef4ac0730cecd1ab",
+    "code_tree": "5e05f29df4c120c98ae9f7e76560266c99ffd157",
     "archive_candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
-    "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-codex-startup.md"
+    "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-canonicalize.md"
   },
   "provider_verified": false,
   "windows_verified": false,
@@ -356,7 +357,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "native_canonicalize_fix_passed_codex_rebuild_pending",
+    "state": "native_canonicalize_fix_passed_codex_build_appcontrol_blocked",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -367,9 +368,9 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Tiny Rust native baseline reproduced canonicalize error5; same fixture with patched std passed path reopen, Unicode private-home write, outside read and inside write boundaries. Actual rebuilt Codex not yet accepted.",
-    "candidate": "0ec321f90d95658aec7e8b4b712e434870339cbd",
-    "code_tree": "776e5033c1958d2a4ab7cf7bef4ac0730cecd1ab",
+    "native_progress": "Native path fix red/green PASS. Private pinned Codex build reached compilation, then Windows Application Control rejected unsigned parking_lot_core helper (os4551/event3077); no Codex executable. Cleanup/taskdisabled/preservation PASS.",
+    "candidate": "f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3",
+    "code_tree": "5e05f29df4c120c98ae9f7e76560266c99ffd157",
     "review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
@@ -398,7 +399,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Rebuild pinned private Codex with reviewed canonicalize and arg0 containment corrections, then fresh startup acceptance.",
+      "next_action": "Approved build/signing/execution route required before fresh rebuilt Codex startup; preserve host policy and failed artifacts.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -479,7 +480,31 @@
         "review": "PASS independent source/wrapper/native evidence review",
         "codex_acceptance": false,
         "archive": "docs/implementation/gpt-platform-evidence/windows-canonicalize-fix.zip",
-        "archive_sha256": "c4f7b0fe31c5bb5dbdf0508fc741130ae78a9e25fca349094b760738a9a98a21"
+        "archive_sha256": "c4f7b0fe31c5bb5dbdf0508fc741130ae78a9e25fca349094b760738a9a98a21",
+        "build": {
+          "state": "blocked_application_control",
+          "task": "OMS GPT Private Runtime Build 734bbdfad4a9 v2",
+          "cargo_pid": 5044,
+          "exit_code": 101,
+          "timed_out": false,
+          "codex_executable_produced": false,
+          "blocked_helper_sha256": "20818708ed2329feb709538181338894244de14db08ba509c3b8acd5c3226a5a",
+          "policy": "VerifiedAndReputableDesktop",
+          "event": 3077,
+          "event_record": 582,
+          "event_utc": "2026-09-13T04:48:33.9089330Z",
+          "preservation": "all_eight_health_guards_passed",
+          "task_disabled": true,
+          "owned_processes_remaining": false,
+          "review": "PASS independent failure/event/cleanup review",
+          "archive": "docs/implementation/gpt-platform-evidence/windows-codex-private-build.zip",
+          "archive_sha256": "12234eba33b11d6598172ff7ade0a50d2ae685b890bc146676b345f21bae804f",
+          "available_codesigning_certificates": {
+            "CurrentUser/My": 0,
+            "LocalMachine/My": 0
+          },
+          "initialize_probe": "reviewed_and_csharp_compiled_only"
+        }
       }
     }
   },

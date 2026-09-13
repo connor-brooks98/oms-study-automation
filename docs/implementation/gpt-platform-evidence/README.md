@@ -44,3 +44,9 @@ Detached startup fix: `windows-lpac-detached-fix.zip`, SHA256 `e8326e70542e26594
   source/build provenance and both postflights. SHA256
   `c4f7b0fe31c5bb5dbdf0508fc741130ae78a9e25fca349094b760738a9a98a21`;
   307 manifest files, 1,499,078 bytes. Actual Codex acceptance remains pending.
+
+- `windows-codex-private-build.zip`: pinned private build preparation, metadata-only
+  lock normalization, Application Control failure/event correlation, cleanup and
+  signing inventory, plus unexecuted initialize probe/C# compile proof. SHA256
+  `12234eba33b11d6598172ff7ade0a50d2ae685b890bc146676b345f21bae804f`; 257 manifest files, 1,583,016 bytes.
+  No rebuilt Codex executable was produced.

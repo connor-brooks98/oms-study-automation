@@ -1,6 +1,6 @@
 # O: Windows canonicalization fix
 
-2026-09-13. **Native path regression PASS; actual rebuilt Codex acceptance pending.**
+2026-09-13. **Native path regression PASS; private Codex build blocked by Windows Application Control.**
 Independent source, fixed-wrapper and raw-result review passed by
 `/root/review_production_policy`. Production generation remains closed.
 
@@ -55,15 +55,25 @@ The final build corrects these without shared configuration/registry changes.
 
 ## Next exact handoff
 
-Build pinned Codex source commit`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`
-against the patched private standard library, preserving official Windows build
-flags and explicit private-build hash provenance. Before acceptance, correct arg0's
-temp-directory guard to compare normalized canonical paths on both sides.
+The canonicalization and Windows alias-containment patches are implemented and
+reviewed. Actual Codex building stopped at host Application Control before a
+Codex executable was produced. Resume only through an explicitly approved
+build/signing/execution route; retain the NUC's existing policy and all failed
+artifacts. Do not retry the rejected file by renaming, moving, elevating, or
+changing admission policy. A source/runtime failure is not a reason to weaken LPAC.
+
+After obtaining a permitted build, bind its new executable hash to a fresh
+version proof, followed by the already prepared fixed initialize probe. That
+probe waits for the exact initialize response before closing stdin, uses fresh
+file-only/no-auth configuration with all telemetry exporters disabled, and has
+passed independent source review and actual Windows C# compile-only validation.
+It has not executed. Configured elevated Windows sandbox setup is reached only
+by explicit setup or execution requests; neither is in this fixed protocol.
+
 `GLOBALROOT` remains a fail-closed compatibility limitation in PathUri hierarchical
 permissions and no-follow filesystem operations; do not claim those consumers work.
-Then bind the new binary hash to fresh version/startup acceptance. App-server,
-credential persistence, tool/read/network boundaries and provider acceptance are
-separate tests; this tiny fixture does not satisfy them.
+App-server, credential persistence, tool/read/network boundaries and provider
+acceptance are separate tests; the tiny path fixture does not satisfy them.
 
 All raw artifacts are retained beneath O's visualization root in
 `windows-canonicalize-baseline`, `windows-canonicalize-patched`, and
@@ -95,3 +105,59 @@ Private Codex release build is authorized with two compile jobs, BelowNormal,
 checks. Official workspace version0.153.4 remains to preserve the locked graph;
 new SHA/provenance identifies the custom binary, not an official release label.
 Only the private source/toolchain/cache paths are modified.
+
+## Private build preparation correction
+
+The release commit labels workspace packages0.153.4 but commits a lockfile with
+local versions0.0.0. The first locked build stopped before compilation; owned-job
+cleanup and both Hub checks passed, and the task was disabled. The exact retained
+lock normalization changes149 local workspace-inherited package versions only
+(143 explicit members plus six auto-included path members). Independent parsed
+TOML and manifest review confirms every external package/revision/checksum and
+all other fields remain unchanged. Original lock SHA256
+`3494b8a78d0f643556a83a9cc184e912bcab9f4c5640288952f4223452ba5dc8`;
+final normalized SHA256
+`a2cb91dfb2e8112bc81d05158fa00b9698e2df8cc1ae0547b5dc5606a44904d3`.
+The fresh build retains `--locked`; it does not update third-party dependencies.
+
+## Confirmed Application Control build barrier
+
+Fresh Limited task `OMS GPT Private Runtime Build 734bbdfad4a9 v2` started
+CargoPID5044 at`2026-09-13T04:45:59.490270Z`. The corrected `--locked` graph passed;
+Rust and dependency compilation began. Cargo exited101 without timeout when
+Windows denied execution of parking_lot_core0.9.12's newly built helper.
+No Codex executable was produced and no rebuilt Codex or provider was executed.
+
+- File: private `target/codex-v2/release/build/parking_lot_core-a3179d96918c35dc/build-script-build.exe`,
+  145,920 bytes, NotSigned, flat SHA256
+  `20818708ed2329feb709538181338894244de14db08ba509c3b8acd5c3226a5a`.
+- Cargo: OS error4551, application control blocked the file, never executed.
+- CodeIntegrity event3077/record582 at`2026-09-13T04:48:33.9089330Z`:
+  policy`VerifiedAndReputableDesktop`, GUID`{0283ac0f-fff1-49ae-ada1-8a933130cad6}`,
+  PolicyID`27555.1000.240208`, status`0xc0e90002`. Its flat hash matches the file.
+  Correlated3033/3089 events show no signature; this is not evidence of malware.
+- All eight pre/during/post health guards passed. Postflight
+  `2026-09-13T04:48:36.416719+00:00`: exact Hub8268/revision/tree/schema and worker
+  identities preserved. No timeout, cleanup_errors empty, task disable returned0;
+  independent task state Disabled and owned-process reconciliation empty.
+
+Independent final build-failure/raw-event/cleanup review: **PASS** by
+`/root/review_production_policy`. This admission barrier is separate from the
+native-tested path fix; rebuilding, runtime acceptance and generation stay pending.
+No policy/ACL/account/registry exception, paid fallback or reset credit was used.
+
+A read-only code-signing certificate metadata query at
+`2026-09-13T04:57:56.5602666Z` found zero certificates in both CurrentUser/My and
+LocalMachine/My, without query errors. No key was accessed, exported or used.
+This does not inventory other machines or remote signing services. The remaining
+required input is an approved signing/build route that satisfies host policy;
+no signature purchase, policy exception or alternative launch is authorized here.
+
+Final build/preparation/diagnosis archive:
+[`windows-codex-private-build.zip`](../gpt-platform-evidence/windows-codex-private-build.zip),
+SHA256 `12234eba33b11d6598172ff7ade0a50d2ae685b890bc146676b345f21bae804f`, 257 manifest files, 1,583,016 bytes.
+ZIP integrity and every manifest size/hash verified. Includes exact prepared
+source/lock diffs, build drivers and receipts, matched policy events, signing
+metadata, and reviewed initialize draft with Windows compile-only evidence.
+Public compiler/dependency binaries remain retained outside Git. Final worker
+receipt SHA256`24db470dd3887ab47c3f433a06942ad4c4a81cca1a655fea020b700c2f140d28`.

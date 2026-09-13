@@ -4,7 +4,7 @@ Status: core implementation and bounded Windows artifact acceptance are ready fo
 
 Reviewed production-policy commit: `0aa11c7ee40021ede773f6ddc3c9c6e063b557fc`, tree `0614b7a5c19b791e8ca30bd8dafe906ed613236e`, branch `codex/gpt-runtime-fix-2026-09-12`. The requested pre-change snapshot was pushed at `274da9d74108e0e8a4f6b6b51ecec5a9550fdd0b`; `b5d19cd5` additionally backs up both completed Windows raw evidence bundles in Git. The production client now applies the accepted experimental protocol and fixed policy, private process home and platform binary pins, and rejects policy drift before `turn/start`. Independent review passed; O retest passed 97 checks with three opt-in skips, Ruff and strict mypy. The generation readiness guard remains closed. The subsequently approved single temporary LowBoxConsoleEnabled experiment did not resolve `0xC0000142`; the setting was restored to its original absence and independently verified. No production source or activation change followed. [Exact policy handoff](gpt-platform-handoffs/B-runtime-policy.md).
 
-Current source candidate: `0ec321f90d95658aec7e8b4b712e434870339cbd`. The new fixed Codex startup probe returns the exact version and exit0 on Windows, but rejects a home-canonicalization AccessDenied warning. Same-source read-boundary regression passed. The native trace identifies a denied MountPointManager open during DOS path canonicalization after the private home opened successfully. Actual restricted Codex startup remains unaccepted. [Current startup receipt](gpt-platform-handoffs/O-windows-codex-startup.md). The Windows LPAC synthetic read test now passes without a debugger: detached cmd reads the allowed canary, is denied the outside file, and exits normally with the required code1. The fix replaces CREATE_NO_WINDOW with DETACHED_PROCESS while retaining token capabilities, child-process restriction and explicit file handles. Independent source, wrapper and raw-result review passed; both live Hub preservation checks passed. This resolves the synthetic startup blocker. Actual Codex restricted-runtime and provider acceptance remain pending, so production generation stays closed. [Exact diagnosis and acceptance](gpt-platform-handoffs/O-windows-startup-review.md#detached-start-fix-and-passing-native-acceptance). The LPAC probe is a separate network-free synthetic boundary test; its native acceptance status is recorded in [the LPAC handoff](gpt-platform-handoffs/O-windows-lpac.md). Existing release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`; they are not rebuilt packages for this candidate. [Prior Windows artifact/router acceptance](gpt-platform-handoffs/O-windows-runtime.md).
+Current source candidate: `f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3`. The reviewed Rust path-resolution patch now passes native Windows LPAC red/green tests, including canonical reopen and unchanged read/write denial boundaries. The Codex temp-containment correction is independently reviewed; the private build reached compilation but Application Control rejected an unsigned dependency helper. No rebuilt Codex was produced; runtime acceptance remains pending. Production generation stays closed. [Current fix and native receipt](gpt-platform-handoffs/O-windows-canonicalize.md). Earlier restricted Codex startup failed with a confirmed MountPointManager denial during DOS canonicalization; [that failed proof remains retained](gpt-platform-handoffs/O-windows-codex-startup.md). Existing release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`, not rebuilt packages for this candidate.
 
 ## Intended release and limits
 
@@ -22,7 +22,7 @@ This replaces the required Google path for new lecture quizzes with an explicitl
 | Anki candidates | Exact observed source/product-qualified QIDs and allowlisted pasted NIDs against an existing local index | Real prefix rules/index setup pending; no live Anki changes or full curation |
 | Private progress | Server-issued attempt identity, durable exact replay, first/repeat and omitted/unknown counts | Descriptive counts only; no pass prediction or invented chronology |
 | Custom/cumulative blocks | Accepted native questions across selected course/exams, reviewed topic filters, immutable source/version identity and resume; grounded suggestions require explicit acceptance | Results-only vendor entries cannot become playable content; model suggestions share runtime activation gate |
-| AMBOSS reference mode | Explicit unavailable state and official link; manual NID route | Specific sent thread has an automatic acknowledgement only; account/subscription does not prove MCP entitlement |
+| AMBOSS reference mode | Explicit unavailable state and official link; manual NID route | AMBOSS reply confirms external MCP is not offered; supported alternatives unconfirmed |
 
 The lecture pipeline fails before dispatch with `context_limit` and affected objective/count diagnostics when full evidence exceeds 20 images or 100,000 serialized source characters. It does not truncate sources or silently claim complete coverage. Automatic partitioning has not been accepted. These conservative ceilings are local implementation limits, not verified model context limits.
 
@@ -32,7 +32,7 @@ The preview remains on the frozen base at port56460. The diagnostic branch prese
 
 Earlier Astra async-input and agent-list calls still execute under the inspected partial controls; those failures are retained. Production generation therefore remains unavailable. On Windows, standalone Codex0.153.4 runs. A System event associates the earlier runner timeout with DLL initialization failure; its root cause remains unknown. Two direct-helper checks now passed, including the intended conbr/session1/Limited caller context. They do not exercise sandbox-account startup or IPC. The initially incorrect help syntax was diagnosed from version-matched official source; corrected help passed. The normal debug CLI retry was rejected: its unconditional ACL refresh and empty deny-read overrides can remove earlier recorded deny-read rules. Restricted identity/readable roots and account persistence remain unresolved. No explicit setup, ACL, account or registry repair was attempted; possible internal preparation by the unexpected first sandbox invocation has not been audited. [Windows diagnosis and exact next proposal](gpt-platform-handoffs/B-windows-runner-diagnosis.md).
 
-Optional AMBOSS and vendor sample blockers remain separate. [Prior runtime receipt](gpt-platform-handoffs/O-runtime.md) records the earlier failed configurations; the current bounded receipt above supersedes its candidate and GPT-5.5 pending status.
+Optional AMBOSS and vendor sample blockers remain separate. The authorized reply thread now confirms external MCP is not offered; no follow-up was sent. [Prior runtime receipt](gpt-platform-handoffs/O-runtime.md) records the earlier failed configurations; the current bounded receipt above supersedes its candidate and GPT-5.5 pending status.
 
 ## Retained state and UX
 
@@ -42,7 +42,7 @@ The sixteen-item September 9 resolution record is retained in `docs/implementati
 
 ## Windows operational preservation
 
-Fresh before/after evidence is retained in the current bounded receipt. Latest LPAC postflight: `2026-09-13T03:27:04.7507589Z` (both preservation checks passed). The earlier full task/owner inventory remains in `gpt-platform-handoffs/live-preflight.json`.
+Fresh before/after evidence is retained in the current bounded receipt. Latest LPAC path-proof postflight: `2026-09-13T04:22:18.3348634Z` (both preservation checks passed). The later private-build health postflight passed at `2026-09-13T04:48:36.416719+00:00`; that is build preservation, not LPAC runtime acceptance. The earlier full task/owner inventory remains in `gpt-platform-handoffs/live-preflight.json`.
 
 - Root `C:\Services\oms-study-automation-v2`, commit `f487c6229b91d2b1ac11729e465561f6c1ffe997`, schema 31.
 - Scheduled task `OMS Study Hub V2`, principal `conbr`, Running.
@@ -83,7 +83,7 @@ Pushing the implementation branch is authorized. Main merge and live deployment 
 - B6 actual-constructor synthetic lecture workflow and private JSON/ZIP/PDF route parity passed; O repeated its opt-in Chrome test: **1 passed, 5 deselected**, all 12 desktop/mobile stages without overflow or page errors. C4 browser independently passed cumulative selection, source labels, answer/resume, manual filters and explicit fake-provider suggestion acceptance. [Browser paths/hashes](gpt-platform-handoffs/O3-browser-evidence.json).
 - B7 export review passed after medical font correction: exact native payload/original PNG parity, supported medical glyphs, embedded fonts, immutable renderer identities, and unpacked-wheel-only export. PDF visual/asset evidence is in [B7 receipt](gpt-platform-handoffs/B7.md). Native macOS Python3.13/PyMuPDF in-process teardown was not accepted; the synthetic full workflow uses a checked raster subprocess. Actual Windows conversion/image retention and export checks now passed in the bounded continuation; runtime isolation and forced-timeout/reaping behavior remain unaccepted.
 - Source archive: `Study-Hub-V2-Source-2026-09-11-gpt-candidate.zip`, SHA256 `f4a3e7d7039e4ad5ab91e4e6fc5f85a89186a96917caaf8b5962e6a201090b40`, 700 manifest files verified. Runtime archive: SHA256 `849887d7cfa4f2b6af987b958eff3b97f833573b738130065729f00dd3a8c582`, 309 manifest files verified. Both rebuild byte-identically, pass ZIP integrity and contain byte-identical bundled fonts. [Exact local archive paths and manifests](gpt-platform-handoffs/O3-archives.json). The historical runtime archive filename does not authorize or enable paid fallback.
-- Original dirty/untracked status matches the exact bootstrap list. Live NUC operational proof is the read-only old-Hub snapshot above. The isolated local preview and one bounded Windows Office conversion were launched; the live Hub was not restarted or deployed, and nothing was pushed, merged to main, deleted, or applied to Anki.
+- Original dirty/untracked status matches the exact bootstrap list. Live NUC operational proof is the read-only old-Hub snapshot above. The isolated local preview and one bounded Windows Office conversion were launched. The implementation branch was subsequently pushed with authorization; the live Hub was not restarted or deployed, and nothing was merged to main, deleted, or applied to Anki.
 
 Current continuation checks: **197 local regression tests passed with5 skips**, then **26 final export/atomic/private-route checks passed with1 Windows skip**; complete Ruff and mypy231 files passed. Windows export verification passed18 tests, with2 symlink cases explicitly excluded, and the retained native PDF passed image/export/grade parity without another Office launch. The initial7 failing export tests and the PowerShell transport parser failure are retained alongside the correction evidence. These are scoped results, not a repeat of the base full suite.
 
@@ -119,6 +119,25 @@ fixture. Baseline reproduced error5; patched build passed canonical reopen,
 Unicode home write and existing read/write denial assertions. Both fresh tasks
 were disabled with exact live-Hub preservation and no cleanup error. Independent
 review passed. [Exact native red/green receipt](gpt-platform-handoffs/O-windows-canonicalize.md).
-This proves the path correction only. Rebuilt pinned Codex startup, app-server,
-Windows login persistence and provider acceptance remain pending; generation
+This proves the path correction only. The pinned rebuild is blocked by host Application Control before a Codex artifact
+was produced. Startup, app-server, Windows login persistence and provider acceptance
+remain pending; generation
 stays closed. No installed runtime or live Hub was replaced.
+
+
+## Ready-to-review runtime fix and required build route
+
+The implementation commit above contains the minimal Rust shared resolver patch,
+the reviewed Windows Codex containment correction, and the native red/green fixture.
+Accept the patch/source and stated proof subset for review; retain generation's
+closed gate. Actual Codex artifact construction requires an explicitly approved
+build/signing/execution route after Windows Application Control rejected the
+unsigned parking_lot_core build helper. The matched policy event and complete
+cleanup/health evidence are in the current receipt. No runtime deployment,
+policy exception, account change or alternate execution workaround is proposed.
+The fixed initialize probe is prepared/reviewed and C#-compiled, not executed.
+
+The read-only signing inventory found no code-signing certificate in either
+CurrentUser/My or LocalMachine/My. Approval/input for a supported signing/build
+setup is required before this host can continue the blocked construction step;
+the current evidence does not establish a usable signer or an accepted executable.

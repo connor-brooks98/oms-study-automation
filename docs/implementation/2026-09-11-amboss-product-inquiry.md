@@ -31,3 +31,17 @@ Connor Brooks
 ## Delivery
 
 Sent successfully through the authenticated Gmail account. Gmail returned the `SENT` label and message/thread ID `1a0924aab334e5da`. This proves the send operation, not receipt or a reply from AMBOSS. Do not resend on orchestrator startup; any follow-up email requires authorization.
+
+
+## Reply verified 2026-09-13T04:32:47.510371+00:00
+
+Read only the authorized sent Gmail thread `1a0924aab334e5da`. Mark from AMBOSS
+replied on2026-09-12 at13:50UTC, message `1a095e1d699eb171`: external MCP access
+is not currently offered. AMBOSS offers Learning and Clinical Care within its
+own platform with membership. Mark offered to ask Product about alternatives
+and requested the account email and more detail on the external use case.
+No endpoint, API entitlement, export contract, or AnKing-ID matching interface
+was supplied. This supersedes the earlier automatic-acknowledgement-only status.
+No follow-up, account lookup, purchase, or credential use was performed.
+Supported API/pilot/manual export alternatives remain unconfirmed and optional;
+core lecture quizzes/chat do not depend on this integration.
