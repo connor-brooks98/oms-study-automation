@@ -517,7 +517,7 @@
             "actual_quote_verified": false
           },
           "resume": {
-            "state": "corrected_build_failed_memory_allocation",
+            "state": "serial_build_failed_cli_memory_allocation",
             "authorization": "2026-09-13 user reports disabling Smart App Control and requests continuation",
             "policy_verified": true,
             "signing_or_purchase_authorized": false,
@@ -545,7 +545,7 @@
               "postflight_utc": "2026-09-13T13:46:14.460994Z",
               "cleanup_errors": []
             },
-            "next_action": "Review serial build adjustment with unchanged memory bound; retain completed failure evidence before fresh bounded retry",
+            "next_action": "Review measured final CLI memory failure and host headroom before a bounded corrected build",
             "corrected_build": {
               "task": "OMS GPT Private Runtime Build 734bbdfad4a9 fetch 20260913",
               "cargo_pid": 6876,
@@ -581,7 +581,35 @@
               "postflight_utc": "2026-09-13T14:08:59.398506Z"
             },
             "diagnostic_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-build-path-fix.zip",
-            "diagnostic_archive_sha256": "c300963743eb1d860281887f87381386bf72c8c322a76b8d3d0277f31e4ed3d2"
+            "diagnostic_archive_sha256": "c300963743eb1d860281887f87381386bf72c8c322a76b8d3d0277f31e4ed3d2",
+            "serial_build": {
+              "state": "failed_cli_memory_allocation",
+              "task": "OMS GPT Private Runtime Build 734bbdfad4a9 serial 20260913",
+              "cargo_pid": 24824,
+              "started_utc": "2026-09-13T15:19:14.149615Z",
+              "deadline_utc": "2026-09-13T16:49:14.149615Z",
+              "change": "Both Cargo argv and CARGO_BUILD_JOBS set to one; completed pinned target/cache reused; read-only peak job memory receipt added",
+              "unchanged": "8 GiB job cap, 90-minute bound, BelowNormal priority, source/toolchain/lock/patches/release profile",
+              "prelaunch_review": "PASS /root/review_production_policy",
+              "evidence_root": "windows-runtime-resume-20260913/serial-cache-build",
+              "exit_code": 101,
+              "finished_utc": "2026-09-13T16:18:40.258917Z",
+              "timed_out": false,
+              "cleanup_errors": [],
+              "failed_crate": "codex-cli (bin codex)",
+              "peak_job_memory_bytes": 8605347840,
+              "configured_job_memory_limit_bytes": 8589934592,
+              "peak_process_memory_bytes": 8354680832,
+              "health_receipts_passed": 121,
+              "task_disabled": true,
+              "owned_process_reconciliation": "empty",
+              "independent_postflight_utc": "2026-09-13T16:20:00.7999856Z",
+              "codex_executable_produced": false,
+              "earlier_failed_crates": "codex-core and codex-app-server passed serially",
+              "interpretation": "Measured peak commitment reached job cap; system commit contribution not ruled out",
+              "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-serial-build-oom.zip",
+              "evidence_archive_sha256": "723c9040e0ec1b5463b6327e55c0281f0a27686fe5fd47120c276d87b0bc0094"
+            }
           }
         }
       }

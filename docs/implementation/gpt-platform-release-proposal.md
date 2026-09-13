@@ -14,7 +14,10 @@ is set aside. A later AWS-LC compiler failure was reproduced and fixed by a shor
 private Cargo cache, without changing source or the dependency lock. The corrected
 full build passed AWS-LC compilation but later stopped on compiler memory
 allocation failures. Cleanup and all 116 Hub checks passed; a serial build
-adjustment is under review. No rebuilt Codex startup or provider acceptance is claimed. [Current runtime handoff](gpt-platform-handoffs/O-windows-canonicalize.md).
+adjustment passed the earlier crates but failed final CLI compilation, with
+measured job commitment reaching the same 8 GiB cap. Its 121 health checks and
+independent cleanup/preservation checks passed. A bounded memory adjustment is
+under review; no rebuilt Codex startup or provider acceptance is claimed. [Current runtime handoff](gpt-platform-handoffs/O-windows-canonicalize.md).
 
 This replaces the required Google path for new lecture quizzes with an explicitly selected Codex subscription backend, preserves full slide/transcript evidence and image assets, requires question/answer review before native publication, and adds private source-scoped/general chat. Outlines are optional. Existing publications, imported artifacts, Anki scheduling and Gate 2B proof resources are retained.
 

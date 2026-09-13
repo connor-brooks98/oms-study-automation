@@ -23,8 +23,19 @@ compilations failed with allocation/LLVM out-of-memory errors; Cargo exited 101
 without timeout or cleanup errors. All 116 health receipts passed; independent
 postflight at `2026-09-13T15:14:04.6788506Z` confirmed the task disabled, no owned
 processes and exact Hub preservation. The evidence does not yet distinguish the
-8 GiB job limit from system commit pressure. A serial build adjustment is under
-review. No executable was produced and native version/initialize remain pending.
+8 GiB job limit from system commit pressure. A serial build adjustment passed independent review and started at
+`2026-09-13T15:19:14.149615Z`: both Cargo job settings are one, with the same
+8 GiB cap, release profile and retained pinned target/cache. The fresh task and
+receipts preserve the failed run. A read-only peak-memory query adds diagnostics
+before unconditional job cleanup. The serial run passed both earlier crates,
+then failed final `codex-cli` compilation with LLVM out-of-memory. Measured peak
+job commitment was 8,605,347,840 bytes against the 8,589,934,592-byte cap; this
+supports limit pressure but does not exclude system commit pressure. Cargo exited
+101 without timeout or cleanup errors. All 121 health guards passed, and independent
+postflight at `2026-09-13T16:20:00.7999856Z` confirmed task disabled, owned processes
+absent and exact Hub preservation. No executable was produced; native
+version/initialize remain pending. Host headroom and the smallest bounded
+adjustment are under review.
 
 A prior attempt to copy the entire old cache was abandoned after its control-call
 timeout. The exact owned worker was terminated and reaped; process reconciliation
@@ -43,6 +54,12 @@ SHA256 `682bf47301aded1ab534b70fb1e0ca1b0544f7d7b18250e90aa76cd10d05b976`,
 180 manifest files, 319,816 bytes. ZIP integrity and all manifest hashes/sizes
 passed. It includes the completed run, compiler failures and preservation evidence;
 it excludes any successor build and does not establish Codex startup.
+
+Completed serial-build failure: [windows-runtime-serial-build-oom.zip](../gpt-platform-evidence/windows-runtime-serial-build-oom.zip),
+SHA256 `723c9040e0ec1b5463b6327e55c0281f0a27686fe5fd47120c276d87b0bc0094`,
+237 manifest files, 256,482 bytes. ZIP integrity and all manifest
+hashes/sizes passed. The snapshot excludes any successor run and contains no
+native Codex startup acceptance.
 
 ## Change and provenance
 
