@@ -296,7 +296,7 @@
     "amboss_decision": "No AMBOSS integration for now; retain inquiry history and future idea, do not pursue access or send follow-ups."
   },
   "release": {
-    "candidate": "146df998b88cd31c561cf8339b8c90abc95369ea",
+    "candidate": "ab21eff5e98eec15d7e80f2f4596a06341db192d",
     "live_authorized": false,
     "proposal": "docs/implementation/gpt-platform-release-proposal.md",
     "receipt": "docs/implementation/gpt-platform-handoffs/O3.md",
@@ -327,7 +327,7 @@
         "scope": "26passed1skip at8de86582"
       }
     ],
-    "code_tree": "add98dfa84a008ba988bea7894c4bfb671d87603",
+    "code_tree": "dfcb17d27dc012486202bdf78472a8ea795c45f2",
     "archive_candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
     "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-canonicalize.md",
     "reviewed_checkpoint": "81b0be57332430f65ef53feafcaf001a3f93934e",
@@ -375,7 +375,7 @@
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
     "worker": "B",
     "task": "native tool-policy evidence and fail-closed activation",
-    "provider_generation_authorized": false,
+    "provider_generation_authorized": true,
     "private_source_tests_authorized": false,
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
@@ -973,7 +973,67 @@
         }
       }
     },
-    "historical_startup_review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr"
+    "historical_startup_review": "PASS independent standalone source/wrapper review; native Codex startup oracle correctly failed on stderr",
+    "provider_authorization_scope": {
+      "date": "2026-09-14",
+      "platform": "macOS",
+      "inputs": "synthetic text/image and lecture quiz fixtures only",
+      "windows_provider_authorized": false,
+      "paid_fallback": false,
+      "production_activation": false
+    },
+    "current_verification": {
+      "state": "in_progress",
+      "windows": {
+        "worker": "/root/windows_restrictions",
+        "scope": "LPAC synthetic adversarial turn; no real provider",
+        "review": "PASS independent actualtoolmatrix/current3capOSboundary/controlledinterrupt and cleanup",
+        "evidence": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/windows-restrictions-20260914/adversarial-turn",
+        "state": "bounded_native_restrictions_accepted",
+        "outcome": "45-second timeout after turn/start, zero fixture HTTP requests; no tool-denial proof",
+        "cleanup": "Child16244 reaped, task disabled, owned processes absent, exact Hub preserved",
+        "diagnosis": "OrdinaryLimited curl control also failed before LPAC creation. Exact Mac fixture PID firewall log shows HomebrewPython awaiting inbound decision; correction uses already-allowed systemPython without firewall change.",
+        "failure_manifest_sha256": "3d4af10866457398b2b22fd56ab056009bfdfbda8bc4cd812557a3f88c677294",
+        "connectivity_failure_manifest_sha256": "26adb85814acc346a6768f5a7db0cf727dfeaefa8c33a7cf27bec18e15c94ece",
+        "next_action": "Windows production launcher integration and account/provider acceptance are separate",
+        "connectivity_result": "PASS ordinaryLimited and LPAC curl exit0, exact marker/empty stderr, two ordered fixture GETs, independent cleanup/Hub preservation",
+        "connectivity_manifest_sha256": "517bee62d0d9787c2304905dd0c1e31245c87962a855e9da63d18cfc2080d941",
+        "matrix_result": "All15 exact tool-call rejections, empty registry, completed turn, child25424 exit0/reaped",
+        "matrix_manifest_sha256": "6321e876a4b333d10d9b5b85e4815a0ee6fcb19b7e2852c060fd91504170a529",
+        "source_boundary_manifest_sha256": "d8393a687383c344ef84b19ab580e537405311fdac4a70204baffb29dea6c68b",
+        "source_boundary": "5actualfileops passed oncurrent3captoken, expected cmdexit1, cleanup/preservation passed; independentreviewpending",
+        "interrupt_manifest_sha256": "b6dbb0532d100175a04fb737ae9482004d71826ffab82aefba1c2634d8d2c08a",
+        "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-restrictions-20260914.zip",
+        "evidence_archive_sha256": "dd2a039f5fc6778e834682c59905945b2c4b76010a6cec8e1511a9e2a57889be"
+      },
+      "mac": {
+        "worker": "/root/mac_generation_acceptance",
+        "scope": "One actual synthetic GPT-5.5 subscription text/image/schema turn",
+        "url": "http://127.0.0.1:62170",
+        "pid": 18163,
+        "source_commit": "ab21eff5e98eec15d7e80f2f4596a06341db192d",
+        "root": "/Users/connor/Library/Application Support/OMSStudyHub/gpt-mac-acceptance-20260914-ovcqf2lh",
+        "generation_verified": true,
+        "binary_preflight": "Old expected87a08119 pin now hashes ecad78db; do not transfer prior acceptance without fresh verification",
+        "hub_generation_verified": false,
+        "restrictions_verified": false,
+        "account_connected": true,
+        "result_sha256": "320f3832ef8df3c8aae910d71b9f785df51378b016378072ad8d5abb459c63c4",
+        "result": "Correct number7/red image JSON; one turn, no reported limit/retry, owned process reaped",
+        "evidence": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/mac-generation-acceptance-20260914/current-ecad-provider-1",
+        "next_action": "Bounded realGPT synthetic lecture workflow with explicit fixtureOffice rendering limit",
+        "review": "PASS independent exact synthetic provider result and cleanup review",
+        "matrix_result_sha256": "615454e0a8c7de33216a664c200e6a86b682523b5981c924a4f8c8362f8b1582",
+        "interrupt_result_sha256": "76918c0dfd0baef627d28683e39f193906f033b085268a604c34cd08a4343524",
+        "runtime_diagnostics": "15 exact forced-call pre-handler rejections with empty tools; controlled native interrupt ack+terminal; both exit0/cleaned. Independent actual review pending; production path not yet integrated.",
+        "runtime_review": "PASS independent actual15-call matrix and interrupt receipts; production integration in progress",
+        "source_tree": "dfcb17d27dc012486202bdf78472a8ea795c45f2",
+        "production_client": "Mac-only accepted runtime policy integrated;93focusedpassed3skip,Ruff/mypyPASS; independentreviewPASS",
+        "ui_readiness": "Actual browser accountconnected/generationready/GPT5.5images; model saved",
+        "workflow_first_attempt": "Stoppedbeforeprovider: missingstagingroot quarantinedslideupload; lecture1retained; correction/resumepending"
+      },
+      "reviewer": "/root/acceptance_review"
+    }
   },
   "local_preview": {
     "url": "http://127.0.0.1:56460",

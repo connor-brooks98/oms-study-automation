@@ -1,18 +1,24 @@
 # GPT Study Hub candidate — release proposal
 
-Status: core implementation and bounded Windows artifact acceptance are ready for review. Actual Windows PowerPoint conversion preserved the embedded image and vector shape; a discovered long-path export defect was fixed, reviewed and passed18 Windows export checks plus retained-slide export/grade parity. The working local preview has a connected ChatGPT account. Generation activation and live NUC deployment remain pending.
+Status: Mac runtime integration is reviewed and committed at `ab21eff5e98eec15d7e80f2f4596a06341db192d`. The new preview at http://127.0.0.1:62170 reports ChatGPT connected and GPT-5.5 image generation ready. An actual synthetic provider request passed. Windows bounded tool rejection, OS file-access and interruption checks passed independent review after fixing the synthetic server's interpreter selection. Full lecture workflow acceptance is in progress; Windows production integration and live NUC deployment remain pending.
+
+Current acceptance: [September 14 runtime handoff](gpt-platform-handoffs/O-runtime-acceptance-20260914.md).
+The earlier source/runtime receipts below remain historical evidence, not proof of
+the newly observed Mac binary or the complete production workflow.
 
 ## What remains before release — 2026-09-14
 
 The implementation task checklist records **local acceptance**, not complete release
-readiness. Windows startup and the targeted path tests passed, but production GPT
-generation is still disabled by `_require_generation_ready` (`capability_unverified`).
+readiness. Mac generation is now enabled only for the accepted runtime/model and
+confined request path. Windows generation remains `capability_unverified`.
 
-1. Finish provider-free checks of the fixed Windows runtime on the production path:
-   tool prevention, approved source read boundaries, network restrictions and interruption/cleanup.
+1. Integrate the accepted Windows diagnostic restrictions into its production
+   launcher. The diagnostic matrix, current-token file boundaries and interruption
+   passed; permitted host-client HTTP does not imply endpoint isolation.
 2. Accept Windows account persistence and actual GPT text/image/schema behavior with
    synthetic inputs, then exercise the lecture-image quiz through generation, review and export.
-   These are separate from the already successful local-preview login and fake-provider tests.
+   These are separate from the successful Mac provider test and current Mac Hub
+   synthetic lecture acceptance, which uses an explicit fixture Office converter.
 3. Freeze the final package and rollback/cutover procedure for deployment approval.
    The live Hub has not been updated.
 
@@ -23,7 +29,7 @@ remain optional pending inputs for their adapters.
 
 Reviewed production-policy commit: `0aa11c7ee40021ede773f6ddc3c9c6e063b557fc`, tree `0614b7a5c19b791e8ca30bd8dafe906ed613236e`, branch `codex/gpt-runtime-fix-2026-09-12`. The requested pre-change snapshot was pushed at `274da9d74108e0e8a4f6b6b51ecec5a9550fdd0b`; `b5d19cd5` additionally backs up both completed Windows raw evidence bundles in Git. The production client now applies the accepted experimental protocol and fixed policy, private process home and platform binary pins, and rejects policy drift before `turn/start`. Independent review passed; O retest passed 97 checks with three opt-in skips, Ruff and strict mypy. The generation readiness guard remains closed. The subsequently approved single temporary LowBoxConsoleEnabled experiment did not resolve `0xC0000142`; the setting was restored to its original absence and independently verified. No production source or activation change followed. [Exact policy handoff](gpt-platform-handoffs/B-runtime-policy.md).
 
-Current source candidate: `146df998b88cd31c561cf8339b8c90abc95369ea`. The Windows runtime includes the reviewed shared path-resolution, temp-containment and remote-control display-name fixes. The hostname fix handles denied optional metadata without changing hostname-based policy, telemetry, authentication or routing. Three focused local tests passed, and the exact API denial was reproduced under LPAC.
+Windows patched-runtime source checkpoint: `146df998b88cd31c561cf8339b8c90abc95369ea`. The Windows runtime includes the reviewed shared path-resolution, temp-containment and remote-control display-name fixes. The hostname fix handles denied optional metadata without changing hostname-based policy, telemetry, authentication or routing. Three focused local tests passed, and the exact API denial was reproduced under LPAC.
 
 The new private Windows build succeeded: executable SHA256 `d6eb90b7409dc22f407a9dfa44ec629a8a5a6bf3ca001493aef13dd85a75dbda` (294,002,688 bytes). All 165 Hub and 1,134 memory checks passed, with independent cleanup and preservation verified. Fresh strict LPAC version and initialize checks now passed on that exact executable: expected output/response, empty stderr, normal exits, token checks and independent cleanup/preservation. The hostname panic did not recur. Both targeted Windows arg0 unit tests subsequently passed in ordinary Limited execution: one selected case each, normal exit 0, empty stderr and independent cleanup/preservation. The compile artifact, final wrappers and raw results passed separate independent reviews. Generation remains closed. [Current fix and exact evidence](gpt-platform-handoffs/O-windows-canonicalize.md).
 
@@ -35,7 +41,7 @@ Existing release archives below remain bound to original core code `9e54da4188ab
 
 This replaces the required Google path for new lecture quizzes with an explicitly selected Codex subscription backend, preserves full slide/transcript evidence and image assets, requires question/answer review before native publication, and adds private source-scoped/general chat. Outlines are optional. Existing publications, imported artifacts, Anki scheduling and Gate 2B proof resources are retained.
 
-**Activation is blocked, even after local tests pass.** The private runtime has proven bounded LPAC identity and startup, but complete production tool prevention/read-root enforcement, account persistence and actual model text/image/schema acceptance remain unverified. Production generation fails closed with `capability_unverified`; no paid fallback or configuration bypass is present. Fake-client tests prove the application workflow only. A subsequently authorized managed-device login succeeded in the isolated macOS preview on September 11 (ET). The Hub reported the account connected and advertised model slugs. This establishes local login only; generation and Windows account persistence remain unverified.
+**Windows activation remains blocked.** Its bounded LPAC tool, file and interruption proofs must still be integrated into the production launcher; Windows account/provider acceptance is separate. Mac production generation now uses the reviewed current-runtime policy, request-specific file confinement and fresh ChatGPT/usage preflight. Its real synthetic text/image/schema request passed; the complete lecture workflow remains a separate acceptance record. No paid fallback or configuration bypass is present.
 
 | Capability | Local candidate scope | External/operational limit |
 | --- | --- | --- |
