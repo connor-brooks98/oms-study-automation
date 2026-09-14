@@ -1,9 +1,12 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from shutil import copyfile
+from tempfile import TemporaryDirectory
 from threading import RLock
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
+from oms_hub.document_processing.lecture_intake import parse_lecture_source
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.ingestion.domain import (
     ChunkSession,
@@ -55,10 +58,7 @@ class IngestionService:
         self, kind: UploadKind, path: Path, filename: str
     ) -> MatchDecision:
         """Compute a match without creating item rows or catalog progress."""
-        if kind is UploadKind.SLIDES:
-            title, opening = self._pptx_text(path)
-        else:
-            title, opening = self._transcript_text(path)
+        title, opening = self._source_text(path, filename)
         return self.matcher.match(
             UploadEvidence(filename=filename, embedded_title=title, opening_text=opening),
             self.catalog.list_lectures(),
@@ -151,15 +151,35 @@ class IngestionService:
         )
 
     def _evidence(self, item: StoredUploadItem) -> UploadEvidence:
-        if item.kind is UploadKind.SLIDES:
-            title, opening = self._pptx_text(item.staged_path)
-        else:
-            title, opening = self._transcript_text(item.staged_path)
+        title, opening = self._source_text(item.staged_path, item.original_filename)
         return UploadEvidence(
             filename=item.original_filename,
             embedded_title=title,
             opening_text=opening,
         )
+
+    def _source_text(self, path: Path, filename: str) -> tuple[str, str]:
+        suffix = Path(filename).suffix.casefold()
+        if suffix == ".pptx":
+            return self._pptx_text(path)
+        if suffix in {".txt", ".md"}:
+            return self._transcript_text(path)
+        # Staging filenames deliberately carry no source extension. Give the
+        # existing parsers a disposable, format-correct snapshot, never rename
+        # or modify the staged original. Missing OCR falls back to filename
+        # matching and review, rather than silently inventing text evidence.
+        try:
+            with TemporaryDirectory(prefix="oms-lecture-match-") as directory:
+                root = Path(directory)
+                source = root / ("source" + suffix)
+                copyfile(path, source)
+                parsed = parse_lecture_source(source, root / "assets")
+                texts = [
+                    segment.text.strip() for segment in parsed.segments if segment.text.strip()
+                ]
+                return (texts[0][:500] if texts else "", " ".join(texts)[:2000])
+        except Exception:  # noqa: BLE001 - absent parser evidence requires manual matching
+            return "", ""
 
     def _pptx_text(self, path: Path) -> tuple[str, str]:
         title = ""

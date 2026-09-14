@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal, Protocol
 
 from pptx import Presentation
@@ -15,6 +16,7 @@ from pypdf.errors import PdfReadError
 from oms_hub.anki.contracts import canonical_payload_sha256
 from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.domain import SourceKind
+from oms_hub.document_processing.lecture_intake import parse_lecture_source
 from oms_hub.document_processing.run_styles import (
     StyledTextRunSidecar,
     matches_policy_color,
@@ -138,6 +140,8 @@ class SourcePassage:
             return f"Lecture {self.lecture_id}, transcript {interval}"
         if self.source_kind is SourceKind.SUMMARY:
             return f"Lecture {self.lecture_id}, NotebookLM summary"
+        if self.source_kind in {SourceKind.SLIDE, SourceKind.VISION}:
+            return f"Lecture {self.lecture_id}, {self.locator}"
         return f"Lecture {self.lecture_id}, transcript"
 
 
@@ -412,6 +416,8 @@ class LectureSourceExtractor:
         path = revision.immutable_source_path
         if not path.is_file():
             raise FileNotFoundError(path)
+        if path.suffix.casefold() != ".pptx":
+            return self._extract_material(revision)
         presentation = Presentation(str(path))
         passages: list[SourcePassage] = []
         for slide_number, slide in enumerate(
@@ -478,6 +484,38 @@ class LectureSourceExtractor:
                 )
         return passages
 
+    def _extract_material(self, revision: StudyRevision) -> list[SourcePassage]:
+        # Only parse a local, immutable source. This shared extractor is used by
+        # lecture chat as well as curation; it never sends data or edits Anki.
+        with TemporaryDirectory(prefix="oms-material-passages-") as directory:
+            document = parse_lecture_source(
+                revision.immutable_source_path, Path(directory), require_text=False
+            )
+            passages = [
+                SourcePassage.create(
+                    revision_id=revision.id,
+                    lecture_id=revision.lecture_id,
+                    artifact_id=revision.upload_item_id,
+                    source_kind=SourceKind.SLIDE,
+                    source_id=f"DOC:{revision.id}:{segment.key}",
+                    locator=f"{segment.locator.label} ({segment.key})",
+                    text=segment.text,
+                )
+                for segment in document.segments if segment.text.strip()
+            ]
+            if not passages and (document.assets or document.warnings):
+                passages.append(SourcePassage.create(
+                    revision_id=revision.id,
+                    lecture_id=revision.lecture_id,
+                    artifact_id=revision.upload_item_id,
+                    source_kind=SourceKind.VISION,
+                    source_id=f"DOC:{revision.id}:image",
+                    locator="document image; text extraction unavailable",
+                    text="",
+                    extraction_status="vision_unavailable",
+                ))
+            return passages
+
     def _extract_transcript(
         self,
         revision: StudyRevision,
@@ -488,6 +526,8 @@ class LectureSourceExtractor:
             and revision.immutable_derived_path.is_file()
             else revision.immutable_source_path
         )
+        if path.suffix.casefold() not in {".txt", ".md"}:
+            raise ValueError("source cleaned transcript is unavailable")
         raw_text = path.read_text(encoding="utf-8")
         units = _transcript_units(raw_text)
         windows = _overlapping_windows(

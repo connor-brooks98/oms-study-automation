@@ -78,8 +78,7 @@ def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
     assert "Practice Questions</a>" in base
     assert '<details class="sh-more">' in base
     for destination in (
-        "/uploads/slides",
-        "/uploads/transcripts",
+        "/uploads",
         "/quarantine",
         "/review",
         "/settings",
@@ -171,7 +170,8 @@ def test_public_library_separates_public_identity_while_players_remain_focus_mod
 
 def test_presentational_contracts_cover_forms_and_deferred_review_hooks() -> None:
     assert 'class="page-shell sh-container--narrow upload-page"' in source("uploads.html")
-    assert "sh-select" in source("quarantine.html")
+    assert "lecture_picker(" in source("quarantine.html")
+    assert "sh-select" in source("components/lecture_picker.html")
     assert "sh-select" in source("settings.html")
     assert "sh-select" in source("notebook_studio.html")
     assert "sh-option" in (STATIC / "public_quiz.js").read_text(encoding="utf-8")
@@ -228,7 +228,7 @@ def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
     assert ".lecture-regenerate" in app_css
     assert "white-space: normal" in app_css
     assert lecture.count('class="file-actions lecture-card-actions') == 4
-    assert lecture.index("Open Lecture PDF") < lecture.index("Download PPTX")
+    assert lecture.index("Open Lecture PDF") < lecture.index("Download original")
     assert lecture.index("Open Transcript") < lecture.index("Download Transcript")
     assert lecture.index("Open Lecture Outline") < lecture.index(
         "Download Lecture Outline"
@@ -241,7 +241,7 @@ def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
     ) in lecture
     assert (
         'secondary sh-btn sh-btn--secondary" href="/artifacts/'
-        '{{ slide_revision.id }}/pptx">Download PPTX'
+        '{{ slide_revision.id }}/original">Download original'
     ) in lecture
     assert (
         'primary sh-btn sh-btn--primary" href="/artifacts/'
@@ -251,10 +251,10 @@ def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
         'secondary sh-btn sh-btn--secondary" href="/artifacts/'
         '{{ transcript_revision.id }}/cleaned/download">Download Transcript'
     ) in lecture
-    assert "Regenerate lecture outline" in lecture
-    assert "Regenerate lecture quiz" in lecture
+    assert "Regenerate lecture outline" not in lecture
+    assert "Regenerate lecture quiz" not in lecture
     assert "touch-action: none" in library_css
-    assert "uploads.js?v=20260818.2" in uploads
+    assert "uploads.js?v=20260914.1" in uploads
     assert "Download Transcript" in lecture
     assert "Download Lecture Outline" in lecture
 
@@ -266,7 +266,8 @@ def test_tracker_control_and_disclosure_scans_cover_the_locked_residuals() -> No
     library = source("public_quiz_library.html")
 
     assert "<fieldset" not in anki and "<legend" not in anki
-    assert "<fieldset" not in studio and "<legend" not in studio
+    assert "<fieldset" not in studio.replace("<fieldset disabled>", "")
+    assert "<legend" not in studio
     assert all('class="sh-select"' in line for line in anki.splitlines() if "<select" in line)
     assert "sh-input" in studio and "sh-textarea" in studio and "sh-file" in studio
     assert dashboard.index("needs review") < dashboard.index('class="heading-actions"')
@@ -281,7 +282,8 @@ def test_tracker_control_and_disclosure_scans_cover_the_locked_residuals() -> No
 
 def test_quiz_builder_import_forms_use_locked_controls_without_losing_hooks() -> None:
     studio = source("notebook_studio.html")
-    assert "<fieldset" not in studio and "<legend" not in studio
+    assert "<fieldset" not in studio.replace("<fieldset disabled>", "")
+    assert "<legend" not in studio
     assert studio.count("data-import-source-form") == 3
     assert studio.count('class="studio-intake-form" data-import-source-form') == 3
     assert studio.count('class="sh-check studio-intake-notebook"') == 3
@@ -483,7 +485,7 @@ def test_player_and_dynamic_foundations_preserve_shared_components() -> None:
     assert '"sh-empty anki-empty-compact"' in anki_js
     assert '"sh-empty__title"' in anki_js
     assert '"1 Study Hub quiz is ready."' in lecture_js
-    assert "1 Study Hub quiz is ready." in lecture
+    assert "Study Hub quiz is ready." in lecture
     assert "slide_revision.canonical_derived_path.name" in lecture
     assert "transcript_revision.canonical_derived_path.name" in lecture
 

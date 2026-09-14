@@ -1,0 +1,16 @@
+{% macro lecture_picker(id, catalog_id, name='lecture_id', selected=(), multiple=false, required=false, label='Lecture') -%}
+<fieldset class="lecture-picker" id="{{ id }}" data-lecture-picker data-catalog-id="{{ catalog_id }}" data-name="{{ name }}" data-multiple="{{ 'true' if multiple else 'false' }}" data-required="{{ 'true' if required else 'false' }}" data-selected='{{ selected|list|tojson }}'>
+  <legend class="sh-field-label">{{ label }}</legend>
+  <div class="lecture-picker__filters">
+    <label class="sh-field-label" for="{{ id }}-course">Course<select class="sh-select" id="{{ id }}-course" data-picker-course><option value="">All courses</option></select></label>
+    <label class="sh-field-label" for="{{ id }}-exam">Exam<select class="sh-select" id="{{ id }}-exam" data-picker-exam><option value="">All exams</option></select></label>
+    <label class="sh-field-label lecture-picker__search" for="{{ id }}-search">Search lectures<input class="sh-input" id="{{ id }}-search" data-picker-search type="search" placeholder="Lecture number, topic or source" aria-describedby="{{ id }}-status" autocomplete="off"></label>
+  </div>
+  <div class="lecture-picker__selection" data-picker-selection aria-label="Selected {{ label|lower }}"></div>
+  <p class="lecture-picker__status" id="{{ id }}-status" data-picker-status role="status" aria-live="polite">Loading lectures…</p>
+  <div class="lecture-picker__results" data-picker-results></div>
+  <div class="lecture-picker__pages"><button class="sh-btn sh-btn--secondary" type="button" data-picker-previous>Previous</button><button class="sh-btn sh-btn--secondary" type="button" data-picker-next>Next</button></div>
+  <div data-picker-values></div>
+  <noscript>Enable JavaScript to search and select a lecture.</noscript>
+</fieldset>
+{%- endmacro %}

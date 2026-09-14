@@ -6,7 +6,7 @@
     <div>
       <p class="eyebrow sh-eyebrow">Quiz workflows</p>
       <h1 class="sh-title">Quiz Builder</h1>
-      <p class="page-summary sh-subtitle">Generate a quiz with NotebookLM or import supplied practice questions for private review.</p>
+      <p class="page-summary sh-subtitle">Generate a GPT quiz from a lecture page, or import supplied practice questions for private review.</p>
       <p data-poll-status class="field-message" role="alert" aria-live="polite"></p>
     </div>
     <div class="heading-actions">
@@ -35,11 +35,12 @@
   </section>
   <div class="studio-workflow-switch sh-seg t-tabs" role="tablist" aria-label="Quiz workflow">
     <span class="t-tabs-pill" data-workflow-pill aria-hidden="true"></span>
-    <button class="button primary sh-btn sh-btn--primary sh-seg__btn sh-seg__btn--active t-tab" id="workflow-tab-generate" type="button" role="tab" data-workflow-tab="generate" aria-controls="workflow-panel-generate" aria-selected="true">Generate Quiz</button>
+    <button class="button primary sh-btn sh-btn--primary sh-seg__btn sh-seg__btn--active t-tab" id="workflow-tab-generate" type="button" role="tab" data-workflow-tab="generate" aria-controls="workflow-panel-generate" aria-selected="true">NotebookLM uploads</button>
     <button class="button secondary sh-btn sh-btn--secondary sh-seg__btn t-tab" id="workflow-tab-import" type="button" role="tab" data-workflow-tab="import" aria-controls="workflow-panel-import" aria-selected="false" tabindex="-1">Import Practice Questions</button>
   </div>
 
   <section id="workflow-panel-generate" role="tabpanel" aria-labelledby="workflow-tab-generate" data-workflow-panel="generate">
+    <p class="field-help">NotebookLM keeps a reference copy of your files. Quiz generation uses the lecture materials saved in Study Hub. <a href="/lectures">Choose a lecture</a> to generate its quiz.</p>
     <div class="studio-source-grid">
       <form class="card sh-card" data-source-form data-source-type="file">
         <h2>NotebookLM file source</h2>
@@ -57,13 +58,15 @@
       </form>
     </div>
     <section class="card sh-card studio-status"><h2>Sources</h2><p data-source-status class="field-message" role="status" aria-live="polite"></p><ul data-source-list><li>Select a course and exam to view sources.</li></ul></section>
-    <section class="card sh-card studio-runner">
-      <div><p class="eyebrow">NotebookLM generation</p><h2>Generate Quiz</h2><p>Select attached sources—or intentionally select none. The prompt is sent through NotebookLM chat.</p></div>
+    <section class="card sh-card studio-runner" hidden aria-hidden="true">
+      <div><p class="eyebrow">Retained legacy controls</p><h2>Generate Quiz</h2><p>Select attached sources—or intentionally select none. The prompt is sent through NotebookLM chat.</p></div>
       <form data-run-form>
+        <fieldset disabled>
         <section class="studio-source-picker-group"><p class="sh-section-label">Notebook sources</p><label>Filter attached sources<input class="sh-input" type="search" data-source-filter placeholder="Type a source label"></label><button class="button secondary sh-btn sh-btn--secondary compact" type="button" data-select-all-sources>Select all attached sources</button><div class="studio-source-picker" data-source-picker><p>Select a source course and exam first.</p></div></section>
         <label>Quiz label<input class="sh-input" name="label" maxlength="300" required></label><label>Prompt<textarea class="sh-textarea" name="prompt" maxlength="50000" required></textarea></label>
         <div class="studio-scope-fields"><label>Publish under course<select class="sh-select" data-destination-course required><option value="">Select course</option>{% for course in courses %}<option value="{{ course.subject }}" data-exams="{{ course.exams|join(',') }}">{{ course.subject }}</option>{% endfor %}</select></label><label>Publish under exam<select class="sh-select" data-destination-exam disabled required><option value="">Select exam</option></select></label></div>
-        <button class="button primary sh-btn sh-btn--primary" type="submit">Queue NotebookLM quiz</button><p data-run-message data-toast-source aria-live="polite"></p>
+        <button class="button primary sh-btn sh-btn--primary" type="submit">Legacy generation unavailable</button><p data-run-message data-toast-source aria-live="polite"></p>
+        </fieldset>
       </form>
     </section>
     <section class="card sh-dropzone studio-image-drop" data-image-dropzone tabindex="0" role="button" aria-label="Drop an image source here"><h2>Drop an image from Google Images</h2><p>Drag an image onto this area to upload it directly as a NotebookLM source.</p><p data-image-drop-message aria-live="polite">Select a course and exam before dropping an image.</p></section>
@@ -85,7 +88,7 @@
           <label class="sh-field-label sh-file">File<input class="sh-input" name="file" type="file" accept=".pdf,.pptx,.txt,.md,.csv,.json,.xml,.yaml,.yml,.docx,.rtf,.html,.htm,.png,.jpg,.jpeg,.webp" aria-describedby="import-file-help" required></label>
           <p class="field-help" id="import-file-help">Choose one document or image. Add related files in separate passes.</p>
           <label class="sh-field-label studio-intake-role">Role<select class="sh-select" name="role" data-import-role><option value="questions">Questions</option><option value="answer_key">Answer key</option><option value="supporting_reference">Supporting reference</option><option value="combined_questions_answers">Combined questions and answers</option></select></label>
-          <label class="sh-check studio-intake-notebook"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Use in NotebookLM for missing answers</label>
+          <label class="sh-check studio-intake-notebook"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Keep a reference copy in NotebookLM</label>
           <button class="button primary sh-btn sh-btn--primary" type="submit">Add file</button><p data-form-message data-toast-source aria-live="polite"></p>
         </form>
         <form class="studio-intake-form" data-import-source-form data-import-source-type="text">
@@ -93,7 +96,7 @@
           <label class="sh-field-label">Label<input class="sh-input" name="title" required></label>
           <label class="sh-field-label">Text<textarea class="sh-textarea" name="text" required></textarea></label>
           <label class="sh-field-label studio-intake-role">Role<select class="sh-select" name="role" data-import-role><option value="questions">Questions</option><option value="answer_key">Answer key</option><option value="supporting_reference">Supporting reference</option><option value="combined_questions_answers">Combined questions and answers</option></select></label>
-          <label class="sh-check studio-intake-notebook"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Use in NotebookLM for missing answers</label>
+          <label class="sh-check studio-intake-notebook"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Keep a reference copy in NotebookLM</label>
           <button class="button primary sh-btn sh-btn--primary" type="submit">Add text</button><p data-form-message data-toast-source aria-live="polite"></p>
         </form>
         <form class="studio-intake-form" data-import-source-form data-import-source-type="url">
@@ -101,7 +104,7 @@
           <label class="sh-field-label">Label<input class="sh-input" name="title" required></label>
           <label class="sh-field-label">URL<input class="sh-input" name="url" type="url" required></label>
           <label class="sh-field-label studio-intake-role">Role<select class="sh-select" name="role" data-import-role><option value="questions">Questions</option><option value="answer_key">Answer key</option><option value="supporting_reference">Supporting reference</option><option value="combined_questions_answers">Combined questions and answers</option></select></label>
-          <label class="sh-check studio-intake-notebook"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Use in NotebookLM for missing answers</label>
+          <label class="sh-check studio-intake-notebook"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Keep a reference copy in NotebookLM</label>
           <button class="button primary sh-btn sh-btn--primary" type="submit">Add URL</button><p data-form-message data-toast-source aria-live="polite"></p>
         </form>
         </div>

@@ -47,6 +47,18 @@ from oms_hub.study_generation.practice_domain import QuestionDraft
 from oms_hub.study_generation.repository import GenerationRepository
 
 logger = logging.getLogger(__name__)
+NOTEBOOKLM_UPLOAD_ONLY = (
+    "NotebookLM is upload-only. Study generation uses GPT; "
+    "retained NotebookLM work requires review."
+)
+
+
+def reject_notebook_generation() -> None:
+    raise NotebookGatewayError(
+        NOTEBOOKLM_UPLOAD_ONLY, source=DiagnosticSource.VALIDATION, retryable=False
+    )
+
+
 __all__ = ["NotebookAuthenticationError"]
 _active_client: ContextVar[Any | None] = ContextVar(
     "notebooklm_active_client",
@@ -371,6 +383,7 @@ class StoredNotebookLMGateway:
         sources: LectureSourceSet,
         prompt: PromptSnapshot,
     ) -> NotebookAnswer:
+        reject_notebook_generation()
         return cast(
             NotebookAnswer,
             _run(self._ask(notebook, sources, prompt)),
@@ -385,6 +398,7 @@ class StoredNotebookLMGateway:
         transcript: RevisionSource,
         prompt: PromptSnapshot,
     ) -> NotebookGeneration:
+        reject_notebook_generation()
         with self.mutation_scope(
             subject, exam_number, "generation", str(uuid4())
         ):
@@ -486,6 +500,7 @@ class StoredNotebookLMGateway:
         prompt: str,
         source_ids: list[str],
     ) -> tuple[str, str]:
+        reject_notebook_generation()
         with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
             return cast(
                 tuple[str, str],
@@ -499,6 +514,7 @@ class StoredNotebookLMGateway:
         question: QuestionDraft,
         source_ids: tuple[str, ...],
     ) -> NotebookQuestionResult:
+        reject_notebook_generation()
         with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
             return cast(
                 NotebookQuestionResult,

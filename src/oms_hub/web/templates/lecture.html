@@ -49,7 +49,7 @@
     <section class="file-card sh-card {{ 'ready' if slide_revision and not slide_problem else 'missing' }}">
       <div class="file-card-title">
         <span class="file-state-icon" aria-hidden="true">{{ "✓" if slide_revision else "↑" }}</span>
-        <h2>Lecture Slides (PPTX / PDF)</h2>
+        <h2>Lecture Materials</h2>
       </div>
       <p class="file-caption">{% if slide_revision and slide_problem %}Lecture PDF {{ slide_problem }}.{% elif slide_revision %}{{ slide_revision.canonical_derived_path.name }}{% else %}Not yet uploaded{% endif %}</p>
       <div class="file-actions lecture-card-actions">
@@ -59,7 +59,7 @@
         <span class="button disabled sh-btn is-disabled" aria-disabled="true">Lecture PDF unavailable</span>
         {% endif %}
         {% if slide_revision %}
-        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ slide_revision.id }}/pptx">Download PPTX</a>
+        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ slide_revision.id }}/original">Download original</a>
         {% endif %}
       </div>
     </section>
@@ -80,7 +80,8 @@
         {% endif %}
       </div>
     </section>
-    <section class="file-card sh-card {{ 'ready' if outline_output else 'missing' }}" data-generation-card data-kind="outline">
+    {% if outline_output %}
+    <section class="file-card sh-card ready">
       <div class="file-card-title">
         <span class="file-state-icon" aria-hidden="true">{{ "✓" if outline_output else "✦" }}</span>
         <h2>Lecture Outline (PDF)</h2>
@@ -94,31 +95,29 @@
         {% if outline_output %}
         <a class="button primary sh-btn sh-btn--primary" data-generation-link href="/artifacts/outlines/{{ outline_output.id }}">Open Lecture Outline</a>
         <a class="button secondary sh-btn sh-btn--secondary" data-generation-download href="/artifacts/outlines/{{ outline_output.id }}/download">Download Lecture Outline</a>
-        {% else %}
-        <button class="button primary sh-btn sh-btn--primary" type="button" data-generate>Generate Lecture Outline</button>
         {% endif %}
       </div>
-      {% if outline_output %}<button class="lecture-regenerate sh-iconbtn" type="button" data-generate aria-label="Regenerate lecture outline" title="Regenerate lecture outline"><span aria-hidden="true">↻</span></button>{% endif %}
+
     </section>
-    <section class="file-card sh-card {{ 'ready' if quiz_output else 'missing' }}" {% if not use_gpt %}data-generation-card{% endif %} data-kind="quiz">
+    {% endif %}
+    <section class="file-card sh-card {{ 'ready' if quiz_output or gpt_quizzes else 'missing' }}" data-gpt-lecture="{{ lecture.id }}" data-kind="quiz" id="gpt-quiz-heading">
       <div class="file-card-title">
-        <span class="file-state-icon" aria-hidden="true">{{ "✓" if quiz_output else "✦" }}</span>
+        <span class="file-state-icon" aria-hidden="true">{{ "✓" if quiz_output or gpt_quizzes else "✦" }}</span>
         <h2>Lecture Quiz</h2>
       </div>
       <p class="file-caption" data-generation-message aria-live="polite">
-        {% if quiz_output %}1 Study Hub quiz is ready.
+        {% if quiz_output or gpt_quizzes %}Study Hub quiz is ready.
         {% elif quiz_job %}{{ quiz_job.stage.value.replace('_', ' ').title() }}
-        {% else %}Built from this lecture's PDF and cleaned transcript only.{% endif %}
+        {% else %}Built from this lecture's materials and cleaned transcript only.{% endif %}
       </p>
-      <div class="file-actions lecture-card-actions lecture-card-actions--single">
-        {% if quiz_output %}
-        <a class="button primary sh-btn sh-btn--primary" data-generation-link href="{{ quiz_output.url }}" target="_blank" rel="noopener noreferrer">Take Lecture Quiz</a>
-        {% else %}
-        {% if use_gpt %}<a class="button primary sh-btn sh-btn--primary" href="#gpt-quiz-heading">Generate Lecture Quiz</a>
-        {% else %}<button class="button primary sh-btn sh-btn--primary" type="button" data-generate>Generate Lecture Quiz</button>{% endif %}
+      <div class="file-actions lecture-card-actions">
+        {% if gpt_quizzes %}
+        <a class="button primary sh-btn sh-btn--primary" href="/public/quizzes/{{ gpt_quizzes[0].token }}">Take Lecture Quiz</a>
+        {% elif quiz_output %}
+        <a class="button primary sh-btn sh-btn--primary" href="{{ quiz_output.url }}">Take Lecture Quiz</a>
         {% endif %}
       </div>
-      {% if quiz_output and not use_gpt %}<button class="lecture-regenerate sh-iconbtn" type="button" data-generate aria-label="Regenerate lecture quiz" title="Regenerate lecture quiz"><span aria-hidden="true">↻</span></button>{% endif %}
+      {% include "_gpt_lecture.html" %}
     </section>
   </div>
   </div>
@@ -194,8 +193,6 @@
     </div>
   </details>
 
-  {% include "_gpt_lecture.html" %}
-
   <details class="metadata-panel sh-card">
     <summary><span class="sh-disclose" aria-hidden="true">▸</span> Edit lecture details</summary>
     <form method="post" action="/lectures/{{ lecture.id }}/metadata">
@@ -211,6 +208,6 @@
 </article>
 {% endblock %}
 {% block scripts %}
-<script src="/static/gpt.js?v=20260911" defer></script>
+<script src="/static/gpt.js?v=20260914.3" defer></script>
 <script src="/static/lecture.js?v={{ shell_asset_version }}" defer></script>
 {% endblock %}

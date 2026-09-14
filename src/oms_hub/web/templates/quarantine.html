@@ -1,6 +1,8 @@
 {% extends "base.html" %}
+{% from "components/lecture_picker.html" import lecture_picker %}
 {% block title %}Unmatched uploads · Study Hub{% endblock %}
 {% block content %}
+<link rel="stylesheet" href="/static/lecture_picker.css?v=20260914.1">
 <section class="page-shell narrow-page sh-container--narrow">
   <div class="page-heading sh-header">
     <div>
@@ -19,13 +21,7 @@
     <ul>{% for evidence in item.evidence %}<li>{{ evidence }}</li>{% endfor %}</ul>
     {% endif %}
     <form method="post" action="/quarantine/{{ item.id }}/assign">
-      <label class="sh-field-label" for="quarantine-lecture-{{ item.id }}">Lecture</label>
-        <select class="sh-select" id="quarantine-lecture-{{ item.id }}" name="lecture_id" required>
-          <option value="">Select a lecture</option>
-          {% for lecture in lectures %}
-          <option value="{{ lecture.id }}">{{ lecture.subject }} Lecture {{ "%02d"|format(lecture.lecture_number) }} · Exam {{ lecture.exam_number }} — {{ lecture.topic }}</option>
-          {% endfor %}
-        </select>
+      {{ lecture_picker('quarantine-lecture-' ~ item.id, 'quarantine-lecture-catalog', required=true) }}
       <button class="button primary sh-btn sh-btn--primary" type="submit">Assign and process</button>
     </form>
   </section>
@@ -36,4 +32,6 @@
   </section>
   {% endfor %}
 </section>
+<script id="quarantine-lecture-catalog" type="application/json">{{ lecture_catalog|tojson }}</script>
+<script src="/static/lecture_picker.js?v=20260914.1" defer></script>
 {% endblock %}

@@ -161,3 +161,32 @@ for (const outcome of ['success', 'rejected', 'network error']) {
     } finally { controller.dispose(); }
   });
 }
+
+
+test('shared source picker sends revision IDs and locks while answer is pending', async () => {
+  const { documentRef, controls } = page();
+  const locked = [], required = [], calls = [];
+  controls['[data-chat-mode]'].value = 'lecture';
+  controls['[data-chat-sources]'].querySelector = () => ({ lecturePicker: {
+    getValues: () => ['71', '82'], setDisabled: value => locked.push(value),
+    setRequired: value => required.push(value),
+  } });
+  let complete;
+  const controller = chat.initialize(documentRef, async (url, options) => {
+    calls.push([url, JSON.parse(options.body)]);
+    if (url.endsWith('/conversations')) return { ok: true, json: async () => ({ conversation_id: 'cid' }) };
+    return new Promise(resolve => { complete = resolve; });
+  });
+  controls['[data-chat-question]'].value = 'Explain';
+  const pending = controls['[data-chat-form]'].listeners.submit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls[0][1].revision_ids, [71, 82]);
+  assert.equal(locked.at(-1), true);
+  complete({ ok: true, json: async () => ({ request_id: 'r', question: 'Explain', state: 'completed', answer: { text: 'Saved' } }) });
+  await pending;
+  assert.equal(locked.at(-1), false);
+  controls['[data-chat-mode]'].value = 'general';
+  controls['[data-chat-mode]'].listeners.change();
+  assert.equal(required.at(-1), false);
+  controller.dispose();
+});

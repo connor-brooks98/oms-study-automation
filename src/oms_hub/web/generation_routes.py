@@ -275,7 +275,7 @@ def queue_outline(request: Request, lecture_id: int) -> JSONResponse:
 
 @lecture_router.post("/{lecture_id}/quiz")
 def queue_quiz(request: Request, lecture_id: int) -> JSONResponse:
-    return _queue_generation(request, lecture_id, GenerationKind.QUIZ)
+    return queue_gpt_quiz(request, lecture_id, GptLectureQueue())
 
 
 @notebook_router.get("/status")
@@ -327,9 +327,10 @@ class LectureObjective(BaseModel):
 
 
 class GptLectureQueue(BaseModel):
-    label: str = Field(min_length=1, max_length=300)
-    objectives: list[LectureObjective] = Field(min_length=1, max_length=500)
-    require_images: bool = True
+    instructions: str = Field(default="", max_length=4000)
+    label: str | None = Field(default=None, min_length=1, max_length=300)
+    objectives: list[LectureObjective] | None = Field(default=None, min_length=1, max_length=500)
+    require_images: bool | None = None
 
 
 def _private_owner(request: Request, *, mutation: bool = True) -> str:
@@ -412,8 +413,10 @@ def queue_gpt_quiz(request: Request, lecture_id: int, body: GptLectureQueue) -> 
         raise HTTPException(409, "The GPT lecture worker is not configured.")
     try:
         run = request.app.state.gpt_lecture_service.queue(lecture_id, owner_id=owner,
-            label=body.label, objectives=tuple((o.id, o.text) for o in body.objectives),
-            require_images=body.require_images)
+            label=body.label, objectives=(
+                tuple((o.id, o.text) for o in body.objectives)
+                if body.objectives is not None else None),
+            require_images=body.require_images, instructions=body.instructions)
     except KeyError as error:
         raise HTTPException(404, "lecture was not found") from error
     except (ValueError, GenerationPrerequisiteError, IntegrityError) as error:

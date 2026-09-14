@@ -9,6 +9,7 @@ from oms_hub.artifact_writes import (
 )
 from oms_hub.config import Settings
 from oms_hub.db import Database
+from oms_hub.document_processing.lecture_intake import parse_lecture_source
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import (
     sha256_file,
@@ -95,10 +96,8 @@ class TranscriptPipeline:
                 "Validating and cleaning the uploaded transcript",
             )
             payload = item.staged_path.read_bytes()
-            raw_text = validate_transcript_bytes(
-                payload,
-                self.settings.max_upload_file_bytes,
-            )
+            if not payload or len(payload) > self.settings.max_upload_file_bytes:
+                raise TranscriptValidationError("transcript size is invalid")
             if sha256_file(item.staged_path) != revision.source_sha256:
                 raise TranscriptValidationError("staged transcript checksum mismatch")
             source_sha256 = verified_atomic_write(
@@ -107,6 +106,20 @@ class TranscriptPipeline:
             )
             if source_sha256 != revision.source_sha256:
                 raise TranscriptValidationError("preserved transcript checksum mismatch")
+            if revision.immutable_source_path.suffix.casefold() in {".txt", ".md"}:
+                extracted = payload
+            else:
+                document = parse_lecture_source(
+                    revision.immutable_source_path,
+                    revision.immutable_source_path.parent / "document-assets",
+                )
+                extracted = "\n\n".join(
+                    segment.text for segment in document.segments if segment.text.strip()
+                ).encode("utf-8")
+            raw_text = validate_transcript_bytes(extracted, self.settings.max_upload_file_bytes)
+            verified_atomic_write(
+                raw_text.encode("utf-8"), revision.immutable_source_path.parent / "extracted.txt"
+            )
             self.catalog.set_step_status(
                 revision.lecture_id,
                 V2StepName.TRANSCRIPT_VALIDATED,

@@ -103,7 +103,7 @@ def test_manifest_descriptor_rejection_is_structured_and_not_durable(tmp_path: P
             "files": [
                 {
                     "slot_id": slot_id,
-                    "filename": "wrong.pdf",
+                    "filename": "wrong.exe",
                     "size_bytes": 4,
                     "sha256": hashlib.sha256(b"nope").hexdigest(),
                 }
@@ -115,9 +115,9 @@ def test_manifest_descriptor_rejection_is_structured_and_not_durable(tmp_path: P
     assert response.json()["errors"] == [
         {
             "slot_id": slot_id,
-            "filename": "wrong.pdf",
+            "filename": "wrong.exe",
             "code": "validation_failed",
-            "detail": "transcripts uploads require .txt",
+            "detail": "supported lecture formats: .pptx, .pdf, .docx, .txt, .md, .rtf",
         }
     ]
     assert _counts(app) == (0, 0, 0)
@@ -142,7 +142,7 @@ def test_manifest_descriptor_errors_name_only_each_rejected_member(tmp_path: Pat
                 },
                 {
                     "slot_id": wrong_type_slot,
-                    "filename": "wrong.pdf",
+                    "filename": "wrong.exe",
                     "size_bytes": 4,
                     "sha256": hashlib.sha256(b"nope").hexdigest(),
                 },
@@ -160,9 +160,9 @@ def test_manifest_descriptor_errors_name_only_each_rejected_member(tmp_path: Pat
     assert response.json()["errors"] == [
         {
             "slot_id": wrong_type_slot,
-            "filename": "wrong.pdf",
+            "filename": "wrong.exe",
             "code": "validation_failed",
-            "detail": "transcripts uploads require .txt",
+            "detail": "supported lecture formats: .pptx, .pdf, .docx, .txt, .md, .rtf",
         },
         {
             "slot_id": bad_hash_slot,

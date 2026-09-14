@@ -157,11 +157,25 @@ def export_reviewed_quiz(
     return paths[0], paths[1], paths[2]
 
 
+def render_published_quiz_pdf(
+    quiz: NativeQuiz,
+    images: dict[str, SanitizedQuizImage],
+    publication: str,
+) -> bytes:
+    """Render only already-public content; never invent missing legacy evidence."""
+    if {q.image_ref.key for q in quiz.questions if q.image_ref} != set(images):
+        raise ValueError("published quiz image mapping is incomplete")
+    digest = hashlib.sha256(serialize_native_quiz(quiz).encode()).hexdigest()
+    return _render_pdf(quiz, images, None, digest, publication=publication)
+
+
 def _render_pdf(
     quiz: NativeQuiz,
     images: dict[str, SanitizedQuizImage],
-    evidence: _Provenance,
+    evidence: _Provenance | None,
     digest: str,
+    *,
+    publication: str | None = None,
 ) -> bytes:
     _register_pdf_fonts()
     styles = getSampleStyleSheet()
@@ -195,7 +209,9 @@ def _render_pdf(
 
     story = [
         paragraph(quiz.title, styles["Title"]),
-        paragraph(f"{len(quiz.questions)} reviewed questions", small),
+        paragraph(
+            f"{len(quiz.questions)} {'published' if publication else 'reviewed'} questions", small
+        ),
         paragraph("Questions", styles["Heading1"]),
     ]
     for index, question in enumerate(quiz.questions, 1):
@@ -232,28 +248,44 @@ def _render_pdf(
             story.append(paragraph(f"Correct answer: {choices[question.correct_choice_id]}"))
         story.append(paragraph(question.rationale))
     story.extend([PageBreak(), paragraph("Sources and objectives", styles["Heading1"])])
+    if publication:
+        story.append(paragraph(publication, small))
+        story.append(
+            paragraph(
+                "Only source details recorded in the published quiz are included. "
+                "Missing legacy source references have not been reconstructed.",
+                small,
+            )
+        )
     for index, question in enumerate(quiz.questions, 1):
-        record = evidence.questions[question.id]
+        record = evidence.questions[question.id] if evidence else None
         story.append(paragraph(f"Question {index} ({question.id})", heading))
-        story.append(paragraph("Objectives: " + ", ".join(record.objective_ids), small))
+        if record:
+            story.append(paragraph("Objectives: " + ", ".join(record.objective_ids), small))
         if question.learning_objective:
             story.append(paragraph(question.learning_objective, small))
         story.extend(
             paragraph(f"{ref.source_id}: {ref.segment_key} ({ref.locator})", small)
-            for ref in record.source_refs
+            for ref in (record.source_refs if record else ())
         )
         if question.image_ref:
             ref = question.image_ref
             story.append(paragraph(f"Image {ref.key}: {ref.source_title}, {ref.locator}", small))
     story.extend(
-        [Spacer(1, 12), paragraph("Accepted payload SHA-256", heading), paragraph(digest, small)]
+        [
+            Spacer(1, 12),
+            paragraph(
+                "Published payload SHA-256" if publication else "Accepted payload SHA-256", heading
+            ),
+            paragraph(digest, small),
+        ]
     )
 
     def footer(canvas: Any, document: Any) -> None:
         canvas.saveState()
         canvas.setFont(_PDF_REGULAR, 8)
         canvas.setFillColor(colors.HexColor("#64748b"))
-        canvas.drawString(54, 32, "Reviewed lecture quiz")
+        canvas.drawString(54, 32, "Published quiz" if publication else "Reviewed lecture quiz")
         canvas.drawRightString(558, 32, f"Page {document.page}")
         canvas.restoreState()
 

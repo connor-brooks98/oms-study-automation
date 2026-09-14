@@ -51,6 +51,8 @@ def classify_public_path(path: str) -> PublicPathPolicy:
         parts[1] in {"content", "answer", "flags"} and len(parts) == 2
     ):
         return PublicPathPolicy(True, is_canonical, "general")
+    if len(parts) == 2 and parts[1] == "export.pdf" and re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+        return PublicPathPolicy(True, is_canonical, "outline")
     if parts[1] == "outline" and len(parts) == 2:
         return PublicPathPolicy(True, is_canonical, "outline")
     if parts[1] == "media" and len(parts) == 3 and parts[2]:

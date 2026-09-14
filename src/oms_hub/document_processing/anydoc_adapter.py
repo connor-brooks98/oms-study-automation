@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -69,6 +70,15 @@ def convert_anydoc_document(
     assets, warnings = _convert_assets(document.assets, asset_root)
     segments = _convert_blocks(document.blocks, assets)
     segments.extend(_convert_notes(document.notes, len(segments)))
+    # Block provenance comes from the parser's explicit image reference, never
+    # from a derived reading PDF or a guessed Office page number.
+    assets = [
+        replace(asset, locator=next(
+            (segment.locator for segment in segments if asset.key in segment.asset_keys),
+            asset.locator,
+        ))
+        for asset in assets
+    ]
     return ParsedDocument(
         source_id=snapshot.id,
         source_sha256=snapshot.sha256,

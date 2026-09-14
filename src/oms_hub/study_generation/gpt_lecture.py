@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -19,7 +20,14 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from oms_hub.document_processing.domain import ParsedAsset, ParsedDocument, SourceSnapshot
+from oms_hub.document_processing.domain import (
+    DocumentLocator,
+    ParsedAsset,
+    ParsedDocument,
+    ParsedSegment,
+    SegmentKind,
+    SourceSnapshot,
+)
 from oms_hub.document_processing.presentation_render import PresentationRenderer
 from oms_hub.document_processing.router import DocumentProcessorRouter
 from oms_hub.document_processing.run_styles import (
@@ -138,11 +146,12 @@ def _batch_sources(
     inputs: LectureInputs,
 ) -> tuple[list[tuple[LectureInputs, str]], tuple[ParsedAsset, ...]]:
     bindings = {binding.snapshot.id: binding for binding in inputs.bindings}
+    eligible = quiz_instruction_documents(inputs)
     assets = tuple(
         sorted(
             (
                 asset
-                for document in inputs.documents
+                for document in eligible
                 if document.source_id == inputs.slide_source_id
                 for asset in document.assets
             ),
@@ -157,7 +166,7 @@ def _batch_sources(
             "role": bindings[document.source_id].role,
             "segments": [asdict(segment) for segment in document.segments],
         }
-        for document in inputs.documents
+        for document in eligible
     ]
     images = [
         {
@@ -185,7 +194,8 @@ def _batch_sources(
                 "objectives": [{"id": key, "text": text} for key, text in batch.objectives],
                 "sources": sources,
                 "images": images,
-                "run_styles": [sidecar.model_dump(mode="json") for sidecar in inputs.run_styles],
+                "run_styles": _instruction_run_styles(inputs),
+                **({"quiz_instructions": inputs.instructions} if inputs.instructions else {}),
             }
         )
         if len(assets) > MAX_BATCH_IMAGES or len(source) > MAX_SOURCE_CHARACTERS:
@@ -341,7 +351,12 @@ def generate_lecture_quiz(
                             SessionRequest(
                                 str(descriptor["request_id"]),
                                 model,
-                                prompt.content,
+                                prompt.content + (
+                                    "\n\nAdditional user quiz instructions (within the supplied "
+                                    "eligible evidence and required output schema):\n"
+                                    + inputs.instructions
+                                    if inputs.instructions else ""
+                                ),
                                 source,
                                 image_paths=tuple(paths),
                                 output_schema=schema,
@@ -439,7 +454,7 @@ def to_review_drafts(
     validate_generated_quiz(quiz, inputs, require_images=inputs.image_required)
     segments = {
         (document.source_id, segment.key): segment
-        for document in inputs.documents for segment in document.segments
+        for document in quiz_instruction_documents(inputs) for segment in document.segments
     }
     drafts = []
     for question in quiz.questions:
@@ -543,10 +558,10 @@ def validate_generated_quiz(
                 for question in quiz.questions
             )
         ),
-        documents=inputs.documents,
+        documents=quiz_instruction_documents(inputs),
     )
-    documents = {document.source_id: document for document in inputs.documents}
-    for document in inputs.documents:
+    documents = {document.source_id: document for document in quiz_instruction_documents(inputs)}
+    for document in documents.values():
         if len({segment.key for segment in document.segments}) != len(document.segments) or len(
             {asset.key for asset in document.assets}
         ) != len(document.assets):
@@ -567,8 +582,11 @@ def validate_generated_quiz(
         ]
         if not any(
             asset.key in segment.asset_keys
-            or (asset.locator.page_number, asset.locator.slide_number)
-            == (segment.locator.page_number, segment.locator.slide_number)
+            or (
+                (asset.locator.page_number or asset.locator.slide_number)
+                and (asset.locator.page_number, asset.locator.slide_number)
+                == (segment.locator.page_number, segment.locator.slide_number)
+            )
             for segment in segments
         ):
             raise ValueError("image is not associated with the question's cited source evidence")
@@ -603,11 +621,154 @@ class LectureInputs:
     prompt_version: str = "gpt-lecture-v1"
     image_required: bool = True
     run_styles: tuple[StyledTextRunSidecar, ...] = ()
+    instructions: str = ""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.instructions, str) or len(self.instructions) > 4000:
+            raise ValueError("quiz instructions must be at most 4000 characters")
         object.__setattr__(self, "objectives", tuple(tuple(item) for item in self.objectives))
         for field in ("documents", "bindings", "run_styles"):
             object.__setattr__(self, field, tuple(getattr(self, field)))
+
+
+_QUIZ_RANGE = re.compile(
+    r"\b(slides?|pages?)\s+(\d+)(?:\s*(?:[-–—]|to|through)\s*(\d+))?\b", re.I
+)
+# Explicit supported red RGB values from Office palettes; unknown/theme-unresolved
+# colors are never guessed from a rendered page or from nearby red text.
+_QUIZ_REDS = frozenset({"FF0000", "C00000", "800000", "990000", "CC0000"})
+
+
+def _instruction_scope(inputs: LectureInputs) -> tuple[str | None, frozenset[int], bool]:
+    instruction = inputs.instructions.casefold()
+    matches = list(_QUIZ_RANGE.finditer(instruction))
+    if len(matches) > 1:
+        raise ValueError("Use one contiguous slide or page range in quiz instructions.")
+    red = bool(re.search(
+        r"\bonly\s+(?:(?:generate|create|make|a|quiz|for|the|information|info|text|content|"
+        r"material|written|shown|in|colored|coloured)\s+)*red\b"
+        r"|\bred\s+(?:text\s+)?only\b", instruction
+    ))
+    if re.search(r"\b(?:exclude|except|skip|avoid|without|not|don't)\b", instruction) and (
+        matches or red or re.search(r"\b(?:slides?|pages?|red)\b", instruction)
+    ):
+        raise ValueError(
+            "Exclusion or negated source restrictions are unsupported; use an inclusion range."
+        )
+    if re.search(r"\bonly\b", instruction) and not matches and not red:
+        raise ValueError(
+            "Unsupported source restriction; use only slides/pages 2–6 or only red text."
+        )
+    if "only" in instruction and re.search(
+        r"\b(?:blue|green|yellow|orange|highlighted|bold)\b", instruction
+    ):
+        raise ValueError("Only recorded red text is supported for color restrictions.")
+    if matches and re.search(r"\bred\b", instruction) and not red:
+        raise ValueError("Combine ranges with the explicit restriction 'only red text'.")
+    unit: str | None = None
+    numbers: frozenset[int] = frozenset()
+    if matches:
+        match = matches[0]
+        prefix = instruction[:match.start()]
+        if not re.search(r"\b(?:only|use|cover|from|focus|limit)\b", prefix):
+            raise ValueError("Use an explicit inclusion such as 'only slides 2–6'.")
+        first, last = int(match[2]), int(match[3] or match[2])
+        if first < 1 or last < first or last > 10000 or re.match(
+            r"\s*(?:,\s*\d|and\s+\d|[-–—]\s*\d)", instruction[match.end():]
+        ):
+            raise ValueError("Use one valid contiguous slide or page range.")
+        unit = "slide_number" if match[1].startswith("slide") else "page_number"
+        numbers = frozenset(range(first, last + 1))
+    allowed_only = int(red) + int(bool(matches and re.search(
+        r"\bonly\b", instruction[:matches[0].start()]
+    )))
+    if len(re.findall(r"\bonly\b", instruction)) > allowed_only:
+        raise ValueError("Mixed or unsupported source restrictions cannot be applied safely.")
+    return unit, numbers, red
+
+
+def quiz_instruction_documents(inputs: LectureInputs) -> tuple[ParsedDocument, ...]:
+    """Eligible quiz view; immutable originals and full provenance stay in inputs."""
+    unit, numbers, red = _instruction_scope(inputs)
+    if unit is None and not red:
+        return inputs.documents
+    material = next(doc for doc in inputs.documents if doc.source_id == inputs.slide_source_id)
+    if unit:
+        available = {getattr(segment.locator, unit) for segment in material.segments}
+        available.update(getattr(asset.locator, unit) for asset in material.assets)
+        if not numbers.issubset(available):
+            raise ValueError("Requested slide/page numbers lack source-qualified evidence.")
+    segments = tuple(
+        s for s in material.segments if not unit or getattr(s.locator, unit) in numbers
+    )
+    assets = tuple(a for a in material.assets if not unit or getattr(a.locator, unit) in numbers)
+    if red:
+        binding = next(b for b in inputs.bindings if b.role == "slides")
+        sidecar = next(
+            (s for s in inputs.run_styles if s.source_id == inputs.slide_source_id), None
+        )
+        if binding.snapshot.path.suffix.casefold() != ".pptx" or sidecar is None:
+            raise ValueError(
+                "Only-red instructions require original PowerPoint run-color evidence."
+            )
+        runs = tuple(r for r in sidecar.runs if r.text.strip()
+                     and (not unit or (unit == "slide_number" and r.slide_number in numbers)))
+        if any(run.resolved_color is None for run in runs):
+            raise ValueError(
+                "Some original text colors are unresolved; only-red selection is unavailable."
+            )
+        for run in runs:
+            rgb = run.resolved_color
+            if rgb and rgb not in _QUIZ_REDS:
+                r, g, b = (int(rgb[index:index + 2], 16) for index in (0, 2, 4))
+                if r > 0 and r >= 2 * g and r >= 2 * b:
+                    raise ValueError("An original red shade is outside the supported red palette.")
+        eligible_locators = {run.locator for run in runs}
+        segments = tuple(
+            ParsedSegment(
+                f"red-run-{index + 1}", SegmentKind.PARAGRAPH, run.text,
+                DocumentLocator(run.locator, slide_number=run.slide_number),
+                style_metadata=(f"resolved RGB #{run.resolved_color}",),
+            )
+            for index, run in enumerate(sidecar.runs)
+            if run.locator in eligible_locators and run.resolved_color in _QUIZ_REDS
+        )
+        # Whole-slide images and unmapped transcript text could disclose excluded
+        # material. A red-only request supplies precisely the selected text runs.
+        assets = ()
+    if not any(segment.text.strip() for segment in segments):
+        raise ValueError("The requested quiz scope contains no readable supported source text.")
+    keys = {asset.key for asset in assets}
+    selected_keys = {segment.key for segment in segments}
+    segments = tuple(replace(
+        segment, asset_keys=tuple(key for key in segment.asset_keys if key in keys),
+        parent_key=segment.parent_key if segment.parent_key in selected_keys else None,
+        previous_key=segment.previous_key if segment.previous_key in selected_keys else None,
+        next_key=segment.next_key if segment.next_key in selected_keys else None,
+    ) for segment in segments)
+    return tuple(
+        replace(doc, segments=segments, assets=assets) if doc.source_id == material.source_id
+        else replace(doc, segments=(), assets=()) for doc in inputs.documents
+    )
+
+
+def _instruction_run_styles(inputs: LectureInputs) -> list[dict[str, object]]:
+    unit, numbers, red = _instruction_scope(inputs)
+    if unit is None and not red:
+        return [sidecar.model_dump(mode="json") for sidecar in inputs.run_styles]
+    return [StyledTextRunSidecar(
+        source_id=sidecar.source_id, source_sha256=sidecar.source_sha256,
+        parser_version=sidecar.parser_version,
+        runs=tuple(run for run in sidecar.runs
+                   if (not unit or (unit == "slide_number" and run.slide_number in numbers))
+                   and (not red or run.resolved_color in _QUIZ_REDS)),
+    ).model_dump(mode="json") for sidecar in inputs.run_styles]
+
+
+def apply_quiz_instructions(inputs: LectureInputs) -> LectureInputs:
+    validate_lecture_inputs(inputs)
+    quiz_instruction_documents(inputs)
+    return inputs
 
 
 def uncovered_objectives(
@@ -678,8 +839,19 @@ def validate_lecture_inputs(inputs: LectureInputs) -> None:
             _verify_asset(asset)
             if binding.role == "slides" and not (
                 asset.locator.page_number or asset.locator.slide_number
+                or (
+                    binding.snapshot.path.suffix.casefold() in {".docx", ".rtf"}
+                    and asset.locator.block_index
+                    and any(
+                        asset.key in segment.asset_keys
+                        and asset.locator.block_index == segment.locator.block_index
+                        for segment in document.segments
+                    )
+                )
             ):
-                raise ValueError("slide image requires an actual page or slide locator")
+                raise ValueError(
+                    "material image requires an actual page, slide, or linked block locator"
+                )
         if binding.role == "slides" and inputs.image_required:
             pages = {
                 (segment.locator.page_number, segment.locator.slide_number)
@@ -705,6 +877,11 @@ def validate_lecture_inputs(inputs: LectureInputs) -> None:
         and inputs.slide_source_id not in styles
     ):
         raise ValueError("PowerPoint run-style evidence is missing")
+    eligible = quiz_instruction_documents(inputs)
+    if inputs.image_required and not any(
+        doc.assets for doc in eligible if doc.source_id == inputs.slide_source_id
+    ):
+        raise ValueError("Required images are unavailable within the requested quiz scope.")
 
 
 def source_asset(inputs: LectureInputs, source_id: str, asset_key: str) -> ParsedAsset:
@@ -712,7 +889,7 @@ def source_asset(inputs: LectureInputs, source_id: str, asset_key: str) -> Parse
     validate_lecture_inputs(inputs)
     if source_id != inputs.slide_source_id:
         raise ValueError("image source is not the selected lecture slides")
-    for document in inputs.documents:
+    for document in quiz_instruction_documents(inputs):
         if document.source_id == source_id:
             for asset in document.assets:
                 if asset.key == asset_key:
@@ -755,6 +932,7 @@ def source_manifest(inputs: LectureInputs) -> dict[str, object]:
         ],
         "sources": sources,
         "run_styles": [sidecar.model_dump(mode="json") for sidecar in inputs.run_styles],
+        **({"instructions": inputs.instructions} if inputs.instructions else {}),
     }
     canonical = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     result: dict[str, object] = json.loads(canonical)
@@ -851,6 +1029,7 @@ def lecture_inputs_from_manifest(manifest: dict[str, object]) -> LectureInputs:
                 "objectives": [
                     (objective["id"], objective["text"]) for objective in data["objectives"]
                 ],
+                "instructions": data.get("instructions", ""),
                 "bindings": [
                     {
                         **{key: data[key] for key in ("lecture_id", "subject", "exam_number")},
@@ -1107,7 +1286,7 @@ class GptLectureWorker:
                 raise ValueError("lecture source and objective provenance cannot be replaced")
             image = None
             if question.chosen_image is not None:
-                selected = next((asset for document in inputs.documents
+                selected = next((asset for document in quiz_instruction_documents(inputs)
                     if document.source_id == inputs.slide_source_id for asset in document.assets
                     if _candidate_id(draft.question_id, inputs.slide_source_id, asset.key)
                         == question.selected_candidate_id), None)

@@ -186,23 +186,36 @@ class GptLectureService:
         self.router, self.renderer, self.work_root = router, renderer, work_root
         self.owner_id, self.model = owner_id, model
 
-    def queue(self, lecture_id: int, *, owner_id: str, label: str,
-              objectives: tuple[tuple[str, str], ...], require_images: bool = True) -> Any:
+    def queue(self, lecture_id: int, *, owner_id: str, label: str | None = None,
+              objectives: tuple[tuple[str, str], ...] | None = None,
+              require_images: bool | None = None, instructions: str = "") -> Any:
         import mimetypes
+        from dataclasses import replace
         from uuid import uuid4
 
         from oms_hub.document_processing.domain import SourceSnapshot
         from oms_hub.study_generation.gpt_lecture import (
             LectureInputs,
             LectureSourceBinding,
+            apply_quiz_instructions,
             parse_lecture_sources,
+            quiz_instruction_documents,
         )
 
         self._authorize(owner_id)
+        instructions = instructions.strip()
+        if len(instructions) > 4000:
+            raise ValueError("Quiz instructions must be 4000 characters or fewer.")
+        if label is None and (objectives is not None or require_images is not None):
+            raise ValueError(
+                "Provide a quiz title when customizing objectives or image requirements.")
         lecture = self.catalog.get_lecture(lecture_id)
         if lecture is None:
             raise KeyError(lecture_id)
-        if not 1 <= len(objectives) <= 500 or sum(len(t) for _, t in objectives) > 100_000:
+        if objectives is not None and (
+            not 1 <= len(objectives) <= 500
+            or sum(len(t) for _, t in objectives) > 100_000
+        ):
             raise ValueError("provide 1-500 bounded learning objectives")
         revisions = {r.kind: r for r in self.ingestion.list_current_revisions(lecture_id)}
         bindings = []
@@ -223,12 +236,29 @@ class GptLectureService:
         run_id = str(uuid4())
         inputs = LectureInputs(lecture.id, lecture.subject, lecture.exam_number,
             bindings[0].revision_id, bindings[1].revision_id,
-            bindings[0].snapshot.id, bindings[1].snapshot.id, objectives, (),
-            bindings=tuple(bindings), image_required=require_images)
+            bindings[0].snapshot.id, bindings[1].snapshot.id,
+            objectives if objectives is not None else (
+                ("source-all", "Cover the complete lecture sources."),), (),
+            bindings=tuple(bindings), image_required=bool(require_images),
+            instructions=instructions)
         inputs = parse_lecture_sources(inputs, self.router, self.work_root / run_id,
             renderer=self.renderer)
+        inputs = apply_quiz_instructions(inputs)
+        if objectives is not None and quiz_instruction_documents(inputs) != inputs.documents:
+            raise ValueError(
+                "Source restrictions require automatic coverage; omit custom objectives."
+            )
+        if objectives is None:
+            inputs = replace(inputs, objectives=_lecture_coverage_targets(inputs))
+        if require_images is None:
+            materials = next(document for document in quiz_instruction_documents(inputs)
+                             if document.source_id == inputs.slide_source_id)
+            inputs = replace(inputs, image_required=bool(materials.assets))
+        auto_label = label is None and objectives is None and require_images is None
+        prefix, suffix = f"Lecture {lecture.lecture_number:02d} - ", " - Quiz"
+        label = label or prefix + lecture.topic[:300 - len(prefix) - len(suffix)] + suffix
         return self.studio.queue_gpt_lecture(inputs, run_id=run_id, owner_id=owner_id,
-            label=label, model=self.model)
+            label=label, model=self.model, auto_label=auto_label)
 
     def load_inputs(self, run: Any) -> Any:
         import json
@@ -261,3 +291,22 @@ class GptLectureService:
     def _authorize(self, owner_id: str) -> None:
         if not owner_id or owner_id != self.owner_id:
             raise PermissionError("lecture owner mismatch")
+
+
+def _lecture_coverage_targets(inputs: Any) -> tuple[tuple[str, str], ...]:
+    """One-click source coverage units, not invented faculty learning objectives."""
+    from oms_hub.study_generation.gpt_lecture import quiz_instruction_documents
+
+    targets = tuple(
+        (f"source-{document_index + 1}-{index + 1}",
+         f"Assess the clinically relevant concepts in {segment.locator.label} "
+         f"(source {document.source_id}, source segment {segment.key}). "
+         "Cover the stated learning objectives and use the complete lecture sources for context.")
+        for document_index, document in enumerate(quiz_instruction_documents(inputs))
+        for index, segment in enumerate(document.segments)
+        if segment.text.strip() or segment.asset_keys
+    )
+    if not targets or len(targets) > 500:
+        raise GenerationPrerequisiteError(
+            "Lecture source coverage requires 1–500 readable sections.")
+    return targets

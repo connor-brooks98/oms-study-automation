@@ -5,8 +5,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO
 from uuid import UUID, uuid4
-from zipfile import BadZipFile, ZipFile, is_zipfile
 
+from oms_hub.document_processing.lecture_intake import (
+    SUPPORTED_LECTURE_SUFFIXES,
+    validate_lecture_source,
+)
 from oms_hub.ingestion.domain import (
     ChunkSession,
     StagedUpload,
@@ -17,7 +20,6 @@ from oms_hub.ingestion.domain import (
 )
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_PPTX_REQUIRED = {"[Content_Types].xml", "ppt/presentation.xml"}
 
 
 class UploadRejected(ValueError):
@@ -165,7 +167,7 @@ class StagingService:
             try:
                 if not path.is_file():
                     raise UploadRejected("file transfer is incomplete")
-                self._validate_content(manifest.kind, path)
+                self._validate_content(manifest.kind, path, slot.filename)
                 if path.stat().st_size != slot.size_bytes:
                     raise UploadRejected("file size does not match manifest")
                 if self._hash_file(path) != slot.sha256:
@@ -412,7 +414,7 @@ class StagingService:
                         raise UploadRejected("batch exceeds upload limit")
                     digest.update(chunk)
                     output.write(chunk)
-            self._validate_content(batch.kind, temporary)
+            self._validate_content(batch.kind, temporary, filename)
             temporary.replace(ready)
             return StagedUpload(
                 batch_id=batch.id,
@@ -451,7 +453,7 @@ class StagingService:
                 raise UploadRejected("file size does not match manifest")
             if digest.hexdigest() != expected_sha256:
                 raise UploadRejected("file checksum does not match manifest")
-            self._validate_content(kind, temporary)
+            self._validate_content(kind, temporary, filename)
             temporary.replace(target)
         finally:
             temporary.unlink(missing_ok=True)
@@ -555,7 +557,7 @@ class StagingService:
         digest = self._hash_file(source)
         if digest != session.expected_sha256:
             raise UploadRejected("chunk upload checksum mismatch")
-        self._validate_content(session.kind, source)
+        self._validate_content(session.kind, source, session.filename)
         if session.manifest_owned:
             self._manifest_slot(self.get_manifest(session.batch_id), session.item_id)
             ready = self._manifest_file_path(session.batch_id, session.item_id)
@@ -760,45 +762,17 @@ class StagingService:
             or "\\" in filename
         ):
             raise UploadRejected("unsafe upload filename")
-        expected = ".pptx" if kind is UploadKind.SLIDES else ".txt"
-        if Path(filename).suffix.casefold() != expected:
-            raise UploadRejected(f"{kind.value} uploads require {expected}")
-
-    def _validate_content(self, kind: UploadKind, path: Path) -> None:
-        if path.stat().st_size == 0:
-            raise UploadRejected("uploaded file is empty")
-        if kind is UploadKind.SLIDES:
-            self._validate_pptx(path)
-        else:
-            self._validate_text(path)
-
-    def _validate_pptx(self, path: Path) -> None:
-        if not is_zipfile(path):
-            raise UploadRejected("file is not a valid PowerPoint presentation")
-        try:
-            with ZipFile(path) as archive:
-                if not _PPTX_REQUIRED.issubset(archive.namelist()):
-                    raise UploadRejected(
-                        "file is not a valid PowerPoint presentation"
-                    )
-        except BadZipFile as error:
+        if Path(filename).suffix.casefold() not in SUPPORTED_LECTURE_SUFFIXES:
             raise UploadRejected(
-                "file is not a valid PowerPoint presentation"
-            ) from error
+                "supported lecture formats: " + ", ".join(SUPPORTED_LECTURE_SUFFIXES)
+            )
 
-    def _validate_text(self, path: Path) -> None:
-        raw = path.read_bytes()
-        if b"\x00" in raw:
-            raise UploadRejected("transcript contains binary data")
-        decoded = decode_utf8_transcript(raw)
-        if not decoded.strip():
-            raise UploadRejected("transcript contains no text")
-        printable = sum(
-            character.isprintable() or character in "\r\n\t"
-            for character in decoded
-        )
-        if printable / len(decoded) < 0.85:
-            raise UploadRejected("transcript contains binary data")
+    def _validate_content(self, kind: UploadKind, path: Path, filename: str) -> None:
+        del kind  # A lecture role is independent of the source document format.
+        try:
+            validate_lecture_source(path, Path(filename).suffix.casefold())
+        except ValueError as error:
+            raise UploadRejected(str(error)) from error
 
     def _batch_root(self, batch_id: str) -> Path:
         return self._contained(self.root / "batches", batch_id)

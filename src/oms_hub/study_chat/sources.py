@@ -90,6 +90,9 @@ class ChatSources:
                 options.append(
                     {
                         "revision_id": revision.id,
+                        "id": revision.id,
+                        "course": lecture.subject,
+                        "exam": lecture.exam_number,
                         "label": f"{lecture.subject} · Exam {lecture.exam_number} · "
                         f"Lecture {lecture.lecture_number}: {lecture.topic} · {revision.kind}",
                     }

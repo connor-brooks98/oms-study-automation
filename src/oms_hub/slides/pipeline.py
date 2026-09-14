@@ -9,6 +9,7 @@ from oms_hub.artifact_writes import (
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.document_processing.domain import ParsedDocument, SourceSnapshot
+from oms_hub.document_processing.lecture_intake import parse_lecture_source, render_reading_pdf
 from oms_hub.document_processing.router import ParserMode
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
@@ -71,7 +72,7 @@ class SlidePipeline:
     def process(self, item_id: str) -> StudyRevision:
         item = self.repository.require_item(item_id)
         if item.kind is not UploadKind.SLIDES:
-            raise ValueError("upload item is not a PowerPoint")
+            raise ValueError("upload item is not lecture material")
         if item.lecture_id is None:
             raise ValueError("upload item has not been matched to a lecture")
         lecture = self.catalog.get_lecture(item.lecture_id)
@@ -113,11 +114,12 @@ class SlidePipeline:
                     lecture.lecture_number,
                     lecture.topic,
                 ),
+                source_suffix=revision.immutable_source_path.suffix,
             )
             self._set_slide_steps(
                 revision.lecture_id,
                 StepStatus.RUNNING,
-                "Validating and converting the uploaded PowerPoint",
+                "Validating and preparing the uploaded lecture material",
             )
             self._preserve_source(
                 item.staged_path,
@@ -129,7 +131,7 @@ class SlidePipeline:
                 revision.lecture_id,
                 V2StepName.SLIDES_VALIDATED,
                 StepStatus.COMPLETE,
-                "Original PowerPoint preserved and checksum verified",
+                "Original lecture material preserved and checksum verified",
             )
             derived_sha256 = self._ensure_pdf(
                 revision.immutable_source_path,
@@ -214,7 +216,10 @@ class SlidePipeline:
             raise
 
     def _evaluate_document(self, title: str, revision: StudyRevision) -> None:
-        if self.document_evaluator is None:
+        if (
+            self.document_evaluator is None
+            or revision.immutable_source_path.suffix.casefold() != ".pptx"
+        ):
             return
         snapshot = SourceSnapshot(
             id=f"slide-revision-{revision.id}",
@@ -261,12 +266,12 @@ class SlidePipeline:
         expected_sha256: str,
     ) -> None:
         if sha256_file(staged) != expected_sha256:
-            raise ValueError("staged PowerPoint checksum mismatch")
+            raise ValueError("staged lecture material checksum mismatch")
         if immutable.is_file() and sha256_file(immutable) == expected_sha256:
             return
         copied_sha256 = verified_atomic_copy(staged, immutable)
         if copied_sha256 != expected_sha256:
-            raise ValueError("preserved PowerPoint checksum mismatch")
+            raise ValueError("preserved lecture material checksum mismatch")
 
     def _ensure_pdf(
         self,
@@ -282,7 +287,18 @@ class SlidePipeline:
             validate_pdf(destination)
             return expected_sha256
         destination.unlink(missing_ok=True)
-        self.converter.convert(source, destination)
+        if source.suffix.casefold() == ".pdf":
+            validate_pdf(source)
+            verified_atomic_copy(source, destination)
+        elif source.suffix.casefold() == ".pptx":
+            self.converter.convert(source, destination)
+        else:
+            self.last_document = parse_lecture_source(
+                source, source.parent / "document-assets", require_text=False
+            )
+            if not self.last_document.segments and not self.last_document.assets:
+                raise ValueError("lecture material contains no extractable text or images")
+            render_reading_pdf(self.last_document, destination)
         validate_pdf(destination)
         return sha256_file(destination)
 

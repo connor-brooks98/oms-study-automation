@@ -45,6 +45,7 @@ from oms_hub.study_generation.gpt_lecture import (
     validate_generated_quiz,
     validate_lecture_inputs,
 )
+from tests.llm.test_codex_session import fake_session  # noqa: F401 - shared pytest fixture
 
 
 class _QuizClient:
@@ -185,6 +186,8 @@ def test_callback_failure_leaves_ambiguous_dispatch_that_explicit_resume_cannot_
 def test_real_capability_preflight_failure_preserves_receipt_and_allows_only_explicit_resume(
     tmp_path,
 ):
+    # The base runtime now rejects unknown models before checking artifact readiness.
+    # Use the supported model to exercise the intended unaccepted-binary preflight.
     inputs = _inputs(tmp_path)
     executable = Path(sys.executable).resolve()
     client = CodexSessionClient(
@@ -197,7 +200,7 @@ def test_real_capability_preflight_failure_preserves_receipt_and_allows_only_exp
     try:
         with pytest.raises(SessionError) as error:
             generate_lecture_quiz(
-                client, "run1", "chosen", inputs,
+                client, "run1", "gpt-5.5", inputs,
                 cancelled=lambda: False, on_lifecycle=events.append,
             )
         assert error.value.code == "capability_unverified"
@@ -215,12 +218,12 @@ def test_real_capability_preflight_failure_preserves_receipt_and_allows_only_exp
     ready.callback = events.append
     with pytest.raises(SessionError, match="interrupted"):
         generate_lecture_quiz(
-            ready, "run1", "chosen", inputs,
+            ready, "run1", "gpt-5.5", inputs,
             cancelled=lambda: False, on_lifecycle=ready.callback,
         )
     assert not ready.requests
     quiz = generate_lecture_quiz(
-        ready, "run1", "chosen", inputs,
+        ready, "run1", "gpt-5.5", inputs,
         cancelled=lambda: False, on_lifecycle=ready.callback, resume=True,
     )
     assert len(ready.requests) == 1
@@ -339,26 +342,13 @@ def test_concurrent_callers_cannot_dispatch_same_run_twice(tmp_path, monkeypatch
     assert len(client.requests) == 1
 
 
-def test_real_fake_pipe_malformed_json_is_saved_before_feature_rejection(tmp_path, monkeypatch):
+def test_real_fake_pipe_malformed_json_is_saved_before_feature_rejection(
+    tmp_path, fake_session,  # noqa: F811 - imported shared pytest fixture
+):
     inputs = _inputs(tmp_path)
-    executable = Path(sys.executable).resolve()
-    client = CodexSessionClient(
-        executable,
-        tmp_path / "session",
-        tmp_path / "work",
-        binary_sha256=sha256(executable.read_bytes()).hexdigest(),
-        turn_timeout=2,
-        shutdown_timeout=0.2,
-    )
-    trace = tmp_path / "wire.jsonl"
-    client._command = [
-        sys.executable,
-        str(Path(__file__).parents[1] / "llm/fixtures/codex_fake_server.py"),
-        "bad_json",
-        str(trace),
-    ]
-    # Synthetic local executable only: production capability readiness remains closed.
-    monkeypatch.setattr(client, "_require_generation_ready", lambda request: None)
+    # Reuse the inspected local fake-platform fixture: production model/pin guards
+    # remain intact, and only this Python fake can reach the pipe protocol stage.
+    client, trace, _wires = fake_session("bad_json")
     events = []
     try:
         for resume in (False, True):
@@ -366,7 +356,7 @@ def test_real_fake_pipe_malformed_json_is_saved_before_feature_rejection(tmp_pat
                 generate_lecture_quiz(
                     client,
                     "run1",
-                    "chosen",
+                    "gpt-5.5",
                     inputs,
                     cancelled=lambda: False,
                     on_lifecycle=events.append,

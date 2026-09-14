@@ -6,8 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oms_hub.artifact_writes import ArtifactWriteClaimLost, ArtifactWriteContended
-from oms_hub.domain import StepStatus, V2StepName
+from oms_hub.domain import StepStatus
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.study_generation.domain import (
     GenerationJob,
@@ -17,7 +16,6 @@ from oms_hub.study_generation.domain import (
     NotebookAnswer,
     PromptSnapshot,
 )
-from oms_hub.study_generation.native_quiz import QuizContractError
 from oms_hub.study_generation.notebook import NotebookAuthenticationError
 from oms_hub.study_generation.worker import GenerationWorker
 
@@ -206,169 +204,21 @@ def _worker(tmp_path, job, publisher, notebook=None):
     return worker, repository, connection, progress
 
 
-def test_publication_contract_failure_clears_answer_for_bounded_regeneration(tmp_path):
-    publisher = Publisher()
-    worker, repository, _, _ = _worker(
-        tmp_path, _job(notebook_answer=QUIZ_JSON), publisher,
-    )
-    failures = []
-    repository.record_attempt = lambda *args: failures.append(args)
-    repository.contract_failure_count = lambda job_id: len(failures)
-
-    def reject(*args):
-        raise QuizContractError("Lecture quiz requires an unavailable image")
-
-    publisher.publish = reject
+@pytest.mark.parametrize("kind", [GenerationKind.QUIZ, GenerationKind.OUTLINE])
+@pytest.mark.parametrize("stage", [GenerationStage.NOTEBOOK_PROMPT, GenerationStage.PDF,
+                                  GenerationStage.QUIZ_VALIDATE, GenerationStage.DOCS])
+def test_legacy_claims_pause_without_inference_or_losing_saved_answer(tmp_path, kind, stage):
+    job = _job(kind=kind, stage=stage, notebook_answer=QUIZ_JSON, attempts=99)
+    publisher = Publisher(fail=True)
+    worker, repository, connection, progress = _worker(tmp_path, job, publisher)
+    stopped = []
+    repository.fail = lambda job_id, error, paused=False: stopped.append((job_id, error, paused))
+    worker._run = lambda _: pytest.fail("legacy generation must not start")
     assert worker.run_once()
-    assert len(failures) == 1
-    assert repository.current.notebook_answer is None
-    assert repository.current.stage is GenerationStage.NOTEBOOK_PROMPT
-    assert repository.quiz is None
-    assert repository.retried[0] == "job-1"
-
-
-def test_worker_validates_and_publishes_notebook_quiz_natively(tmp_path):
-    publisher = Publisher()
-    worker, repository, connection, progress = _worker(
-        tmp_path,
-        _job(
-            stage=GenerationStage.QUIZ_VALIDATE,
-            notebook_answer=QUIZ_JSON,
-        ),
-        publisher,
-    )
-
-    assert worker.run_once()
-
-    assert len(publisher.calls) == 1
-    assert publisher.calls[0][:2] == (1, "job-1")
-    assert publisher.calls[0][2].title == "Seizure Practice"
-    assert repository.quiz == (1, "job-1", QUIZ_URL)
-    assert connection.invalidations == []
-    assert repository.current.state is GenerationState.COMPLETE
-    assert progress[0][:3] == (
-        1,
-        V2StepName.QUIZ_PUBLISHED,
-        StepStatus.RUNNING,
-    )
-    assert progress[-1][:3] == (
-        1,
-        V2StepName.QUIZ_PUBLISHED,
-        StepStatus.COMPLETE,
-    )
-
-
-def test_generation_worker_rejects_matching_notebook_output(tmp_path: Path) -> None:
-    publisher = Publisher()
-    worker, repository, _, _ = _worker(
-        tmp_path,
-        _job(
-            stage=GenerationStage.QUIZ_VALIDATE,
-            notebook_answer=MATCHING_QUIZ_JSON,
-        ),
-        publisher,
-    )
-    attempts: list[tuple[object, ...]] = []
-    failures: list[tuple[str, str, bool]] = []
-    repository.record_attempt = lambda *values: attempts.append(values)
-    repository.contract_failure_count = lambda _job_id: 2
-    repository.fail = lambda job_id, error, paused=False: failures.append(
-        (job_id, error, paused)
-    )
-
-    assert worker.run_once() is True
-    assert publisher.calls == []
-    assert attempts and "multiple-choice" in str(attempts[0][-1])
-    assert failures and "multiple-choice" in failures[0][1]
-
-
-@pytest.mark.parametrize("error", [ArtifactWriteContended("held"), ArtifactWriteClaimLost("lost")])
-def test_claim_failures_are_deferred_after_generation_retry_limit(tmp_path, error):
-    publisher = Publisher()
-    worker, repository, _, progress = _worker(
-        tmp_path, _job(attempts=99), publisher
-    )
-    worker._run = lambda job: (_ for _ in ()).throw(error)
-    assert worker.run_once() is True
-    assert repository.current.state is not GenerationState.FAILED
-    assert repository.retried[0] == "job-1"
-    assert progress[-1][2] is StepStatus.QUEUED
-
-
-def test_worker_appends_machine_contract_to_editable_obsidian_prompt(tmp_path):
-    notebook = Notebook()
-    publisher = Publisher()
-    worker, repository, _, _ = _worker(
-        tmp_path,
-        _job(),
-        publisher,
-        notebook,
-    )
-
-    assert worker.run_once()
-
-    assert notebook.prompt.path == Path("Quiz Prompt.md")
-    assert notebook.prompt.sha256 == "a" * 64
-    assert notebook.prompt.content.startswith(
-        "Create a rigorous lecture quiz."
-    )
-    assert "Return exactly one JSON object" in notebook.prompt.content
-    assert [stage for stage, _ in repository.advances] == [
-        GenerationStage.QUIZ_VALIDATE,
-        GenerationStage.PUBLISH,
-        GenerationStage.CATALOG,
-    ]
-
-
-def test_worker_resume_at_docs_does_not_republish_quiz(tmp_path):
-    worker, repository, connection, _ = _worker(
-        tmp_path,
-        _job(
-            stage=GenerationStage.DOCS,
-            notebook_answer=QUIZ_JSON,
-            quiz_url=QUIZ_URL,
-        ),
-        Publisher(fail=True),
-    )
-    worker.prompts = SimpleNamespace(
-        inspect=lambda kind: (_ for _ in ()).throw(
-            AssertionError(f"legacy recovery must not reload {kind}")
-        )
-    )
-
-    assert worker.run_once()
-
-    assert connection.invalidations == []
-    assert repository.current.state is GenerationState.COMPLETE
-
-
-def test_worker_pauses_and_invalidates_expired_notebook_login(tmp_path):
-    worker, repository, _, progress = _worker(
-        tmp_path,
-        _job(),
-        Publisher(),
-        ExpiredNotebook(),
-    )
-    failures = []
-    repository.fail = lambda job_id, error, paused=False: failures.append(
-        (job_id, error, paused)
-    )
-    connection = worker.notebook_connection
-
-    assert worker.run_once()
-
-    assert failures == [
-        (
-            "job-1",
-            "NotebookLM login expired; reconnect Google in Settings.",
-            True,
-        )
-    ]
-    assert connection.invalidations == [
-        "NotebookLM login expired; reconnect Google in Settings."
-    ]
-    assert progress[-1][:3] == (
-        1,
-        V2StepName.QUIZ_PUBLISHED,
-        StepStatus.NEEDS_REVIEW,
-    )
+    assert stopped[0][0] == job.id and stopped[0][2] is True
+    assert "upload-only" in stopped[0][1]
+    assert repository.current.notebook_answer == QUIZ_JSON
+    assert repository.current.stage is stage and not repository.advances
+    assert not publisher.calls and not connection.invalidations
+    assert progress[-1][2] is StepStatus.NEEDS_REVIEW
+    assert not worker.run_once()

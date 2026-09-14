@@ -2,21 +2,16 @@ from __future__ import annotations
 
 import logging
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import replace
-from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 from oms_hub.db import is_sqlite_busy
+from oms_hub.files.atomic import sha256_file
 from oms_hub.files.office import OfficeConverter
 from oms_hub.files.pdf import inspect_pdf
+from oms_hub.files.trusted_paths import is_indirection
 from oms_hub.llm.domain import DiagnosticSource
-from oms_hub.study_generation.native_quiz import (
-    QuizContractError,
-    image_requirements,
-    parse_notebook_quiz,
-)
-from oms_hub.study_generation.notebook import StoredNotebookLMGateway
+from oms_hub.study_generation.notebook import NOTEBOOKLM_UPLOAD_ONLY, StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookGatewayError,
@@ -26,7 +21,6 @@ from oms_hub.study_generation.notebook_errors import (
 from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.studio_domain import (
-    StudioRunStage,
     StudioSource,
     StudioSourceOperation,
     StudioSourceType,
@@ -116,174 +110,9 @@ class StudioWorker:
             else:
                 self.import_worker.run(run)
             return True
-        if self.publisher is not None:
-            try:
-                remote_chat_allowed = self.publisher.prepare_studio_run_chat(run.id)
-            except Exception as error:  # noqa: BLE001 - durable recovery boundary
-                self.repository.record_run_attempt(
-                    run.id,
-                    run.attempts,
-                    DiagnosticSource.STUDY_HUB.value,
-                    run.raw_response,
-                    str(error),
-                )
-                if is_sqlite_busy(error) and run.attempts < 4:
-                    self.repository.retry_run(
-                        run.id,
-                        DiagnosticSource.STUDY_HUB.value,
-                        str(error),
-                        timedelta(seconds=min(30 * (2 ** (run.attempts - 1)), 300)),
-                    )
-                else:
-                    self.repository.fail_run(
-                        run.id,
-                        DiagnosticSource.STUDY_HUB.value,
-                        str(error),
-                    )
-                return True
-            if not remote_chat_allowed:
-                return True
-        try:
-            if run.notebook_id is not None and run.raw_response is not None:
-                notebook_id, answer = run.notebook_id, run.raw_response
-            else:
-                notebook_id, answer = self.gateway.ask_studio(
-                    run.subject,
-                    run.exam_number,
-                    run.prompt,
-                    [source.remote_source_id for source in run.sources],
-                )
-                self.repository.save_run_response(run.id, answer, notebook_id)
-            self.repository.record_run_attempt(
-                run.id,
-                run.attempts,
-                "notebook_chat",
-                answer,
-                None,
-            )
-        except NotebookGatewayError as error:
-            if isinstance(error, NotebookAuthenticationError):
-                self.connection.invalidate(str(error))
-            self.repository.record_run_attempt(
-                run.id,
-                run.attempts,
-                error.source.value,
-                None,
-                str(error),
-            )
-            if error.retryable and run.attempts < 4:
-                self.repository.retry_run(
-                    run.id,
-                    error.source.value,
-                    str(error),
-                    timedelta(seconds=min(30 * (2 ** (run.attempts - 1)), 300)),
-                )
-            else:
-                self.repository.fail_run(run.id, error.source.value, str(error))
-            return True
-        except Exception as error:  # noqa: BLE001 - durable worker boundary
-            self.repository.record_run_attempt(
-                run.id,
-                run.attempts,
-                DiagnosticSource.STUDY_HUB.value,
-                None,
-                str(error),
-            )
-            if is_sqlite_busy(error) and run.attempts < 4:
-                self.repository.retry_run(
-                    run.id,
-                    DiagnosticSource.STUDY_HUB.value,
-                    str(error),
-                    timedelta(seconds=min(30 * (2 ** (run.attempts - 1)), 300)),
-                )
-            else:
-                self.repository.fail_run(
-                    run.id,
-                    DiagnosticSource.STUDY_HUB.value,
-                    str(error),
-                )
-            return True
-
-        try:
-            if self.publisher is None:
-                self.repository.complete_run(run.id, notebook_id, answer)
-                return True
-            self.repository.set_run_stage(run.id, StudioRunStage.QUIZ_VALIDATE)
-            quiz = replace(parse_notebook_quiz(answer), title=run.label)
-            if image_requirements(quiz):
-                self.repository.await_image_review(
-                    run.id,
-                    notebook_id,
-                    answer,
-                    quiz,
-                )
-                if self.image_service is not None:
-                    try:
-                        review = self.repository.quiz_review(run.id)
-                        sources = tuple(
-                            source
-                            for snapshot in run.sources
-                            if (source := self.repository.get(snapshot.source_id)) is not None
-                        )
-                        self.image_service.auto_bind_from_sources(
-                            run.id,
-                            review.requirements,
-                            sources,
-                        )
-                    except Exception as error:  # noqa: BLE001 - manual review remains available
-                        LOGGER.warning(
-                            "Studio image binding failed; manual review remains available (%s)",
-                            type(error).__name__,
-                        )
-                return True
-            self.repository.set_run_stage(run.id, StudioRunStage.PUBLISH)
-            self.publisher.publish_and_complete_studio_run(
-                run.id,
-                quiz,
-                notebook_id,
-                answer,
-            )
-        except QuizContractError as error:
-            self.repository.mark_run_attempt_error(
-                run.id,
-                run.attempts,
-                DiagnosticSource.CONTRACT.value,
-                str(error),
-            )
-            if self.repository.contract_failure_count(run.id) < 2:
-                self.repository.retry_run(
-                    run.id,
-                    DiagnosticSource.CONTRACT.value,
-                    str(error),
-                    timedelta(seconds=5),
-                    discard_response=True,
-                )
-            else:
-                self.repository.fail_run(
-                    run.id,
-                    DiagnosticSource.CONTRACT.value,
-                    str(error),
-                )
-        except Exception as error:  # noqa: BLE001 - durable local generation boundary
-            self.repository.mark_run_attempt_error(
-                run.id,
-                run.attempts,
-                DiagnosticSource.VALIDATION.value,
-                str(error),
-            )
-            if is_sqlite_busy(error) and run.attempts < 4:
-                self.repository.retry_run(
-                    run.id,
-                    DiagnosticSource.VALIDATION.value,
-                    str(error),
-                    timedelta(seconds=min(30 * (2 ** (run.attempts - 1)), 300)),
-                )
-            else:
-                self.repository.fail_run(
-                    run.id,
-                    DiagnosticSource.VALIDATION.value,
-                    str(error),
-                )
+        self.repository.fail_run(
+            run.id, DiagnosticSource.VALIDATION.value, NOTEBOOKLM_UPLOAD_ONLY, paused=True
+        )
         return True
 
     def _run_source_operation(
@@ -320,6 +149,7 @@ class StudioWorker:
                     text=text,
                     url=source.source_url,
                 )
+                self._verify_pinned_payload(source)
             # Exiting the durable mutation scope is part of the remote effect's
             # success contract. A lost lease must remain reconcilable rather
             # than committing a silently trusted local completion.
@@ -379,6 +209,7 @@ class StudioWorker:
             return
         try:
             with self._notebook_scope(operation, source):
+                self._verify_pinned_payload(source)
                 remote_ids = self.gateway.list_studio_source_ids(
                     operation.notebook_id, baseline_ids=operation.baseline_remote_ids
                 )
@@ -459,6 +290,7 @@ class StudioWorker:
         source: StudioSource,
     ) -> tuple[Path | None, str | None, bool]:
         path = source.payload_path
+        self._verify_pinned_payload(source)
         converted = False
         if source.source_type in {
             StudioSourceType.FILE,
@@ -480,3 +312,13 @@ class StudioWorker:
             else None
         )
         return path, text, converted
+
+    @staticmethod
+    def _verify_pinned_payload(source: StudioSource) -> None:
+        if source.snapshot_sha256 is not None and (
+            source.payload_path is None or not source.payload_path.is_file()
+            or any(is_indirection(part)
+                   for part in (source.payload_path, *source.payload_path.parents))
+            or sha256_file(source.payload_path) != source.snapshot_sha256
+        ):
+            raise ValueError("queued source no longer matches its pinned artifact")

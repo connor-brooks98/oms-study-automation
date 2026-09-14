@@ -18,7 +18,7 @@
 <body class="sh-app">
   <a class="skip-link" href="#main-content">Skip to main content</a>
   {% set current_path = request.url.path %}
-  {% set more_active = current_path.startswith('/study/') or current_path.startswith('/question-bank') or current_path.startswith('/uploads/') or current_path.startswith('/quarantine') or current_path.startswith('/review') or current_path.startswith('/settings') %}
+  {% set more_active = current_path.startswith('/study/') or current_path.startswith('/question-bank') or current_path.startswith('/uploads') or current_path.startswith('/quarantine') or current_path.startswith('/review') or current_path.startswith('/settings') %}
   <header class="site-header sh-topbar">
     <div class="sh-topbar__inner">
       <a class="brand sh-wordmark" href="/">
@@ -38,8 +38,7 @@
             <a href="/study/chat">Study chat</a>
             <a href="/study/progress">Study progress</a>
             <a href="/question-bank">Question bank imports</a>
-            <a href="/uploads/slides">Upload slides</a>
-            <a href="/uploads/transcripts">Upload transcript</a>
+            <a href="/uploads">Upload materials</a>
             <a href="/quarantine">Unmatched uploads</a>
             <a href="/review">Review</a>
             <a href="/settings">Settings</a>
@@ -75,8 +74,7 @@
       <a href="/question-bank" data-command-item>Question bank imports <span>Import results and review questions</span></a>
       <a href="/study/progress" data-command-item>Study progress <span>Review recorded attempts</span></a>
       <a href="/study/chat" data-command-item>Study chat <span>Ask about selected lecture sources</span></a>
-      <a href="/uploads/slides" data-command-item>Upload slides <span>Convert PowerPoint files to PDF</span></a>
-      <a href="/uploads/transcripts" data-command-item>Upload transcript <span>Clean lecture transcripts</span></a>
+      <a href="/uploads" data-command-item>Upload materials <span>Add slides, documents, and transcripts</span></a>
       <a href="/quarantine" data-command-item>Unmatched uploads <span>Choose the matching lecture</span></a>
       <a href="/review" data-command-item>Review <span>Resolve stopped workflows</span></a>
       <a href="/settings" data-command-item>Settings <span>Providers, models, and runtime</span></a>
@@ -94,7 +92,7 @@
       <a href="/study/chat">Study chat</a>
             <a href="/study/progress">Study progress</a>
             <a href="/question-bank">Question bank imports</a>
-      <a href="/uploads/slides">Upload slides</a><a href="/uploads/transcripts">Upload transcript</a>
+      <a href="/uploads">Upload materials</a>
       <a href="/quarantine">Unmatched uploads</a><a href="/review">Review</a><a href="/settings">Settings</a>
     </nav>
   </dialog>

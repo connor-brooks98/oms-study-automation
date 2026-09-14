@@ -46,7 +46,7 @@ def test_lecture_omits_study_actions_and_keeps_materials_and_pass_tracker(tmp_pa
     document = HTMLParser(TestClient(app).get(f"/lectures/{lecture_id}").text)
 
     assert document.css_first(".lecture-study-actions") is None
-    assert len(document.css(".file-card-grid .file-card")) == 4
+    assert len(document.css(".file-card-grid .file-card")) == 3
     assert document.css_first("#pass-tracker [data-pass-count]").text(strip=True) == "0/5"
     pipeline = document.css_first(".pipeline-card")
     assert pipeline.tag == "details" and "open" not in pipeline.attributes

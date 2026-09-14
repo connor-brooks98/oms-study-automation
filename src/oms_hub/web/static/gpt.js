@@ -177,9 +177,6 @@
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (busy || !form.reportValidity()) return;
-        const parsed = objectives(form.elements.objectives.value);
-        const label = form.elements.label.value.trim();
-        if (!parsed.length || !label) { message.textContent = "Enter a quiz title and at least one learning objective."; return; }
         busy = true;
         submit.disabled = true;
         form.setAttribute("aria-busy", "true");
@@ -187,7 +184,7 @@
         review.hidden = true;
         try {
           const payload = await post(documentRef, fetchImpl, `/lectures/${encodeURIComponent(lecture.dataset.gptLecture)}/gpt-quiz`, {
-            label, objectives: parsed, require_images: form.elements.require_images.checked,
+            instructions: form.elements?.instructions?.value.trim() || "",
           });
           if (!payload.run_id || !payload.review_url) throw new Error("The server did not return a quiz review link.");
           review.href = safeLink(payload.review_url, documentRef.baseURI);

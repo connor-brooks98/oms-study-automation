@@ -1,4 +1,5 @@
 import json
+import mimetypes
 import os
 import threading
 from collections.abc import Callable, Mapping
@@ -24,6 +25,7 @@ from oms_hub.routing import expanded_path
 
 class ArtifactRole(StrEnum):
     PPTX = "pptx"
+    ORIGINAL = "original"
     PDF = "pdf"
     RAW = "raw"
     CLEANED = "cleaned"
@@ -190,6 +192,7 @@ class ArtifactService:
             and role
             in {
                 ArtifactRole.PPTX,
+                ArtifactRole.ORIGINAL,
                 ArtifactRole.PDF,
                 ArtifactRole.CLEANED,
             }
@@ -261,21 +264,18 @@ class ArtifactService:
         role: ArtifactRole,
     ) -> tuple[Path, str, str, str, bool]:
         if revision.kind is UploadKind.SLIDES:
-            if role is ArtifactRole.PPTX:
+            if role in {ArtifactRole.PPTX, ArtifactRole.ORIGINAL}:
                 path = (
                     revision.canonical_source_path
                     if revision.current
                     else revision.immutable_source_path
                 )
                 if path is None:
-                    raise ArtifactNotFound("PowerPoint artifact is unavailable")
+                    raise ArtifactNotFound("original lecture artifact is unavailable")
                 return (
                     path,
                     revision.source_sha256,
-                    (
-                        "application/vnd.openxmlformats-officedocument."
-                        "presentationml.presentation"
-                    ),
+                    mimetypes.guess_type(path.name)[0] or "application/octet-stream",
                     "attachment",
                     False,
                 )
@@ -296,12 +296,15 @@ class ArtifactService:
                 )
         elif revision.kind is UploadKind.TRANSCRIPTS:
             if role is ArtifactRole.RAW:
+                path = revision.immutable_source_path
+                is_text = path.suffix.casefold() in {".txt", ".md"}
                 return (
-                    revision.immutable_source_path,
+                    path,
                     revision.source_sha256,
-                    "text/plain; charset=utf-8",
-                    "inline",
-                    True,
+                    ("text/plain; charset=utf-8" if is_text else
+                     (mimetypes.guess_type(path.name)[0] or "application/octet-stream")),
+                    "inline" if is_text else "attachment",
+                    is_text,
                 )
             if role is ArtifactRole.CLEANED:
                 path = (

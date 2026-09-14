@@ -92,7 +92,7 @@ def test_page_escapes_source_titles_and_errors_do_not_leak(setup):
     with client:
         page = client.get("/study/chat")
         assert "<script>alert" not in page.text
-        assert "&lt;script&gt;alert" in page.text
+        assert r"\u003cscript\u003ealert" in page.text
         denied = client.post(
             "/study/chat/conversations", json={"mode": "lecture", "revision_ids": [999]}
         )
@@ -110,3 +110,36 @@ def test_unconfigured_page_is_readable_and_does_not_construct_a_client(setup):
         assert "Chat is unavailable" in response.text
         assert "data-chat-form" not in response.text
         assert client.post("/study/chat/conversations", json={"mode": "general"}).status_code == 503
+
+
+def test_source_picker_preserves_revision_identity_and_saved_selection(setup):
+    import json
+    import re
+
+    from oms_hub.models import LectureModel, StudyRevisionModel
+
+    repo, database, _ = setup
+    with database.session() as session:
+        session.add(
+            LectureModel(id=9, subject="Neuro", exam_number=2, lecture_number=7, topic="Reflexes")
+        )
+        session.flush()
+        session.get(StudyRevisionModel, 1).lecture_id = 9
+    client, _ = client_for(repo)
+    with client:
+        cid = client.post(
+            "/study/chat/conversations", json={"mode": "lecture", "revision_ids": [1]}
+        ).json()["conversation_id"]
+        page = client.get(f"/study/chat?conversation_id={cid}")
+    catalog = json.loads(
+        re.search(
+            r'<script id="chat-source-catalog" type="application/json">(.*?)</script>',
+            page.text,
+            re.S,
+        ).group(1)
+    )
+    assert catalog[0]["id"] == catalog[0]["revision_id"] == 1
+    assert catalog[0]["course"] == "Neuro" and catalog[0]["exam"] == 2
+    assert "data-selected='[1]'" in page.text
+    assert 'data-multiple="true"' in page.text
+    assert '<select class="sh-input" id="chat-sources"' not in page.text

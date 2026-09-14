@@ -1,15 +1,13 @@
 {% extends "base.html" %}
-{% set is_slides = kind.value == "slides" %}
-{% block title %}Upload {{ "slides" if is_slides else "transcripts" }} · Study Hub{% endblock %}
+{% from "components/lecture_picker.html" import lecture_picker %}
+{% block title %}Upload lecture materials · Study Hub{% endblock %}
 {% block content %}
 <section class="page-shell sh-container--narrow upload-page">
   <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow sh-eyebrow">Upload files</p>
-      <h1 class="sh-title">Upload {{ "lecture slides" if is_slides else "lecture transcripts" }}</h1>
+      <h1 class="sh-title">Upload lecture materials</h1>
       <p class="page-summary sh-subtitle">
-        {% if is_slides %}Add downloaded PowerPoint files. Study Hub will match, preserve, convert, and file them.
-        {% else %}Add downloaded text transcripts. Study Hub will match, clean, validate, and file them.{% endif %}
+        Add slides, documents, and transcripts together. Choose how each file should be used before uploading.
       </p>
       {% if selected_lecture %}
       <p class="field-help">For {{ selected_lecture.subject }} Lecture {{ "%02d"|format(selected_lecture.lecture_number) }} · {{ selected_lecture.topic }}</p>
@@ -18,13 +16,18 @@
   </div>
 
   <div class="upload-workbench">
-  <form class="upload-form" action="/uploads/{{ kind.value }}" method="post" enctype="multipart/form-data" data-upload-form data-kind="{{ kind.value }}" data-lecture-id="{{ selected_lecture.id if selected_lecture else '' }}">
-    {% if selected_lecture %}<input type="hidden" name="lecture_id" value="{{ selected_lecture.id }}">{% endif %}
+  <form class="upload-form" action="/uploads/slides" method="post" enctype="multipart/form-data" data-upload-form data-default-kind="{{ kind.value if kind else '' }}" data-lecture-id="{{ selected_lecture.id if selected_lecture else '' }}">
+    <details class="upload-assignment"{% if selected_lecture %} open{% endif %}>
+    <summary>Choose a lecture, or match files automatically</summary>
+    {{ lecture_picker('upload-lecture', 'upload-lecture-catalog', selected=[selected_lecture.id|string] if selected_lecture else [], label='Assign to a lecture (optional)') }}
+    <p class="field-help">Leave blank to match each file by its name. Select a lecture only when all files belong to it.</p>
+    </details>
+    <script id="upload-lecture-catalog" type="application/json">{{ lecture_catalog|tojson }}</script>
     <div class="upload-zone sh-dropzone" data-drop-zone>
       <span class="upload-mark" aria-hidden="true">↑</span>
-      <h2>Drop {{ "PowerPoint" if is_slides else "transcript" }} files here</h2>
-      <p id="upload-help">{{ "PPTX only" if is_slides else "TXT only" }} · multiple files supported · up to 100 MB each</p>
-      <label for="upload-files" class="sr-only">Choose {{ "PowerPoint" if is_slides else "transcript" }} files</label>
+      <h2>Drop lecture files here</h2>
+      <p id="upload-help">PPTX, PDF, DOCX, TXT, MD, RTF · multiple files supported · up to 100 MB each</p>
+      <label for="upload-files" class="sr-only">Choose lecture files</label>
       <input id="upload-files" class="sr-only" name="files" type="file" accept="{{ accept }}" multiple aria-describedby="upload-help">
       <button class="button secondary sh-btn sh-btn--secondary upload-browse" type="button">Choose files</button>
     </div>
@@ -40,15 +43,14 @@
   </section>
   </div>
 
+  <p class="field-help">PowerPoint conversion requires the configured Office renderer. Documents become reading copies; scanned PDFs need readable text for transcript processing. Legacy .ppt and .doc files must be saved as .pptx or .docx first.</p>
   <aside class="info-card sh-panel">
     <strong>What happens next</strong>
     <p>Confident matches enter processing automatically. Anything ambiguous stays in <a href="/quarantine">Unmatched uploads</a> until you choose its lecture.</p>
   </aside>
 
-  {% if not is_slides %}
   <dialog class="duplicate-dialog" data-duplicate-dialog aria-labelledby="duplicate-dialog-title" aria-describedby="duplicate-dialog-copy">
     <div class="duplicate-dialog-mark" aria-hidden="true">!</div>
-    <p class="eyebrow">API cost safeguard</p>
     <h2 id="duplicate-dialog-title">Cleaned transcript already available</h2>
     <p id="duplicate-dialog-copy">A cleaned lecture transcript has already been processed for this lecture. Are you sure you want to process another?</p>
     <p class="duplicate-lecture" data-duplicate-lecture></p>
@@ -59,9 +61,11 @@
       <button class="button primary sh-btn sh-btn--primary" type="button" data-confirm-duplicate>Process anyway</button>
     </div>
   </dialog>
-  {% endif %}
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/uploads.js?v=20260818.2" defer></script>
+<link rel="stylesheet" href="/static/lecture_picker.css?v=20260914.1">
+<link rel="stylesheet" href="/static/uploads.css?v=20260914.1">
+<script src="/static/lecture_picker.js?v=20260914.1" defer></script>
+<script src="/static/uploads.js?v=20260914.1" defer></script>
 {% endblock %}

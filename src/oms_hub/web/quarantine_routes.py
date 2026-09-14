@@ -26,14 +26,22 @@ def _service(request: Request) -> IngestionService:
 
 @router.get("", response_class=HTMLResponse)
 def quarantine_page(request: Request) -> HTMLResponse:
+    lectures = CatalogRepository(request.app.state.database).list_lectures()
     return templates.TemplateResponse(
         request=request,
         name="quarantine.html",
         context={
             "items": _repository(request).list_quarantined(),
-            "lectures": CatalogRepository(
-                request.app.state.database
-            ).list_lectures(),
+            "lecture_catalog": [
+                {
+                    "id": lecture.id,
+                    "course": lecture.subject,
+                    "exam": lecture.exam_number,
+                    "label": f"{lecture.subject} · Exam {lecture.exam_number} · "
+                    f"Lecture {lecture.lecture_number:02d} — {lecture.topic}",
+                }
+                for lecture in lectures
+            ],
         },
     )
 

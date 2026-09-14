@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from oms_hub.document_processing.lecture_intake import SUPPORTED_LECTURE_SUFFIXES
 from oms_hub.ingestion.domain import (
     StagedUpload,
     UploadKind,
@@ -33,10 +34,11 @@ templates = Jinja2Templates(
 )
 
 
+@router.get("/uploads", response_class=HTMLResponse)
 @router.get("/uploads/{kind}", response_class=HTMLResponse)
 def upload_page(
-    kind: UploadKind,
     request: Request,
+    kind: UploadKind | None = None,
     lecture_id: int | None = None,
 ) -> HTMLResponse:
     selected_lecture = None
@@ -49,11 +51,14 @@ def upload_page(
         name="uploads.html",
         context={
             "kind": kind,
-            "accept": (
-                ".pptx"
-                if kind is UploadKind.SLIDES
-                else ".txt"
-            ),
+            "accept": ",".join(SUPPORTED_LECTURE_SUFFIXES),
+            "lecture_catalog": [
+                {"id": str(lecture.id), "course": lecture.subject,
+                 "exam": str(lecture.exam_number),
+                 "label": (f"{lecture.subject} Lecture {lecture.lecture_number:02d}"
+                           f" · {lecture.topic}")}
+                for lecture in _catalog(request).list_lectures()
+            ],
             "selected_lecture": selected_lecture,
         },
     )

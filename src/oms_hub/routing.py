@@ -21,7 +21,13 @@ def expanded_path(path: Path) -> Path:
 def build_slide_destinations(
     settings: Settings,
     lecture: LectureKey,
+    source_suffix: str = ".pptx",
 ) -> SlideDestinations:
+    from oms_hub.document_processing.lecture_intake import SUPPORTED_LECTURE_SUFFIXES
+
+    source_suffix = source_suffix.casefold()
+    if source_suffix not in SUPPORTED_LECTURE_SUFFIXES:
+        raise ValueError("unsupported lecture material source extension")
     if settings.icloud_staging_root is None:
         raise ValueError("iCloud staging root has not been configured")
     subject = sanitize_filename(lecture.subject)
@@ -39,7 +45,9 @@ def build_slide_destinations(
     )
     cloud_dir = cloud_root / subject / f"Exam {lecture.exam_number}"
     destinations = SlideDestinations(
-        source=lecture_dir / names.pptx,
+        source=lecture_dir / (
+            Path(names.pptx).stem + (" - Source.pdf" if source_suffix == ".pdf" else source_suffix)
+        ),
         pdf=lecture_dir / names.pdf,
         icloud_pdf=cloud_dir / names.pdf,
     )

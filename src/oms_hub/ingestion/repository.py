@@ -851,7 +851,7 @@ class IngestionRepository:
                     / (
                         f"original{extension}"
                         if item.kind == UploadKind.SLIDES.value
-                        else "raw.txt"
+                        else f"raw{extension}"
                     )
                 )
                 if item.kind == UploadKind.SLIDES.value:

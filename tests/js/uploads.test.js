@@ -424,3 +424,129 @@ test("selection locks and serialized errors are rendered as safe text inputs", (
     "one.txt: bad encoding two.txt: too large",
   );
 });
+
+test("mixed intake infers roles and freezes each group without dropping files", () => {
+  const deck = { name: "lecture.pptx", size: 123 };
+  const notes = { name: "transcript.TXT", size: 45 };
+  const doc = { name: "reading.docx", size: 67 };
+  const files = [deck, notes, doc];
+  const roles = new Map(files.map((file) => [file, uploads.defaultFileKind(file.name)]));
+  assert.equal(uploads.defaultFileKind("reading.pdf", "transcripts"), "transcripts");
+  roles.set(doc, "transcripts");
+  const groups = uploads.groupFilesByKind(files, roles);
+  assert.deepEqual(groups.map((group) => [group.kind, group.files]), [
+    ["slides", [deck]], ["transcripts", [notes, doc]],
+  ]);
+  assert.deepEqual(uploads.groupFilesByKind([], roles), []);
+});
+
+test("mixed submit retires recovered slides and retries only pending transcripts with a cleared lecture", async (t) => {
+  const { File } = require("node:buffer");
+  class Element {
+    constructor(tag = "div") {
+      this.tag = tag;
+      this.children = [];
+      this.listeners = new Map();
+      this.dataset = {};
+      this.classList = { add() {}, remove() {} };
+    }
+    addEventListener(name, callback) { this.listeners.set(name, callback); }
+    async emit(name) { await this.listeners.get(name)?.({ preventDefault() {} }); }
+    append(...children) { this.children.push(...children); }
+    replaceChildren() { this.children = []; }
+    setAttribute() {}
+    removeAttribute() {}
+    querySelectorAll() {
+      return this.children.flatMap((child) => [child, ...child.querySelectorAll()])
+        .filter((child) => ["button", "select"].includes(child.tag));
+    }
+  }
+  const originalXHR = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
+  t.after(() => {
+    if (originalXHR) Object.defineProperty(globalThis, "XMLHttpRequest", originalXHR);
+    else delete globalThis.XMLHttpRequest;
+  });
+
+  // Both a lost response and cancellation after commit must retire the same snapshot.
+  for (const failure of [new Error("Connection lost"), new DOMException("Cancelled", "AbortError")]) {
+    const multipart = [];
+    globalThis.XMLHttpRequest = class extends Element {
+      constructor() { super(); this.upload = new Element(); }
+      open(_method, url) { this.url = url; }
+      setRequestHeader() {}
+      send(body) {
+        multipart.push({ url: this.url, names: body.getAll("files").map((file) => file.name) });
+        this.status = 200;
+        this.response = {};
+        this.listeners.get("load")();
+      }
+    };
+    const form = new Element();
+    form.dataset.lectureId = "42"; // The URL initially selected a lecture; the user cleared it.
+    const input = new Element("input");
+    const selected = new Element();
+    const picker = new Element("fieldset");
+    picker.lecturePicker = {
+      getValues: () => [],
+      setDisabled: (value) => { picker.disabled = value; },
+    };
+    const status = new Element();
+    const fields = new Map([
+      ["#upload-files", input], [".upload-browse", new Element("button")],
+      ["[data-drop-zone]", new Element()], ["[data-selected-files]", selected],
+      [".upload-submit", new Element("button")], ["[data-lecture-picker]", picker],
+    ]);
+    form.querySelector = (selector) => fields.get(selector) || null;
+    const elements = new Map([
+      ["[data-upload-form]", form], ["[data-upload-status]", status],
+      ["[data-upload-items]", new Element()], ["[data-progress-wrap]", new Element()],
+      ["[data-progress-bar]", new Element()],
+    ]);
+    const document = {
+      cookie: "study_hub_csrf=test-token",
+      querySelector: (selector) => elements.get(selector) || null,
+      createElement: (tag) => new Element(tag),
+    };
+    const manifests = [];
+    const requests = [];
+    const response = (body, status = 200) => ({ ok: status < 400, status, json: async () => body });
+    uploads.initialize(document, async (url, options = {}) => {
+      requests.push([options.method || "GET", url]);
+      if (url === "/api/upload-manifests") {
+        assert.equal(input.disabled, true);
+        assert.equal(picker.disabled, true);
+        manifests.push(JSON.parse(options.body));
+        return response({ manifest_id: `m${manifests.length}` });
+      }
+      if (url === "/api/upload-manifests/m1/finalize") throw failure;
+      if (url === "/api/upload-manifests/m1" && options.method === "DELETE") {
+        return response({ batch_id: "slides-batch" }, 409);
+      }
+      if (url === "/api/upload-manifests/m2/finalize") return response({ batch_id: "transcript-batch" });
+      if (url.startsWith("/api/upload-batches/")) {
+        return response({ lifecycle: "terminal", outcome: "complete", items: [] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    input.files = [new File(["slide"], "lecture.pptx"), new File(["notes"], "lecture.txt")];
+    await input.emit("change");
+    await form.emit("submit");
+    assert.deepEqual(requests.slice(-2), [
+      ["DELETE", "/api/upload-manifests/m1"], ["GET", "/api/upload-batches/slides-batch"],
+    ]);
+    assert.match(status.textContent, /already finalized/);
+    assert.deepEqual(selected.children.map((row) => row.children[0].textContent), ["lecture.txt"]);
+    assert.equal(input.disabled, false);
+    assert.equal(picker.disabled, false);
+
+    await form.emit("submit");
+    assert.deepEqual(manifests.map((manifest) => [
+      manifest.kind, manifest.lecture_id, manifest.files.map((file) => file.filename),
+    ]), [["slides", null, ["lecture.pptx"]], ["transcripts", null, ["lecture.txt"]]]);
+    assert.deepEqual(multipart, [
+      { url: "/uploads/slides", names: ["lecture.pptx"] },
+      { url: "/uploads/transcripts", names: ["lecture.txt"] },
+    ]);
+    assert.equal(selected.children.length, 0);
+  }
+});

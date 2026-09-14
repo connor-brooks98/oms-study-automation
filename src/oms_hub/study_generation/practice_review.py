@@ -55,6 +55,7 @@ _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES = frozenset(
         "duplicate-supplied-answer",
         "missing-supplied-answer",
         "notebook-support-not-selected",
+        "notebook-generation-disabled",
         "supplied-answer-out-of-bounds",
         "unmatched-question",
         "unmatched-supplied-answer",
@@ -535,17 +536,27 @@ class PracticeReviewService:
             diagnostic.code in _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES
             for diagnostic in draft.diagnostics
         )
+        notebook_answer_blocked = any(
+            diagnostic.code == "notebook-generation-disabled" for diagnostic in draft.diagnostics
+        )
+        complete_manual_answer = (
+            isinstance(correct_index, int) and not isinstance(correct_index, bool)
+            and 0 <= correct_index < len(choices) and bool(rationale and rationale.strip())
+        )
         manually_resolved_answer = (
-            "correct_index" in values
+            ("correct_index" in values or (notebook_answer_blocked and "rationale" in values))
             and isinstance(correct_index, int)
             and has_resolvable_answer_diagnostic
+            and (not notebook_answer_blocked or complete_manual_answer)
         )
         requires_verification = (
             draft.verification_required
             or draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+            or notebook_answer_blocked
         ) and (
             not manually_resolved_answer
             or draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+            or notebook_answer_blocked
         )
         diagnostics = (
             tuple(

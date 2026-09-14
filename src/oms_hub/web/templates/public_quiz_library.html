@@ -39,8 +39,7 @@
       <details class="sh-more">
         <summary class="sh-nav__link sh-more__trigger" aria-expanded="false">More <span class="sh-more__chevron" aria-hidden="true">▾</span></summary>
         <div class="sh-more__menu t-dropdown" data-origin="top-right">
-          <a href="/uploads/slides">Upload slides</a>
-          <a href="/uploads/transcripts">Upload transcript</a>
+          <a href="/uploads">Upload materials</a>
           <a href="/quarantine">Unmatched uploads</a>
           <a href="/review">Review</a>
           <a href="/settings">Settings</a>
@@ -70,7 +69,7 @@
     <nav aria-label="Mobile navigation">
       <a href="/" data-dialog-initial-focus>Home</a><a href="/lectures">Lectures</a><a href="/anki">Anki</a><a href="/studio">Quiz Builder</a>
       <a href="{{ quiz_library_path }}">{{ 'Manage quizzes' if management_mode else 'Quizzes' }}</a><a href="{{ practice_library_path }}">{{ 'Manage practice questions' if management_mode else 'Practice Questions' }}</a>
-      <a href="/uploads/slides">Upload slides</a><a href="/uploads/transcripts">Upload transcript</a>
+      <a href="/uploads">Upload materials</a>
       <a href="/quarantine">Unmatched uploads</a><a href="/review">Review</a><a href="/settings">Settings</a>
     </nav>
   </dialog>
@@ -109,6 +108,7 @@
               <span class="chevron sh-disclose" aria-hidden="true">▸</span>
             </button>
             <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" hidden>
+              {% if exam.export_url %}<p><a class="sh-btn sh-btn--secondary" href="{{ exam.export_url }}">Download {{ course.name }} · Exam {{ exam.number }} as one PDF</a></p>{% endif %}
               {% for row in exam.quizzes %}
               <article class="lecture-row sh-row" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}" {% if management_mode %}data-quiz-order-row data-order-url="/api/published-quizzes/{{ row.token }}/order" data-context-trigger{% endif %}>
                 {% if management_mode %}

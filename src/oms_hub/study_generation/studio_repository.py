@@ -5,7 +5,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.engine import CursorResult
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
 from oms_hub.files.atomic import sha256_file
+from oms_hub.files.trusted_paths import is_indirection
 from oms_hub.llm.codex_session import SessionError, SessionLifecycle
 from oms_hub.models import (
     BankImportModel,
@@ -172,6 +173,60 @@ class StudioRepository:
         with self.database.session() as session:
             model = session.get(StudioSourceModel, source_id)
             return None if model is None else self._domain(model)
+
+    def enqueue_lecture_upload(self, revision_id: int, *, connected: bool) -> StudioSource:
+        """Append one pinned, filed revision to the existing source-upload queue."""
+        with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+            revision = session.get(StudyRevisionModel, revision_id)
+            if revision is None or not revision.current or revision.state != "current":
+                raise ValueError("NotebookLM upload requires a current filed revision")
+            lecture = session.get(LectureModel, revision.lecture_id)
+            if lecture is None or revision.kind not in {"slides", "transcripts"}:
+                raise ValueError("NotebookLM upload lecture scope is unavailable")
+            digest = revision.derived_sha256
+            if (not digest or not revision.immutable_derived_path
+                or not revision.canonical_derived_path):
+                raise ValueError("NotebookLM upload requires filed PDF or cleaned transcript")
+            path = Path(revision.immutable_derived_path)
+            suffix = ".pdf" if revision.kind == "slides" else ".txt"
+            if path.suffix.casefold() != suffix:
+                raise ValueError("NotebookLM upload artifact type does not match its role")
+            for artifact in (path, Path(revision.canonical_derived_path)):
+                if (not artifact.is_absolute() or not artifact.is_file()
+                    or any(is_indirection(part) for part in (artifact, *artifact.parents))
+                    or sha256_file(artifact) != digest):
+                    raise ValueError("NotebookLM upload artifact identity could not be verified")
+            source_id = str(uuid5(NAMESPACE_URL,
+                f"oms-lecture-notebook-upload-v1:{lecture.id}:{revision.id}:{revision.kind}:{digest}"))
+            title = (f"{lecture.subject} Lecture {lecture.lecture_number:02d} · "
+                     f"{lecture.topic} · {revision.kind} · revision {revision.id}")
+            expected = {
+                "subject": lecture.subject, "subject_key": normalize_subject(lecture.subject),
+                "exam_number": lecture.exam_number, "source_type": StudioSourceType.FILE.value,
+                "title": title, "payload_path": str(path), "snapshot_sha256": digest,
+                "original_filename": Path(revision.canonical_derived_path).name,
+                "purpose": StudioSourcePurpose.NOTEBOOK.value,
+            }
+            existing = session.get(StudioSourceModel, source_id)
+            if existing is not None:
+                if any(getattr(existing, key) != value for key, value in expected.items()):
+                    raise ValueError("NotebookLM upload identity is already bound to other data")
+                return self._domain(existing)
+            model = StudioSourceModel(
+                id=source_id, **expected,
+                state=(StudioSourceState.PENDING.value if connected
+                       else StudioSourceState.NEEDS_REVIEW.value),
+                diagnostic_source=None if connected else "notebook_upload_unavailable",
+                error=None if connected else (
+                    "Lecture filed successfully. Optional NotebookLM upload is held because "
+                    "the connection is unavailable; GPT generation is unaffected."
+                ),
+            )
+            session.add(model)
+            session.flush()
+            return self._domain(model)
 
     def list_sources(
         self,
@@ -1223,6 +1278,7 @@ class StudioRepository:
 
     def queue_gpt_lecture(
         self, inputs: Any, *, run_id: str, owner_id: str, label: str, model: str,
+        auto_label: bool = False,
     ) -> StudioRun:
         from oms_hub.study_generation.gpt_lecture import source_manifest
         from oms_hub.study_generation.quiz_import_worker import _document_json
@@ -1255,6 +1311,46 @@ class StudioRepository:
                 ):
                     raise ValueError("lecture source binding changed")
             key = normalize_subject(inputs.subject)
+            if auto_label:
+                existing_runs = session.scalars(select(StudioRunModel).where(
+                    StudioRunModel.destination_subject_key == key,
+                    StudioRunModel.destination_exam_number == inputs.exam_number,
+                )).all()
+                source_pins = {(b.revision_id, b.snapshot.sha256) for b in inputs.bindings}
+                for previous in existing_runs:
+                    if (previous.backend != "codex_subscription" or previous.state not in {
+                        "queued", "running", "paused", "interrupted", "awaiting_review"
+                    }):
+                        continue
+                    artifacts = {a.artifact_key: a.payload_json for a in session.scalars(
+                        select(StudioRunArtifactModel).where(
+                            StudioRunArtifactModel.run_id == previous.id,
+                            StudioRunArtifactModel.artifact_key.in_(
+                                ("gpt:settings", "gpt:manifest")),
+                        ))}
+                    try:
+                        saved_settings = json.loads(artifacts["gpt:settings"])
+                        saved = json.loads(artifacts["gpt:manifest"])
+                        saved_pins = {(b["revision_id"], b["snapshot"]["sha256"])
+                                      for b in saved["sources"]}
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if (saved_settings.get("owner_id") == owner_id
+                        and saved_settings.get("automatic_coverage") is True
+                        and saved.get("lecture_id") == inputs.lecture_id
+                        and saved.get("instructions", "") == inputs.instructions
+                        and saved_pins == source_pins):
+                        return self._run_domain(session, previous)
+                used = {r.label_key for r in existing_runs}
+                used.update(session.scalars(select(PublishedQuizModel.label_key).where(
+                    PublishedQuizModel.destination_subject_key == key,
+                    PublishedQuizModel.destination_exam_number == inputs.exam_number,
+                )))
+                base_label, version = label, 1
+                while normalize_subject(label) in used:
+                    version += 1
+                    suffix = f" ({version})"
+                    label = base_label[:300 - len(suffix)] + suffix
             run = StudioRunModel(id=run_id, subject=inputs.subject, subject_key=key,
                 exam_number=inputs.exam_number, destination_subject=inputs.subject,
                 destination_subject_key=key, destination_exam_number=inputs.exam_number,
@@ -1276,7 +1372,8 @@ class StudioRepository:
                     source_role="supporting_reference", attach_to_notebook=False,
                     position=position))
             artifacts = {"gpt:manifest": json.dumps(manifest, sort_keys=True),
-                "gpt:settings": json.dumps({"owner_id": owner_id, "model": model})}
+                "gpt:settings": json.dumps({"owner_id": owner_id, "model": model,
+                                            "automatic_coverage": auto_label})}
             artifacts.update({f"parse:{doc.source_id}": _document_json(doc)
                 for doc in inputs.documents})
             for key, payload in artifacts.items():
@@ -2354,12 +2451,14 @@ class StudioRepository:
         run_id: str,
         diagnostic_source: str,
         error: str,
+        *,
+        paused: bool = False,
     ) -> StudioRun:
         with self.database.session() as session:
             model = session.get(StudioRunModel, run_id)
             if model is None:
                 raise KeyError(run_id)
-            model.state = StudioRunState.FAILED.value
+            model.state = StudioRunState.PAUSED.value if paused else StudioRunState.FAILED.value
             model.diagnostic_source = diagnostic_source
             model.error = error[:1000]
             model.next_attempt_at = None

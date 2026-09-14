@@ -655,6 +655,50 @@ def test_missing_answer_is_not_mislabeled_as_ai_generated(tmp_path: Path) -> Non
     assert "q1: AI-generated answer requires verification" not in blockers
 
 
+def test_upload_only_answer_can_be_manually_completed_verified_and_published(tmp_path):
+    from oms_hub.study_generation.practice_answers import (
+        AnswerResolutionScope,
+        PracticeAnswerResolver,
+    )
+
+    class NoInference:
+        def __getattr__(self, name):
+            raise AssertionError(f"No model or paid fallback may be called: {name}")
+
+    service = _service(tmp_path)
+    original = replace(_draft("q1", generated=False), correct_index=None, rationale=None,
+                       answer_provenance=None, verification_required=True)
+    unresolved = PracticeAnswerResolver(NoInference(), NoInference()).resolve(
+        original, AnswerResolutionScope("Neuro", 1, ("support-1",))
+    )
+    service.store("run-1", (unresolved,))
+    publisher = GenerationRepository(service.repository.database, practice_review=service)
+    assert any("upload-only" in blocker for blocker in service.blockers("run-1"))
+    with pytest.raises(ValueError):
+        publisher.publish_reviewed_studio_quiz("run-1")
+    with pytest.raises(ValueError, match="incomplete"):
+        service.verify_generated_answer("run-1", "q1")
+
+    # An answer without its rationale must keep the policy blocker.
+    partial = service.update_question("run-1", "q1", {"correct_index": 1})
+    assert any(d.code == "notebook-generation-disabled" for d in partial.draft.diagnostics)
+    with pytest.raises(ValueError):
+        service.update_question("run-1", "q1", {"rationale": "  "})
+    corrected = service.update_question("run-1", "q1", {"rationale": "B follows the source."})
+    assert corrected.answer_provenance is AnswerProvenance.MANUALLY_CORRECTED
+    assert corrected.draft.diagnostics == ()
+    assert corrected.verification_required and corrected.verified_at is None
+    with pytest.raises(ValueError):
+        publisher.publish_reviewed_studio_quiz("run-1")
+
+    verified = service.verify_generated_answer("run-1", "q1")
+    assert verified.verified_at and not service.blockers("run-1")
+    published = publisher.publish_reviewed_studio_quiz("run-1")
+    assert publisher.published_quiz(published.token) is not None
+    assert service.question("run-1", "q1").draft.correct_index == 1
+    service.repository.database.close()
+
+
 @pytest.mark.parametrize(
     "content_kind",
     [QuizContentKind.EXAM_REVIEW, QuizContentKind.PRACTICE_QUESTIONS],

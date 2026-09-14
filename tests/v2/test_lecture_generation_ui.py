@@ -11,7 +11,7 @@ from oms_hub.models import StudyRevisionModel
 from oms_hub.repositories import LectureInput
 
 
-def test_lecture_page_shows_separate_outline_and_quiz_controls(tmp_path):
+def test_lecture_page_has_one_gpt_quiz_button_and_no_outline_generation(tmp_path):
     app = create_app(
         Settings(
             _env_file=None,
@@ -27,11 +27,15 @@ def test_lecture_page_shows_separate_outline_and_quiz_controls(tmp_path):
     page = TestClient(app).get(f"/lectures/{lecture_id}")
 
     assert page.status_code == 200
-    assert page.text.count("Generate Lecture Outline") == 1
-    assert page.text.count("Generate Lecture Quiz") == 1
-    assert "Lecture Outline (PDF)" in page.text
+    assert page.text.count("Generate lecture quiz") == 1
+    assert "Generate Lecture Outline" not in page.text
+    assert "Create lecture quiz" not in page.text
+    assert "gpt-quiz-objectives" not in page.text
+    assert 'name="instructions"' in page.text
+    assert 'id="quiz-instructions"' in page.text
+    assert "Lecture Outline (PDF)" not in page.text
     assert "Lecture Quiz" in page.text
-    assert "Built from this lecture's PDF and cleaned transcript only." in page.text
+    assert "Built from this lecture's materials and cleaned transcript only." in page.text
     assert "Gemini Quiz Gem" not in page.text
     assert f'href="/uploads/slides?lecture_id={lecture_id}"' not in page.text
     assert "Upload Lecture PPTX" not in page.text
@@ -259,7 +263,7 @@ def test_lecture_page_does_not_mark_a_changed_pdf_as_ready(tmp_path):
     assert "Open Lecture PDF" not in page.text
 
 
-def test_dashboard_has_separate_slide_and_transcript_uploads(tmp_path):
+def test_dashboard_has_one_materials_intake(tmp_path):
     app = create_app(
         Settings(
             _env_file=None,
@@ -270,10 +274,9 @@ def test_dashboard_has_separate_slide_and_transcript_uploads(tmp_path):
 
     page = TestClient(app).get("/lectures")
 
-    assert 'href="/uploads/slides"' in page.text
-    assert "+ Upload lecture" in page.text
-    assert 'href="/uploads/transcripts"' in page.text
-    assert "+ Upload transcript" in page.text
+    assert 'href="/uploads"' in page.text
+    assert "+ Upload materials" in page.text
+    assert 'href="/uploads/transcripts"' not in page.text
 
 
 def test_dashboard_only_exposes_the_first_course_and_exam_by_default(tmp_path):
@@ -478,7 +481,8 @@ def test_lecture_upload_page_targets_the_selected_lecture(tmp_path):
 
     assert page.status_code == 200
     assert "Neuro Lecture 01 · Seizures" in page.text
-    assert f'name="lecture_id" value="{lecture_id}"' in page.text
+    assert f'data-selected=\'["{lecture_id}"]\'' in page.text
+    assert 'data-name="lecture_id"' in page.text
 
 
 def test_targeted_upload_is_assigned_to_the_selected_lecture(tmp_path):
@@ -505,3 +509,19 @@ def test_targeted_upload_is_assigned_to_the_selected_lecture(tmp_path):
 
     assert upload.status_code == 202
     assert batch["items"][0]["lecture_id"] == lecture_id
+
+
+def test_unified_intake_and_legacy_links_offer_both_roles(tmp_path):
+    app = create_app(Settings(_env_file=None, data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}"))
+    client = TestClient(app)
+    for path in ("/uploads", "/uploads/slides", "/uploads/transcripts"):
+        response = client.get(path)
+        assert response.status_code == 200
+        document = HTMLParser(response.text)
+        assert document.css_first("h1").text() == "Upload lecture materials"
+        assert document.css_first("input[type=file]").attributes["accept"] == (
+            ".pptx,.pdf,.docx,.txt,.md,.rtf")
+        assert document.css_first("[data-duplicate-dialog]") is not None
+        assert document.css_first("[data-lecture-picker]") is not None
+    assert client.get("/uploads?lecture_id=999999").status_code == 404

@@ -4,7 +4,7 @@ from typing import Annotated, Literal, cast
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -20,6 +20,7 @@ from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.artifact_routes import outline_pdf_response
 from oms_hub.web.csrf import require_form_csrf
 from oms_hub.web.lecture_labels import lecture_label
+from oms_hub.web.published_quiz_exports import PublicToken, public_quiz_pdf
 from oms_hub.web.routes import _course_hue
 
 router = APIRouter(prefix="/public")
@@ -303,6 +304,11 @@ def _quiz_library(
             "exams": tuple(
                 {
                     "number": number,
+                    "export_url": "/studio/library/exports/pdf?" + urlencode({
+                        "course": subject_key, "exam": number,
+                        "category": "practice_questions" if content_kinds == frozenset({
+                            QuizContentKind.PRACTICE_QUESTIONS}) else "quizzes",
+                    }) if _owner_library_navigation(request, management_mode) else None,
                     "quiz_count": len(exams[number]),
                     "quizzes": tuple(exams[number]),
                 }
@@ -440,6 +446,11 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.get("/quizzes/{token}/export.pdf")
+def quiz_pdf(request: Request, token: PublicToken) -> Response:
+    return public_quiz_pdf(request, token)
 
 
 @router.get("/quizzes/{token}/content")

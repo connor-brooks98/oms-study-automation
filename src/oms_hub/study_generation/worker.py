@@ -26,6 +26,7 @@ from oms_hub.study_generation.native_quiz import (
     parse_notebook_quiz,
     quiz_prompt,
 )
+from oms_hub.study_generation.notebook import NOTEBOOKLM_UPLOAD_ONLY
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookGatewayError,
@@ -65,6 +66,12 @@ class GenerationWorker:
         if job is None:
             return False
         progress_step = _progress_step(job.kind)
+        if getattr(job, "backend", "notebooklm") != "codex_subscription":
+            self.repository.fail(job.id, NOTEBOOKLM_UPLOAD_ONLY, paused=True)
+            self.catalog.set_step_status(
+                job.lecture_id, progress_step, StepStatus.NEEDS_REVIEW, NOTEBOOKLM_UPLOAD_ONLY
+            )
+            return True
         self.catalog.set_step_status(
             job.lecture_id,
             progress_step,

@@ -122,3 +122,38 @@ test("wrong run identity is rejected without polling or review navigation", asyn
   assert.equal(nodes.review.hidden, true);
   assert.equal(runtime.next, null);
 });
+
+test("single lecture button sends optional instructions without required fields or NotebookLM", async () => {
+  let submitHandler, request;
+  const button = { disabled: false };
+  const message = {}, review = {};
+  const form = {
+    reportValidity: () => true, setAttribute() {},
+    querySelector: () => button,
+    addEventListener: (_event, handler) => { submitHandler = handler; },
+  };
+  const lecture = {
+    dataset: { gptLecture: "17" },
+    querySelector: (selector) => ({
+      "[data-gpt-quiz-form]": form, "[data-gpt-message]": message,
+      "[data-gpt-review]": review,
+    })[selector],
+  };
+  const doc = {
+    cookie: "study_hub_csrf=token", baseURI: "http://127.0.0.1:60431/lectures/17",
+    querySelector: (selector) => selector === "[data-gpt-lecture]" ? lecture : null,
+  };
+  gpt.initialize(doc, async (url, options) => {
+    request = { url, options };
+    return { ok: true, json: async () => ({ run_id: "run-17", state: "queued", review_url: "/lectures/gpt-runs/run-17" }) };
+  });
+  await submitHandler({ preventDefault() {} });
+  assert.equal(request.url, "/lectures/17/gpt-quiz");
+  assert.deepEqual(JSON.parse(request.options.body), {instructions: ""});
+  assert.equal(button.disabled, false);
+  assert.equal(review.hidden, false);
+  assert.equal(review.href, "http://127.0.0.1:60431/lectures/gpt-runs/run-17");
+  form.elements = {instructions: {value: "  Only slides 2–6  "}};
+  await submitHandler({preventDefault() {}});
+  assert.deepEqual(JSON.parse(request.options.body), {instructions: "Only slides 2–6"});
+});

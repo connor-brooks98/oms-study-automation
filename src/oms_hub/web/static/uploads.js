@@ -29,6 +29,15 @@
     })))
   );
 
+  const defaultFileKind = (filename, preferred = "") => preferred || (
+    /\.(txt|md)$/i.test(filename) ? "transcripts" : "slides"
+  );
+
+  // Keep each role in the existing atomic manifest lifecycle.
+  const groupFilesByKind = (files, roles) => ["slides", "transcripts"]
+    .map((kind) => ({ kind, files: files.filter((file) => roles.get(file) === kind) }))
+    .filter((group) => group.files.length);
+
   const batchIsTerminal = (batch) => batch.lifecycle === "terminal";
 
   const selectionIsLocked = (activeSubmission) => Boolean(activeSubmission);
@@ -291,8 +300,11 @@
     const progressWrap = documentRef.querySelector("[data-progress-wrap]");
     const progressBar = documentRef.querySelector("[data-progress-bar]");
     const submit = form.querySelector(".upload-submit");
-    const kind = form.dataset.kind;
-    const lectureId = form.dataset.lectureId || "";
+    let kind = "slides";
+    let lectureId = "";
+    const picker = form.querySelector("[data-lecture-picker]");
+    const roles = new Map();
+    const completedItems = new Map();
     const dialog = documentRef.querySelector("[data-duplicate-dialog]");
     const dialogLecture = dialog?.querySelector("[data-duplicate-lecture]");
     const dialogError = dialog?.querySelector("[data-duplicate-error]");
@@ -325,11 +337,23 @@
       input.value = ""; // permits selecting the same file again after removal
       selected.replaceChildren();
       chosenFiles.forEach((file, index) => {
+        if (!roles.has(file)) roles.set(file, defaultFileKind(file.name, form.dataset.defaultKind));
         const row = documentRef.createElement("div");
         row.className = "selected-file";
         const name = documentRef.createElement("span");
         const size = documentRef.createElement("span");
         const remove = documentRef.createElement("button");
+        const role = documentRef.createElement("select");
+        role.className = "sh-select selected-file-role";
+        role.setAttribute("aria-label", `Use ${file.name} as`);
+        for (const [value, label] of [["slides", "Lecture material"], ["transcripts", "Transcript"]]) {
+          const option = documentRef.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          role.append(option);
+        }
+        role.value = roles.get(file);
+        role.addEventListener("change", () => roles.set(file, role.value));
         name.textContent = file.name;
         name.className = "selected-file-name";
         size.textContent = formatBytes(file.size);
@@ -339,15 +363,23 @@
         remove.setAttribute("aria-label", `Remove ${file.name}`);
         remove.textContent = "Remove";
         remove.addEventListener("click", () => {
+          if (selectionIsLocked(activeSubmission)) return;
+          roles.delete(file);
           chosenFiles = removeFileAt(chosenFiles, index);
           showFiles([]);
         });
-        row.append(name, size, remove);
+        row.append(name, size, role, remove);
         selected.append(row);
       });
       status.textContent = chosenFiles.length
         ? `${chosenFiles.length} file${chosenFiles.length === 1 ? "" : "s"} ready.`
         : "Ready for files.";
+    };
+
+    const retireSubmittedFiles = () => {
+      const submitted = new Set((activeSubmission?.snapshot || []).map((slot) => slot.file));
+      chosenFiles = chosenFiles.filter((file) => !submitted.has(file));
+      submitted.forEach((file) => roles.delete(file));
     };
 
     const setProgress = (value) => {
@@ -374,7 +406,8 @@
 
     const renderBatch = (batch) => {
       items.replaceChildren();
-      batch.items.forEach((item) => {
+      batch.items.forEach((item) => completedItems.set(item.id, item));
+      completedItems.forEach((item) => {
         const row = documentRef.createElement("li");
         const name = documentRef.createElement("span");
         const state = documentRef.createElement("span");
@@ -664,7 +697,17 @@
         input.focus();
         return;
       }
-      const snapshot = freezeManifest(chosenFiles);
+      const invalid = chosenFiles.find((file) => !/\.(pptx|pdf|docx|txt|md|rtf)$/i.test(file.name) || !file.size || file.size > 100 * 1024 * 1024);
+      if (invalid) {
+        status.textContent = `${invalid.name}: choose a supported, nonempty file up to 100 MB.`;
+        return;
+      }
+      const groups = groupFilesByKind(chosenFiles, roles).map((group) => ({
+        kind: group.kind, snapshot: freezeManifest(group.files),
+      }));
+      lectureId = picker?.lecturePicker?.getValues()[0] || "";
+      picker?.lecturePicker?.setDisabled(true);
+      selected.querySelectorAll("button, select").forEach((element) => { element.disabled = true; });
       const controller = new AbortController();
       const deadline = Date.now() + (20 * 60 * 1000);
       activeSubmission = {
@@ -674,9 +717,15 @@
       browse.disabled = true;
       zone.setAttribute("aria-disabled", "true");
       submit.textContent = "Cancel upload";
-      status.textContent = "Uploading to the NUC…";
+      status.textContent = "Uploading files…";
+      completedItems.clear();
       items.replaceChildren();
       try {
+        for (const group of groups) {
+        controller.signal.throwIfAborted();
+        kind = group.kind;
+        const snapshot = group.snapshot;
+        Object.assign(activeSubmission, { snapshot, manifestId: null, finalizeStarted: false, definitiveFinalizationRejection: false });
         const manifestId = await createManifest(snapshot, controller.signal);
         activeSubmission.manifestId = manifestId;
         const small = snapshot.filter((slot) => slot.size <= chunkThreshold);
@@ -698,8 +747,10 @@
           );
           throw new Error(rejectionDetail(result, "Upload was rejected."));
         }
+        retireSubmittedFiles();
         setProgress(100);
         await pollBatch(result.batch_id, controller.signal, deadline);
+        }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
           const manifestId = activeSubmission?.manifestId;
@@ -714,6 +765,7 @@
                 (controller) => { recoveryController = controller; },
               );
               if (cancelled.finalized) {
+                retireSubmittedFiles();
                 clearPausedDecision();
                 status.textContent = "Upload was already finalized.";
                 return;
@@ -742,6 +794,7 @@
                 (controller) => { recoveryController = controller; },
               );
               if (outcome.finalized) {
+                retireSubmittedFiles();
                 clearPausedDecision();
                 status.textContent = "Upload was already finalized.";
                 return;
@@ -763,11 +816,17 @@
         browse.disabled = false;
         zone.removeAttribute("aria-disabled");
         submit.textContent = "Upload files";
+        picker?.lecturePicker?.setDisabled(false);
+        const finalStatus = status.textContent;
+        showFiles([]);
+        status.textContent = finalStatus + (chosenFiles.length ? ` ${chosenFiles.length} file(s) remain selected.` : "");
       }
     });
   };
 
   const api = {
+    defaultFileKind,
+    groupFilesByKind,
     appendUniqueFiles,
     chunkFinalizeUrl,
     csrfToken,

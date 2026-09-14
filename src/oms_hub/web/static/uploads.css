@@ -1,0 +1,10 @@
+.upload-page .selected-file { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(12rem, auto) auto; align-items: center; gap: .75rem; }
+.upload-page .selected-file-name { overflow-wrap: anywhere; }
+.upload-page .selected-file-role { width: 100%; }
+.upload-page .field-help { margin-block: .75rem; }
+@media (max-width: 640px) {
+  .upload-page .selected-file { grid-template-columns: minmax(0, 1fr) auto; }
+  .upload-page .selected-file-role { grid-column: 1; min-width: 0; }
+}
+.upload-assignment { margin-block-end: 1rem; }
+.upload-assignment > summary { padding-block: .75rem; cursor: pointer; font-weight: 600; }

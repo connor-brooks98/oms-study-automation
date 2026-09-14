@@ -1,10 +1,8 @@
 import json
 from dataclasses import dataclass
 
-import pytest
-
 from oms_hub.llm.domain import GeneratedText, LLMTask, ProviderName
-from oms_hub.study_generation.notebook import NotebookQuestionResult, NotebookQuestionStatus
+from oms_hub.study_generation.notebook import NotebookQuestionResult
 from oms_hub.study_generation.practice_answers import (
     AnswerResolutionScope,
     PracticeAnswerResolver,
@@ -114,68 +112,12 @@ def test_supplied_answer_never_calls_notebook_or_fallback() -> None:
     assert resolved.answer_provenance is AnswerProvenance.PROVIDED_BY_SOURCE
 
 
-def test_notebook_outage_does_not_call_fallback() -> None:
-    fallback = GeneratedFallback(_generated())
-    resolver = PracticeAnswerResolver(RaisingNotebook(), fallback)
-
-    with pytest.raises(RuntimeError, match="offline"):
-        resolver.resolve(_draft(), _scope())
-
-    assert fallback.requests == []
-
-
-def test_notebook_answered_sets_notebook_provenance_without_ai_gate() -> None:
-    notebook = ResultNotebook(
-        NotebookQuestionResult(
-            NotebookQuestionStatus.ANSWERED,
-            0,
-            "Biceps flexes the elbow.",
-            ("Course guide p4",),
-        )
-    )
-    fallback = GeneratedFallback(_generated())
-
-    resolved = PracticeAnswerResolver(notebook, fallback).resolve(_draft(), _scope())
-
-    assert resolved.correct_index == 0
-    assert resolved.answer_provenance is AnswerProvenance.NOTEBOOKLM
-    assert resolved.answer_evidence == ("Course guide p4",)
-    assert resolved.answer_uncertainty_note is None
-    assert resolved.verification_required is False
-    assert resolved.source_refs == _draft().source_refs
-    assert fallback.requests == []
-
-
-def test_explicit_no_support_uses_configured_fallback_and_requires_verification() -> None:
-    notebook = ResultNotebook(
-        NotebookQuestionResult(NotebookQuestionStatus.NO_SUPPORT, None, "No selected support.", ())
-    )
-    fallback = GeneratedFallback(_generated())
-
-    resolved = PracticeAnswerResolver(notebook, fallback).resolve(_draft(), _scope())
-
-    assert resolved.correct_index == 1
-    assert resolved.answer_provenance is AnswerProvenance.GENERATED_BY_AI
-    assert resolved.answer_evidence == ("General anatomy reference",)
-    assert resolved.answer_uncertainty_note == _generated()["uncertainty_note"]
-    assert resolved.verification_required is True
-    assert resolved.verified_at is None
-    assert fallback.requests[0].task is LLMTask.QUIZ_ANSWER_GENERATION
-    assert fallback.requests[0].output_schema["type"] == "object"
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {**_generated(1), "correct_index": 2},
-        {"correct_index": 1, "rationale": "", "evidence": [], "uncertainty_note": ""},
-        {**_generated(1), "rationale": " ", "uncertainty_note": "  "},
-    ],
-)
-def test_invalid_fallback_contract_does_not_return_a_draft(payload: dict[str, object]) -> None:
-    notebook = ResultNotebook(
-        NotebookQuestionResult(NotebookQuestionStatus.NO_SUPPORT, None, "No support.", ())
-    )
-
-    with pytest.raises(ValueError):
-        PracticeAnswerResolver(notebook, GeneratedFallback(payload)).resolve(_draft(), _scope())
+def test_missing_answer_stays_in_review_without_notebook_or_paid_fallback() -> None:
+    resolver = PracticeAnswerResolver(FailingNotebook(), FailingFallback())
+    original = _draft()
+    result = resolver.resolve(original, _scope())
+    assert result.correct_index is None and result.answer_provenance is None
+    assert result.verification_required and result.verified_at is None
+    assert result.source_refs == original.source_refs
+    assert result.blocking_diagnostics and "upload-only" in result.blocking_diagnostics[-1]
+    assert resolver.resolve(result, _scope()) == result

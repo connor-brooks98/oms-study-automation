@@ -32,6 +32,7 @@
     if (!root) return null;
     const field = name => root.querySelector(`[data-chat-${name}]`);
     const form = field('form'), mode = field('mode'), sources = field('sources');
+    const sourcePicker = sources.querySelector?.('[data-lecture-picker]')?.lecturePicker;
     const question = field('question'), status = field('status'), messages = field('messages');
     let conversationId = root.dataset.conversationId || null;
     let activeRequest = null, busy = false, pollTimer = null;
@@ -39,7 +40,9 @@
 
     function setBusy(value) {
       busy = value;
-      for (const name of ['mode', 'sources', 'send', 'clear']) field(name).disabled = value;
+      for (const name of ['mode', 'send', 'clear']) field(name).disabled = value;
+      if (sourcePicker) sourcePicker.setDisabled(value);
+      else sources.disabled = value;
       field('cancel').disabled = !value || !activeRequest;
       form.setAttribute('aria-busy', String(value));
     }
@@ -97,7 +100,8 @@
     }
     function scopeChanged(reset = true) {
       field('source-field').hidden = mode.value !== 'lecture';
-      sources.required = mode.value === 'lecture';
+      if (sourcePicker) sourcePicker.setRequired(mode.value === 'lecture');
+      else sources.required = mode.value === 'lecture';
       field('reference').hidden = mode.value !== 'medical_reference';
       if (reset && !busy) {
         conversationId = null;
@@ -109,7 +113,9 @@
     async function send(event) {
       event?.preventDefault();
       if (busy || !question.value.trim()) return;
-      const selected = mode.value === 'lecture' ? Array.from(sources.selectedOptions, item => Number(item.value)) : [];
+      const sourceIds = sourcePicker ? sourcePicker.getValues().map(Number) :
+        Array.from(sources.selectedOptions || [], item => Number(item.value));
+      const selected = mode.value === 'lecture' ? sourceIds : [];
       if (mode.value === 'lecture' && !selected.length) {
         status.textContent = 'Select at least one lecture source.';
         return;

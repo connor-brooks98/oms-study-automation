@@ -36,12 +36,14 @@ class IngestionWorker:
         transcript_pipeline: IngestionPipeline,
         *,
         gpt_transcript_pipeline: IngestionPipeline | None = None,
+        on_filed: Callable[[object], None] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.repository = repository
         self.slide_pipeline = slide_pipeline
         self.transcript_pipeline = transcript_pipeline
         self.gpt_transcript_pipeline = gpt_transcript_pipeline
+        self.on_filed = on_filed
         self.now = now or (lambda: datetime.now(UTC))
 
     def recover_interrupted_jobs(self) -> int:
@@ -65,9 +67,18 @@ class IngestionWorker:
                 pipeline = self.gpt_transcript_pipeline
             elif job.backend != "legacy_api":
                 raise ValueError("unsupported ingestion backend")
-            pipeline.process(job.upload_item_id)
+            result = pipeline.process(job.upload_item_id)
         except Exception as error:  # noqa: BLE001 - job boundary records all failures
             self._handle_failure(job, error)
+            return True
+        if self.on_filed is not None:
+            try:
+                self.on_filed(result)
+            except Exception as error:  # noqa: BLE001 - optional sync must not fail filed work
+                logger.warning(
+                    "Optional NotebookLM queue stopped for ingestion job %s (%s)",
+                    job.id, type(error).__name__,
+                )
         return True
 
     def _handle_failure(self, job: IngestionJob, error: Exception) -> None:
