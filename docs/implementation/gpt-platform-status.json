@@ -3,8 +3,8 @@
   "schema_version": 1,
   "program": "gpt-study-platform-2026-09-11",
   "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2",
-  "integration_branch": "codex/gpt-runtime-fix-2026-09-12",
-  "integration_worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
+  "integration_branch": "codex/hub-intake-ux-2026-09-14",
+  "integration_worktree": "/Users/connor/Developer/worktrees/oms-hub-intake-ux",
   "orchestrator": {
     "thread_id": "01a09271-e627-7712-a2fc-ff675db23a8b",
     "host_id": "local"
@@ -1150,5 +1150,26 @@
     "evidence_backup_commit": "b5d19cd5",
     "remote": "origin",
     "pushed_and_verified": true
+  },
+  "intake_quiz_ux": {
+    "state": "accepted_local_review_pending_release",
+    "date": "2026-09-14",
+    "base_commit": "20a6e5225a11aea683fdb50a59c4a5c111aaa540",
+    "handoff": "docs/implementation/gpt-platform-handoffs/O-intake-quiz-ux-20260914.md",
+    "preview_url": "http://127.0.0.1:60431/lectures/1",
+    "preview_kind": "isolated_synthetic_ui_workers_disabled",
+    "provider_acceptance": "not_run_for_this_change",
+    "windows_acceptance": "not_run_for_this_change",
+    "deployment": "not_deployed",
+    "retained_runtime_branch": "codex/gpt-runtime-fix-2026-09-12",
+    "source_commit": "7a6aab38740c4e4a6cda3d89cc1d8778e4c56734",
+    "tests": [
+      "337 Python passed, 1 opt-in browser skip; 93.34 seconds; exit 0",
+      "67 Node passed; exit 0",
+      "Ruff passed; mypy 29 changed source files passed",
+      "Independent scoped review: 29 passed, no actionable findings",
+      "Desktop/mobile direct UI and actual HTTP individual/exam PDF checks passed"
+    ],
+    "review": "PASS independent bounded code reviews; upload recovery, parser compatibility, quiz naming, answer blockers, scope and PDF boundaries verified"
   }
 }

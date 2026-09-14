@@ -1,5 +1,30 @@
 # GPT Study Hub candidate — release proposal
 
+## Current intake and quiz UX candidate — 2026-09-14
+
+Branch: `codex/hub-intake-ux-2026-09-14`, based on
+`20a6e5225a11aea683fdb50a59c4a5c111aaa540`. Reviewed source commit: `7a6aab38740c4e4a6cda3d89cc1d8778e4c56734`.
+Verification receipt: [the current UX handoff](gpt-platform-handoffs/O-intake-quiz-ux-20260914.md).
+
+This candidate combines slides and transcripts on one upload page, accepts PPTX,
+PDF, DOCX, TXT, MD and RTF, and replaces long lecture lists with course/exam/search
+selection. Lecture pages have one **Generate lecture quiz** action with optional
+instructions. Source-qualified slide/page ranges and recorded PowerPoint red text
+restrict quiz evidence; unsupported restrictions stop with an explanation. Blank
+instructions use the full lecture. Naming, course/exam placement, retained previous
+quizzes and required answer review remain. Individual and exact course/exam PDF
+exports are available. NotebookLM remains an upload-only reference destination;
+its inference paths cannot generate new study materials.
+
+Review the UI at [the isolated synthetic preview](http://127.0.0.1:60431/lectures/1).
+That preview has no provider credentials and its background workers are disabled.
+Local tests and browser/PDF checks are independent of the earlier real provider
+acceptance below. No Windows runtime, live Hub, retained lecture data, Anki schedule
+or protected proof resource was changed. This is a source/UI review candidate;
+Windows production acceptance and deployment approval remain separate.
+
+## Earlier runtime acceptance — retained evidence
+
 Status: Mac runtime integration is reviewed and committed at `ab21eff5e98eec15d7e80f2f4596a06341db192d`. The new preview at http://127.0.0.1:62170 passed actual subscription transcript cleanup, image-quiz generation, answer review, publication, grading and JSON/ZIP/PDF export. Windows bounded tool rejection, OS file-access and interruption checks passed independent review after fixing the synthetic server's interpreter selection. Windows production integration and live NUC deployment remain pending.
 
 Reviewable demonstration: [three-question synthetic image quiz](http://127.0.0.1:62170/public/quizzes/559c1c89b5e9afd17b418b0c311c69e12d5b75b7d22893953c34a461af5a0b66).
@@ -52,7 +77,7 @@ This replaces the required Google path for new lecture quizzes with an explicitl
 | Capability | Local candidate scope | External/operational limit |
 | --- | --- | --- |
 | Full lecture-image quiz | Full approved slides and cleaned transcript, frozen objective coverage, source locators, original sanitized images, native review and publication | Synthetic Windows Office/image/export subset accepted; subscription generation and forced-timeout cleanup pending; conservative request ceiling: 20 images and 100,000 serialized source characters |
-| Optional outline | Current-source validation through filing/commit; durable raw result; PDF filing with Codex provenance | GPT replacement of any retained imported NotebookLM outline is explicitly unavailable; historical legacy review is preserved |
+| Retained outlines | Existing outlines remain readable; lecture-page outline generation is removed | NotebookLM inference is disabled; historical artifacts and review are preserved |
 | Native JSON/ZIP/PDF exports | Same native payload and original PNGs; source/objective manifest; embedded-font PDF with unsupported-text rejection; private download parity reviewed | Actual Windows18 export checks passed; no private lecture evidence used; UNC and symlink/junction cases unaccepted |
 | Lecture/general chat | Owner-scoped current source snapshots, citations, durable history, cancellation/ambiguous-turn protection | Same runtime/account activation gate |
 | Question-bank imports | Normalized results-only or explicitly authorized content, preview/confirm, identity conflicts and review | Exact supported UWorld and TrueLearn samples still needed; no guessed proprietary parsers |
@@ -73,7 +98,7 @@ AMBOSS is deferred and is not a blocker. Vendor sample inputs remain separate fr
 
 ## Retained state and UX
 
-Original checkout `/Users/connor/Developer/oms-study-automation` remains dirty and is not used as a release source. Four reviewed local UX hunks were copied into candidate commit `73efe9cd`: lecture study-action removal, its unused CSS removal and existing test adjustment, plus multiline feedback whitespace. The original files and all untracked paths remain untouched. The candidate has the new objective form and retains material cards, processing details and pass editor.
+Original checkout `/Users/connor/Developer/oms-study-automation` remains dirty and is not used as a release source. Four reviewed local UX hunks were copied into candidate commit `73efe9cd`: lecture study-action removal, its unused CSS removal and existing test adjustment, plus multiline feedback whitespace. The original files and all untracked paths remain untouched. That historical candidate had an objective form. The current UX candidate replaces it with optional quiz instructions and retains material cards, processing details and the pass editor.
 
 The sixteen-item September 9 resolution record is retained in `docs/implementation/handoffs/2026-09-09-ux-audit-fixes.md`. Existing local route/JS regressions cover validated Home resume, lecture search, answer metadata hiding, source/destination context, material/study labels, selected-source controls, owner/public navigation, seven-pass target versus configured slots, global/local publication diagnostics, Anki Advanced controls, dated run history, compact library/player controls and upload language. The later lecture-action removal supersedes that record's M2 action row. Cloudflare's prior beacon configuration receipt is historical; no live configuration was changed or reverified here.
 
