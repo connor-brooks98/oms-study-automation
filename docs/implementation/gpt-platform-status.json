@@ -82,7 +82,7 @@
       ],
       "review": "PASS independent final code and documentation review",
       "blocker": null,
-      "next_action": "candidate review; Windows/provider activation separately pending"
+      "next_action": "Candidate review; bounded Windows startup/arg0 accepted, full production isolation and provider activation separately pending"
     },
     "B1": {
       "state": "accepted_local",
@@ -357,7 +357,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "hostname_fixed_windows_startup_passed_arg0_pending",
+    "state": "bounded_windows_startup_and_arg0_accepted",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -368,10 +368,10 @@
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
     "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Fixed private Windows executable d6eb90 passed fresh strict LPAC VERSION and INITIALIZE: exact output/one response, empty stderr, normal exits, token/profile/capability/session checks and independent cleanup/preservation PASS. Targeted Windows arg0 tests remain pending; production generation/provider/deployment acceptance remain separate.",
+    "native_progress": "Fixed private Windows executable d6eb90 passed fresh strict LPAC VERSION and INITIALIZE. Both exact Windows arg0 unit tests passed separately under ordinary Limited execution. Independent raw-result/hash/cleanup/preservation reviews passed; production isolation/account/model/provider/deployment acceptance remain separate.",
     "candidate": "146df998b88cd31c561cf8339b8c90abc95369ea",
     "code_tree": "add98dfa84a008ba988bea7894c4bfb671d87603",
-    "review": "PASS independent source/wrapper/native review for exact d6eb90 fixed Windows VERSION and INITIALIZE; prior failed-artifact results retained as history",
+    "review": "PASS independent source, wrapper, native startup, compiled test artifact and both exact Windows arg0 results; all final evidence hashes and preservation checked",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
       "26 passed,1 skipped final export/atomic/routes at8de86582",
@@ -381,7 +381,8 @@
       "78passed3opt-inskip4.77s; Ruff passed; native Windows single apply_patch denial PASS",
       "Policy O retest97passed3opt-inskip9.93s; Rufffivefiles and strictmypytwomodulesPASS",
       "Same-source Windows read-boundary regression passed; CodexVersion startup FAIL with exact version/exit0 and home warning",
-      "Native Rust canonicalize red/green: baseline error5; patched same fixture all assertions passed; both tasks disabled/preservation passed"
+      "Native Rust canonicalize red/green: baseline error5; patched same fixture all assertions passed; both tasks disabled/preservation passed",
+      "Fixed private Windows build, strict LPAC VERSION/INITIALIZE and exactly two ordinary Limited Windows arg0 tests passed; independent evidence/preservation review PASS"
     ],
     "worker_implementation": "f3711eb33656785ead908bce6c1458e423b03511",
     "worker_receipt": "0c4d2ba6ef91c1f176760320483908b377027aff",
@@ -399,7 +400,7 @@
       "child_exit_code": "0x00000001",
       "preservation": "passed",
       "postflight_utc": "2026-09-13T02:27:39.3408783Z",
-      "next_action": "Bind and review the minimal targeted arg0 compile/test wrappers, compile without running, review exact test artifact, then run only two targeted Windows tests serially.",
+      "next_action": "Review this candidate and prepare the separately scoped full production tool/read-root/network and account/model acceptance; generation remains capability_unverified.",
       "console_experiment": {
         "authorization": "explicit user approval, one shot consumed",
         "state": "completed_failure_unchanged",
@@ -799,7 +800,7 @@
         }
       },
       "hostname_fix": {
-        "state": "windows_version_initialize_passed_arg0_pending",
+        "state": "windows_version_initialize_and_two_arg0_tests_passed",
         "source_commit": "146df998b88cd31c561cf8339b8c90abc95369ea",
         "patch": "scripts/runtime-patches/codex-0.153.4-remote-control-name.patch",
         "patch_sha256": "d3de282dc3839ad69aca064eb6882fa071a267b09c01b16d4cbd9f95152ccb51",
@@ -870,7 +871,7 @@
           "manifest_sha256": "64c95ff7a6078aa3efd2d1843ef131133bfc3ff4f7e4dc12e0371151540269ae",
           "arg0_manifest_sha256": "9712d27d1b1d23e6746e5f131c8c6f9534b0f365b99b6284a0fbb2c7cc0c5e96",
           "requirements": "Actual new executable/provenance and final bound review; same-SHA fresh version then initialize PASS before two targeted arg0 tests",
-          "current_outcomes": "See startup_acceptance for completed actual bindings/results; arg0 compile/test artifact and outcomes remain pending"
+          "current_outcomes": "See startup_acceptance and arg0_acceptance for the completed bindings, native results and independent reviews."
         },
         "startup_acceptance": {
           "state": "passed_native_lpac_version_and_initialize",
@@ -895,10 +896,68 @@
           },
           "token_and_preservation": "Both fixed LPAC oracles and inner/outer/independent preservation passed; tasks disabled, owned processes absent, original installed runtime and exact Hub unchanged",
           "review": "PASS independent raw protocol/all59version+63initialize evidence hashes/token/normalexit/preservation",
-          "arg0_tests": "not_run",
+          "arg0_tests": "Separate later ordinary Limited native acceptance passed; see arg0_acceptance",
           "provider_thread_turn": "not_run",
           "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-hostname-startup.zip",
           "evidence_archive_sha256": "19c5e6db465721bcdacf9032529d1fc361660ff6863ad1a5dbe78efc5daf693d"
+        },
+        "arg0_acceptance": {
+          "state": "passed_two_exact_native_windows_tests",
+          "scope": "ordinary Limited native unit tests; LPAC version/initialize proofs are separate",
+          "source_commit": "146df998b88cd31c561cf8339b8c90abc95369ea",
+          "test_executable_sha256": "2a1d3c6b86a19798b0d8f8af29d7af22ee4e6800e9ed998afebfa947c5ab0cba",
+          "test_executable_bytes": 7271424,
+          "release_sha256_unchanged": "d6eb90b7409dc22f407a9dfa44ec629a8a5a6bf3ca001493aef13dd85a75dbda",
+          "compile": {
+            "started_utc": "2026-09-14T00:01:41.909665+00:00",
+            "finished_utc": "2026-09-14T00:53:18.308214+00:00",
+            "returncode": 0,
+            "timed_out": false,
+            "health_count": 105,
+            "health_all_pass": true,
+            "memory_count": 723,
+            "memory_all_pass": true,
+            "reconciliation_utc": "2026-09-14T00:54:33.9721312Z"
+          },
+          "tests": [
+            {
+              "name": "tests::windows_alias_home_rejects_resolved_temp_containment",
+              "pid": 3288,
+              "started_utc": "2026-09-14T01:18:58.296918+00:00",
+              "finished_utc": "2026-09-14T01:18:58.699393+00:00",
+              "returncode": 0,
+              "timed_out": false,
+              "passed": true,
+              "selected_tests": 1,
+              "filtered_out": 9,
+              "stderr_bytes": 0
+            },
+            {
+              "name": "tests::windows_alias_home_preserves_first_use_and_resolution_errors",
+              "pid": 17560,
+              "started_utc": "2026-09-14T01:18:59.587586+00:00",
+              "finished_utc": "2026-09-14T01:18:59.614169+00:00",
+              "returncode": 0,
+              "timed_out": false,
+              "passed": true,
+              "selected_tests": 1,
+              "filtered_out": 9,
+              "stderr_bytes": 0
+            }
+          ],
+          "health_count": 2,
+          "memory_count": 4,
+          "guards_all_pass": true,
+          "independent_postflight_utc": "2026-09-14T01:33:44.0460513Z",
+          "final_hash_verification_utc": "2026-09-14T01:34:34.893262+00:00",
+          "preservation": "Task disabled, owned processes absent, exact Hub and six artifact/source/installed-runtime pins unchanged",
+          "review": "PASS independent compile/artifact (219 completion hashes), final wrapper and actual two-test outcomes (94 completion hashes)",
+          "compile_manifest_sha256": "161c0007d16f394266ce083abddc044151a1e2ee4ab7a25f23af6efb9ad890be",
+          "test_manifest_sha256": "dadac4306f8716f2e971ee9f1a710a727882efa078a79c00a07b4bfd65d9228f",
+          "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-arg0-acceptance.zip",
+          "evidence_archive_sha256": "a7e57140a902ad3b3592b15ff3aa9118e7272319a3df1ce08d9c148bca323a1f",
+          "provider_executed": false,
+          "deployment_executed": false
         }
       }
     },

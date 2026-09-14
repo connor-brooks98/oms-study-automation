@@ -1,10 +1,47 @@
 # O: Windows canonicalization fix
 
-2026-09-13. **Native path regression PASS; compiler-path fix passed; private Windows build/version PASS; initialize hostname panic reproduced; narrow fix reviewed.**
+2026-09-13 (ET; final receipts September 14 UTC). **Native path regression, fixed private build, strict LPAC version/initialize and both Windows arg0 unit tests PASS.**
 Independent source, fixed-wrapper and raw-result review passed by
 `/root/review_production_policy`. Production generation remains closed.
 
-## Current resumed build — 2026-09-13
+## Current result — targeted Windows arg0 acceptance
+
+Source candidate `146df998b88cd31c561cf8339b8c90abc95369ea` is ready for review
+with bounded Windows startup and path tests accepted. Production generation remains
+`capability_unverified`; full tool/read-root/network enforcement, account persistence,
+model/provider acceptance and deployment remain separate.
+
+The serial compile-only run completed with Cargo 0 at
+`2026-09-14T00:53:18.308214Z`, without timeout or cleanup errors. All 105 Hub and
+723 memory checks passed. The uniquely selected test executable is 7,271,424 bytes,
+SHA256 `2a1d3c6b86a19798b0d8f8af29d7af22ee4e6800e9ed998afebfa947c5ab0cba`;
+native/local hashes match. Independent artifact review verified all 219 completion hashes.
+
+The final bound wrapper passed independent review, then ran only:
+
+- `tests::windows_alias_home_rejects_resolved_temp_containment`: PID 3288,
+  `2026-09-14T01:18:58.296918Z` to `01:18:58.699393Z`.
+- `tests::windows_alias_home_preserves_first_use_and_resolution_errors`: PID 17560,
+  `2026-09-14T01:18:59.587586Z` to `01:18:59.614169Z`.
+
+Each selected exactly one test: one passed, nine filtered, normal exit 0, empty stderr,
+no timeout or cleanup errors. They ran serially in distinct private TEMP directories
+under ordinary Limited Windows execution; these are not LPAC tests. Both Hub and all
+four memory checks passed. Independent `2026-09-14T01:33:44.0460513Z` reconciliation
+confirmed task disabled, no owned processes and exact live-Hub preservation.
+At `01:34:34.893262Z`, all six artifact/source/installed-runtime hashes remained unchanged,
+including accepted runtime `d6eb90b7…75dbda`. Independent actual-result review passed
+all 94 test completion hashes and the raw test results. No further native execution is pending for this slice.
+
+Evidence: [windows-runtime-arg0-acceptance.zip](../gpt-platform-evidence/windows-runtime-arg0-acceptance.zip),
+SHA256 `a7e57140a902ad3b3592b15ff3aa9118e7272319a3df1ce08d9c148bca323a1f`,
+314 payloads, 829,883 bytes; CRC and every payload size/hash passed. The binary is
+retained outside Git at the exact paths/hash in `compile/frozen-artifact.json`.
+Compile completion manifest SHA256 `161c0007d16f394266ce083abddc044151a1e2ee4ab7a25f23af6efb9ad890be`;
+test completion manifest SHA256 `dadac4306f8716f2e971ee9f1a710a727882efa078a79c00a07b4bfd65d9228f`.
+Earlier failures and preparation snapshots below remain historical evidence.
+
+## Retained resumed build history — 2026-09-13
 
 The user-disabled Smart App Control state was verified before the fresh run.
 That run passed the previous policy barrier, then failed compiling AWS-LC:
@@ -229,8 +266,8 @@ original installed runtime hash and exact Hub unchanged. The hostname panic did
 not recur. All 59 version and 63 initialize completion hashes and raw protocol
 checks passed independent review.
 
-The two targeted Windows arg0 tests remain pending separate compile/artifact/run
-reviews. This startup proof does not establish full production read/network policy,
+The two targeted Windows arg0 tests subsequently passed separate compile/artifact/run
+reviews, as recorded in the current result above. This startup proof does not establish full production read/network policy,
 account persistence, provider generation or deployed behavior. Earlier executable
 `74d7706f…5ecf4f` does not contain the correction; its initialize failure is retained.
 

@@ -6,7 +6,9 @@ Reviewed production-policy commit: `0aa11c7ee40021ede773f6ddc3c9c6e063b557fc`, t
 
 Current source candidate: `146df998b88cd31c561cf8339b8c90abc95369ea`. The Windows runtime includes the reviewed shared path-resolution, temp-containment and remote-control display-name fixes. The hostname fix handles denied optional metadata without changing hostname-based policy, telemetry, authentication or routing. Three focused local tests passed, and the exact API denial was reproduced under LPAC.
 
-The new private Windows build succeeded: executable SHA256 `d6eb90b7409dc22f407a9dfa44ec629a8a5a6bf3ca001493aef13dd85a75dbda` (294,002,688 bytes). All 165 Hub and 1,134 memory checks passed, with independent cleanup and preservation verified. Fresh strict LPAC version and initialize checks now passed on that exact executable: expected output/response, empty stderr, normal exits, token checks and independent cleanup/preservation. The hostname panic did not recur. The two targeted Windows arg0 tests remain pending; generation remains closed. [Current fix and exact evidence](gpt-platform-handoffs/O-windows-canonicalize.md).
+The new private Windows build succeeded: executable SHA256 `d6eb90b7409dc22f407a9dfa44ec629a8a5a6bf3ca001493aef13dd85a75dbda` (294,002,688 bytes). All 165 Hub and 1,134 memory checks passed, with independent cleanup and preservation verified. Fresh strict LPAC version and initialize checks now passed on that exact executable: expected output/response, empty stderr, normal exits, token checks and independent cleanup/preservation. The hostname panic did not recur. Both targeted Windows arg0 unit tests subsequently passed in ordinary Limited execution: one selected case each, normal exit 0, empty stderr and independent cleanup/preservation. The compile artifact, final wrappers and raw results passed separate independent reviews. Generation remains closed. [Current fix and exact evidence](gpt-platform-handoffs/O-windows-canonicalize.md).
+
+Completed Windows arg0 evidence: [compile and two-test archive](gpt-platform-evidence/windows-runtime-arg0-acceptance.zip), SHA256 `a7e57140a902ad3b3592b15ff3aa9118e7272319a3df1ce08d9c148bca323a1f`. All 314 archived payload sizes/hashes and ZIP integrity passed. The exact test executable SHA256 is `2a1d3c6b86a19798b0d8f8af29d7af22ee4e6800e9ed998afebfa947c5ab0cba`; the accepted runtime above remains unchanged.
 
 Existing release archives below remain bound to original core code `9e54da4188abaa5694c57b0d59aaec7c4e216a4f`; they are not rebuilt packages for this source candidate. Historical diagnostics below are retained; the current state above and linked handoff supersede their earlier blockers.
 
@@ -144,8 +146,9 @@ predecessors and exact artifact identity are recorded in the linked runtime hand
 The executable is frozen and its exact LPAC version check passed. The fixed
 initialize probe executed but failed at hostname discovery. The narrow display-name
 correction is implemented, reviewed and rebuilt successfully; fresh strict LPAC
-version and initialize checks passed. The two Windows arg0 tests remain pending
-their separate compile/artifact/run verification. Provider and deployment acceptance remain separate.
+version and initialize checks passed. Both exact Windows arg0 tests also passed
+separate compile/artifact/wrapper/result verification. These unit tests used ordinary
+Limited execution; they do not expand the LPAC proof. Provider and deployment acceptance remain separate.
 
 
 ## Signing setup decision — 2026-09-13
