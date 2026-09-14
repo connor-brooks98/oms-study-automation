@@ -71,7 +71,11 @@ Supplementary board practice may use verified question-bank records and AnKing q
 
 ### 2026-09-11 — AMBOSS-assisted AnKing candidate selection
 
-**Status:** Explore later; Anki curation deferred
+**Status:** Deferred by Connor on 2026-09-14; AMBOSS excluded from the current Hub release
+
+Decision update (2026-09-14): do not incorporate AMBOSS for now. Retain this idea and
+the existing inquiry history for possible later reconsideration; pursue no integration
+or follow-up unless Connor asks to resume. Full Anki curation remains deferred.
 
 Connor reports that AMBOSS AI accepts lecture slides and supporting materials and returns matching AnKing note IDs. Explore using those matches as the starting candidate set for a lecture deck instead of rebuilding all card retrieval in the Hub. AMBOSS publicly documents lecture uploads and Anki recommendations in AI Mode Learning; the exact note-ID export and programmatic access still need verification.
 

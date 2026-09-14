@@ -1,4 +1,5 @@
 {
+  "program_state": "local_core_implementation_accepted_release_acceptance_pending",
   "schema_version": 1,
   "program": "gpt-study-platform-2026-09-11",
   "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2",
@@ -249,7 +250,7 @@
       ],
       "review": "PASS independent review",
       "blocker": null,
-      "next_action": "integrated; external capabilities separately pending"
+      "next_action": "Live AMBOSS integration deferred by user on2026-09-14; retain accepted unavailable-state implementation"
     },
     "C3": {
       "state": "accepted_local",
@@ -278,7 +279,7 @@
     }
   },
   "external": {
-    "amboss": "external_mcp_not_offered; supported_alternative_unconfirmed",
+    "amboss": "deferred_by_user_2026-09-14; excluded_from_current_release; not_a_blocker",
     "amboss_thread_id": "1a0924aab334e5da",
     "uworld_sample": "not_supplied",
     "truelearn_sample": "not_supplied",
@@ -291,10 +292,11 @@
       "1a0924aab334e5da",
       "1a0924ac6f289fe0",
       "1a095e1d699eb171"
-    ]
+    ],
+    "amboss_decision": "No AMBOSS integration for now; retain inquiry history and future idea, do not pursue access or send follow-ups."
   },
   "release": {
-    "candidate": "f39d78a28f09b51b4b9b1a78c4347d8d4413bfc3",
+    "candidate": "146df998b88cd31c561cf8339b8c90abc95369ea",
     "live_authorized": false,
     "proposal": "docs/implementation/gpt-platform-release-proposal.md",
     "receipt": "docs/implementation/gpt-platform-handoffs/O3.md",
@@ -325,9 +327,19 @@
         "scope": "26passed1skip at8de86582"
       }
     ],
-    "code_tree": "5e05f29df4c120c98ae9f7e76560266c99ffd157",
+    "code_tree": "add98dfa84a008ba988bea7894c4bfb671d87603",
     "archive_candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
-    "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-canonicalize.md"
+    "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-canonicalize.md",
+    "reviewed_checkpoint": "81b0be57332430f65ef53feafcaf001a3f93934e",
+    "gates": {
+      "local_core_implementation": "accepted; task states describe local implementation, not deployed completion",
+      "bounded_windows_startup_and_path_tests": "accepted; LPAC version/initialize and two native arg0 unit tests",
+      "production_runtime_restrictions": "pending; complete tool prevention, source read boundaries, network restrictions and interruption/cleanup under the production path",
+      "subscription_provider": "pending; Windows account persistence and real synthetic text/image/schema requests",
+      "lecture_image_quiz_workflow": "pending_provider_acceptance; source-to-generation-to-review-to-export flow with synthetic lecture evidence",
+      "deployment": "not_authorized; final package and rollback/cutover review follow runtime/provider acceptance"
+    },
+    "next_action": "Complete provider-free production runtime restriction acceptance on the fixed Windows artifact before the separately scoped real GPT text/image and quiz workflow acceptance."
   },
   "provider_verified": false,
   "windows_verified": false,

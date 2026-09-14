@@ -2,6 +2,25 @@
 
 Status: core implementation and bounded Windows artifact acceptance are ready for review. Actual Windows PowerPoint conversion preserved the embedded image and vector shape; a discovered long-path export defect was fixed, reviewed and passed18 Windows export checks plus retained-slide export/grade parity. The working local preview has a connected ChatGPT account. Generation activation and live NUC deployment remain pending.
 
+## What remains before release — 2026-09-14
+
+The implementation task checklist records **local acceptance**, not complete release
+readiness. Windows startup and the targeted path tests passed, but production GPT
+generation is still disabled by `_require_generation_ready` (`capability_unverified`).
+
+1. Finish provider-free checks of the fixed Windows runtime on the production path:
+   tool prevention, approved source read boundaries, network restrictions and interruption/cleanup.
+2. Accept Windows account persistence and actual GPT text/image/schema behavior with
+   synthetic inputs, then exercise the lecture-image quiz through generation, review and export.
+   These are separate from the already successful local-preview login and fake-provider tests.
+3. Freeze the final package and rollback/cutover procedure for deployment approval.
+   The live Hub has not been updated.
+
+**AMBOSS is deferred by Connor on 2026-09-14 and excluded from this release.** It is
+not an external prerequisite. Existing inquiry records and unavailable-state handling
+remain; no new access work or follow-up is planned. UWorld/TrueLearn sample exports
+remain optional pending inputs for their adapters.
+
 Reviewed production-policy commit: `0aa11c7ee40021ede773f6ddc3c9c6e063b557fc`, tree `0614b7a5c19b791e8ca30bd8dafe906ed613236e`, branch `codex/gpt-runtime-fix-2026-09-12`. The requested pre-change snapshot was pushed at `274da9d74108e0e8a4f6b6b51ecec5a9550fdd0b`; `b5d19cd5` additionally backs up both completed Windows raw evidence bundles in Git. The production client now applies the accepted experimental protocol and fixed policy, private process home and platform binary pins, and rejects policy drift before `turn/start`. Independent review passed; O retest passed 97 checks with three opt-in skips, Ruff and strict mypy. The generation readiness guard remains closed. The subsequently approved single temporary LowBoxConsoleEnabled experiment did not resolve `0xC0000142`; the setting was restored to its original absence and independently verified. No production source or activation change followed. [Exact policy handoff](gpt-platform-handoffs/B-runtime-policy.md).
 
 Current source candidate: `146df998b88cd31c561cf8339b8c90abc95369ea`. The Windows runtime includes the reviewed shared path-resolution, temp-containment and remote-control display-name fixes. The hostname fix handles denied optional metadata without changing hostname-based policy, telemetry, authentication or routing. Three focused local tests passed, and the exact API denial was reproduced under LPAC.
@@ -28,7 +47,7 @@ This replaces the required Google path for new lecture quizzes with an explicitl
 | Anki candidates | Exact observed source/product-qualified QIDs and allowlisted pasted NIDs against an existing local index | Real prefix rules/index setup pending; no live Anki changes or full curation |
 | Private progress | Server-issued attempt identity, durable exact replay, first/repeat and omitted/unknown counts | Descriptive counts only; no pass prediction or invented chronology |
 | Custom/cumulative blocks | Accepted native questions across selected course/exams, reviewed topic filters, immutable source/version identity and resume; grounded suggestions require explicit acceptance | Results-only vendor entries cannot become playable content; model suggestions share runtime activation gate |
-| AMBOSS reference mode | Explicit unavailable state and official link; manual NID route | AMBOSS reply confirms external MCP is not offered; supported alternatives unconfirmed |
+| AMBOSS integration | Deferred by Connor on 2026-09-14; excluded from this release | No access work or follow-up planned; existing unavailable-state handling retained |
 
 The lecture pipeline fails before dispatch with `context_limit` and affected objective/count diagnostics when full evidence exceeds 20 images or 100,000 serialized source characters. It does not truncate sources or silently claim complete coverage. Automatic partitioning has not been accepted. These conservative ceilings are local implementation limits, not verified model context limits.
 
@@ -38,7 +57,7 @@ The preview remains on the frozen base at port56460. The diagnostic branch prese
 
 Earlier Astra async-input and agent-list calls still execute under the inspected partial controls; those failures are retained. Production generation therefore remains unavailable. On Windows, standalone Codex0.153.4 runs. A System event associates the earlier runner timeout with DLL initialization failure; its root cause remains unknown. Two direct-helper checks now passed, including the intended conbr/session1/Limited caller context. They do not exercise sandbox-account startup or IPC. The initially incorrect help syntax was diagnosed from version-matched official source; corrected help passed. The normal debug CLI retry was rejected: its unconditional ACL refresh and empty deny-read overrides can remove earlier recorded deny-read rules. Restricted identity/readable roots and account persistence remain unresolved. No explicit setup, ACL, account or registry repair was attempted; possible internal preparation by the unexpected first sandbox invocation has not been audited. [Windows diagnosis and exact next proposal](gpt-platform-handoffs/B-windows-runner-diagnosis.md).
 
-Optional AMBOSS and vendor sample blockers remain separate. The authorized reply thread now confirms external MCP is not offered; no follow-up was sent. [Prior runtime receipt](gpt-platform-handoffs/O-runtime.md) records the earlier failed configurations; the current bounded receipt above supersedes its candidate and GPT-5.5 pending status.
+AMBOSS is deferred and is not a blocker. Vendor sample inputs remain separate from core readiness. The retained authorized reply confirms external MCP is not offered; no follow-up was sent. [Prior runtime receipt](gpt-platform-handoffs/O-runtime.md) records the earlier failed configurations; the current bounded receipt above supersedes its candidate and GPT-5.5 pending status.
 
 ## Retained state and UX
 
