@@ -1171,5 +1171,27 @@
       "Desktop/mobile direct UI and actual HTTP individual/exam PDF checks passed"
     ],
     "review": "PASS independent bounded code reviews; upload recovery, parser compatibility, quiz naming, answer blockers, scope and PDF boundaries verified"
+  },
+  "lecture_qol": {
+    "state": "accepted_local_review_pending_release",
+    "date": "2026-09-14",
+    "source_commit": "1aadfe4fa99638045e2b2fb22c174395b6bb75ff",
+    "base_commit": "a0f1e2166358db3d182198bc30ae8c3936cc32d8",
+    "handoff": "docs/implementation/gpt-platform-handoffs/O-lecture-qol-20260914.md",
+    "database_schema_version": 41,
+    "preview_url": "http://127.0.0.1:60431/lectures/1",
+    "preview_kind": "isolated_synthetic_ui_workers_disabled",
+    "tests": [
+      "168 Python integration passed",
+      "23 migration passed",
+      "63 JavaScript passed",
+      "Final affected checks: 11 source + 9 queue Python; 49 player/source JavaScript passed",
+      "Ruff and strict mypy 10 changed source files passed",
+      "Desktop/mobile browser: preset reload/apply, cited excerpt, guessed queue entry and confident-correct clearing passed"
+    ],
+    "review": "PASS independent cross-reviews; local personal-session link finding fixed and retested",
+    "provider_acceptance": "not_run_for_this_change",
+    "windows_acceptance": "not_run_for_this_change",
+    "deployment": "not_deployed"
   }
 }

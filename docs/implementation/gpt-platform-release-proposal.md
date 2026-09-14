@@ -1,6 +1,27 @@
 # GPT Study Hub candidate — release proposal
 
-## Current intake and quiz UX candidate — 2026-09-14
+## Current lecture QoL candidate — 2026-09-14
+
+Branch: `codex/hub-intake-ux-2026-09-14`.
+Reviewed source commit: `1aadfe4fa99638045e2b2fb22c174395b6bb75ff`.
+[Exact acceptance handoff](gpt-platform-handoffs/O-lecture-qol-20260914.md).
+
+Matching lecture-material/transcript cards and a full-width quiz workspace now
+include saved teacher instructions, a personal missed-or-guessed review queue,
+and cited source excerpts beside graded explanations. Existing intake and quiz
+behavior below is retained. Schema 41 adds only the owner-scoped preset table.
+
+Local acceptance: 168 integration tests, 23 migration tests and 63 JavaScript
+checks passed, with final affected reruns and independent reviews. Actual desktop
+and mobile browser checks verified preset persistence, source excerpts and queue
+entry/clear behavior using synthetic data. [Open the preview](http://127.0.0.1:60431/lectures/1).
+Background workers are disabled and health intentionally reports not ready.
+
+This is a reviewed source candidate. No real provider or Windows acceptance was
+run for this change, and the live Hub has not been updated. Deployment still
+requires the remaining runtime acceptance, final package and rollback review below.
+
+## Earlier intake and quiz UX acceptance — 2026-09-14
 
 Branch: `codex/hub-intake-ux-2026-09-14`, based on
 `20a6e5225a11aea683fdb50a59c4a5c111aaa540`. Reviewed source commit: `7a6aab38740c4e4a6cda3d89cc1d8778e4c56734`.
