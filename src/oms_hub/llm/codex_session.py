@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
-from oms_hub.llm.codex_policy import policy_args
+from oms_hub.llm.codex_policy import macos_policy_args, macos_sandbox_profile, policy_args
 
 PINNED_VERSION = "codex-cli 0.153.4"
 PINNED_SCHEMA_SHA256 = "e8284c5cb8157554a3dd1e035aadbd4325aea501af56887e9c2e12eb1b9b9448"
@@ -27,7 +27,10 @@ INSPECTED_WINDOWS_BINARY_SHA256 = "444a3f0008050605cae73cd9b7a2dcac61294062dfaab
 PINNED_EXPERIMENTAL_SCHEMA_SHA256 = (
     "b06f77062369d481a59cc70720c12b89cb9dd49c385863923262102d3ad6c978"
 )
-_RUNTIME_PINS = {"darwin": INSPECTED_MACOS_BINARY_SHA256, "win32": INSPECTED_WINDOWS_BINARY_SHA256}
+ACCEPTED_MACOS_BINARY_SHA256 = "ecad78dbf98adb89ec475edac86630406cbe59d9f3070b17d88065f136b94bcb"
+ACCEPTED_MACOS_VERSION = "0.154.0-alpha.6.2"
+ACCEPTED_MACOS_SCHEMA_SHA256 = "24df528acec2952e6b96c1c2b061f98e60177d059e12c90cf318621380c9de9e"
+_RUNTIME_PINS = {"darwin": ACCEPTED_MACOS_BINARY_SHA256, "win32": INSPECTED_WINDOWS_BINARY_SHA256}
 
 
 @dataclass(frozen=True)
@@ -371,7 +374,7 @@ class CodexSessionClient:
         startup_timeout: float = 30,
         turn_timeout: float = 180,
         shutdown_timeout: float = 2,
-        binary_sha256: str = INSPECTED_MACOS_BINARY_SHA256,
+        binary_sha256: str | None = None,
     ):
         for timeout in (startup_timeout, turn_timeout, shutdown_timeout):
             if not math.isfinite(timeout) or timeout <= 0:
@@ -387,8 +390,27 @@ class CodexSessionClient:
         ):
             raise ValueError("session and staging roots must be separate dedicated directories")
         self.startup_timeout, self.turn_timeout = startup_timeout, turn_timeout
-        self.shutdown_timeout, self.binary_sha256 = shutdown_timeout, binary_sha256
+        self.shutdown_timeout = shutdown_timeout
+        self.binary_sha256 = binary_sha256 or _RUNTIME_PINS.get(sys.platform, "")
         self._command = [str(self.executable), "app-server", "--listen", "stdio://", *policy_args()]
+        if sys.platform == "darwin":
+            self._command = [
+                str(self.executable),
+                "app-server",
+                "--listen",
+                "stdio://",
+                *macos_policy_args(),
+                "-c",
+                'model_provider="openai"',
+                "-c",
+                'cli_auth_credentials_store="file"',
+                "-c",
+                'sandbox_mode="read-only"',
+                "-c",
+                'approval_policy="on-request"',
+                "-c",
+                "analytics.enabled=false",
+            ]
         self._lock = threading.Lock()
         self._closed = threading.Event()
         self._cancel_requested = threading.Event()
@@ -424,6 +446,9 @@ class CodexSessionClient:
             return
         try:
             if self.binary_sha256 != _RUNTIME_PINS.get(sys.platform):
+                raise SessionError("capability_unverified")
+            config = self.session_home / "config.toml"
+            if sys.platform == "darwin" and (config.exists() or config.is_symlink()):
                 raise SessionError("capability_unverified")
             with self.executable.open("rb") as binary:
                 if hashlib.file_digest(binary, "sha256").hexdigest() != self.binary_sha256:
@@ -472,9 +497,16 @@ class CodexSessionClient:
                     "TMPDIR": str(temporary),
                 }
             )
-            self._wire = _Stdio(
-                self._command, cwd=cwd, env=env, shutdown_timeout=self.shutdown_timeout
-            )
+            command = self._command
+            if sys.platform == "darwin":
+                env["PATH"] = "/usr/bin:/bin"
+                command = [
+                    "/usr/bin/sandbox-exec",
+                    "-p",
+                    macos_sandbox_profile(self.executable, self.session_home, cwd),
+                    *command,
+                ]
+            self._wire = _Stdio(command, cwd=cwd, env=env, shutdown_timeout=self.shutdown_timeout)
             self._events = []
             initialized = self._rpc(
                 "initialize",
@@ -489,6 +521,10 @@ class CodexSessionClient:
             if not isinstance(actual_home, str) or os.path.normcase(
                 actual_home
             ) != os.path.normcase(str(self.session_home)):
+                raise SessionError("capability_unverified")
+            if sys.platform == "darwin" and not str(initialized.get("userAgent", "")).startswith(
+                f"oms-study-hub/{ACCEPTED_MACOS_VERSION} "
+            ):
                 raise SessionError("capability_unverified")
             self._wire.send({"method": "initialized"}, deadline, cancelled)
         except OSError:
@@ -564,6 +600,7 @@ class CodexSessionClient:
                         )
                     account_connected = True
                     models: list[str] = []
+                    image_models: list[str] = []
                     cursor: str | None = None
                     seen: set[str] = set()
                     while True:
@@ -578,7 +615,16 @@ class CodexSessionClient:
                             raise SessionError("protocol_error")
                         for model in data:
                             if isinstance(model, dict) and model_ready(model, images=False):
+                                if (
+                                    self._macos_generation_ready()
+                                    and model.get("model") != "gpt-5.5"
+                                ):
+                                    continue
                                 models.append(_identifier(model["model"]))
+                                if self._macos_generation_ready() and model_ready(
+                                    model, images=True
+                                ):
+                                    image_models.append(_identifier(model["model"]))
                         cursor = page.get("nextCursor")
                         if cursor is None:
                             break
@@ -589,17 +635,19 @@ class CodexSessionClient:
                         "account/rateLimits/read", None, deadline, self._closed.is_set
                     )
                     limited, reset = _limit_state(limits)
-                    # A connected account does not prove restricted generation readiness.
+                    ready = self._macos_generation_ready() and "gpt-5.5" in models
                     return SessionStatus(
                         "connecting"
                         if self._pending_login
                         else "limited"
                         if limited
+                        else "connected"
+                        if ready
                         else "unavailable",
                         tuple(dict.fromkeys(models)),
-                        (),
+                        tuple(dict.fromkeys(image_models)),
                         reset,
-                        "rate_limited" if limited else "capability_unverified",
+                        "rate_limited" if limited else None if ready else "capability_unverified",
                         account_connected=True,
                     )
                 except SessionError:
@@ -661,11 +709,15 @@ class CodexSessionClient:
                 self._stop()
                 raise
 
+    def _macos_generation_ready(self) -> bool:
+        return sys.platform == "darwin" and self.binary_sha256 == ACCEPTED_MACOS_BINARY_SHA256
+
     def _require_generation_ready(self, request: SessionRequest) -> None:
-        # The fixed registry controls do not prove OS isolation or real provider acceptance.
-        # No config boolean may bypass those remaining gates. Tests replace this method only
-        # for their owned fake executable; native activation needs separate accepted evidence.
-        raise SessionError("capability_unverified")
+        # Accepted 2026-09-14: pinned native empty-registry matrix, OS file boundaries,
+        # controlled interrupt, and one real synthetic text/image/schema subscription turn.
+        # Windows has no accepted equivalent. No setting can bypass this platform/model pin.
+        if not self._macos_generation_ready() or request.model != "gpt-5.5":
+            raise SessionError("capability_unverified")
 
     def _stage_images(self, request: SessionRequest, directory: Path) -> list[dict[str, str]]:
         from oms_hub.study_generation.quiz_images import MAX_QUIZ_IMAGE_BYTES, sanitize_quiz_image
@@ -784,6 +836,17 @@ class CodexSessionClient:
                     min(deadline, time.monotonic() + self.startup_timeout),
                     is_cancelled,
                 )
+                if sys.platform == "darwin":
+                    account = self._rpc(
+                        "account/read", {"refreshToken": False}, deadline, is_cancelled
+                    ).get("account")
+                    if not isinstance(account, dict) or account.get("type") != "chatgpt":
+                        raise SessionError("auth_required")
+                    limited, reset = _limit_state(
+                        self._rpc("account/rateLimits/read", None, deadline, is_cancelled)
+                    )
+                    if limited:
+                        raise SessionError("rate_limited", reset_at=reset)
                 thread = self._rpc(
                     "thread/start",
                     {

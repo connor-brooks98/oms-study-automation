@@ -19,7 +19,12 @@ def load_probe():
 
 
 def test_partial_preparation_is_pinned_and_does_not_open_generation(tmp_path):
-    client = CodexSessionClient(tmp_path / "codex", tmp_path / "home", tmp_path / "work")
+    client = CodexSessionClient(
+        tmp_path / "codex",
+        tmp_path / "home",
+        tmp_path / "work",
+        binary_sha256=INSPECTED_MACOS_BINARY_SHA256,
+    )
     original = list(client._command)
     command = load_probe()["codex_tool_policy_args"](INSPECTED_MACOS_BINARY_SHA256)
     assert client._command == original

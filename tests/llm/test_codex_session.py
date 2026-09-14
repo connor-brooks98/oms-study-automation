@@ -10,6 +10,7 @@ import tomllib
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -131,6 +132,8 @@ def test_reducer_rejects_unsolicited_tool_request():
 
 @pytest.fixture
 def fake_session(tmp_path, monkeypatch):
+    # Generic pipe lifecycle tests use an owned fake executable, not native Mac confinement.
+    monkeypatch.setattr(codex_session, "sys", SimpleNamespace(platform="fixture"))
     clients, wires = [], []
     real_wire = codex_session._Stdio
 
@@ -154,7 +157,7 @@ def fake_session(tmp_path, monkeypatch):
             startup_timeout=startup_timeout,
             shutdown_timeout=0.2,
         )
-        monkeypatch.setitem(codex_session._RUNTIME_PINS, sys.platform, client.binary_sha256)
+        monkeypatch.setitem(codex_session._RUNTIME_PINS, "fixture", client.binary_sha256)
         trace = root / "wire.jsonl"
         client._command = [
             sys.executable,

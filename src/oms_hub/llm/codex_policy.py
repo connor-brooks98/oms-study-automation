@@ -1,6 +1,7 @@
 """Fixed 0.153.4 registry controls; these do not establish OS/provider readiness."""
 
 import json
+from pathlib import Path
 
 # Snapshot used by the accepted GPT-5.5 macOS/Windows empty-environment probes.
 _DISABLED_FEATURES = """
@@ -50,3 +51,102 @@ def policy_args() -> list[str]:
         "--strict-config",
         *(arg for key, value in config.items() for arg in ("-c", f"{key}={json.dumps(value)}")),
     ]
+
+
+def macos_policy_config() -> dict[str, str | bool]:
+    """Observed 0.154 catalog; OS confinement handles ambient file reads."""
+    config = {
+        value.split("=", 1)[0]: json.loads(value.split("=", 1)[1]) for value in policy_args()[2::2]
+    }
+    del config["features.realtime_conversation"]
+    config.update(
+        {
+            f"features.{name}": False
+            for name in (
+                "guardianv2.thread_context",
+                "reasoning_effort_override",
+                "unified_exec_tty",
+                "windows_sandbox_service",
+                "worktrees",
+            )
+        }
+    )
+    config["features.skip_host_skill_discovery"] = False
+    # The reusable fixture owns provider/auth/sandbox settings in its blank config.
+    return {
+        key: value
+        for key, value in config.items()
+        if key.startswith("features.")
+        or key
+        in {
+            "web_search",
+            "apps._default.enabled",
+            "tools.experimental_request_user_input.enabled",
+            "orchestrator.skills.enabled",
+            "orchestrator.mcp.enabled",
+        }
+    }
+
+
+def macos_policy_args() -> list[str]:
+    config = macos_policy_config()
+    # One inline TOML table preserves literal dotted feature names, avoiding CLI path splitting.
+    feature_table = (
+        "{"
+        + ",".join(
+            f"{json.dumps(key.removeprefix('features.'))}={json.dumps(value)}"
+            for key, value in config.items()
+            if key.startswith("features.")
+        )
+        + "}"
+    )
+    return [
+        "--strict-config",
+        "-c",
+        f"features={feature_table}",
+        *(
+            arg
+            for key, value in config.items()
+            if not key.startswith("features.")
+            for arg in ("-c", f"{key}={json.dumps(value)}")
+        ),
+    ]
+
+
+def macos_sandbox_profile(executable: Path, session_home: Path, work: Path) -> str:
+    """Deny ambient file contents/writes; metadata and provider networking remain allowed."""
+
+    def quote(path: Path | str) -> str:
+        return json.dumps(str(path))
+
+    system = ("/System/Library", "/usr/lib", "/usr/bin", "/bin", "/Library/Apple/System")
+    return "\n".join(
+        [
+            "(version 1)",
+            "(allow default)",
+            "(deny file-read-data)",
+            "(deny file-write*)",
+            "(allow file-read-data "
+            + " ".join(f"(subpath {quote(path)})" for path in system)
+            + ")",
+            "(allow file-read-data "
+            + " ".join(
+                f"(literal {quote(path)})"
+                for path in (
+                    executable,
+                    "/",
+                    "/dev/null",
+                    "/dev/random",
+                    "/dev/urandom",
+                    "/private/etc/hosts",
+                    "/private/etc/resolv.conf",
+                    "/private/var/run/resolv.conf",
+                    "/private/etc/localtime",
+                )
+            )
+            + ' (subpath "/private/etc/ssl"))',
+            f"(allow file-read-data file-write* (subpath {quote(session_home)}) "
+            f"(subpath {quote(work)}))",
+            '(allow file-write* (literal "/dev/null"))',
+        ]
+    )
