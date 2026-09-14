@@ -285,7 +285,7 @@
     "truelearn_sample": "not_supplied",
     "vendor_request": "Asked once for product and official per-question results/QID/notes export controls; answer pending.",
     "managed_login": "Connected in isolated local preview via actual managed login; confirmed in OpenAI browser and Hub on2026-09-12T00:51:58Z",
-    "runtime_restrictions": "Generation stays capability_unverified. Windows GPT5.5 single valid apply_patch call denied before handler with canary absent; all-tool/OS/read-root/login persistence/provider gates remain pending.",
+    "runtime_restrictions": "Mac production runtimeaccepted for fixedartifact/GPT5.5; Windowsboundeddiagnosticsaccepted, productionlauncher/account/providerpending.",
     "anki_qid_rules": "fixture-tested; observed real source/product-qualified prefixes not configured",
     "amboss_last_checked_utc": "2026-09-13T04:32:47.510371+00:00",
     "amboss_message_ids": [
@@ -329,17 +329,30 @@
     ],
     "code_tree": "dfcb17d27dc012486202bdf78472a8ea795c45f2",
     "archive_candidate": "9e54da4188abaa5694c57b0d59aaec7c4e216a4f",
-    "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-windows-canonicalize.md",
-    "reviewed_checkpoint": "81b0be57332430f65ef53feafcaf001a3f93934e",
+    "continuation_receipt": "docs/implementation/gpt-platform-handoffs/O-runtime-acceptance-20260914.md",
+    "reviewed_checkpoint": "f4184f58",
     "gates": {
       "local_core_implementation": "accepted; task states describe local implementation, not deployed completion",
       "bounded_windows_startup_and_path_tests": "accepted; LPAC version/initialize and two native arg0 unit tests",
-      "production_runtime_restrictions": "pending; complete tool prevention, source read boundaries, network restrictions and interruption/cleanup under the production path",
-      "subscription_provider": "pending; Windows account persistence and real synthetic text/image/schema requests",
-      "lecture_image_quiz_workflow": "pending_provider_acceptance; source-to-generation-to-review-to-export flow with synthetic lecture evidence",
-      "deployment": "not_authorized; final package and rollback/cutover review follow runtime/provider acceptance"
+      "production_runtime_restrictions": "Macaccepted and integrated; Windowsdiagnostic15tool/file/interruptproofaccepted, productionlauncher pending",
+      "subscription_provider": "Macactualsynthetictext/image/schema and2turnlecturegenerationaccepted; Windowsaccount/providerpending",
+      "lecture_image_quiz_workflow": "accepted_mac_synthetic: actual transcriptcleanup/imagequiz/answerreview/publication/grading/JSONZIPPDF exports; fixtureOfficeconverter only. NativeWindows provider workflow pending.",
+      "deployment": "not_authorized; final package and rollback/cutover review follow runtime/provider acceptance",
+      "bounded_windows_runtime_restrictions": "accepted:15exacttoolrejections,current3capability5fileoperations,controlledinterrupt,cleanup/preservation; productionlauncher separate"
     },
-    "next_action": "Complete provider-free production runtime restriction acceptance on the fixed Windows artifact before the separately scoped real GPT text/image and quiz workflow acceptance."
+    "next_action": "Windows production launcher integration, then separately scoped Windows account/provider acceptance and final deployment package/rollback review.",
+    "evidence_archives": [
+      {
+        "path": "docs/implementation/gpt-platform-evidence/windows-runtime-restrictions-20260914.zip",
+        "sha256": "dd2a039f5fc6778e834682c59905945b2c4b76010a6cec8e1511a9e2a57889be",
+        "review": "PASS independent586entries"
+      },
+      {
+        "path": "docs/implementation/gpt-platform-evidence/macos-runtime-and-hub-acceptance-20260914.zip",
+        "sha256": "b0c3ecaa8ffff00258b21872f9fc644d8ef4905f66746edc1a4d2f026ff057f3",
+        "review": "PASS independent829entries"
+      }
+    ]
   },
   "provider_verified": false,
   "windows_verified": false,
@@ -369,7 +382,7 @@
     "no_grandchildren": true
   },
   "runtime_activation": {
-    "state": "bounded_windows_startup_and_arg0_accepted",
+    "state": "mac_runtime_and_provider_accepted_windows_diagnostics_accepted",
     "base_commit": "159e529487d51c5f038bd492cba2c742105d5965",
     "branch": "codex/gpt-runtime-fix-2026-09-12",
     "worktree": "/Users/connor/Developer/worktrees/oms-gpt-runtime-activation",
@@ -379,11 +392,11 @@
     "private_source_tests_authorized": false,
     "diagnostic_commit": "374ea09e1350468da1ac8e9c17df91fa9c120826",
     "diagnostic_review": "PASS; independent69passed1skip; Ruff and mypy passed",
-    "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-runtime.md",
-    "native_progress": "Fixed private Windows executable d6eb90 passed fresh strict LPAC VERSION and INITIALIZE. Both exact Windows arg0 unit tests passed separately under ordinary Limited execution. Independent raw-result/hash/cleanup/preservation reviews passed; production isolation/account/model/provider/deployment acceptance remain separate.",
-    "candidate": "146df998b88cd31c561cf8339b8c90abc95369ea",
-    "code_tree": "add98dfa84a008ba988bea7894c4bfb671d87603",
-    "review": "PASS independent source, wrapper, native startup, compiled test artifact and both exact Windows arg0 results; all final evidence hashes and preservation checked",
+    "handoff": "docs/implementation/gpt-platform-handoffs/O-runtime-acceptance-20260914.md",
+    "native_progress": "Windows15tool rejections,current3capabilityfileoperations,andcontrolledinterrupt accepted. Macproductionclient enabled only foracceptedartifact/model; actual syntheticprovider and2turnHubgeneration accepted. Windowsproduction/account/provider separate.",
+    "candidate": "ab21eff5e98eec15d7e80f2f4596a06341db192d",
+    "code_tree": "dfcb17d27dc012486202bdf78472a8ea795c45f2",
+    "review": "PASS independent nativeWindowsdiagnostics/archive and Macproductioncode/provider/Hubworkflow/answers/exports/archive",
     "tests": [
       "197 passed,5 skipped broader local regression at f217e434",
       "26 passed,1 skipped final export/atomic/routes at8de86582",
@@ -402,7 +415,7 @@
       "policy": "/root/runtime_policy_integration",
       "isolation": "/root/windows_isolation_route"
     },
-    "production_policy_commit": "0aa11c7ee40021ede773f6ddc3c9c6e063b557fc",
+    "production_policy_commit": "ab21eff5e98eec15d7e80f2f4596a06341db192d",
     "lpac": {
       "handoff": "docs/implementation/gpt-platform-handoffs/O-windows-lpac.md",
       "source_sha256": "c3a6831cba9295e7e233f2e0125d18a62cb5a0e60cfd71fb254978287f69a1bd",
@@ -980,18 +993,17 @@
       "inputs": "synthetic text/image and lecture quiz fixtures only",
       "windows_provider_authorized": false,
       "paid_fallback": false,
-      "production_activation": false
+      "production_activation": false,
+      "mac_preview_activation": true,
+      "production_activation_meaning": "Live NUC deployment remains unauthorized; separately authorized isolatedMacpreview uses acceptedruntime."
     },
     "current_verification": {
-      "state": "in_progress",
+      "state": "completed_requested_verification_scope",
       "windows": {
         "worker": "/root/windows_restrictions",
-        "scope": "LPAC synthetic adversarial turn; no real provider",
+        "scope": "Accepted bounded LPAC tool rejection, current-token file-access and controlled interruption; no real Windows provider",
         "review": "PASS independent actualtoolmatrix/current3capOSboundary/controlledinterrupt and cleanup",
-        "evidence": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/windows-restrictions-20260914/adversarial-turn",
         "state": "bounded_native_restrictions_accepted",
-        "outcome": "45-second timeout after turn/start, zero fixture HTTP requests; no tool-denial proof",
-        "cleanup": "Child16244 reaped, task disabled, owned processes absent, exact Hub preserved",
         "diagnosis": "OrdinaryLimited curl control also failed before LPAC creation. Exact Mac fixture PID firewall log shows HomebrewPython awaiting inbound decision; correction uses already-allowed systemPython without firewall change.",
         "failure_manifest_sha256": "3d4af10866457398b2b22fd56ab056009bfdfbda8bc4cd812557a3f88c677294",
         "connectivity_failure_manifest_sha256": "26adb85814acc346a6768f5a7db0cf727dfeaefa8c33a7cf27bec18e15c94ece",
@@ -1001,27 +1013,33 @@
         "matrix_result": "All15 exact tool-call rejections, empty registry, completed turn, child25424 exit0/reaped",
         "matrix_manifest_sha256": "6321e876a4b333d10d9b5b85e4815a0ee6fcb19b7e2852c060fd91504170a529",
         "source_boundary_manifest_sha256": "d8393a687383c344ef84b19ab580e537405311fdac4a70204baffb29dea6c68b",
-        "source_boundary": "5actualfileops passed oncurrent3captoken, expected cmdexit1, cleanup/preservation passed; independentreviewpending",
+        "source_boundary": "PASS independent review: five actual file operations under the current three-capability token, expected cmd exit1, cleanup and preservation verified",
         "interrupt_manifest_sha256": "b6dbb0532d100175a04fb737ae9482004d71826ffab82aefba1c2634d8d2c08a",
         "evidence_archive": "docs/implementation/gpt-platform-evidence/windows-runtime-restrictions-20260914.zip",
-        "evidence_archive_sha256": "dd2a039f5fc6778e834682c59905945b2c4b76010a6cec8e1511a9e2a57889be"
+        "evidence_archive_sha256": "dd2a039f5fc6778e834682c59905945b2c4b76010a6cec8e1511a9e2a57889be",
+        "historical_failed_adversarial_outcome": "45-second timeout after turn/start, zero fixture HTTP requests; no tool-denial proof",
+        "historical_failed_adversarial_cleanup": "Child16244 reaped, task disabled, owned processes absent, exact Hub preserved",
+        "historical_failed_adversarial_evidence": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/windows-restrictions-20260914/adversarial-turn",
+        "outcome": "PASS: 15 exact tool-call rejections, five OS file operations, exact interrupt acknowledgement and interrupted completion",
+        "cleanup": "PASS independent disabled tasks, no owned diagnostic processes/listeners, and exact live Hub preservation",
+        "evidence": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/windows-restrictions-20260914/adversarial-system-python"
       },
       "mac": {
         "worker": "/root/mac_generation_acceptance",
-        "scope": "One actual synthetic GPT-5.5 subscription text/image/schema turn",
+        "scope": "One real standalone subscription text/image/schema turn plus completed two-turn synthetic Hub lecture workflow, answer review, publication, grading and exports",
         "url": "http://127.0.0.1:62170",
-        "pid": 18163,
+        "pid": 19725,
         "source_commit": "ab21eff5e98eec15d7e80f2f4596a06341db192d",
         "root": "/Users/connor/Library/Application Support/OMSStudyHub/gpt-mac-acceptance-20260914-ovcqf2lh",
         "generation_verified": true,
         "binary_preflight": "Old expected87a08119 pin now hashes ecad78db; do not transfer prior acceptance without fresh verification",
-        "hub_generation_verified": false,
+        "hub_generation_verified": true,
         "restrictions_verified": false,
         "account_connected": true,
         "result_sha256": "320f3832ef8df3c8aae910d71b9f785df51378b016378072ad8d5abb459c63c4",
         "result": "Correct number7/red image JSON; one turn, no reported limit/retry, owned process reaped",
         "evidence": "/Users/connor/.codex/visualizations/2026/09/11/01a09271-e627-7712-a2fc-ff675db23a8b/mac-generation-acceptance-20260914/current-ecad-provider-1",
-        "next_action": "Bounded realGPT synthetic lecture workflow with explicit fixtureOffice rendering limit",
+        "next_action": "Mac synthetic acceptance complete; nativeMacOffice remains unverified",
         "review": "PASS independent exact synthetic provider result and cleanup review",
         "matrix_result_sha256": "615454e0a8c7de33216a664c200e6a86b682523b5981c924a4f8c8362f8b1582",
         "interrupt_result_sha256": "76918c0dfd0baef627d28683e39f193906f033b085268a604c34cd08a4343524",
@@ -1030,7 +1048,17 @@
         "source_tree": "dfcb17d27dc012486202bdf78472a8ea795c45f2",
         "production_client": "Mac-only accepted runtime policy integrated;93focusedpassed3skip,Ruff/mypyPASS; independentreviewPASS",
         "ui_readiness": "Actual browser accountconnected/generationready/GPT5.5images; model saved",
-        "workflow_first_attempt": "Stoppedbeforeprovider: missingstagingroot quarantinedslideupload; lecture1retained; correction/resumepending"
+        "workflow_first_attempt": "Historical pre-provider failure: missing staging root quarantined slide upload. Resolved by local configuration and same-item resume; original failure retained.",
+        "workflow_result": "PASS: one transcript turn + one quiz turn; three source-grounded answers reviewed, publication/grading/JSONZIPPDF exports and actual browser image verified",
+        "run_id": "3518e8cc-fe0a-422b-8473-e02eb2cfe0be",
+        "native_mac_office_verified": false,
+        "model_provenance": "Requested/effective GPT5.5; quizjournal actual_model=null/model_evidence=unverified",
+        "hub_verified": true,
+        "workflow_review": "PASS independent actual journals, answers, publication, grading, exports and829-entry archive",
+        "quiz_url": "http://127.0.0.1:62170/public/quizzes/559c1c89b5e9afd17b418b0c311c69e12d5b75b7d22893953c34a461af5a0b66",
+        "evidence_archive": "docs/implementation/gpt-platform-evidence/macos-runtime-and-hub-acceptance-20260914.zip",
+        "evidence_archive_sha256": "b0c3ecaa8ffff00258b21872f9fc644d8ef4905f66746edc1a4d2f026ff057f3",
+        "workflow_preparation_failures": "Missingstagingroot and missingapprovedpromptSHA both stoppedbeforeprovider. Sameitemsresumed afterconfigurationcorrection; failuresretained."
       },
       "reviewer": "/root/acceptance_review"
     }

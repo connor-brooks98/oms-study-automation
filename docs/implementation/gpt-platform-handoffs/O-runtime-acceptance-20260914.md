@@ -5,6 +5,12 @@ and test synthetic GPT generation using the existing ChatGPT subscription. No pr
 lecture/provider test, paid fallback, reset credit, live Hub deployment or Anki change.
 AMBOSS remains deferred. Vendor export samples remain separate from core acceptance.
 
+Current outcome: the requested bounded Windows diagnostics and Mac synthetic Hub
+workflow passed independent review. The Mac preview is running at
+http://127.0.0.1:62170, PID19725, on application commit
+`ab21eff5e98eec15d7e80f2f4596a06341db192d`. Windows production launcher integration,
+Windows account/provider acceptance and live deployment remain separate.
+
 ## Mac preview and runtime drift
 
 New isolated preview: http://127.0.0.1:62170/settings, PID 6267, source checkpoint
@@ -186,6 +192,40 @@ Local evidence under the task visualization root:
 - `mac-generation-acceptance-20260914/current-ecad-fixture-1`: metadata-command
   failure before app-server/provider startup.
 
-Next: run the independently reviewed Windows adversarial route, then separately
-accept one small real Mac subscription text/image/schema turn after review.
-Full Hub generation, Windows provider behavior and deployed behavior remain unverified.
+## Completed Mac Hub workflow
+
+The first two attempts stopped before any provider dispatch: the fresh preview
+needed its local staging directory and the approved synthetic transcript-prompt
+hash. Both failures and uploads were retained. Supported quarantine reassignment
+resumed the same logical items after those configuration corrections; no duplicate
+lecture, slide upload or provider retry was needed.
+
+The final attempt completed exactly one transcript-cleaning turn and one quiz turn,
+with distinct completed thread/turn identities. The cleaned222-character transcript
+equals the source. Three questions cover both supplied objectives; reviewed answer
+indices are0,2,1, and all answer/distractor explanations match the source. The first
+question retains the original500x240 diagram. Independent review checked source
+grounding, the generation journals and the actual image before answer verification.
+
+The quiz was verified and published once in the isolated preview. Public answer
+grading, image parity and JSON/ZIP/PDF exports passed. O also inspected the actual
+rendered browser quiz and diagram. User-facing result:
+http://127.0.0.1:62170/public/quizzes/559c1c89b5e9afd17b418b0c311c69e12d5b75b7d22893953c34a461af5a0b66
+
+Limits: this preview accepts only the exact synthetic PowerPoint fixture through
+the existing test converter; native macOS Office conversion is unverified. The
+production Codex client and subscription generation are real. Requested/effective
+model checks use GPT-5.5; the quiz journal's `actual_model=null` and
+`model_evidence=unverified` remain unchanged. No provider calls followed generation.
+
+Mac evidence archive: `../gpt-platform-evidence/macos-runtime-and-hub-acceptance-20260914.zip`,
+SHA256 `b0c3ecaa8ffff00258b21872f9fc644d8ef4905f66746edc1a4d2f026ff057f3`.
+Independent review verified all828 payload files plus inventory, ZIP integrity,
+final publication/grading and export parity. It includes failed attempts and safe
+launcher receipts, but no managed auth files. The earlier provider-source snapshot
+gap noted above remains explicit.
+
+Next: integrate the accepted Windows restrictions into its production launcher,
+then obtain separately scoped Windows account/provider acceptance and prepare the
+final deployment package/rollback review. AMBOSS stays deferred; vendor adapters
+need exact supported samples. The live Hub and Anki remain unchanged.

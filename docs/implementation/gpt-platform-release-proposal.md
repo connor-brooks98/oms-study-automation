@@ -1,6 +1,12 @@
 # GPT Study Hub candidate — release proposal
 
-Status: Mac runtime integration is reviewed and committed at `ab21eff5e98eec15d7e80f2f4596a06341db192d`. The new preview at http://127.0.0.1:62170 reports ChatGPT connected and GPT-5.5 image generation ready. An actual synthetic provider request passed. Windows bounded tool rejection, OS file-access and interruption checks passed independent review after fixing the synthetic server's interpreter selection. Full lecture workflow acceptance is in progress; Windows production integration and live NUC deployment remain pending.
+Status: Mac runtime integration is reviewed and committed at `ab21eff5e98eec15d7e80f2f4596a06341db192d`. The new preview at http://127.0.0.1:62170 passed actual subscription transcript cleanup, image-quiz generation, answer review, publication, grading and JSON/ZIP/PDF export. Windows bounded tool rejection, OS file-access and interruption checks passed independent review after fixing the synthetic server's interpreter selection. Windows production integration and live NUC deployment remain pending.
+
+Reviewable demonstration: [three-question synthetic image quiz](http://127.0.0.1:62170/public/quizzes/559c1c89b5e9afd17b418b0c311c69e12d5b75b7d22893953c34a461af5a0b66).
+The Mac demonstration uses an exact-fixture PowerPoint converter; it does not
+establish native macOS Office support. Generation uses the real production Codex
+client. Requested/effective GPT-5.5 checks passed; provider-returned model provenance
+remains unverified in the quiz journal.
 
 Current acceptance: [September 14 runtime handoff](gpt-platform-handoffs/O-runtime-acceptance-20260914.md).
 The earlier source/runtime receipts below remain historical evidence, not proof of
@@ -17,8 +23,8 @@ confined request path. Windows generation remains `capability_unverified`.
    passed; permitted host-client HTTP does not imply endpoint isolation.
 2. Accept Windows account persistence and actual GPT text/image/schema behavior with
    synthetic inputs, then exercise the lecture-image quiz through generation, review and export.
-   These are separate from the successful Mac provider test and current Mac Hub
-   synthetic lecture acceptance, which uses an explicit fixture Office converter.
+   These are separate from the completed Mac provider test and Mac Hub synthetic
+   lecture acceptance, which uses an explicit fixture Office converter.
 3. Freeze the final package and rollback/cutover procedure for deployment approval.
    The live Hub has not been updated.
 
@@ -41,7 +47,7 @@ Existing release archives below remain bound to original core code `9e54da4188ab
 
 This replaces the required Google path for new lecture quizzes with an explicitly selected Codex subscription backend, preserves full slide/transcript evidence and image assets, requires question/answer review before native publication, and adds private source-scoped/general chat. Outlines are optional. Existing publications, imported artifacts, Anki scheduling and Gate 2B proof resources are retained.
 
-**Windows activation remains blocked.** Its bounded LPAC tool, file and interruption proofs must still be integrated into the production launcher; Windows account/provider acceptance is separate. Mac production generation now uses the reviewed current-runtime policy, request-specific file confinement and fresh ChatGPT/usage preflight. Its real synthetic text/image/schema request passed; the complete lecture workflow remains a separate acceptance record. No paid fallback or configuration bypass is present.
+**Windows activation remains blocked.** Its bounded LPAC tool, file and interruption proofs must still be integrated into the production launcher; Windows account/provider acceptance is separate. Mac production generation now uses the reviewed current-runtime policy, request-specific file confinement and fresh ChatGPT/usage preflight. Its real synthetic text/image/schema request and two-turn lecture workflow passed, with the rendering/provenance limits above. No paid fallback or configuration bypass is present.
 
 | Capability | Local candidate scope | External/operational limit |
 | --- | --- | --- |
