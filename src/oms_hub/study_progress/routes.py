@@ -17,6 +17,7 @@ from oms_hub.models import StudySessionModel, StudySessionQuestionModel, StudyTo
 from oms_hub.study_chat.contracts import UuidId
 from oms_hub.study_chat.routes import _owner
 from oms_hub.study_progress.blocks import BlockFilters, BlockService
+from oms_hub.study_progress.review_queue import ReviewFilters, ReviewQueueService
 from oms_hub.study_progress.service import ProgressService
 from oms_hub.study_progress.sessions import AnswerSelection, Duration, StudySessionService
 from oms_hub.study_progress.tags import TopicService
@@ -39,6 +40,7 @@ class CreateInput(BaseModel):
 
 class AnswerInput(AnswerSelection):
     elapsed_ms: Duration | None = None
+    guessed: bool = False
 
 
 def _sessions(request: Request) -> StudySessionService:
@@ -136,10 +138,15 @@ def answer(
     request: Request, session_id: UuidId, attempt_id: UuidId, body: AnswerInput
 ) -> JSONResponse:
     owner = _owner(request, mutation=True)
-    submission = AnswerSelection.model_validate(body.model_dump(exclude={"elapsed_ms"}))
+    submission = AnswerSelection.model_validate(body.model_dump(exclude={"elapsed_ms", "guessed"}))
     with _errors():
         receipt = _sessions(request).answer(
-            session_id, attempt_id, submission, owner_id=owner, elapsed_ms=body.elapsed_ms
+            session_id,
+            attempt_id,
+            submission,
+            owner_id=owner,
+            elapsed_ms=body.elapsed_ms,
+            guessed=body.guessed,
         )
     return JSONResponse(
         receipt.feedback
@@ -147,6 +154,7 @@ def answer(
             "attempt_id": receipt.attempt_id,
             "bank_attempt_id": receipt.bank_attempt_id,
             "result": receipt.result,
+            "guessed": receipt.guessed,
         },
         headers=_HEADERS,
     )
@@ -432,3 +440,81 @@ def cancel_suggestion(
     return RedirectResponse(
         f"/study/blocks/suggestions/{identity}", status_code=303, headers=_HEADERS
     )
+
+
+def _review_queue(request: Request) -> ReviewQueueService:
+    return ReviewQueueService(_blocks(request))
+
+
+@router.get("/review", response_class=HTMLResponse)
+def review_queue_page(
+    request: Request,
+    course: str | None = None,
+    exam: Annotated[int, Query(ge=0, le=1000)] = 0,
+    count: Annotated[int, Query(ge=1, le=500)] = 20,
+) -> HTMLResponse:
+    owner = _owner(request)
+    with _errors():
+        filters = ReviewFilters(course=course or None, exam=exam or None, count=count)
+        queue = _review_queue(request).catalog(owner, filters)
+    return templates.TemplateResponse(
+        request=request,
+        name="study_review_queue.html",
+        context={
+            "queue": queue,
+            "filters": filters,
+            "selected": queue.items[:count],
+            "csrf_token": _csrf(request),
+        },
+        headers=_HEADERS,
+    )
+
+
+@router.get("/review/data")
+def review_queue_data(
+    request: Request,
+    course: str | None = None,
+    exam: Annotated[int, Query(ge=0, le=1000)] = 0,
+    count: Annotated[int, Query(ge=1, le=500)] = 20,
+) -> JSONResponse:
+    owner = _owner(request)
+    with _errors():
+        filters = ReviewFilters(course=course or None, exam=exam or None, count=count)
+        queue = _review_queue(request).catalog(owner, filters)
+    return JSONResponse(
+        {
+            "total": queue.total,
+            "matching": len(queue.items),
+            "unavailable": queue.unavailable,
+            "items": [
+                {
+                    "key": item.key,
+                    "course": item.course,
+                    "course_label": item.course_label,
+                    "exam": item.exam,
+                    "source_label": item.source_label,
+                    "reason": item.reason,
+                    "answered_at": item.answered_at,
+                }
+                for item in queue.items[:count]
+            ],
+        },
+        headers=_HEADERS,
+    )
+
+
+@router.post("/review/start")
+def start_review_queue(
+    request: Request,
+    selected_key: Annotated[list[str], Form()],
+    csrf_token: Annotated[str, Form()],
+    course: Annotated[str | None, Form()] = None,
+    exam: Annotated[int, Form(ge=0, le=1000)] = 0,
+    count: Annotated[int, Form(ge=1, le=500)] = 20,
+) -> RedirectResponse:
+    owner = _owner(request)
+    require_form_csrf(request, csrf_token)
+    with _errors():
+        filters = ReviewFilters(course=course or None, exam=exam or None, count=count)
+        view = _review_queue(request).create(owner, filters, selected_keys=tuple(selected_key))
+    return RedirectResponse(f"/study/sessions/{view.id}", status_code=303, headers=_HEADERS)

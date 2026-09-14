@@ -17,6 +17,7 @@
   <a class="skip-link" href="#quiz-player">Skip to quiz</a>
   <nav class="quiz-page-nav sh-container--narrow" aria-label="Quiz library">
     <a class="quiz-library-button sh-btn sh-btn--secondary" href="{{ library_url }}" aria-label="{{ library_label }}">← {{ library_label }}</a>
+    {% if personal_study_available %}<a class="quiz-library-button sh-btn sh-btn--primary" href="/study/sessions/new?quiz_token={{ quiz.token }}">Study with progress &amp; sources</a>{% endif %}
     <a class="quiz-library-button sh-btn sh-btn--secondary" href="/public/quizzes/{{ quiz.token }}/export.pdf">Download quiz PDF</a>
   </nav>
   <main

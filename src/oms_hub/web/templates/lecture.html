@@ -24,6 +24,79 @@
   {% set pass_total = lecture.passes|length %}
 
   <div class="lecture-workbench">
+
+  <div class="file-card-grid">
+    <section class="file-card sh-card {{ 'ready' if slide_revision and not slide_problem else 'missing' }}">
+      <div class="file-card-title">
+        <h2>Lecture Materials</h2>
+      </div>
+      <p class="file-caption">{% if slide_revision and slide_problem %}Lecture PDF {{ slide_problem }}. Download the original or upload a replacement.{% elif slide_revision %}{{ slide_revision.canonical_derived_path.name }}{% else %}Add slides or a reading document for this lecture.{% endif %}</p>
+      <div class="file-actions lecture-card-actions">
+        {% if slide_revision and not slide_problem %}
+        <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ slide_revision.id }}/pdf">Open Lecture PDF</a>
+        {% else %}
+        <a class="sh-btn sh-btn--secondary" href="/uploads?lecture_id={{ lecture.id }}&amp;kind=slides">Upload materials</a>
+        {% endif %}
+        {% if slide_revision %}
+        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ slide_revision.id }}/original">Download original</a>
+        {% endif %}
+      </div>
+    </section>
+    <section class="file-card sh-card {{ 'ready' if transcript_revision and not transcript_problem else 'missing' }}">
+      <div class="file-card-title">
+        <h2>Transcript</h2>
+      </div>
+      <p class="file-caption">{% if transcript_revision and transcript_problem %}Cleaned transcript {{ transcript_problem }}. Upload a replacement to continue.{% elif transcript_revision %}{{ transcript_revision.canonical_derived_path.name }}{% else %}Add lecture notes or a transcript to use alongside the materials.{% endif %}</p>
+      <div class="file-actions lecture-card-actions">
+        {% if transcript_revision and not transcript_problem %}
+        <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open Transcript</a>
+        {% else %}
+        <a class="sh-btn sh-btn--secondary" href="/uploads?lecture_id={{ lecture.id }}&amp;kind=transcripts">Upload transcript</a>
+        {% endif %}
+        {% if transcript_revision %}
+        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ transcript_revision.id }}/cleaned/download">Download Transcript</a>
+        {% endif %}
+      </div>
+    </section>
+    <section class="lecture-quiz-panel sh-panel" data-gpt-lecture="{{ lecture.id }}" data-kind="quiz" id="gpt-quiz-heading">
+      <div class="file-card-title">
+        <h2>Lecture Quiz</h2>
+      </div>
+      <p class="file-caption" data-generation-message aria-live="polite">
+        {% if quiz_output or gpt_quizzes %}Study Hub quiz is ready.
+        {% else %}Built from this lecture's materials and cleaned transcript only.{% endif %}
+      </p>
+      {% if gpt_quizzes or quiz_output %}
+      <div class="file-actions lecture-card-actions">
+        {% if gpt_quizzes %}
+        <a class="button primary sh-btn sh-btn--primary" href="/study/sessions/new?quiz_token={{ gpt_quizzes[0].token }}">Take Lecture Quiz</a>
+        {% elif quiz_output %}
+        <a class="button primary sh-btn sh-btn--primary" href="{{ quiz_output.url }}">Take Lecture Quiz</a>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% include "_gpt_lecture.html" %}
+    </section>
+    {% if outline_output %}
+    <section class="file-card sh-card ready lecture-outline-panel">
+      <div class="file-card-title">
+        <h2>Lecture Outline (PDF)</h2>
+      </div>
+      <p class="file-caption" data-generation-message aria-live="polite">
+        {% if outline_output %}Lecture outline PDF is ready.
+        {% elif outline_job %}{{ outline_job.stage.value.replace('_', ' ').title() }}
+        {% else %}Generated from this lecture's PDF and cleaned transcript only.{% endif %}
+      </p>
+      <div class="file-actions lecture-card-actions{% if not outline_output %} lecture-card-actions--single{% endif %}">
+        {% if outline_output %}
+        <a class="button primary sh-btn sh-btn--primary" data-generation-link href="/artifacts/outlines/{{ outline_output.id }}">Open Lecture Outline</a>
+        <a class="button secondary sh-btn sh-btn--secondary" data-generation-download href="/artifacts/outlines/{{ outline_output.id }}/download">Download Lecture Outline</a>
+        {% endif %}
+      </div>
+
+    </section>
+    {% endif %}
+  </div>
   <details class="pipeline-card sh-panel" aria-labelledby="pipeline-heading" {% if status in ('failed', 'quarantined', 'needs_review') %}open{% endif %}>
     <summary><span class="mono-label" id="pipeline-heading">Materials processing</span><strong>{{ status_label }} · {{ progress_percent }}%</strong></summary>
     <div class="pipeline-card__body">
@@ -45,81 +118,6 @@
     </div>
   </details>
 
-  <div class="file-card-grid">
-    <section class="file-card sh-card {{ 'ready' if slide_revision and not slide_problem else 'missing' }}">
-      <div class="file-card-title">
-        <span class="file-state-icon" aria-hidden="true">{{ "✓" if slide_revision else "↑" }}</span>
-        <h2>Lecture Materials</h2>
-      </div>
-      <p class="file-caption">{% if slide_revision and slide_problem %}Lecture PDF {{ slide_problem }}.{% elif slide_revision %}{{ slide_revision.canonical_derived_path.name }}{% else %}Not yet uploaded{% endif %}</p>
-      <div class="file-actions lecture-card-actions">
-        {% if slide_revision and not slide_problem %}
-        <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ slide_revision.id }}/pdf">Open Lecture PDF</a>
-        {% elif not slide_revision %}
-        <span class="button disabled sh-btn is-disabled" aria-disabled="true">Lecture PDF unavailable</span>
-        {% endif %}
-        {% if slide_revision %}
-        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ slide_revision.id }}/original">Download original</a>
-        {% endif %}
-      </div>
-    </section>
-    <section class="file-card sh-card {{ 'ready' if transcript_revision and not transcript_problem else 'missing' }}">
-      <div class="file-card-title">
-        <span class="file-state-icon" aria-hidden="true">{{ "✓" if transcript_revision else "↑" }}</span>
-        <h2>Transcript (TXT)</h2>
-      </div>
-      <p class="file-caption">{% if transcript_revision and transcript_problem %}Cleaned transcript {{ transcript_problem }}.{% elif transcript_revision %}{{ transcript_revision.canonical_derived_path.name }}{% else %}Not yet uploaded{% endif %}</p>
-      <div class="file-actions lecture-card-actions">
-        {% if transcript_revision and not transcript_problem %}
-        <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open Transcript</a>
-        {% elif not transcript_revision %}
-        <span class="button disabled sh-btn is-disabled" aria-disabled="true">Cleaned transcript unavailable</span>
-        {% endif %}
-        {% if transcript_revision %}
-        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ transcript_revision.id }}/cleaned/download">Download Transcript</a>
-        {% endif %}
-      </div>
-    </section>
-    {% if outline_output %}
-    <section class="file-card sh-card ready">
-      <div class="file-card-title">
-        <span class="file-state-icon" aria-hidden="true">{{ "✓" if outline_output else "✦" }}</span>
-        <h2>Lecture Outline (PDF)</h2>
-      </div>
-      <p class="file-caption" data-generation-message aria-live="polite">
-        {% if outline_output %}Lecture outline PDF is ready.
-        {% elif outline_job %}{{ outline_job.stage.value.replace('_', ' ').title() }}
-        {% else %}Generated from this lecture's PDF and cleaned transcript only.{% endif %}
-      </p>
-      <div class="file-actions lecture-card-actions{% if not outline_output %} lecture-card-actions--single{% endif %}">
-        {% if outline_output %}
-        <a class="button primary sh-btn sh-btn--primary" data-generation-link href="/artifacts/outlines/{{ outline_output.id }}">Open Lecture Outline</a>
-        <a class="button secondary sh-btn sh-btn--secondary" data-generation-download href="/artifacts/outlines/{{ outline_output.id }}/download">Download Lecture Outline</a>
-        {% endif %}
-      </div>
-
-    </section>
-    {% endif %}
-    <section class="file-card sh-card {{ 'ready' if quiz_output or gpt_quizzes else 'missing' }}" data-gpt-lecture="{{ lecture.id }}" data-kind="quiz" id="gpt-quiz-heading">
-      <div class="file-card-title">
-        <span class="file-state-icon" aria-hidden="true">{{ "✓" if quiz_output or gpt_quizzes else "✦" }}</span>
-        <h2>Lecture Quiz</h2>
-      </div>
-      <p class="file-caption" data-generation-message aria-live="polite">
-        {% if quiz_output or gpt_quizzes %}Study Hub quiz is ready.
-        {% elif quiz_job %}{{ quiz_job.stage.value.replace('_', ' ').title() }}
-        {% else %}Built from this lecture's materials and cleaned transcript only.{% endif %}
-      </p>
-      <div class="file-actions lecture-card-actions">
-        {% if gpt_quizzes %}
-        <a class="button primary sh-btn sh-btn--primary" href="/public/quizzes/{{ gpt_quizzes[0].token }}">Take Lecture Quiz</a>
-        {% elif quiz_output %}
-        <a class="button primary sh-btn sh-btn--primary" href="{{ quiz_output.url }}">Take Lecture Quiz</a>
-        {% endif %}
-      </div>
-      {% include "_gpt_lecture.html" %}
-    </section>
-  </div>
   </div>
 
   <details class="checklist-card sh-card t-accordion" data-processing-checklist>
@@ -208,6 +206,6 @@
 </article>
 {% endblock %}
 {% block scripts %}
-<script src="/static/gpt.js?v=20260914.3" defer></script>
+<script src="/static/gpt.js?v=20260914.4" defer></script>
 <script src="/static/lecture.js?v={{ shell_asset_version }}" defer></script>
 {% endblock %}

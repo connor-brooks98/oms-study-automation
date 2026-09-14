@@ -2346,20 +2346,34 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 .course-toggle { background: var(--card); }
 .row-progress { color: var(--text-3-strong); }
 
-.lecture-workbench {
-  display: grid;
-  grid-template-areas: "outputs status";
-  grid-template-columns: minmax(0, 1fr) minmax(17rem, 20rem);
-  align-items: start;
-  gap: var(--sp-5);
-  margin-block-end: var(--sp-5);
-}
-.lecture-workbench > .pipeline-card { grid-area: status; margin: 0; }
-.lecture-workbench > .file-card-grid { grid-area: outputs; margin: 0; }
+/* Lecture sources stay compact; quiz generation has its own full-width workspace. */
+.lecture-workbench { margin-block-end: var(--sp-5); }
+.lecture-workbench > .file-card-grid { margin: 0; gap: var(--sp-5); }
+.lecture-workbench > .pipeline-card { margin: var(--sp-4) 0 0; padding: var(--sp-3) var(--sp-5); }
 .pipeline-card.sh-panel { border: 1px solid var(--border); }
-.file-card.sh-card { box-shadow: none; }
-.file-card.missing { border-color: var(--border); background: var(--surface); }
-.file-actions .sh-btn { min-height: var(--control-h); padding-inline: var(--sp-4); }
+.lecture-page .file-card { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-5); border-color: var(--border); background: var(--card); box-shadow: none; }
+.lecture-page .file-card-title h2 { margin: 0; font-size: var(--fs-h2); }
+.lecture-page .file-caption { min-height: 0; margin: 0; color: var(--text-2); font: inherit; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.lecture-page .lecture-card-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); margin-block-start: auto; }
+.lecture-page .lecture-card-actions .sh-btn { width: auto; min-height: var(--control-h); padding-inline: var(--sp-4); }
+.lecture-quiz-panel { grid-column: 1 / -1; padding: var(--sp-6); border: 1px solid var(--border); background: var(--card); }
+.lecture-quiz-panel > .file-caption { margin-block: var(--sp-2) var(--sp-4); }
+.lecture-quiz-panel > .lecture-card-actions:empty { display: none; }
+.lecture-quiz-panel > .lecture-card-actions:not(:empty) { margin-block-end: var(--sp-5); }
+.lecture-quiz-panel [data-gpt-quiz-form] { display: grid; gap: var(--sp-3); }
+.lecture-quiz-panel textarea { display: block; width: 100%; min-height: 7rem; resize: vertical; }
+.lecture-quiz-panel [data-gpt-quiz-form] > .sh-btn { justify-self: start; }
+.lecture-quiz-panel .field-help { margin: 0; max-width: 75ch; }
+.lecture-quiz-panel > .field-help { margin-block-start: var(--sp-3); }
+.lecture-quiz-panel [data-gpt-message]:empty { display: none; }
+.lecture-outline-panel { grid-column: 1 / -1; }
+.lecture-quiz-panel [data-quiz-presets] { border-block: 1px solid var(--border); padding-block: var(--sp-3); }
+.lecture-quiz-panel [data-quiz-presets] summary { cursor: pointer; font-weight: 600; min-height: 2rem; }
+.lecture-quiz-panel [data-quiz-presets] .sh-field-label { display: block; margin-block: var(--sp-3) var(--sp-2); }
+.quiz-preset-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-block-end: var(--sp-3); }
+.quiz-preset-row > .sh-input, .quiz-preset-row > .sh-select { flex: 1 1 16rem; min-width: 0; }
+.quiz-preset-row > .sh-btn { flex: 0 1 auto; }
+
 .metadata-panel > form { padding-block-start: var(--sp-3); }
 
 .exam-heading {
@@ -2558,9 +2572,7 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 
 @media (max-width: 58rem) {
   .dashboard-workbench,
-  .lecture-workbench,
   .upload-workbench { grid-template-columns: minmax(0, 1fr); }
-  .lecture-workbench { grid-template-areas: "status" "outputs"; }
   .exam-pass-overview__heading { align-items: flex-start; flex-direction: column; }
   .exam-countdown { grid-template-columns: minmax(0, 1fr); }
   .exam-countdown__action { padding: var(--sp-4) 0 0; border-inline-start: 0; border-top: 1px solid var(--border); }
@@ -2570,6 +2582,8 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
   .dashboard-workbench { gap: var(--sp-3); margin-block-end: var(--sp-8); }
   .dashboard-next { padding: var(--sp-5); }
   .file-card-grid { grid-template-columns: minmax(0, 1fr); }
+  .lecture-quiz-panel { padding: var(--sp-5); }
+  .lecture-page .lecture-card-actions .sh-btn { flex: 1 1 auto; }
   .lecture-row .status-pill {
     position: absolute;
     width: 1px;

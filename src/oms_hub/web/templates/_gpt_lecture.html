@@ -2,6 +2,22 @@
   <label class="sh-field-label" for="quiz-instructions">Quiz instructions <span class="muted">(optional)</span></label>
   <textarea class="sh-textarea" id="quiz-instructions" name="instructions" rows="3" maxlength="4000" aria-describedby="quiz-instructions-help" placeholder="Only slides 2–6, or only text in red"></textarea>
   <p class="field-help" id="quiz-instructions-help">Leave blank for the full lecture. For PDFs, use “only pages 2–6”. Red-only requests require readable PowerPoint text formatting.</p>
+  <details data-quiz-presets>
+    <summary>Saved teacher instructions</summary>
+    <label class="sh-field-label" for="quiz-preset">Preset</label>
+    <div class="quiz-preset-row">
+      <select class="sh-select" id="quiz-preset" data-preset-select><option value="">New preset</option></select>
+      <button class="button secondary sh-btn sh-btn--secondary" type="button" data-preset-apply disabled>Apply instructions</button>
+    </div>
+    <label class="sh-field-label" for="quiz-preset-name">Teacher / preset name</label>
+    <div class="quiz-preset-row">
+      <input class="sh-input" id="quiz-preset-name" data-preset-name maxlength="80" placeholder="Dr. Smith — clinical vignettes">
+      <button class="button secondary sh-btn sh-btn--secondary" type="button" data-preset-save>Save current instructions</button>
+      <button class="button secondary sh-btn sh-btn--secondary" type="button" data-preset-delete disabled>Delete preset</button>
+    </div>
+    <p class="field-help">Apply replaces the instructions above. Save updates the selected preset, or saves by name when “New preset” is selected. Up to 30 presets.</p>
+    <p class="field-message" data-preset-message role="status" aria-live="polite"></p>
+  </details>
   <button class="button primary sh-btn sh-btn--primary" type="submit">Generate lecture quiz</button>
 </form>
 <p class="field-help">Uses this lecture’s current materials and cleaned transcript. Questions are saved to this course and exam for review.</p>

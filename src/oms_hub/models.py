@@ -1163,3 +1163,18 @@ class StudyTopicSuggestionModel(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class QuizInstructionPresetModel(Base):
+    __tablename__ = "quiz_instruction_presets"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name_key", name="uq_quiz_preset_owner_name"),
+        CheckConstraint("length(name) BETWEEN 1 AND 80"),
+        CheckConstraint("length(instructions) BETWEEN 1 AND 4000"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(320))
+    name_key: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(80))
+    instructions: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)

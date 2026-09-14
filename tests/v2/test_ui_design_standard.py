@@ -58,7 +58,7 @@ def test_stylesheet_order_and_system_font_contract() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260911.1" %}' in base
+    assert '{% set shell_asset_version = "20260914.2" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
@@ -199,8 +199,8 @@ def test_daily_workbench_keeps_progress_labels_and_unavailable_actions_honest() 
     assert 'class="dashboard-workbench"' in dashboard
     assert 'class="lecture-workbench"' in lecture
     assert 'href="/uploads/slides" aria-disabled="true"' not in lecture
-    assert "Lecture PDF unavailable" in lecture
-    assert "Cleaned transcript unavailable" in lecture
+    assert "Upload materials</a>" in lecture
+    assert "Upload transcript</a>" in lecture
     assert '<progress class="upload-progress" max="100" value="0"' in uploads
     assert "data-cancel-duplicate" in uploads
     assert "subject }} Lecture {{ \"%02d\"|format(lecture.lecture_number) }}" in review

@@ -430,6 +430,7 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
                     lecture.lecture_number if lecture is not None else None
                 ),
             },
+            "personal_study_available": _owner_library_navigation(request, False),
             "content_url": f"/public/quizzes/{token}/content",
             "answer_url": f"/public/quizzes/{token}/answer",
             "library_url": _public_url((

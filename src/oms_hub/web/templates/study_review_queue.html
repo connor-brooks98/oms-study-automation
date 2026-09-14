@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Missed or guessed · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell sh-container--narrow sh-stack">
+  <header>
+    <h1 class="sh-title">Missed or guessed</h1>
+    <p>Practice questions you missed or marked as a guess in a personal study session. A later correct answer without a guess clears that question.</p>
+    <p><a href="/study/progress">Personal progress</a> · <a href="/study/blocks">All study blocks</a></p>
+  </header>
+  <section class="sh-card" aria-label="Review queue filters">
+    <p><strong>{{ queue.total }}</strong> current question{{ '' if queue.total == 1 else 's' }} to review · {{ queue.items|length }} in this view.</p>
+    <form method="get" action="/study/review" class="sh-stack">
+      <label class="field-label" for="review-course">Course</label>
+      <select class="sh-select" name="course" id="review-course">
+        <option value="">All courses</option>
+        {% for key, label in queue.courses %}<option value="{{ key }}"{% if filters.course == key %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      <label class="field-label" for="review-exam">Exam</label>
+      <select class="sh-select" name="exam" id="review-exam">
+        <option value="0">All exams</option>
+        {% for number in queue.exams %}<option value="{{ number }}"{% if filters.exam == number %} selected{% endif %}>Exam {{ number }}</option>{% endfor %}
+      </select>
+      <label class="field-label" for="review-count">Questions per session</label>
+      <input class="sh-input" type="number" id="review-count" name="count" min="1" max="500" value="{{ filters.count }}" required>
+      <div><button class="sh-btn sh-btn--secondary" type="submit">Apply filters</button></div>
+    </form>
+  </section>
+  {% if selected %}
+  <section class="sh-card">
+    <h2>{{ selected|length }} question{{ '' if selected|length == 1 else 's' }} ready</h2>
+    <p>Oldest review answers first. Only current, available quiz versions can be practiced.</p>
+    <form method="post" action="/study/review/start" class="sh-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="course" value="{{ filters.course or '' }}">
+      <input type="hidden" name="exam" value="{{ filters.exam or 0 }}">
+      <input type="hidden" name="count" value="{{ filters.count }}">
+      <ol>
+        {% for item in selected %}<li>
+          <input type="hidden" name="selected_key" value="{{ item.key }}">
+          {{ item.source_label }} <span class="sh-muted">— {{ item.reason|replace('_', ' ') }}</span>
+        </li>{% endfor %}
+      </ol>
+      <div><button class="sh-btn sh-btn--primary" type="submit">Start review · {{ selected|length }} question{{ '' if selected|length == 1 else 's' }}</button></div>
+    </form>
+    {% if queue.items|length > selected|length %}<p>{{ queue.items|length - selected|length }} more questions match these filters. Adjust the session size to include more.</p>{% endif %}
+  </section>
+  {% elif queue.total %}
+  <section class="sh-card"><h2>No questions match these filters</h2><p><a href="/study/review">Show all missed or guessed questions</a> to choose another course or exam.</p></section>
+  {% else %}
+  <section class="sh-card"><h2>Nothing to review right now</h2><p>Start a personal study session from a quiz. Missed answers and answers marked “I guessed” will appear here.</p><a class="sh-btn sh-btn--secondary" href="/public/quizzes">Browse quizzes</a></section>
+  {% endif %}
+  {% if queue.unavailable %}<p>{{ queue.unavailable }} previously missed or guessed question{{ '' if queue.unavailable == 1 else 's' }} belong to unavailable or changed quiz versions. Your attempt history is retained; those versions cannot be started here.</p>{% endif %}
+</section>
+{% endblock %}

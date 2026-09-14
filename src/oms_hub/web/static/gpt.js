@@ -104,6 +104,89 @@
     return stop;
   }
 
+  function initializePresets(form, documentRef, fetchImpl) {
+    const controls = form.querySelector("[data-quiz-presets]");
+    if (!controls?.querySelector) return;
+    const find = (name) => controls.querySelector(`[data-preset-${name}]`);
+    const select = find("select"), name = find("name"), message = find("message");
+    const apply = find("apply"), save = find("save"), remove = find("delete");
+    const instructions = form.elements.instructions;
+    let presets = [], busy = false;
+    const selected = () => presets.find((preset) => preset.id === select.value);
+    const buttons = () => {
+      select.disabled = name.disabled = save.disabled = busy;
+      apply.disabled = remove.disabled = busy || !selected();
+    };
+    const render = (id = "") => {
+      select.replaceChildren();
+      for (const preset of [{ id: "", name: "New preset" }, ...presets]) {
+        const option = documentRef.createElement("option");
+        option.value = preset.id;
+        option.textContent = preset.name;
+        select.append(option);
+      }
+      select.value = id;
+      buttons();
+    };
+    const request = async (method, id = "", body) => {
+      const response = await fetchImpl(`/study/quiz-presets${id ? `/${encodeURIComponent(id)}` : ""}`, {
+        method, credentials: "same-origin", cache: "no-store",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken(documentRef) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(errorMessage(payload, "Unable to update presets."));
+      return payload;
+    };
+    const act = async (operation) => {
+      if (busy) return;
+      busy = true;
+      buttons();
+      try { await operation(); }
+      catch (error) { message.textContent = error.message || "Unable to update presets."; }
+      finally { busy = false; buttons(); }
+    };
+    select.addEventListener("change", () => {
+      name.value = selected()?.name || "";
+      buttons(); // Choosing a preset never overwrites the editable instructions.
+    });
+    name.addEventListener("keydown", (event) => {
+      // This input shares the quiz form; Enter must not dispatch a generation.
+      if (event.key === "Enter") event.preventDefault();
+    });
+    apply.addEventListener("click", () => {
+      if (busy || !selected()) return;
+      instructions.value = selected().instructions;
+      message.textContent = "Preset applied. You can edit the instructions before generating.";
+    });
+    save.addEventListener("click", () => act(async () => {
+      if (!name.value.trim() || !instructions.value.trim()) throw new Error("Enter a preset name and nonblank quiz instructions.");
+      const id = selected()?.id || "";
+      const preset = await request(id ? "PUT" : "POST", id, { name: name.value, instructions: instructions.value });
+      presets = presets.filter((item) => item.id !== preset.id).concat(preset);
+      render(preset.id);
+      name.value = preset.name;
+      message.textContent = "Preset saved.";
+    }));
+    remove.addEventListener("click", () => act(async () => {
+      const id = selected()?.id;
+      if (!id) return;
+      await request("DELETE", id);
+      presets = presets.filter((item) => item.id !== id);
+      render();
+      message.textContent = "Preset deleted. Your current instructions are still editable and can be saved again.";
+    }));
+    return act(async () => {
+      const payload = await request("GET");
+      if (!Array.isArray(payload.presets) || payload.presets.length > 30 || !payload.presets.every((preset) =>
+        preset && typeof preset.id === "string" && typeof preset.name === "string" && typeof preset.instructions === "string")) {
+        throw new Error("Unable to load saved presets. Your quiz instructions are still editable.");
+      }
+      presets = payload.presets;
+      render();
+    });
+  }
+
   function initialize(documentRef, fetchImpl = root.fetch.bind(root)) {
     const settings = documentRef.querySelector("[data-gpt-settings]");
     if (settings) {
@@ -173,6 +256,7 @@
       const message = lecture.querySelector("[data-gpt-message]");
       const review = lecture.querySelector("[data-gpt-review]");
       const submit = form.querySelector("[type=submit]");
+      initializePresets(form, documentRef, fetchImpl);
       let busy = false;
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -199,7 +283,7 @@
     if (run) return initializeRun(run, documentRef, fetchImpl);
   }
 
-  const api = { objectives, errorMessage, statusText, csrfToken, post, safeLink, runPresentation, initializeRun, initialize };
+  const api = { objectives, errorMessage, statusText, csrfToken, post, safeLink, runPresentation, initializeRun, initializePresets, initialize };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     if (root.document.readyState === "loading") root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

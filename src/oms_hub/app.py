@@ -150,6 +150,7 @@ from oms_hub.study_generation.practice_review import PracticeReviewService
 from oms_hub.study_generation.prompts import PromptFileService
 from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.quiz_import_worker import QuizImportWorker
+from oms_hub.study_generation.quiz_presets import QuizPresetRepository
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import GenerationService, GptLectureService
 from oms_hub.study_generation.studio_repository import StudioRepository
@@ -182,6 +183,8 @@ from oms_hub.web.public_quiz_routes import router as public_quiz_router
 from oms_hub.web.published_quiz_exports import router as published_quiz_export_router
 from oms_hub.web.published_quiz_routes import router as published_quiz_router
 from oms_hub.web.quarantine_routes import router as quarantine_router
+from oms_hub.web.quiz_preset_routes import router as quiz_preset_router
+from oms_hub.web.quiz_source_routes import router as quiz_source_router
 from oms_hub.web.routes import router
 from oms_hub.web.settings_routes import api_router as settings_api_router
 from oms_hub.web.settings_routes import router as settings_router
@@ -1235,6 +1238,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         topics_for=study_topics, media_for=study_media,
     )
     app.state.study_progress_service = ProgressService(app.state.question_bank)
+    app.state.quiz_presets = QuizPresetRepository(database)
 
     def study_publications(owner_id: str) -> tuple[PublishedQuizRecord, ...]:
         if owner_id != study_owner:
@@ -1492,6 +1496,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(study_progress_router)
     app.include_router(gpt_export_router)
     app.include_router(published_quiz_export_router)
+    app.include_router(quiz_preset_router)
+    app.include_router(quiz_source_router)
     app.include_router(create_question_bank_router(
         app.state.question_bank, studio=app.state.studio_repository,
         anki_index=app.state.anki_companion_index))

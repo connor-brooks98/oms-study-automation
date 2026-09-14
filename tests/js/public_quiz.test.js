@@ -1194,3 +1194,65 @@ test("personal source labels render as plain text without changing public quizze
     } else assert.equal(source, null);
   }
 });
+
+test("guessed personal answer is saved and source preview mounts only after grading", async () => {
+  const { documentRef, app } = buildQuizApp();
+  app.dataset.personalSession = "true";
+  app.dataset.quizToken = "personal-session";
+  app.dataset.answerUrl = "/study/sessions/personal-session/answers/{attempt_id}";
+  const rendered = { ...content, questions: [{ ...content.questions[0], attempt_id: "issued" }] };
+  const posts = [], mounts = [];
+  globalThis.StudyHubQuizSources = { mount: (node, context) => mounts.push(context) };
+  try {
+    await quiz.initialize(documentRef, async (url, options) => {
+      if (options?.method === "POST") {
+        posts.push(JSON.parse(options.body));
+        return { ok: true, json: async () => ({ correct: true, correct_choice_id: "c1", rationale: "Saved", guessed: true }) };
+      }
+      return { ok: true, json: async () => rendered };
+    });
+    assert.equal(mounts.length, 0);
+    const checkbox = app.querySelector('[data-focus-key="guessed"]');
+    checkbox.checked = true;
+    checkbox._listeners.change[0]();
+    app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+    await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+    assert.equal(posts[0].guessed, true);
+    assert.deepEqual(mounts, [{ sessionId: "personal-session", attemptId: "issued" }]);
+    assert.ok(findByClass(app, "quiz-guessed-note"));
+  } finally { delete globalThis.StudyHubQuizSources; }
+});
+
+test("guessed staged answer survives reload and cannot change before retry", async () => {
+  const { documentRef, app } = buildQuizApp();
+  app.dataset.personalSession = "true";
+  app.dataset.answerUrl = "/study/sessions/s/answers/{attempt_id}";
+  const rendered = { ...content, questions: [{ ...content.questions[0], attempt_id: "issued",
+    guessed: true, answer: { kind: "choice", choice_id: "c1" } }] };
+  const posts = [];
+  await quiz.initialize(documentRef, async (url, options) => {
+    if (options?.method === "POST") {
+      posts.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ correct: true, correct_choice_id: "c1", rationale: "Saved", guessed: true }) };
+    }
+    return { ok: true, json: async () => rendered };
+  });
+  const checkbox = app.querySelector('[data-focus-key="guessed"]');
+  assert.equal(checkbox.checked, true);
+  assert.equal(checkbox.disabled, true);
+  checkbox.checked = false;
+  checkbox._listeners.change[0]();
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+  assert.equal(posts[0].guessed, true);
+});
+
+test("public quizzes never expose private confidence or source controls", async () => {
+  const { documentRef, app } = buildQuizApp();
+  let mounts = 0;
+  globalThis.StudyHubQuizSources = { mount: () => mounts++ };
+  try {
+    await quiz.initialize(documentRef, async () => ({ ok: true, json: async () => content }));
+    assert.equal(app.querySelector('[data-focus-key="guessed"]'), null);
+    assert.equal(mounts, 0);
+  } finally { delete globalThis.StudyHubQuizSources; }
+});

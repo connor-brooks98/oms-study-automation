@@ -1357,3 +1357,19 @@ def test_mixed_library_uses_studio_label_and_lecture_number(tmp_path):
     assert lecture.token in quiz_library.text
     assert "Neuro Lecture 01" in quiz_library.text
     assert "General CNS Pathology" in quiz_library.text
+
+
+def test_personal_study_entry_is_visible_locally_but_not_on_shared_public_host(tmp_path):
+    app, published = _published_app(tmp_path, public=True)
+    client = TestClient(app, base_url="http://127.0.0.1")
+    path = f"/public/quizzes/{published.token}"
+    local = client.get(path)
+    assert local.status_code == 200
+    assert "Study with progress &amp; sources" in local.text
+    assert f"/study/sessions/new?quiz_token={published.token}" in local.text
+    shared = client.get(path, headers={"host": "study.example.com"})
+    assert shared.status_code == 200
+    assert "Study with progress &amp; sources" not in shared.text
+    assert "quiz_sources.js" not in shared.text
+    assert client.get(f"/study/sessions/new?quiz_token={published.token}",
+                      headers={"host": "study.example.com"}).status_code != 200

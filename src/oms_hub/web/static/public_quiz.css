@@ -582,3 +582,14 @@
   .quiz-answer-row { grid-template-columns: minmax(0, 1fr) 2.45rem; }
   .quiz-answer { padding: .65rem; }
 }
+
+.quiz-confidence { display: flex; align-items: center; gap: var(--sp-3); min-height: 44px; padding-block: var(--sp-3); cursor: pointer; }
+.quiz-confidence input { width: 1.15rem; height: 1.15rem; flex: none; accent-color: var(--brand); }
+.quiz-guessed-note { font-size: var(--fs-sm); }
+.quiz-explanation-layout { display: grid; gap: var(--sp-4); align-items: start; }
+.quiz-explanation-layout > * { min-width: 0; }
+.quiz-explanation-layout > .quiz-feedback { margin-block-start: 0; }
+@media (min-width: 64rem) {
+  .quiz-app.sh-container--narrow[data-personal-session="true"] { max-width: 72rem; }
+  [data-personal-session="true"] .quiz-explanation-layout:has(.quiz-source-panel) { grid-template-columns: minmax(0, 1fr) minmax(16rem, .8fr); }
+}

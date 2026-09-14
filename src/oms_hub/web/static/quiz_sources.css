@@ -1,0 +1,8 @@
+.quiz-sources { margin-block: 0; padding: .85rem 1rem; border: 1px solid var(--border, #d5dbe5); border-radius: .65rem; max-width: 100%; }
+.quiz-sources summary { cursor: pointer; font-weight: 650; }
+.quiz-sources summary:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
+.quiz-sources-body { overflow-wrap: anywhere; }
+.quiz-sources article + article { border-top: 1px solid var(--border, #d5dbe5); margin-top: 1rem; padding-top: .5rem; }
+.quiz-sources h4 { margin: 1rem 0 .5rem; }
+.quiz-sources blockquote { white-space: pre-wrap; margin: .5rem 0; padding-left: .8rem; border-left: 1px solid var(--border, #d5dbe5); line-height: 1.6; }
+@media (max-width: 640px) { .quiz-sources { padding: .75rem; width: 100%; box-sizing: border-box; } }

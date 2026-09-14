@@ -84,6 +84,7 @@ class AnswerReceipt:
     bank_attempt_id: int
     result: Result
     feedback: dict[str, object]
+    guessed: bool = False
 
 
 def _hash(publication: PublishedQuizRecord) -> str:
@@ -255,13 +256,14 @@ class StudySessionService:
                     staged = json.loads(row.selected_answer_json)
                     question["answer"] = staged["submission"]
                     question["elapsed_ms"] = row.elapsed_ms
+                    question["guessed"] = staged.get("guessed", False)
                     if row.bank_attempt_id is not None:
                         question["feedback"] = staged["feedback"]
                 delivered.append(question)
             title = (
                 publication.title
                 if len(publications) == 1 and len(rows) == len(publication.quiz.questions)
-                else f"Study block · {len(rows)} questions"
+                else f"Study block · {len(rows)} question{'' if len(rows) == 1 else 's'}"
             )
             return SessionView(
                 owned.id,
@@ -285,9 +287,11 @@ class StudySessionService:
         *,
         owner_id: str,
         elapsed_ms: int | None = None,
+        guessed: bool = False,
     ) -> AnswerReceipt:
         TypeAdapter(UuidId).validate_python(attempt_id)
         TypeAdapter(Duration | None).validate_python(elapsed_ms)
+        TypeAdapter(Annotated[bool, Field(strict=True)]).validate_python(guessed)
         submission = AnswerSelection.model_validate_json(submission.model_dump_json())
         with self._session_factory() as session:
             # Serialize staging, then release the DB before Q's independent atomic transaction.
@@ -299,7 +303,11 @@ class StudySessionService:
             key = _key(row.quiz_token, row.quiz_version, row.quiz_content_sha256, row.question_id)
             if row.selected_answer_json is not None:
                 staged = json.loads(row.selected_answer_json)
-                if staged["submission"] != submission.model_dump() or row.elapsed_ms != elapsed_ms:
+                if (
+                    staged["submission"] != submission.model_dump()
+                    or row.elapsed_ms != elapsed_ms
+                    or staged.get("guessed", False) != guessed
+                ):
                     raise ValueError("Answer conflict")
             else:
                 if owned.closed_at is not None:
@@ -329,6 +337,7 @@ class StudySessionService:
                     "submission": submission.model_dump(),
                     "feedback": feedback,
                     "result": result,
+                    "guessed": guessed,
                     "topics": [
                         t.model_dump()
                         for t in self.topics_for(owner_id, key)
@@ -367,7 +376,9 @@ class StudySessionService:
             if row.bank_attempt_id not in (None, fact.id):
                 raise ValueError("Bank receipt conflict")
             row.bank_attempt_id = fact.id
-        return AnswerReceipt(attempt_id, fact.id, fact.result, staged["feedback"])
+        return AnswerReceipt(
+            attempt_id, fact.id, fact.result, staged["feedback"], staged.get("guessed", False)
+        )
 
     def close(self, session_id: str, *, owner_id: str) -> None:
         with self._session_factory() as session:

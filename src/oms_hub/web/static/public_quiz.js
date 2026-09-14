@@ -23,7 +23,7 @@
         choiceIds: question.choices.map((choice) => choice.id),
         selectedChoiceIds: Object.fromEntries(question.prompts.map((prompt) => [prompt.id, null])),
         highlights: [], submitted: false, submitting: false,
-        submissionError: null, feedback: null, flagReason: null,
+        submissionError: null, feedback: null, flagReason: null, guessed: false,
       };
     }
     return {
@@ -31,7 +31,7 @@
       selectedChoiceId: null,
       eliminatedChoiceIds: [],
       highlights: [], submitted: false, submitting: false,
-      submissionError: null, feedback: null, flagReason: null,
+      submissionError: null, feedback: null, flagReason: null, guessed: false,
     };
   };
 
@@ -75,6 +75,13 @@
         return question;
       }
       return { ...question, selectedChoiceId: choiceId };
+    })
+  );
+
+  const setGuessed = (state, questionId, guessed) => (
+    updateQuestion(state, questionId, (question) => {
+      if (question.submitted || question.submitting || question.submissionError) return question;
+      return { ...question, guessed: guessed === true };
     })
   );
 
@@ -440,6 +447,7 @@
     expectedQuestion,
     attemptId = null,
     elapsedMs = null,
+    guessed = false,
   ) => {
     let response;
     try {
@@ -452,8 +460,8 @@
         },
         body: JSON.stringify(attemptId
           ? (typeof answer === "string"
-            ? { kind: "choice", choice_id: answer, elapsed_ms: elapsedMs }
-            : { kind: "matching", matches: answer, elapsed_ms: elapsedMs })
+            ? { kind: "choice", choice_id: answer, elapsed_ms: elapsedMs, ...(guessed ? { guessed: true } : {}) }
+            : { kind: "matching", matches: answer, elapsed_ms: elapsedMs, ...(guessed ? { guessed: true } : {}) })
           : (typeof answer === "string"
             ? { question_id: questionId, choice_id: answer }
             : { kind: "matching", question_id: questionId, matches: answer })),
@@ -648,6 +656,7 @@
         for (const question of content.questions) {
           const answer = question.answer;
           if (!answer) continue;
+          state = setGuessed(state, question.id, question.guessed === true);
           if (answer.kind === "matching") {
             for (const [prompt, choice] of Object.entries(answer.matches)) {
               state = selectMatch(state, question.id, prompt, choice);
@@ -1098,9 +1107,38 @@
         } else {
           feedback.hidden = true;
         }
-        body.append(feedback);
+        const explanation = element(documentRef, "div", "quiz-explanation-layout");
+        explanation.append(feedback);
+        if (personalSession && questionProgress.submitted) {
+          if (questionProgress.guessed) {
+            feedback.append(element(documentRef, "p", "quiz-guessed-note",
+              "Marked as guessed — saved to Missed or guessed for another try."));
+          }
+          if (root.StudyHubQuizSources) {
+            const sources = element(documentRef, "aside", "quiz-source-panel");
+            sources.setAttribute("aria-label", "Question sources");
+            explanation.append(sources);
+            root.StudyHubQuizSources.mount(sources, {
+              sessionId: app.dataset.quizToken, attemptId: question.attempt_id,
+            });
+          }
+        }
+        body.append(explanation);
 
         if (!questionProgress.submitted) {
+          if (personalSession) {
+            const confidence = element(documentRef, "label", "quiz-confidence");
+            const guessed = element(documentRef, "input", "", undefined, "guessed");
+            guessed.type = "checkbox";
+            guessed.checked = questionProgress.guessed === true;
+            guessed.disabled = selectionLocked || questionProgress.submitting || Boolean(questionProgress.submissionError);
+            guessed.addEventListener("change", () => {
+              if (guessed.disabled) return;
+              state = setGuessed(state, question.id, guessed.checked);
+            });
+            confidence.append(guessed, element(documentRef, "span", "", "I’m guessing — review this again"));
+            body.append(confidence);
+          }
           if (questionProgress.submissionError) {
             const message = element(documentRef, "p", "quiz-error");
             message.setAttribute("role", "alert");
@@ -1176,6 +1214,7 @@
                 questionProgress,
                 personalSession ? question.attempt_id : null,
                 question.elapsed_ms ?? null,
+                state.questions[question.id].guessed === true,
               );
               state = recordFeedback(
                 state,
@@ -1299,6 +1338,7 @@
     selectChoice,
     selectMatch,
     setFlagReason,
+    setGuessed,
     serializeProgress,
     toggleEliminated,
   };

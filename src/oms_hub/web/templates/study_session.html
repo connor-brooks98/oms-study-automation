@@ -13,7 +13,7 @@
 </section>
 {% else %}
 <link rel="stylesheet" href="/public/quizzes/assets/player.css?v={{ player_asset_version }}">
-<div class="page-shell sh-container--narrow"><a href="/study/progress">Personal progress</a>
+<div class="page-shell sh-container--narrow"><a href="/study/progress">Personal progress</a> · <a href="/study/review">Missed or guessed</a>
   <p>Answers are saved to this personal session. Reloading restores saved answers.</p>
   {% if view.closed %}<p>This session is closed. New answers are disabled.</p>{% endif %}
 </div>
@@ -23,6 +23,8 @@
   data-answer-url="/study/sessions/{{ view.id }}/answers/{attempt_id}">
   <p role="status">Loading {{ view.title }}…</p>
 </section>
+<link rel="stylesheet" href="/static/quiz_sources.css?v={{ player_asset_version }}">
+<script src="/static/quiz_sources.js?v={{ player_asset_version }}" defer></script>
 <script src="/public/quizzes/assets/player.js?v={{ player_asset_version }}" defer></script>
 {% endif %}
 {% endblock %}
