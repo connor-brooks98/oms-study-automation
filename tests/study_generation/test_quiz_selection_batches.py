@@ -127,3 +127,58 @@ def test_character_limit_finds_uneven_partition_when_midpoint_cannot_fit(tmp_pat
     expected_sources = json.loads(_canonical(evidence["sources"]))
     assert all(payload["sources"] == expected_sources for payload in payloads)
     assert all([asset.key for asset in assets] == ["figure-1"] for _, _, assets in batches)
+
+
+def test_character_partition_can_cross_preliminary_question_group_boundary(tmp_path, monkeypatch):
+    inputs = _inputs(tmp_path)
+    slides = inputs.documents[0]
+    manifest = source_manifest(inputs)
+    evidence = compact_evidence(inputs)
+    evidence["sources"][1]["segments"][0]["text"] += "x" * (96_300 - len(_canonical(evidence)))
+    assert len(_canonical(evidence)) == 96_300
+    assert len(evidence["images"]) == 1 and evidence["images"][0]["needs_preview"] is True
+    plan = QuizPlan.model_validate({
+        "title": "Partition across the preliminary boundary",
+        "questions": [{
+            "id": f"q{index}",
+            "focus": "x" * 2000 if index in {20, 22} else "x",
+            "objective_ids": [key for key, _ in inputs.objectives],
+            "source_segments": [{"source_id": slides.source_id, "segment_key": "block-1"}],
+            "image": None,
+        } for index in range(26)],
+    })
+
+    def planner(client, request_id, model, supplied, **kwargs):
+        validate_quiz_plan(plan, supplied)
+        return plan
+
+    def prospective_size(questions):
+        return len(_canonical({
+            **evidence, "manifest_sha256": manifest["sha256"],
+            "question_plan": [question.model_dump(mode="json") for question in questions],
+            "images": [{**evidence["images"][0], "input_index": 0}],
+        }))
+
+    # Fixing a 23+3 boundary traps both large plans in the first group's minimum
+    # three-question tail. Moving the boundary allows a valid 13+9+4 partition.
+    assert prospective_size(plan.questions[20:23]) > MAX_SOURCE_CHARACTERS
+    assert all(prospective_size(group) <= MAX_SOURCE_CHARACTERS for group in (
+        plan.questions[:13], plan.questions[13:22], plan.questions[22:],
+    ))
+    monkeypatch.setattr(quiz_selection, "compact_evidence", lambda _: deepcopy(evidence))
+    monkeypatch.setattr(quiz_selection, "plan_lecture_quiz", planner)
+    batches = quiz_selection.prepare_selected_batches(
+        object(), "cross-group-split", "unused", inputs, manifest,
+        root=tmp_path / "selection", cancelled=lambda: False,
+        on_lifecycle=lambda event: None, resume=False,
+    )
+    payloads = [json.loads(source) for _, source, _ in batches]
+    assert all(3 <= len(payload["question_plan"]) <= 25 for payload in payloads)
+    assert all(len(source) <= MAX_SOURCE_CHARACTERS for _, source, _ in batches)
+    assert [question for payload in payloads for question in payload["question_plan"]] == (
+        plan.model_dump(mode="json")["questions"]
+    )
+    expected_sources = json.loads(_canonical(evidence["sources"]))
+    assert all(payload["sources"] == expected_sources for payload in payloads)
+    assert all(len(images) <= MAX_BATCH_IMAGES for _, _, images in batches)
+    assert all([asset.key for asset in assets] == ["figure-1"] for _, _, assets in batches)

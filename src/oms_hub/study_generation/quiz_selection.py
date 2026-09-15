@@ -53,57 +53,40 @@ def prepare_selected_batches(
             "required_preview_images": len(previews), "planned_questions": len(plan.questions),
         })
 
-    groups: list[list[PlannedQuestion]] = [[]]
-    for question in plan.questions:
-        if len(selected([question])) > MAX_BATCH_IMAGES:
-            raise limit()
-        if groups[-1] and (len(groups[-1]) >= 25 or len(
-            selected([*groups[-1], question])
-        ) > MAX_BATCH_IMAGES):
-            groups.append([])
-        groups[-1].append(question)
-    if len(groups) > 1 and len(groups[-1]) < 3:
-        while len(groups[-1]) < 3 and len(groups[-2]) > 3:
-            if len(selected([groups[-2][-1], *groups[-1]])) > MAX_BATCH_IMAGES:
-                raise limit()
-            groups[-1].insert(0, groups[-2].pop())
-    if any(len(group) < 3 for group in groups):
+    questions = plan.questions
+    packed: dict[int, tuple[tuple[LectureInputs, str, tuple[ParsedAsset, ...]], ...]] = {
+        len(questions): (),
+    }
+    for start in range(len(questions) - 3, -1, -1):
+        # Consider all legal boundaries together: question plans and images vary
+        # in size, so pre-grouping can reject a lecture that fits uneven batches.
+        for end in range(min(start + 25, len(questions)), start + 2, -1):
+            if end not in packed:
+                continue
+            group = questions[start:end]
+            image_keys = sorted(selected(group))
+            if len(image_keys) > MAX_BATCH_IMAGES:
+                continue
+            objective_ids = {key for q in group for key in q.objective_ids}
+            batch = replace(inputs, objectives=tuple(
+                pair for pair in inputs.objectives if pair[0] in objective_ids
+            ))
+            source = _canonical({
+                **evidence,
+                "objectives": [{"id": key, "text": text} for key, text in batch.objectives],
+                "question_plan": [q.model_dump(mode="json") for q in group],
+                "images": [{**inventory[key], "input_index": index}
+                           for index, key in enumerate(image_keys)],
+            })
+            if len(source) > MAX_SOURCE_CHARACTERS:
+                continue
+            packed[start] = ((batch, source, tuple(assets[key] for key in image_keys)),
+                             *packed[end])
+            break
+
+    if 0 not in packed:
         raise limit()
-
-    batches: list[tuple[LectureInputs, str, tuple[ParsedAsset, ...]]] = []
-    for group in groups:
-        packed: dict[int, tuple[tuple[LectureInputs, str, tuple[ParsedAsset, ...]], ...]] = {
-            len(group): (),
-        }
-        for start in range(len(group) - 3, -1, -1):
-            # Try every legal boundary: question plans vary in size, so a fixed
-            # midpoint can reject a lecture that fits in uneven batches.
-            for end in range(len(group), start + 2, -1):
-                if end not in packed:
-                    continue
-                questions = group[start:end]
-                image_keys = sorted(selected(questions))
-                objective_ids = {key for q in questions for key in q.objective_ids}
-                batch = replace(inputs, objectives=tuple(
-                    pair for pair in inputs.objectives if pair[0] in objective_ids
-                ))
-                source = _canonical({
-                    **evidence,
-                    "objectives": [{"id": key, "text": text} for key, text in batch.objectives],
-                    "question_plan": [q.model_dump(mode="json") for q in questions],
-                    "images": [{**inventory[key], "input_index": index}
-                               for index, key in enumerate(image_keys)],
-                })
-                if len(source) > MAX_SOURCE_CHARACTERS:
-                    continue
-                packed[start] = ((batch, source, tuple(assets[key] for key in image_keys)),
-                                 *packed[end])
-                break
-
-        if 0 not in packed:
-            raise limit()
-        batches.extend(packed[0])
-    return batches
+    return list(packed[0])
 
 
 def validate_planned_result(quiz: GeneratedLectureQuiz, source: str) -> None:
