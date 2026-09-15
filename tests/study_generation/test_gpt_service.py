@@ -1,4 +1,5 @@
 import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -136,6 +137,13 @@ def test_gpt_queue_freezes_sources_without_google_and_rechecks_scope(tmp_path, r
     catalog.upsert_lecture(LectureInput('Heme', 3, 1, 'T' * 300, 'Teacher', None))
     long_title = service.queue(lecture_id, owner_id='owner')
     assert len(long_title.label) == 300 and long_title.label.endswith(' - Quiz')
+    service.model = 'new-model'
+    changed_model = service.queue(lecture_id, owner_id='owner')
+    assert changed_model.id != long_title.id
+    assert service.queue(lecture_id, owner_id='owner').id == changed_model.id
+    original = json.loads(repo.run_artifact(long_title.id, 'gpt:settings').payload_json)
+    replacement = json.loads(repo.run_artifact(changed_model.id, 'gpt:settings').payload_json)
+    assert original['model'] == 'fixture' and replacement['model'] == 'new-model'
     with database.session() as session:
         revision = session.scalar(select(StudyRevisionModel).where(
             StudyRevisionModel.kind == 'transcripts'))

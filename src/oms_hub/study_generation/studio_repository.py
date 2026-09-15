@@ -1347,6 +1347,7 @@ class StudioRepository:
                     except (KeyError, TypeError, ValueError):
                         continue
                     if (saved_settings.get("owner_id") == owner_id
+                        and saved_settings.get("model") == model
                         and saved_settings.get("automatic_coverage") is True
                         and saved.get("lecture_id") == inputs.lecture_id
                         and saved.get("instructions", "") == inputs.instructions
