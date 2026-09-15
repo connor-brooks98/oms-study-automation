@@ -1,5 +1,17 @@
+async function queueExtendLMFiles(post, files, notebookId, onQueued) {
+  if (!files.length || files.length > 20) throw new Error("Choose between 1 and 20 files.");
+  // Separate requests keep a batch from exceeding the private Hub proxy's body limit.
+  for (const file of files) {
+    const body = new FormData();
+    body.set("files", file); body.set("notebook_id", notebookId);
+    await post("/uploads", body);
+    await onQueued();
+  }
+}
+if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
 (() => {
   "use strict";
+  if (typeof document === "undefined") return;
   const root = document.querySelector("[data-extendlm]");
   if (!root) return;
   const find = (name) => root.querySelector(`[data-${name}]`);
@@ -106,8 +118,9 @@
   find("files-form").addEventListener("submit", (event) => {
     event.preventDefault();
     action(async () => {
-      const body = new FormData(event.target); body.set("notebook_id", notebook.value);
-      await post("/uploads", body); event.target.reset(); await refresh();
+      const files = Array.from(event.target.querySelector("input[type=file]").files);
+      await queueExtendLMFiles(post, files, notebook.value, refresh);
+      event.target.reset();
     });
   });
   if (find("lecture-upload")) find("lecture-upload").addEventListener("click", () => action(async () => {
