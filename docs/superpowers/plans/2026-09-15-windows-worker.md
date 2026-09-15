@@ -36,6 +36,7 @@ Files: create `src/oms_hub/llm/windows_lpac.py`; modify `src/oms_hub/llm/codex_s
 ### Task 3: Release and workflow
 
 - [x] Obtain fresh read-only review of the security-sensitive diff and acceptance evidence.
-- [ ] Back up deployment/database; stage exact source and runtime hashes; deploy with rollback and health checks.
-- [ ] Queue a new GPT-5.5 quiz after confirming the earlier immutable Terra run has no provider attempt; inspect generated review artifact and exports.
-- [ ] Record the outcome and defer Linux migration in the future ideas document.
+- [x] Back up deployment/database; stage exact source and runtime hashes; deploy with rollback and health checks.
+- [x] Queue a new GPT-5.5 quiz after confirming the earlier immutable Terra run has no provider attempt; inspect generated review artifact and expected export verification gates (HTTP 409, no publication).
+- [x] Record deployment/native evidence and defer Linux migration in the future ideas document.
+- [x] Record final real-lecture result: 24 questions reached review, 25/25 coverage groups, 12 images; healthy throughout, answers remain unverified. See `O-windows-worker-20260915.md` for evidence and limits.
