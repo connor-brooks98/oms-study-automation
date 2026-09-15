@@ -101,7 +101,8 @@ class LectureGenerationError(SessionError):
 
 MAX_BATCH_OBJECTIVES = 25
 MAX_BATCH_IMAGES = 20
-MAX_SOURCE_CHARACTERS = 100_000
+# Includes citation/style metadata as well as lecture text; transport stays capped at 4 MiB.
+MAX_SOURCE_CHARACTERS = 200_000
 _review_verified_images: ContextVar[set[tuple[str, str, int | None, int | None]] | None] = (
     ContextVar("review_verified_images", default=None)
 )

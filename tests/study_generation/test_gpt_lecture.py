@@ -454,7 +454,7 @@ def test_context_blocker_lists_counts_and_every_affected_objective(tmp_path, ove
     inputs = _inputs(tmp_path)
     slide = inputs.documents[0]
     if oversize == "text":
-        slide = replace(slide, segments=(replace(slide.segments[0], text="x" * 100001),))
+        slide = replace(slide, segments=(replace(slide.segments[0], text="x" * 200001),))
     else:
         slide = replace(
             slide,
@@ -474,7 +474,7 @@ def test_context_blocker_lists_counts_and_every_affected_objective(tmp_path, ove
     assert error.value.code == "context_limit"
     assert error.value.objective_ids == tuple(key for key, _ in inputs.objectives)
     assert error.value.counts["source_characters" if oversize == "text" else "images"] > (
-        100000 if oversize == "text" else 20
+        200000 if oversize == "text" else 20
     )
     assert not client.requests
 

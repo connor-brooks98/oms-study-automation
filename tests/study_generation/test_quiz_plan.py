@@ -204,7 +204,11 @@ def test_exclusive_dispatch_prevents_nested_concurrent_call(tmp_path):
 
 def test_text_limit_and_more_than_twenty_inventory_images(tmp_path):
     source = evidence()
-    source["sources"][0]["segments"][0]["text"] = "x" * 100_000
+    source["sources"][0]["segments"][0]["text"] = "x" * 155_000
+    client = Provider()
+    assert run(client, tmp_path / "full-lecture", source)
+    assert json.loads(client.calls[0].source_text) == source
+    source["sources"][0]["segments"][0]["text"] = "x" * 200_000
     client = Provider()
     with pytest.raises(SessionError) as error:
         run(client, tmp_path / "too-large", source)

@@ -83,8 +83,11 @@ def test_character_limit_finds_uneven_partition_when_midpoint_cannot_fit(tmp_pat
     slides = inputs.documents[0]
     manifest = source_manifest(inputs)
     evidence = compact_evidence(inputs)
-    evidence["sources"][1]["segments"][0]["text"] += "x" * (93_000 - len(_canonical(evidence)))
-    assert len(_canonical(evidence)) == 93_000
+    evidence_size = MAX_SOURCE_CHARACTERS - 7_000
+    evidence["sources"][1]["segments"][0]["text"] += "x" * (
+        evidence_size - len(_canonical(evidence))
+    )
+    assert len(_canonical(evidence)) == evidence_size
     plan = QuizPlan.model_validate({
         "title": "Uneven question sizes",
         "questions": [{
@@ -134,8 +137,11 @@ def test_character_partition_can_cross_preliminary_question_group_boundary(tmp_p
     slides = inputs.documents[0]
     manifest = source_manifest(inputs)
     evidence = compact_evidence(inputs)
-    evidence["sources"][1]["segments"][0]["text"] += "x" * (96_300 - len(_canonical(evidence)))
-    assert len(_canonical(evidence)) == 96_300
+    evidence_size = MAX_SOURCE_CHARACTERS - 3_700
+    evidence["sources"][1]["segments"][0]["text"] += "x" * (
+        evidence_size - len(_canonical(evidence))
+    )
+    assert len(_canonical(evidence)) == evidence_size
     assert len(evidence["images"]) == 1 and evidence["images"][0]["needs_preview"] is True
     plan = QuizPlan.model_validate({
         "title": "Partition across the preliminary boundary",
