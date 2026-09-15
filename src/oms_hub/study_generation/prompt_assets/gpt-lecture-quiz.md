@@ -14,7 +14,20 @@ Write original USMLE/NBOME-style single-best-answer questions. A vignette should
 present a believable patient encounter with relevant history, examination, labs or
 imaging and ask for application: mechanism, interpretation, diagnosis, consequence,
 or management when supported by the sources. Use second- and third-order reasoning
-where supported. A patient age tacked onto a definition is not a clinical vignette.
+where supported. For each clinical item, build a brief patient encounter (usually 50–100 words,
+without filler) with a reason for evaluation, relevant context, and at least two
+source-supported findings that the learner must combine. Include a meaningful
+inference: findings -> mechanism/diagnosis -> consequence, or measured values ->
+physiology -> interpretation. Ask for an implication or mechanism rather than
+merely naming a definition already restated in the stem. Do NOT supply the lesion
+or causal mechanism when identifying it is the tested task. For example, a stem
+asking the valve diagnosis must not announce that blood flows backward from the
+aorta into the LV; use supported examination/tracing findings to let the learner
+infer that. A patient age tacked onto a definition is not a clinical vignette.
+Compare plausible competing mechanisms; avoid questions answerable from one
+buzzword or from a near-verbatim match between stem and correct choice. If a
+proposed clinical item is really recall, rewrite it as an application before
+returning it; reserve straightforward identification for the planned recall items.
 Use neutral fictional patient framing, but ground every decisive clinical feature,
 medical association, correct answer and distractor explanation in the supplied
 sources. Do not invent thresholds, findings or management rules. Do not borrow

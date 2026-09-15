@@ -1291,12 +1291,14 @@ class StudioRepository:
         self, inputs: Any, *, run_id: str, owner_id: str, label: str, model: str,
         auto_label: bool = False,
     ) -> StudioRun:
-        from oms_hub.study_generation.gpt_lecture import source_manifest
+        from oms_hub.study_generation.gpt_lecture import _digest, _quiz_prompt, source_manifest
         from oms_hub.study_generation.quiz_import_worker import _document_json
+        from oms_hub.study_generation.quiz_plan import PLAN_PROMPT
 
         if not owner_id or not model.strip() or not label.strip() or len(label) > 300:
             raise ValueError("owner, model and valid label are required")
         manifest = source_manifest(inputs)
+        prompt_hashes = {"writing": _quiz_prompt().sha256, "planning": _digest(PLAN_PROMPT)}
         with self.database.session() as session:
             if session.get_bind().dialect.name == "sqlite":
                 session.execute(text("BEGIN IMMEDIATE"))
@@ -1349,6 +1351,7 @@ class StudioRepository:
                     if (saved_settings.get("owner_id") == owner_id
                         and saved_settings.get("model") == model
                         and saved_settings.get("automatic_coverage") is True
+                        and saved_settings.get("prompt_hashes") == prompt_hashes
                         and saved.get("lecture_id") == inputs.lecture_id
                         and saved.get("instructions", "") == inputs.instructions
                         and saved_pins == source_pins):
@@ -1385,7 +1388,8 @@ class StudioRepository:
                     position=position))
             artifacts = {"gpt:manifest": json.dumps(manifest, sort_keys=True),
                 "gpt:settings": json.dumps({"owner_id": owner_id, "model": model,
-                                            "automatic_coverage": auto_label})}
+                                            "automatic_coverage": auto_label,
+                                            "prompt_hashes": prompt_hashes})}
             artifacts.update({f"parse:{doc.source_id}": _document_json(doc)
                 for doc in inputs.documents})
             for key, payload in artifacts.items():

@@ -62,7 +62,9 @@ def test_automatic_learning_goal_retains_all_evidence_without_per_page_quotas(tm
     assert inputs.documents == (slides, transcript)
 
 
-def test_gpt_queue_freezes_sources_without_google_and_rechecks_scope(tmp_path, request):
+def test_gpt_queue_freezes_sources_without_google_and_rechecks_scope(
+    tmp_path, request, monkeypatch,
+):
     if _isolated_native_check(request):
         return
     import fitz
@@ -146,6 +148,14 @@ def test_gpt_queue_freezes_sources_without_google_and_rechecks_scope(tmp_path, r
     original = json.loads(repo.run_artifact(long_title.id, 'gpt:settings').payload_json)
     replacement = json.loads(repo.run_artifact(changed_model.id, 'gpt:settings').payload_json)
     assert original['model'] == 'fixture' and replacement['model'] == 'new-model'
+    from oms_hub.study_generation import quiz_plan
+
+    monkeypatch.setattr(quiz_plan, 'PLAN_PROMPT', quiz_plan.PLAN_PROMPT + '\nNew style rule.')
+    changed_style = service.queue(lecture_id, owner_id='owner')
+    assert changed_style.id != changed_model.id
+    assert service.queue(lecture_id, owner_id='owner').id == changed_style.id
+    assert json.loads(
+        repo.run_artifact(changed_model.id, 'gpt:settings').payload_json) == replacement
     for text in ('Focus on mechanisms.', '15 questions per objective.', 'fifteen questions'):
         styled = service.queue(lecture_id, owner_id='owner', instructions=text)
         assert service.load_inputs(styled).instructions == text
