@@ -30,3 +30,10 @@ Upload layout checked at 320, 390, 768, 1024, and 1440 px without horizontal ove
 Deployment and actual login outcome are recorded separately under
 `/Users/connor/Developer/release-evidence/gpt-login-20260915`; local tests do not
 establish Windows account login, provider generation, or deployed acceptance.
+
+Native Windows follow-up: the first real login exposed startup rejection of global
+`approval_policy="untrusted"`. A blank-home initialize-only diagnostic captured that
+exact stderr. Overriding only this startup value to `on-request` succeeded; the
+retained accepted Windows fixture uses the same value. Update the shared startup
+configuration accordingly. All feature denials, Windows sandbox requirement,
+thread/turn policies, and the hard Windows generation gate remain unchanged.

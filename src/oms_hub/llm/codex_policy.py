@@ -36,7 +36,7 @@ def policy_args() -> list[str]:
         "model_provider": "openai",
         "cli_auth_credentials_store": "file",
         "sandbox_mode": "read-only",
-        "approval_policy": "untrusted",
+        "approval_policy": "on-request",
         # Never silently select the weaker Windows unelevated backend.
         "windows.sandbox": "elevated",
         "analytics.enabled": False,

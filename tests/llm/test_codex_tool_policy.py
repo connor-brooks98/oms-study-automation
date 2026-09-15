@@ -176,3 +176,21 @@ def test_pinned_native_gpt55_no_environments_rejects_apply_patch(tmp_path):
     assert outputs[0]["output"] == "unsupported custom tool call: apply_patch"
     assert report["canary_created"] is False and report["fixture_unchanged"] is True
     assert report["restrictions_verified"] is False and report["provider_verified"] is False
+
+
+def test_windows_account_startup_uses_supported_policy_without_enabling_generation(
+    tmp_path, monkeypatch
+):
+    import oms_hub.llm.codex_session as session
+
+    monkeypatch.setattr(session.sys, "platform", "win32")
+    client = CodexSessionClient(tmp_path / "codex.exe", tmp_path / "home", tmp_path / "work")
+    assert 'approval_policy="on-request"' in client._command
+    assert 'approval_policy="untrusted"' not in client._command
+    assert 'windows.sandbox="elevated"' in client._command
+    with pytest.raises(SessionError, match="not verified"):
+        client.generate(
+            SessionRequest("fixture", "gpt-5.5", "Fixture", "Fixture"),
+            cancelled=lambda: False, on_lifecycle=lambda _: None,
+        )
+    assert not client.session_home.exists()
