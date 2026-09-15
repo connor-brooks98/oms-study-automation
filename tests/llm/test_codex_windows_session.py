@@ -161,3 +161,95 @@ w.LpacProcess([str(root/'cmd.exe'),'/d','/c','echo MUST_NOT_RUN'],cwd=root/'work
             lpac.CloseHandle(handle)
         for stream in (parent.stdout, parent.stderr):
             stream.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows error semantics")
+@pytest.mark.parametrize("exits", [True, False])
+def test_termination_access_denied_requires_confirmed_exit(monkeypatch, exits):
+    import ctypes
+    import subprocess
+
+    from oms_hub.llm import windows_lpac as lpac
+
+    process = object.__new__(lpac.LpacProcess)
+    process._process = 1
+    process.shutdown_timeout = 0.25
+    monkeypatch.setattr(process, "poll", lambda: None)
+    waits = []
+
+    def terminate(handle, code):
+        ctypes.set_last_error(5)
+        return False
+
+    def wait(timeout):
+        waits.append(timeout)
+        if not exits:
+            raise subprocess.TimeoutExpired("native-test", timeout)
+        return 1
+
+    monkeypatch.setattr(lpac, "Terminate", terminate)
+    monkeypatch.setattr(process, "wait", wait)
+    if exits:
+        process.terminate()
+    else:
+        with pytest.raises(PermissionError):
+            process.terminate()
+    assert waits == [0.25]
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or not os.environ.get("OMS_WINDOWS_CODEX_TEST_EXECUTABLE"),
+    reason="Requires the pinned native Windows runtime",
+)
+def test_native_managed_home_inherits_private_acl_and_persists(tmp_path, monkeypatch):
+    import sqlite3
+    import subprocess
+
+    from oms_hub.llm import codex_session as session
+    from oms_hub.llm.windows_lpac import LpacProcess
+
+    home, work = tmp_path / "home", tmp_path / "work"
+    wires = []
+    original = session._Stdio
+
+    class Capture(original):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            wires.append(self)
+
+    monkeypatch.setattr(session, "_Stdio", Capture)
+    executable = Path(os.environ["OMS_WINDOWS_CODEX_TEST_EXECUTABLE"])
+    for _ in range(2):
+        client = session.CodexSessionClient(executable, home, work)
+        try:
+            status = client.status()
+            assert status.state == "disconnected" and status.error_code == "auth_required", status
+        finally:
+            client.close()
+        with sqlite3.connect(home / "state_5.sqlite") as db:
+            assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+            assert db.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+    assert wires[0].process._sid != wires[1].process._sid
+    cmd = tmp_path / "cmd.exe"
+    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe", cmd)
+    process = LpacProcess(
+        [str(cmd), "/d", "/v:off", "/s", "/c",
+         r"echo PRIVATE>..\home\host-home\tmp\probe.txt & echo BAD>bad.txt & echo BAD>..\bad.txt"],
+        cwd=work,
+        env={key: os.environ[key] for key in ("SystemRoot", "WINDIR", "LOCALAPPDATA")},
+        session_home=home, shutdown_timeout=2,
+    )
+    try:
+        process.stdin.close()
+        process.wait(timeout=15)
+        assert (home / "host-home/tmp/probe.txt").read_text().strip() == "PRIVATE"
+        assert not (work / "bad.txt").exists() and not (tmp_path / "bad.txt").exists()
+    finally:
+        process.close()
+    paths = [home, home / "host-home", home / "host-home/tmp", home / "state_5.sqlite"]
+    icacls = str(Path(os.environ["SystemRoot"]) / "System32/icacls.exe")
+    for path in paths:
+        acl = subprocess.run([icacls, str(path)], capture_output=True, check=True).stdout
+        for child in [w.process for w in wires] + [process]:
+            assert child._profile is None and child._process is None
+            assert child._sid.encode() not in acl

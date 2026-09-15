@@ -486,7 +486,11 @@ class CodexSessionClient:
             ):
                 if directory.resolve() != directory:
                     raise SessionError("capability_unverified")
-                directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+                # Windows 0700 protects the DACL, blocking the private root's LPAC grant.
+                # Keep roots private; descendants inherit that same restricted ACL.
+                mode = (0o777 if sys.platform == "win32" and directory not in
+                        (self.session_home, self.work_root) else 0o700)
+                directory.mkdir(parents=True, exist_ok=True, mode=mode)
                 if os.name != "nt":
                     directory.chmod(0o700)
             # Allowlist inherited platform plumbing, never credentials or provider overrides.

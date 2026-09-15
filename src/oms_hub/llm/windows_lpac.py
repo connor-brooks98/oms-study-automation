@@ -478,6 +478,13 @@ class LpacProcess:
         if self._process and self.poll() is None:
             if not Terminate(self._process, 1):
                 error = c.get_last_error()
+                if error == 5:
+                    # An exiting Windows process can reject termination before it signals.
+                    try:
+                        self.wait(timeout=self.shutdown_timeout)
+                        return
+                    except subprocess.TimeoutExpired:
+                        pass
                 if self.poll() is None:
                     raise c.WinError(error)
 
