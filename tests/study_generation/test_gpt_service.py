@@ -25,7 +25,7 @@ from oms_hub.study_generation.studio_repository import StudioRepository
 from tests.study_generation.test_gpt_lecture import _isolated_native_check
 
 
-def test_automatic_coverage_groups_fragments_without_losing_source_references(tmp_path):
+def test_automatic_learning_goal_retains_all_evidence_without_per_page_quotas(tmp_path):
     from dataclasses import replace
 
     from oms_hub.document_processing.domain import DocumentLocator
@@ -51,13 +51,14 @@ def test_automatic_coverage_groups_fragments_without_losing_source_references(tm
     )))
     inputs = replace(inputs, documents=(slides, transcript))
     targets = _lecture_coverage_targets(inputs)
-    assert len(targets) == 15  # 13 slides and each source's unnumbered context.
-    assert any("slide 13" in text and "image-only-slide" in text for _, text in targets)
-    refs = [text.split("source segments: ")[1].split(").")[0].split(", ")
-            for _, text in targets]
-    assert sorted(key for group in refs for key in group if key) == sorted(
+    assert len(targets) == 1 and targets[0][0] == 'source-all'
+    from oms_hub.study_generation.quiz_evidence import compact_evidence
+
+    evidence = compact_evidence(replace(inputs, objectives=targets))
+    assert [segment['key'] for source in evidence['sources'] for segment in source['segments']] == [
         segment.key for document in inputs.documents for segment in document.segments
-    )
+    ]
+    assert any(image['asset_key'] == 'image-only-slide' for image in evidence['images'])
     assert inputs.documents == (slides, transcript)
 
 
@@ -110,10 +111,11 @@ def test_gpt_queue_freezes_sources_without_google_and_rechecks_scope(tmp_path, r
     assert automatic.label == 'Lecture 01 - Fixture - Quiz'
     assert (automatic.destination_subject, automatic.destination_exam_number) == ('Heme', 3)
     auto_inputs = service.load_inputs(automatic)
-    assert auto_inputs.objectives and auto_inputs.objectives[0][0] == 'source-1-1'
-    assert 'source segment' in auto_inputs.objectives[0][1]
-    assert any(key.startswith('source-2-') for key, _ in auto_inputs.objectives)
+    assert len(auto_inputs.objectives) == 1 and auto_inputs.objectives[0][0] == 'source-all'
     assert auto_inputs.image_required
+    from oms_hub.study_generation.quiz_plan import _question_count_bounds
+
+    assert _question_count_bounds(auto_inputs.instructions) == (12, 12)
     with pytest.raises(ValueError, match='quiz title'):
         service.queue(lecture_id, owner_id='owner', require_images=False)
     with pytest.raises(ValueError, match='quiz title'):
@@ -144,6 +146,11 @@ def test_gpt_queue_freezes_sources_without_google_and_rechecks_scope(tmp_path, r
     original = json.loads(repo.run_artifact(long_title.id, 'gpt:settings').payload_json)
     replacement = json.loads(repo.run_artifact(changed_model.id, 'gpt:settings').payload_json)
     assert original['model'] == 'fixture' and replacement['model'] == 'new-model'
+    for text in ('Focus on mechanisms.', '15 questions per objective.', 'fifteen questions'):
+        styled = service.queue(lecture_id, owner_id='owner', instructions=text)
+        assert service.load_inputs(styled).instructions == text
+    custom = service.queue(lecture_id, owner_id='owner', instructions='Generate 8 questions.')
+    assert _question_count_bounds(service.load_inputs(custom).instructions) == (8, 8)
     with database.session() as session:
         revision = session.scalar(select(StudyRevisionModel).where(
             StudyRevisionModel.kind == 'transcripts'))

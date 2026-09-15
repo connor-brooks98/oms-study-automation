@@ -274,7 +274,8 @@ def _upload_sources(app, client, lecture_id):
 def _queue(client, lecture_id, label="Synthetic image quiz"):
     response = client.post(
         f"/lectures/{lecture_id}/gpt-quiz",
-        json={"label": label, "objectives": OBJECTIVES, "require_images": True},
+        json={"label": label, "objectives": OBJECTIVES, "require_images": True,
+              "instructions": "Generate 3 questions."},
     )
     assert response.status_code == 202, response.text
     return response.json()["run_id"]

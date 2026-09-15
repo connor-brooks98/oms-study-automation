@@ -322,9 +322,9 @@ def test_red_only_real_parser_queue_fake_generation_review_publication_and_expor
             objectives=(("all", "Cover the whole lecture"),),
             instructions="only red text",
         )
-    queued = service.queue(lecture, owner_id="owner", instructions="only red text")
+    queued = service.queue(lecture, owner_id="owner", instructions="3 questions; only red text")
     inputs = service.load_inputs(queued)
-    assert not inputs.image_required and len(inputs.objectives) == 3
+    assert not inputs.image_required and inputs.objectives[0][0] == "source-all"
     client = _ScopedClient(settings.data_dir / "work", inputs)
     images = StudioQuizImageService(repository, settings.data_dir / "media")
     worker = GptLectureWorker(

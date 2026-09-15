@@ -203,9 +203,10 @@ class GptLectureService:
         )
 
         self._authorize(owner_id)
-        instructions = instructions.strip()
+        instructions = instructions.strip() or "Generate exactly 12 questions."
         if len(instructions) > 4000:
-            raise ValueError("Quiz instructions must be 4000 characters or fewer.")
+            raise ValueError(
+                "Quiz instructions must be 4000 characters or fewer.")
         if label is None and (objectives is not None or require_images is not None):
             raise ValueError(
                 "Provide a quiz title when customizing objectives or image requirements.")
@@ -295,31 +296,20 @@ class GptLectureService:
 
 
 def _lecture_coverage_targets(inputs: Any) -> tuple[tuple[str, str], ...]:
-    """One-click source coverage units, not invented faculty learning objectives."""
+    """Keep automatic focus on medical learning goals, not one quota per source page."""
     from oms_hub.study_generation.gpt_lecture import quiz_instruction_documents
 
-    targets = []
-    for document_index, document in enumerate(quiz_instruction_documents(inputs)):
-        groups: dict[str, tuple[list[str], list[str]]] = {}
-        evidence = [
-            (segment.key, segment.locator, 0) for segment in document.segments
-            if segment.text.strip() or segment.asset_keys
-        ] + [(asset.key, asset.locator, 1) for asset in document.assets]
-        for key, locator, kind in evidence:
-            label = (f"slide {locator.slide_number}" if locator.slide_number else
-                     f"page {locator.page_number}" if locator.page_number else
-                     "unnumbered source content")
-            groups.setdefault(label, ([], []))[kind].append(key)
-        for index, (label, (segments, assets)) in enumerate(groups.items()):
-            targets.append((
-                f"source-{document_index + 1}-{index + 1}",
-                f"Assess the clinically relevant concepts in {label} "
-                f"(source {document.source_id}, source segments: {', '.join(segments)}). "
-                f"Source assets: {', '.join(assets) or 'none'}. "
-                "Cover the stated learning objectives and use the complete lecture sources "
-                "for context.",
-            ))
-    if not targets or len(targets) > 500:
-        raise GenerationPrerequisiteError(
-            "Lecture source coverage requires 1–500 readable sections.")
-    return tuple(targets)
+    if not any(segment.text.strip() for document in quiz_instruction_documents(inputs)
+               for segment in document.segments):
+        raise GenerationPrerequisiteError("Lecture sources contain no readable content.")
+    return (("source-all", (
+        "Read the faculty learning objectives in the eligible source text and assess their "
+        "substantive medical concepts. Prioritize explicit professor emphasis in the "
+        "transcript. In each question plan's focus, identify the learning objective or "
+        "testable concept and any supporting emphasis quote. Combine related objectives "
+        "when clinically coherent within the requested count. Do not assign a question "
+        "to every source page or test title, administrative, or objective-list wording. "
+        "When no explicit faculty objectives are present, use the supported medical "
+        "concepts without claiming they are faculty objectives. Use all eligible sources "
+        "as context; do not invent coverage or pad the quiz."
+    )),)
