@@ -1097,7 +1097,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.codex_session = (
         CodexSessionClient(resolved.codex_executable, resolved.data_dir / "codex-session",
-            resolved.data_dir / "codex-work", binary_sha256=resolved.codex_binary_sha256)
+            resolved.data_dir / "codex-work", binary_sha256=resolved.codex_binary_sha256,
+            turn_timeout=600)
         if resolved.codex_executable is not None and resolved.codex_binary_sha256 else None
     )
     app.state.codex_model = (
