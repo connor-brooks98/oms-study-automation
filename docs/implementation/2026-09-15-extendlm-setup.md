@@ -26,7 +26,7 @@ Reuse httpx, existing encrypted storage, CSRF, Cloudflare Access, artifact valid
 2. Install [ExtendLM from Chrome Web Store](https://chromewebstore.google.com/detail/extendlm-notebooklm-exten/jefclkefiknlccjcjmkkhlcfkdgcmgcm) in a supported desktop browser. Sign into ExtendLM and [Gemini Notebook](https://notebook.google.com/) in that profile.
 3. In ExtendLM: Manage Notebooks → profile → Settings → MCP → Enable MCP. Confirm Connected.
 4. In Hub Settings → ExtendLM uploads, choose Sign in. Review the requested upload permissions on ExtendLM's page.
-5. Refresh connections, select the intended browser/account and destination notebook, then send a saved lecture or choose local PDFs/transcripts.
+5. In Settings, refresh connections and select the intended browser/account once. From a lecture, choose Send to NotebookLM, select an existing exam notebook, and send. All lectures for an exam may share that notebook; the Hub restores the saved account automatically. Local file uploads remain available in the Settings page disclosure.
 
 The OAuth callback uses the configured private HTTPS Hub hostname, or the exact loopback URL for local development. No public callback bypass is needed; it remains behind existing Hub authentication. The in-app browser cannot host the Chrome extension. A mobile or managed browser without extension support cannot provide its own bridge.
 
@@ -45,3 +45,12 @@ Implementation and mock tests do not establish live provider acceptance. Complet
 - One existing test fails on both this branch and a clean archive of `0a864d3`: `tests/study_generation/test_notebook_upload_only.py::test_optional_queue_failure_does_not_fail_completed_gpt_ingestion`. Its fake ingestion repository lacks `database` and `fail_job` required by the existing process-control wrapper. No production ingestion code was changed for that failure.
 
 Operational limits: grants and history are per browser sign-in, expire locally after 30 days, and stay in encrypted Hub storage. Reauthorizing creates a separate history; previously accepted sources must be reviewed in NotebookLM before deliberately starting equivalent work under a new grant. Explicit disconnect revokes the grant. Receipts preserve the exact original browser/account; reconnecting a different bridge will not silently reroute a queued job. This release supports existing destination notebooks; create new notebooks in NotebookLM first.
+
+
+### Simplified lecture upload flow — September 15 follow-up
+
+Connor clarified that lectures should share one existing exam notebook, rather than creating individual lecture notebooks or managing ExtendLM folders from the Hub. One-time sign-in and browser/account selection remain in Settings. The lecture send page only shows the exam notebook selector, send button, and upload progress/history; it automatically loads destinations using the saved setup. A missing setup links back to Settings. No new MCP permissions, notebook creation, or changes to the backend upload/retry contracts are needed.
+
+The retained MCP integration is also a potential foundation for source-grounded chatbot answers, uploaded textbook references, and a clearly identified GPT fallback. That future work is recorded in `docs/future-implementation-ideas.md`; the chatbot has not been changed by this UI follow-up.
+
+Follow-up validation: 26 affected Python checks and 58 JavaScript checks pass. The local browser preview verified automatic notebook loading, explicit selection, sending, and the upload receipt using mock responses; no real files or provider grants were used in that preview. Independent review found no blocking issues.

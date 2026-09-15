@@ -321,7 +321,7 @@ def test_routes_private_csrf_cookie_and_local_page(tmp_path, monkeypatch):
         client = TestClient(app)
         page = client.get("/settings/extendlm")
         assert page.status_code == 200
-        assert "Send to NotebookLM" in page.text
+        assert "ExtendLM settings" in page.text
         assert client.get("/settings/extendlm/status").json() == {"signed_in": False}
         assert (
             client.post("/settings/extendlm/connect", data={"csrf_token": "wrong"}).status_code
@@ -413,3 +413,31 @@ def test_stale_account_choice_cannot_select_a_different_browser(tmp_path):
             service.select(key, original)
         service.select(key, replacement)
         assert service.selection(key)["extension_connection"] == provider.connection
+
+
+def test_lecture_send_page_only_needs_exam_notebook_selection(tmp_path, monkeypatch):
+    from selectolax.parser import HTMLParser
+
+    from oms_hub.repositories import LectureInput
+
+    monkeypatch.setattr("oms_hub.app.KeyringSecretStore", Secrets)
+    app = create_app(
+        Settings(_env_file=None, data_dir=tmp_path, database_url=f"sqlite:///{tmp_path / 'hub.db'}")
+    )
+    lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Cardio", 1, 1, "Cardiac physiology", "", None)
+    )
+    client = TestClient(app)
+    page = client.get(f"/settings/extendlm?lecture_id={lecture_id}")
+    assert page.status_code == 200
+    document = HTMLParser(page.text)
+    assert len(document.css("select")) == 1
+    assert document.css_first("[data-notebook]") is not None
+    assert document.css_first("[data-lecture-upload]") is not None
+    assert document.css_first("[data-account]") is None
+    assert document.css_first("[data-connect-form]") is None
+    assert document.css_first("input[type=file]") is None
+    assert document.css_first("[data-setup-needed] a").attributes["href"] == "/settings/extendlm"
+    settings = HTMLParser(client.get("/settings/extendlm").text)
+    assert settings.css_first("[data-account]") is not None
+    assert settings.css_first("[data-connect-form]") is not None

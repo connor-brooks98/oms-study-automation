@@ -16,7 +16,7 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
   if (!root) return;
   const find = (name) => root.querySelector(`[data-${name}]`);
   const message = find("message"), account = find("account"), notebook = find("notebook");
-  let cursor = "", timer, busy = false, signedIn = false;
+  let cursor = "", timer, busy = false, signedIn = false, notebooksLoaded = false;
   const endpoint = "/settings/extendlm";
   async function post(path, fields = {}) {
     const body = fields instanceof FormData ? fields : new FormData();
@@ -30,10 +30,10 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
   }
   function availability() {
     root.querySelectorAll("button").forEach((button) => { button.disabled = busy; });
-    find("accounts").disabled = busy || !signedIn;
-    account.disabled = busy || account.options.length < 2;
+    if (find("accounts")) find("accounts").disabled = busy || !signedIn;
+    if (account) account.disabled = busy || account.options.length < 2;
     notebook.disabled = busy || notebook.options.length < 2;
-    find("upload").disabled = busy || !notebook.value;
+    if (find("upload")) find("upload").disabled = busy || !notebook.value;
     if (find("lecture-upload")) find("lecture-upload").disabled = busy || !notebook.value;
   }
   async function action(work) {
@@ -48,7 +48,7 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
   }
   async function loadNotebooks(continuation = "") {
     const data = await post("/notebooks", { cursor: continuation });
-    if (!continuation) notebook.replaceChildren(option("", "Choose a notebook"));
+    if (!continuation) notebook.replaceChildren(option("", "Choose an exam notebook"));
     data.items.forEach((item) => notebook.append(option(item.id, item.title || "Untitled notebook")));
     cursor = data.next_cursor; find("more").hidden = !cursor; notebook.disabled = false;
     availability();
@@ -85,16 +85,26 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
     if (!response.ok) throw new Error("Hub sign-in is unavailable. Reload the page.");
     const data = await response.json();
     signedIn = data.signed_in;
-    find("auth-status").textContent = data.signed_in ? "Hub authorization saved. Refresh connections to verify your browser and Google account." : "Sign in to authorize uploads from this browser.";
-    find("disconnect").hidden = !data.signed_in;
-    find("accounts").disabled = !data.signed_in;
+    const configured = signedIn && data.selected;
+    if (find("auth-status")) find("auth-status").textContent = configured ? "Setup saved. Use Send to NotebookLM from any lecture and choose its exam notebook." : signedIn ? "Signed in. Choose your browser and Google account below to finish setup." : "Sign in to authorize uploads from this browser.";
+    if (find("disconnect")) find("disconnect").hidden = !signedIn;
+    if (find("setup-needed")) find("setup-needed").hidden = !!configured;
+    if (!configured) {
+      notebook.replaceChildren(option("", "Choose an exam notebook"));
+      notebooksLoaded = false;
+      find("more").hidden = true;
+    }
     renderJobs(data.jobs || []);
     availability();
+    if (configured && !notebooksLoaded) {
+      notebooksLoaded = true;
+      await loadNotebooks();
+    }
     if ((data.jobs || []).some((j) => ["queued", "uploading"].includes(j.status))) {
       timer = setTimeout(() => refresh().catch((e) => { message.textContent = e.message; }), 4000);
     }
   }
-  find("connect-form").addEventListener("submit", (event) => {
+  find("connect-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     action(async () => {
       const data = await post("/connect", new FormData(event.target));
@@ -102,8 +112,8 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
       window.location.assign(data.authorization_url);
     });
   });
-  find("accounts").addEventListener("click", () => action(async () => {
-    notebook.replaceChildren(option("", "Choose a notebook")); notebook.disabled = true;
+  find("accounts")?.addEventListener("click", () => action(async () => {
+    notebook.replaceChildren(option("", "Choose an exam notebook")); notebook.disabled = true;
     find("more").hidden = true; account.disabled = true;
     const data = await post("/accounts");
     account.replaceChildren(option("", "Choose an account"));
@@ -111,19 +121,20 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
     account.disabled = !data.accounts.length;
     if (!data.accounts.length) throw new Error("No connected browser. Open ExtendLM, sign into both accounts, and enable MCP.");
   }));
-  account.addEventListener("change", () => action(async () => {
-    notebook.replaceChildren(option("", "Choose a notebook")); notebook.disabled = true;
+  account?.addEventListener("change", () => action(async () => {
+    notebook.replaceChildren(option("", "Choose an exam notebook")); notebook.disabled = true;
     if (!account.value) return;
-    await post("/select", { choice: account.value }); await loadNotebooks();
+    await post("/select", { choice: account.value });
+    notebooksLoaded = false; await refresh();
   }));
   notebook.addEventListener("change", availability);
   find("more").addEventListener("click", () => action(() => loadNotebooks(cursor)));
-  find("disconnect").addEventListener("click", () => action(async () => {
-    await post("/disconnect"); notebook.replaceChildren(option("", "Choose a notebook"));
+  find("disconnect")?.addEventListener("click", () => action(async () => {
+    await post("/disconnect"); notebooksLoaded = false; notebook.replaceChildren(option("", "Choose an exam notebook"));
     account.replaceChildren(option("", "Choose an account")); account.disabled = true;
     notebook.disabled = true; find("more").hidden = true; await refresh();
   }));
-  find("files-form").addEventListener("submit", (event) => {
+  find("files-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     action(async () => {
       const files = Array.from(event.target.querySelector("input[type=file]").files);

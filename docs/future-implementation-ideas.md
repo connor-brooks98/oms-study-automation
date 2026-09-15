@@ -4,6 +4,16 @@ This is the running backlog for ideas to consider after the current work. An ent
 
 ## Ideas
 
+### 2026-09-15 — NotebookLM resources for the Hub chatbot through ExtendLM MCP
+
+**Status:** Idea; chatbot integration deferred, retain MCP support in the upload workflow
+
+Connor wants the ExtendLM MCP connection to support the Hub chatbot as well as easy exam-folder uploads. Use uploaded lecture slides and transcripts for direct, cited answers; allow Connor to add textbooks as supplementary reference knowledge. If those resources do not answer a question, keep the existing GPT connection available as a fallback.
+
+Core behavior: prefer the selected lecture/exam resources, distinguish textbook references, and clearly identify when an answer comes from GPT fallback rather than the uploaded sources. Preserve citations and source boundaries. One-time ExtendLM setup belongs in Settings; sending a lecture should require choosing its existing exam notebook. Connor clarified that all lectures for an exam can share that notebook; separate lecture notebooks and automated folder creation are unnecessary.
+
+Decide during implementation: which resources to search for a given question, supported MCP retrieval/query tools and citation contracts, how textbook coverage is selected, when source evidence is insufficient and fallback should run, and how browser availability affects answers. This entry does not authorize implementing the chatbot or uploading textbooks now.
+
 ### 2026-09-13 — Optional Windows application control or app isolation
 
 **Status:** Consider later; not approved for installation or configuration

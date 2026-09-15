@@ -3,17 +3,17 @@
 {% block content %}
 <section class="page-shell sh-container settings-page" data-extendlm data-csrf="{{ request.state.csrf_token }}"{% if lecture %} data-lecture-id="{{ lecture.id }}"{% endif %}>
   <header class="sh-header"><div>
-    <h1 class="sh-title">Send to NotebookLM</h1>
-    <p class="sh-subtitle">Upload slides and transcripts through ExtendLM.</p>
+    <h1 class="sh-title">{{ "Send to NotebookLM" if lecture else "ExtendLM settings" }}</h1>
+    <p class="sh-subtitle">{{ lecture.topic if lecture else "Connect once on this computer, then send lectures to an exam notebook." }}</p>
   </div></header>
   <p><a href="/settings">Settings</a>{% if lecture %} · <a href="/lectures/{{ lecture.id }}">Back to {{ lecture.topic }}</a>{% endif %}</p>
+  {% if not lecture %}
   <section class="sh-card settings-card" aria-labelledby="connect-heading">
-    <h2 id="connect-heading">1. Connect this computer</h2>
+    <h2 id="connect-heading">Connect this computer</h2>
     <p>Use a supported desktop browser with ExtendLM installed. Sign into ExtendLM and Google in that same profile, then enable MCP in ExtendLM Settings and confirm “Connected”. Keep that browser open while uploads run.</p>
     <p><a href="https://chromewebstore.google.com/detail/extendlm-notebooklm-exten/jefclkefiknlccjcjmkkhlcfkdgcmgcm" target="_blank" rel="noopener noreferrer">Install ExtendLM</a> · <a href="https://extendlm.com/" target="_blank" rel="noopener noreferrer">Sign in to ExtendLM</a> · <a href="https://notebook.google.com/" target="_blank" rel="noopener noreferrer">Sign in to Google / open NotebookLM</a> · <a href="https://extendlm.com/support/mcp" target="_blank" rel="noopener noreferrer">MCP setup guide</a></p>
     <form method="post" action="/settings/extendlm/connect" data-connect-form>
       <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
-      {% if lecture %}<input type="hidden" name="lecture_id" value="{{ lecture.id }}">{% endif %}
       <button class="sh-btn sh-btn--primary" type="submit">Sign in and authorize Hub uploads</button>
       <button class="sh-btn sh-btn--secondary" type="button" data-disconnect hidden>Disconnect this Hub sign-in</button>
     </form>
@@ -21,39 +21,49 @@
     <p class="field-help">Each browser signs in separately. Google passwords and cookies stay with Google and your browser. A new authorization creates a separate upload history.</p>
   </section>
   <section class="sh-card settings-card" aria-labelledby="destination-heading">
-    <h2 id="destination-heading">2. Choose a destination</h2>
+    <h2 id="destination-heading">Save your browser and Google account</h2>
     <button class="sh-btn sh-btn--secondary" type="button" data-accounts>Refresh connected browsers</button>
     <label for="extendlm-account">Browser and Google account</label>
     <select id="extendlm-account" data-account disabled><option value="">Choose an account</option></select>
     <p class="field-help">If several browsers are connected, close the ones you are not using and refresh to identify this computer. Account 0 is a valid Google account.</p>
-    <label for="extendlm-notebook">Notebook</label>
-    <select id="extendlm-notebook" data-notebook disabled><option value="">Choose a notebook</option></select>
-    <button class="sh-btn sh-btn--secondary" type="button" data-more hidden>Load more notebooks</button>
+    <p class="field-help">This choice is saved for future uploads on this computer.</p>
   </section>
+  {% endif %}
+  {% if lecture %}
+  <p data-setup-needed hidden><a href="/settings/extendlm">Finish ExtendLM setup in Settings</a>, then return here to send this lecture.</p>
+  {% else %}
+  <details class="settings-disclosure"><summary>Send files from this computer</summary>
+  {% endif %}
   <section class="sh-card settings-card" aria-labelledby="files-heading">
-    <h2 id="files-heading">3. Send your files</h2>
+    <h2 id="files-heading">{{ "Choose an exam notebook" if lecture else "Send files to an exam notebook" }}</h2>
+    <label for="extendlm-notebook">Exam notebook</label>
+    <select id="extendlm-notebook" data-notebook disabled><option value="">Choose an exam notebook</option></select>
+    <button class="sh-btn sh-btn--secondary" type="button" data-more hidden>Load more notebooks</button>
     {% if lecture %}
-    <p>{{ lecture.subject }} · Exam {{ lecture.exam_number }} · {{ lecture.topic }}</p>
-    <p>Send this lecture’s current PDF and cleaned transcript when available.</p>
-    <button class="sh-btn sh-btn--primary" type="button" data-lecture-upload disabled>Send saved lecture materials</button>
-    {% endif %}
+    <p>Send this lecture’s available slides and cleaned transcript to the selected exam notebook.</p>
+    <button class="sh-btn sh-btn--primary" type="button" data-lecture-upload disabled>Send to NotebookLM</button>
+    {% else %}
     <form data-files-form>
-      <label for="extendlm-files">Or choose files from this computer</label>
+      <label for="extendlm-files">Files from this computer</label>
       <input id="extendlm-files" name="files" type="file" accept=".pdf,.txt,.md,.docx" multiple required>
       <p class="field-help">PDF slides, TXT, Markdown, or DOCX transcripts. Up to 20 files, 100 MiB each, 500 MiB total. <a href="/uploads">Upload PowerPoint to the Hub</a> first, then send the converted PDF from its lecture page.</p>
       <button class="sh-btn sh-btn--primary" type="submit" data-upload disabled>Send selected files</button>
     </form>
-    <p>Once queued, you can leave this Hub page. Keep the ExtendLM browser running. The Hub records accepted files so resuming does not resend them.</p>
-    <p data-message role="status" aria-live="polite"></p>
+    {% endif %}
+    <p class="field-help">Uploads run in the background. Keep your ExtendLM browser open.</p>
   </section>
+  {% if not lecture %}</details>{% endif %}
+  <p data-message role="status" aria-live="polite"></p>
   <section class="sh-card settings-card" aria-labelledby="receipts-heading">
     <h2 id="receipts-heading">Upload history for this sign-in</h2>
     <p>“Accepted” means NotebookLM received the file. Check indexing to confirm it is ready to use.</p>
     <div data-jobs aria-live="polite"></div>
   </section>
+  {% if not lecture %}
   <details class="settings-disclosure"><summary>Use ExtendLM MCP in another client</summary>
     <p>Add a remote HTTP MCP server using <code>{{ mcp_url }}</code> and complete its OAuth approval. No client secret is needed. This connects that client separately from the Hub.</p>
   </details>
+  {% endif %}
 </section>
 {% endblock %}
-{% block scripts %}<script src="/static/extendlm.js?v=20260915.1" defer></script>{% endblock %}
+{% block scripts %}<script src="/static/extendlm.js?v=20260915.2" defer></script>{% endblock %}
