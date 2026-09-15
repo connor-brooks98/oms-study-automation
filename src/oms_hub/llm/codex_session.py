@@ -418,7 +418,7 @@ class CodexSessionClient:
         self._request_sequence = 0
         self._events: list[dict[str, object]] = []
         self._active_ids: tuple[str | None, str | None] = (None, None)
-        self._pending_login: str | None = None
+        self._pending_login: LoginChallenge | None = None
         self._turn_observer: Callable[[dict[str, Any]], None] | None = None
 
     @contextmanager
@@ -552,7 +552,7 @@ class CodexSessionClient:
             self._events.append(frame)
             if frame["method"] == "account/login/completed":
                 params = _object(frame.get("params"))
-                if params.get("loginId") == self._pending_login:
+                if self._pending_login and params.get("loginId") == self._pending_login.login_id:
                     self._pending_login = None
             if self._turn_observer is not None:
                 self._turn_observer(frame)
@@ -665,11 +665,16 @@ class CodexSessionClient:
 
     def start_login(self, *, device_code: bool = True) -> LoginChallenge:
         with self._operation():
-            if self._pending_login:
-                raise SessionError("protocol_error")
             try:
                 deadline = time.monotonic() + self.startup_timeout
                 self._start(self.work_root, deadline, self._closed.is_set)
+                if self._pending_login:
+                    # Consume queued completion/expiry events before reopening the same challenge.
+                    self._rpc(
+                        "account/read", {"refreshToken": False}, deadline, self._closed.is_set
+                    )
+                    if self._pending_login:
+                        return self._pending_login
                 kind = "chatgptDeviceCode" if device_code else "chatgpt"
                 result = self._rpc(
                     "account/login/start", {"type": kind}, deadline, self._closed.is_set
@@ -682,8 +687,8 @@ class CodexSessionClient:
                 if parsed.scheme != "https" or not parsed.hostname or parsed.username:
                     raise SessionError("protocol_error")
                 user_code = _identifier(result.get("userCode")) if device_code else None
-                self._pending_login = login_id
-                return LoginChallenge(login_id, url, user_code)
+                self._pending_login = LoginChallenge(login_id, url, user_code)
+                return self._pending_login
             except SessionError:
                 self._stop()
                 raise
@@ -693,7 +698,11 @@ class CodexSessionClient:
 
     def cancel_login(self, login_id: str) -> None:
         with self._operation():
-            if login_id != self._pending_login or self._wire is None:
+            if (
+                self._pending_login is None
+                or login_id != self._pending_login.login_id
+                or self._wire is None
+            ):
                 raise SessionError("protocol_error")
             try:
                 result = self._rpc(

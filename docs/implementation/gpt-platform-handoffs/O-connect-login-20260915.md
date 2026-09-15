@@ -37,3 +37,16 @@ exact stderr. Overriding only this startup value to `on-request` succeeded; the
 retained accepted Windows fixture uses the same value. Update the shared startup
 configuration accordingly. All feature denials, Windows sandbox requirement,
 thread/turn policies, and the hard Windows generation gate remain unchanged.
+
+Repeated Connect follow-up: the pending-login guard returned a protocol error before
+issuing any request, causing the browser to close its reserved tab. Retain the full
+pending challenge and return it on repeated clicks after an account read consumes
+any queued completion/expiry notification. Cancellation and process shutdown still
+clear the pending challenge. Expired challenges can be replaced by an explicit click.
+Regression tests cover reuse in both login modes, cancellation, and expiry.
+
+Actual account acceptance: entering the exact existing device code in the user's
+OpenAI page succeeded; the Hub then reported `account_connected=true`. The earlier
+authorization failure's cause is not established. No new challenge or generation
+turn was required. Post-update persistence is recorded in the separate receipt at
+`/Users/connor/Developer/release-evidence/gpt-pending-login-20260915`.

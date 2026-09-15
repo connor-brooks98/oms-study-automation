@@ -69,13 +69,13 @@ for raw in sys.stdin:
             emit(
                 {
                     "method": "account/login/completed",
-                    "params": {"loginId": "login-fixture", "success": True},
+                    "params": {"loginId": "login-fixture", "success": scenario != "login_expired"},
                 }
             )
             pending_login = False
         result = {
             "account": None
-            if scenario == "logged_out"
+            if scenario in ("logged_out", "login_expired")
             else {"type": "chatgpt", "email": "fixture@example.invalid", "planType": "plus"},
             "requiresOpenaiAuth": True,
         }

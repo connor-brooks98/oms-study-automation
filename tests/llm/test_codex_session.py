@@ -322,6 +322,29 @@ def test_managed_login_cancel_uses_real_transport_without_generation(fake_sessio
     ]
 
 
+@pytest.mark.parametrize("device_code", [True, False])
+def test_repeated_connect_reuses_pending_challenge_without_new_login(fake_session, device_code):
+    client, trace, _ = fake_session("logged_out", ready=False)
+    first = client.start_login(device_code=device_code)
+    assert client.start_login(device_code=device_code) == first
+    methods = [row.get("method") for row in wire_records(trace)]
+    assert methods.count("account/login/start") == 1
+    assert methods.count("account/read") == 1
+    assert "account/login/cancel" not in methods
+    client.cancel_login(first.login_id)
+    client.start_login(device_code=device_code)
+    assert sum(row.get("method") == "account/login/start" for row in wire_records(trace)) == 2
+
+
+def test_connect_replaces_expired_challenge_after_consuming_completion(fake_session):
+    client, trace, _ = fake_session("login_expired", ready=False)
+    client.start_login()
+    client.start_login()
+    methods = [row.get("method") for row in wire_records(trace)]
+    assert methods.count("account/read") == 1
+    assert methods.count("account/login/start") == 2
+
+
 def test_explicit_new_login_recovers_after_pending_challenge_transport_dies(fake_session):
     client, trace, wires = fake_session(ready=False)
     client.start_login()
