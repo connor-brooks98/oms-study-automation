@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -160,6 +161,107 @@ def validate_quiz_plan(plan: QuizPlan, evidence: dict[str, Any]) -> None:
         ))
 
 
+def _complete_image_citations(
+    plan: QuizPlan, evidence: dict[str, Any],
+) -> tuple[QuizPlan, dict[str, Any]]:
+    """Append only authoritative image-to-segment links; preserve every provider reference."""
+    from oms_hub.study_generation.gpt_lecture import _digest
+
+    original = plan.model_dump(mode="json")
+    plan = QuizPlan.model_validate(original)
+    segments = {
+        (source["source_id"], segment["key"]): segment
+        for source in evidence["sources"] for segment in source["segments"]
+    }
+    images = {(image["source_id"], image["asset_key"]): image for image in evidence["images"]}
+    additions = []
+    for question in plan.questions:
+        cited = [(ref.source_id, ref.segment_key) for ref in question.source_segments]
+        if any(key not in segments for key in cited):
+            raise ValueError("question contains unknown source citations")
+        if question.image is None:
+            continue
+        image = images.get((question.image.source_id, question.image.asset_key))
+        if image is None:
+            raise ValueError("question contains an unknown image")
+        if any(_associated(image, key[0], segments[key]) for key in cited):
+            continue
+        primary = (image["source_id"], image.get("citation_segment_key"))
+        candidate: tuple[str, Any] | None = primary
+        segment = segments.get(primary)
+        if not (segment and segment["text"].strip() and _associated(image, primary[0], segment)):
+            candidate = next((
+                key for key, item in segments.items()
+                if key[0] == image["source_id"] and image["asset_key"] in item.get("asset_keys", ())
+            ), None)
+        if candidate is not None and candidate not in cited:
+            reference = SegmentCitation(source_id=candidate[0], segment_key=candidate[1])
+            question.source_segments.append(reference)
+            additions.append({"question_id": question.id, **reference.model_dump()})
+    validate_quiz_plan(plan, evidence)
+    return plan, {
+        "version": 1,
+        "added_source_segments": additions,
+        "before_sha256": _digest(original),
+        "after_sha256": _digest(plan.model_dump(mode="json")),
+    }
+
+
+def _recover_plan(
+    root: Path, descriptor: dict[str, Any], evidence: dict[str, Any],
+    completed: SessionLifecycle,
+) -> QuizPlan:
+    from oms_hub.study_generation.gpt_lecture import _canonical, _read_record, _write_record
+
+    invalid = _read_record(root / "invalid.json")
+    if invalid.get("code") != "invalid_output" or invalid.get("detail") not in {
+        "question image is not associated with its cited source page",
+        "question citation has no meaningful text or selected preview",
+    }:
+        raise SessionError("invalid_output")
+    provider = _read_record(root / "provider.json")
+    with (root / "raw.txt").open("rb") as source:
+        raw = source.read(MAX_OUTPUT_BYTES + 1)
+    thread_id, turn_id = provider.get("thread_id"), provider.get("turn_id")
+    if (
+        provider.get("descriptor") != descriptor
+        or _read_record(root / "dispatch.json") != descriptor
+        or provider.get("raw_truncated") is not False
+        or len(raw) > MAX_OUTPUT_BYTES
+        or provider.get("raw_sha256") != hashlib.sha256(raw).hexdigest()
+        or not isinstance(thread_id, str) or not thread_id.strip()
+        or not isinstance(turn_id, str) or not turn_id.strip()
+        or completed.phase != "completed"
+        or completed.request_id != descriptor["request_id"]
+        or (completed.thread_id, completed.turn_id) != (thread_id, turn_id)
+    ):
+        raise SessionError("invalid_output")
+    plan, normalization = _complete_image_citations(QuizPlan.model_validate_json(raw), evidence)
+    recovery = {
+        "descriptor": descriptor,
+        "original_invalid_sha256": sha256_file(root / "invalid.json"),
+        "raw_sha256": provider["raw_sha256"],
+        "normalized_sha256": normalization["after_sha256"],
+        "normalization": normalization,
+        "completed_lifecycle": asdict(completed),
+    }
+    try:
+        with (root / "recovery.json").open("xb") as stream:
+            stream.write(_canonical(recovery).encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError:
+        raise SessionError("interrupted") from None
+    (root / "recovery.json").chmod(0o600)
+    _write_record(root / "complete.json", {
+        **provider,
+        "plan": plan.model_dump(mode="json"),
+        "plan_sha256": normalization["after_sha256"],
+        "normalization": normalization,
+    })
+    return plan
+
+
 def plan_lecture_quiz(
     client: CodexSessionClient,
     request_id: str,
@@ -170,6 +272,7 @@ def plan_lecture_quiz(
     cancelled: Callable[[], bool],
     on_lifecycle: Callable[[SessionLifecycle], None],
     resume: bool = False,
+    completed_lifecycle: SessionLifecycle | None = None,
 ) -> QuizPlan:
     """Persist raw output before validation; never replay a possibly dispatched request."""
     # Local imports keep the final-generation module free to call this planner.
@@ -221,6 +324,8 @@ def plan_lecture_quiz(
             validate_quiz_plan(plan, evidence)
             return plan
         if (root / "invalid.json").exists():
+            if resume and completed_lifecycle is not None:
+                return _recover_plan(root, descriptor, evidence, completed_lifecycle)
             raise SessionError("invalid_output")
         prior_preflights = set(root.glob("preflight-*.json"))
         if (root / "dispatch.json").exists() or (previously_started and not resume):
@@ -279,8 +384,9 @@ def plan_lecture_quiz(
         try:
             if len(raw) > MAX_OUTPUT_BYTES:
                 raise ValueError("provider response exceeds raw artifact ceiling")
-            plan = QuizPlan.model_validate_json(raw)
-            validate_quiz_plan(plan, evidence)
+            plan, normalization = _complete_image_citations(
+                QuizPlan.model_validate_json(raw), evidence,
+            )
         except (ValueError, TypeError, KeyError, AttributeError) as error:
             _write_record(root / "invalid.json", {
                 "code": "invalid_output", "detail": str(error)[:4096],
@@ -290,6 +396,7 @@ def plan_lecture_quiz(
             **provider,
             "plan": plan.model_dump(mode="json"),
             "plan_sha256": _digest(plan.model_dump(mode="json")),
+            "normalization": normalization,
         })
         return plan
     except OSError:

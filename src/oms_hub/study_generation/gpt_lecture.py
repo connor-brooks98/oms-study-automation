@@ -243,6 +243,7 @@ def generate_lecture_quiz(
     on_lifecycle: Callable[[SessionLifecycle], None],
     artifact_root: Path | None = None,
     resume: bool = False,
+    planning_completion: SessionLifecycle | None = None,
 ) -> GeneratedLectureQuiz:
     """Produce a private validated draft; this function never reviews or publishes it."""
     if not request_id.strip() or not model.strip():
@@ -261,6 +262,7 @@ def generate_lecture_quiz(
         selected_batches = prepare_selected_batches(
             client, request_id, model, inputs, manifest, root=root,
             cancelled=cancelled, on_lifecycle=on_lifecycle, resume=resume,
+            completed_lifecycle=planning_completion,
         )
         content = prompt.content + (
             "\nFollow question_plan: return exactly those question ids and their assigned "
@@ -1225,12 +1227,29 @@ class GptLectureWorker:
             model = self._selected_model(run.id)
             quiz = self._response(run.id, inputs)
             if quiz is None:
+                resume_requested = self.repository.gpt_resume_requested(run.id)
+                completion = None
+                if resume_requested:
+                    attempt = self.repository.run_artifact(
+                        run.id, "gpt:attempt:" + run.id + ":plan"
+                    )
+                    if attempt is not None:
+                        if hashlib.sha256(attempt.payload_json.encode()).hexdigest() != (
+                            attempt.signature_sha256
+                        ):
+                            raise ValueError("stored planning lifecycle changed")
+                        event = json.loads(attempt.payload_json)
+                        if event.get("phase") == "completed":
+                            completion = SessionLifecycle(
+                                event["request_id"], "completed",
+                                event["thread_id"], event["turn_id"]
+                            )
                 quiz = generate_lecture_quiz(
                     self.client, run.id, model, inputs,
                     cancelled=lambda: self.repository.gpt_cancelled(run.id),
                     on_lifecycle=lambda event: self.repository.record_gpt_lifecycle(run.id, event),
                     artifact_root=self.artifact_root,
-                    resume=self.repository.gpt_resume_requested(run.id),
+                    resume=resume_requested, planning_completion=completion,
                 )
                 self._save_artifact(run.id, "gpt:response", {
                     "manifest_sha256": source_manifest(inputs)["sha256"],

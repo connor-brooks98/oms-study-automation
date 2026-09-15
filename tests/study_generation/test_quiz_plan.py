@@ -347,3 +347,168 @@ def test_cached_plan_is_revalidated_against_count(tmp_path):
         run(client, tmp_path, source, resume=True)
     assert error.value.code == "invalid_output"
     assert len(client.calls) == 1
+
+
+def missing_image_citation():
+    source = evidence()
+    source["sources"][0]["segments"][0]["asset_keys"] = []
+    source["sources"][0]["segments"].append({
+        "key": "s2", "text": "Actual image caption", "locator": {"page_number": 2},
+    })
+    source["images"][0].update(locator={"page_number": 2}, citation_segment_key="s2")
+    return source
+
+
+def test_missing_citation_completion_preserves_original_fields_and_audits_exact_addition(tmp_path):
+    from oms_hub.study_generation.gpt_lecture import _digest
+
+    payload = output()
+    source = missing_image_citation()
+    plan = run(Provider(payload), tmp_path, source)
+    expected = deepcopy(payload)
+    added = {"source_id": "slides", "segment_key": "s2"}
+    expected["questions"][0]["source_segments"].append(added)
+    assert plan.model_dump(mode="json") == expected
+    record = json.loads((tmp_path / "complete.json").read_text())
+    assert record["normalization"] == {
+        "version": 1,
+        "added_source_segments": [{"question_id": "q0", **added}],
+        "before_sha256": _digest(payload),
+        "after_sha256": _digest(expected),
+    }
+    assert json.loads((tmp_path / "raw.txt").read_text()) == payload
+
+
+def test_completion_can_append_exact_asset_placeholder_without_guessing_same_page_text(tmp_path):
+    source = missing_image_citation()
+    del source["images"][0]["citation_segment_key"]
+    with pytest.raises(SessionError):
+        run(Provider(), tmp_path / "no-authoritative-link", source)
+    source["sources"][0]["segments"][1].update(text="", asset_keys=["a1"])
+    plan = run(Provider(), tmp_path / "explicit-placeholder", source)
+    assert plan.questions[0].source_segments[-1].segment_key == "s2"
+
+
+@pytest.mark.parametrize("change", [
+    lambda p: p["questions"][0]["source_segments"].append(
+        {"source_id": "slides", "segment_key": "unknown"},
+    ),
+    lambda p: p["questions"][0].update(image={"source_id": "slides", "asset_key": "unknown"}),
+    lambda p: p["questions"][0].update(objective_ids=["unknown"]),
+    lambda p: p["questions"][0].update(id="q1"),
+])
+def test_completion_does_not_repair_invalid_original_references(tmp_path, change):
+    payload = output()
+    change(payload)
+    with pytest.raises(SessionError):
+        run(Provider(payload), tmp_path, missing_image_citation())
+    assert json.loads((tmp_path / "raw.txt").read_text()) == payload
+    assert not (tmp_path / "complete.json").exists()
+
+
+def retained_plan(
+    root, monkeypatch, detail="question image is not associated with its cited source page",
+):
+    from oms_hub.study_generation import quiz_plan
+
+    def previous_validation(plan, source):
+        raise ValueError(detail)
+
+    source = missing_image_citation()
+    with monkeypatch.context() as patch:
+        patch.setattr(quiz_plan, "_complete_image_citations", previous_validation)
+        with pytest.raises(SessionError):
+            run(Provider(), root, source)
+    return source
+
+
+def completion_proof():
+    return SessionLifecycle("plan-1", "completed", "thread", "turn")
+
+
+@pytest.mark.parametrize("detail", [
+    "question image is not associated with its cited source page",
+    "question citation has no meaningful text or selected preview",
+])
+def test_retained_raw_recovery_requires_no_provider_and_preserves_originals(
+    tmp_path, monkeypatch, detail,
+):
+    from oms_hub.files.atomic import sha256_file
+
+    source = retained_plan(tmp_path, monkeypatch, detail)
+    original_invalid = (tmp_path / "invalid.json").read_bytes()
+    original_raw = (tmp_path / "raw.txt").read_bytes()
+    client = Provider()
+    plan = run(client, tmp_path, source, resume=True, completed_lifecycle=completion_proof())
+    assert not client.calls
+    assert (tmp_path / "invalid.json").read_bytes() == original_invalid
+    assert (tmp_path / "raw.txt").read_bytes() == original_raw
+    recovery = json.loads((tmp_path / "recovery.json").read_text())
+    complete = json.loads((tmp_path / "complete.json").read_text())
+    assert recovery["original_invalid_sha256"] == sha256_file(tmp_path / "invalid.json")
+    assert recovery["normalized_sha256"] == complete["plan_sha256"]
+    assert recovery["normalization"] == complete["normalization"]
+    assert recovery["normalization"]["added_source_segments"] == [{
+        "question_id": "q0", "source_id": "slides", "segment_key": "s2",
+    }]
+    assert run(client, tmp_path, source) == plan
+    assert not client.calls
+
+
+@pytest.mark.parametrize("proof", [
+    None,
+    SessionLifecycle("plan-1", "turn_started", "thread", "turn"),
+    SessionLifecycle("wrong-request", "completed", "thread", "turn"),
+    SessionLifecycle("plan-1", "completed", "wrong-thread", "turn"),
+    SessionLifecycle("plan-1", "completed", "thread", "wrong-turn"),
+])
+def test_recovery_rejects_missing_or_wrong_completion_proof(tmp_path, monkeypatch, proof):
+    source = retained_plan(tmp_path, monkeypatch)
+    client = Provider()
+    with pytest.raises(SessionError):
+        run(client, tmp_path, source, resume=True, completed_lifecycle=proof)
+    assert not client.calls
+    assert not (tmp_path / "recovery.json").exists()
+
+
+@pytest.mark.parametrize("tamper", [
+    "raw", "provider-descriptor", "dispatch", "truncated", "blank-thread", "invalid-detail",
+])
+def test_recovery_rejects_changed_or_incomplete_receipts(tmp_path, monkeypatch, tamper):
+    source = retained_plan(tmp_path, monkeypatch)
+    if tamper == "raw":
+        (tmp_path / "raw.txt").write_text("tampered")
+    elif tamper == "dispatch":
+        (tmp_path / "dispatch.json").write_text('{}')
+    elif tamper == "invalid-detail":
+        (tmp_path / "invalid.json").write_text(json.dumps({
+            "code": "invalid_output", "detail": "question contains an unknown image",
+        }))
+    else:
+        provider_path = tmp_path / "provider.json"
+        provider = json.loads(provider_path.read_text())
+        if tamper == "provider-descriptor":
+            provider["descriptor"]["requested_model"] = "wrong-model"
+        elif tamper == "truncated":
+            provider["raw_truncated"] = True
+        else:
+            provider["thread_id"] = ""
+        provider_path.write_text(json.dumps(provider))
+    client = Provider()
+    with pytest.raises(SessionError):
+        run(client, tmp_path, source, resume=True, completed_lifecycle=completion_proof())
+    assert not client.calls
+    assert not (tmp_path / "complete.json").exists()
+
+
+def test_recovery_requires_explicit_resume_and_exclusive_claim(tmp_path, monkeypatch):
+    source = retained_plan(tmp_path, monkeypatch)
+    client = Provider()
+    with pytest.raises(SessionError):
+        run(client, tmp_path, source, completed_lifecycle=completion_proof())
+    assert not (tmp_path / "recovery.json").exists()
+    (tmp_path / "recovery.json").write_text('{}')
+    with pytest.raises(SessionError) as error:
+        run(client, tmp_path, source, resume=True, completed_lifecycle=completion_proof())
+    assert error.value.code == "interrupted"
+    assert not client.calls

@@ -21,6 +21,7 @@ def prepare_selected_batches(
     client: CodexSessionClient, request_id: str, model: str, inputs: LectureInputs,
     manifest: dict[str, object], *, root: Path, cancelled: Callable[[], bool],
     on_lifecycle: Callable[[SessionLifecycle], None], resume: bool,
+    completed_lifecycle: SessionLifecycle | None = None,
 ) -> list[tuple[LectureInputs, str, tuple[ParsedAsset, ...]]]:
     from oms_hub.study_generation.gpt_lecture import (
         MAX_BATCH_IMAGES,
@@ -35,6 +36,7 @@ def prepare_selected_batches(
     plan = plan_lecture_quiz(
         client, request_id + ":plan", model, evidence, root=root / "selection",
         cancelled=cancelled, on_lifecycle=on_lifecycle, resume=resume,
+        completed_lifecycle=completed_lifecycle,
     )
     inventory = {(image["source_id"], image["asset_key"]): image
                  for image in evidence["images"]}

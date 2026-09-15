@@ -1342,3 +1342,44 @@ def test_image_required_holds_partially_illustrated_slides_when_fallback_unavail
     )
     with pytest.raises(ValueError, match="image"):
         validate_lecture_inputs(inputs)
+
+
+@pytest.mark.parametrize("tampered", [False, True])
+def test_resume_passes_only_intact_completed_planner_receipt(gpt_review_run, monkeypatch, tampered):
+    from sqlalchemy import select
+
+    from oms_hub.models import StudioRunArtifactModel
+    from oms_hub.study_generation import gpt_lecture
+
+    repository, run, worker, client, _ = gpt_review_run
+    request_id = run.id + ":plan"
+    for phase in ("dispatching", "thread_created", "turn_started", "completed"):
+        repository.record_gpt_lifecycle(run.id, SessionLifecycle(
+            request_id, phase, None if phase == "dispatching" else "plan-thread",
+            "plan-turn" if phase in {"turn_started", "completed"} else None,
+        ))
+    repository.stop_gpt_run(run.id, SessionError("invalid_output"))
+    repository.control_gpt_run(run.id, owner_id="owner", action="resume")
+    if tampered:
+        with repository.database.session() as session:
+            artifact = session.scalar(select(StudioRunArtifactModel).where(
+                StudioRunArtifactModel.run_id == run.id,
+                StudioRunArtifactModel.artifact_key == "gpt:attempt:" + request_id,
+            ))
+            artifact.signature_sha256 = "0" * 64
+    captured = []
+
+    def intercept(*args, **kwargs):
+        captured.append(kwargs)
+        raise SessionError("interrupted")
+
+    monkeypatch.setattr(gpt_lecture, "generate_lecture_quiz", intercept)
+    worker.run(repository.claim_next_run())
+    assert not client.requests
+    if tampered:
+        assert not captured
+    else:
+        assert captured[0]["resume"]
+        assert captured[0]["planning_completion"] == SessionLifecycle(
+            request_id, "completed", "plan-thread", "plan-turn"
+        )
