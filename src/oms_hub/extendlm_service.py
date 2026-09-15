@@ -163,7 +163,7 @@ class ExtendLMService:
                     raise api.ExtendLMError(
                         "ExtendLM returned an invalid browser/account selection."
                     )
-                choice_id = str(len(choices))
+                choice_id = hashlib.sha256(f"{selector}:{account}".encode()).hexdigest()
                 choices[choice_id] = {"extension_connection": selector, "auth_user_id": account}
                 email = user.get("email") if connection.get("emails_shared") else None
                 label = f"Browser {index} · Account {account}" + (f" · {email}" if email else "")

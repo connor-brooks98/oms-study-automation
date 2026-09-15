@@ -17,7 +17,7 @@ import httpx
 MCP_URL = "https://mcp.extendlm.com/mcp"
 ISSUER = "https://api.extendlm.com"
 OAUTH = f"{ISSUER}/rest/v1/mcp/oauth"
-SCOPES = "notebooks:read sources:read sources:write exports:create"
+SCOPES = "notebooks:read sources:read sources:write exports:create exports:download"
 TOOLS = frozenset(
     {
         "extension_status",

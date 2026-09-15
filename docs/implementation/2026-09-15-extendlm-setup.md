@@ -15,7 +15,7 @@ Reuse httpx, existing encrypted storage, CSRF, Cloudflare Access, artifact valid
 
 - [MCP setup](https://extendlm.com/support/mcp): supported extension browser must remain running, signed into both ExtendLM and Gemini Notebook in the same profile, MCP enabled and connection Connected. Public PKCE clients; no client secret. Sign-in and permission approval take place on ExtendLM.
 - [Import sources](https://extendlm.com/support/import-sources): local folder and PDF imports are supported.
-- [Tool catalog](https://mcp.extendlm.com/.well-known/extendlm-tools): version 2.5.1, 149 tools observed. Use `list_notebook_users`, `get_notebooklm_capabilities`, `list_notebooks`, `list_notebook_sources`, `prepare_pdf_source_upload`, `prepare_file_source_upload`, `add_pdf_source`, and `add_file_source`. Source writes require `notebooks:read sources:read sources:write exports:create`; PDF source acceptance is not indexing completion. PDF uploads explicitly use `split_mode=single` to preserve lecture source identity.
+- [Tool catalog](https://mcp.extendlm.com/.well-known/extendlm-tools): version 2.5.1, 149 tools observed. Use `list_notebook_users`, `get_notebooklm_capabilities`, `list_notebooks`, `list_notebook_sources`, `prepare_pdf_source_upload`, `prepare_file_source_upload`, `add_pdf_source`, and `add_file_source`. Source writes require `notebooks:read sources:read sources:write exports:create exports:download`; PDF source acceptance is not indexing completion. PDF uploads explicitly use `split_mode=single` to preserve lecture source identity.
 - [Protected resource](https://mcp.extendlm.com/.well-known/oauth-protected-resource): resource `https://mcp.extendlm.com/mcp`, issuer `https://api.extendlm.com`.
 - [OAuth metadata](https://api.extendlm.com/.well-known/oauth-authorization-server): public dynamic registration, authorization code, refresh tokens, S256, issuer response parameter.
 - [HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports): JSON/SSE, initialization, negotiated protocol and session headers.
@@ -36,9 +36,11 @@ Implementation and mock tests do not establish live provider acceptance. Complet
 
 ### Local validation
 
-- 12 new contract/security tests pass, including PDF and transcript byte uploads, encrypted OAuth grants, PKCE, callback replay prevention, owner/browser isolation, account `0`, JSON/SSE responses, refresh/revocation, pinned upload destinations, duplicate reuse, source indexing state, and interrupted-add recovery across restart without re-uploading.
+- 13 new contract/security tests pass, including PDF and transcript byte uploads, encrypted OAuth grants, PKCE, callback replay prevention, owner/browser isolation, account `0`, stable browser/account choices across tabs, route selection, JSON/SSE responses, refresh/revocation, pinned upload destinations, duplicate reuse, source indexing state, and interrupted-add recovery across restart without re-uploading.
 - 64 surrounding Python checks passed (Settings, daily study UI, Cloudflare Access, lecture material controls, and existing NotebookLM upload behavior).
-- 54 existing Settings/upload JavaScript tests pass; new script parses; the page was inspected in the browser and rendered screenshot.
+- 56 Settings/upload JavaScript tests pass, including separate requests per file and stopping an interrupted batch; the page was inspected in the browser and rendered screenshot.
+- Native Windows regression run: 76 passed, one known baseline test deselected. SSH cannot access the interactive credential vault, so that test process used the null keyring backend; production vault access remains a live sign-in check.
+- Final review caught and fixed CSP-blocked OAuth form redirects (same-origin fetch followed by explicit navigation) and stale ordinal account choices (stable IDs plus route coverage).
 - Ruff and focused strict mypy pass.
 - One existing test fails on both this branch and a clean archive of `0a864d3`: `tests/study_generation/test_notebook_upload_only.py::test_optional_queue_failure_does_not_fail_completed_gpt_ingestion`. Its fake ingestion repository lacks `database` and `fail_job` required by the existing process-control wrapper. No production ingestion code was changed for that failure.
 

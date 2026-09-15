@@ -185,13 +185,21 @@ def sign_in(service):
     )
     assert query["code_challenge"] == [challenge]
     assert query["code_challenge_method"] == ["S256"]
+    assert set(query["scope"][0].split()) == {
+        "notebooks:read",
+        "sources:read",
+        "sources:write",
+        "exports:create",
+        "exports:download",
+    }
     service.finish(key, "code", query["state"][0], api.ISSUER)
     return cookie, key, query["state"][0]
 
 
 def select(service, key):
-    assert service.accounts(key) == [{"id": "0", "label": "Browser 1 · Account 0"}]
-    service.select(key, "0")
+    choices = service.accounts(key)
+    assert len(choices) == 1 and choices[0]["label"] == "Browser 1 · Account 0"
+    service.select(key, choices[0]["id"])
     service.notebooks(key)
 
 
@@ -323,12 +331,14 @@ def test_routes_private_csrf_cookie_and_local_page(tmp_path, monkeypatch):
         login = client.post(
             "/settings/extendlm/connect", data={"csrf_token": token}, follow_redirects=False
         )
-        assert login.status_code == 303
+        assert login.status_code == 200
+        assert "location" not in login.headers
+        assert "form-action 'self'" in page.headers["content-security-policy"]
         assert (
             "HttpOnly" in login.headers["set-cookie"]
             and "SameSite=lax" in login.headers["set-cookie"]
         )
-        state = parse_qs(urlsplit(login.headers["location"]).query)["state"][0]
+        state = parse_qs(urlsplit(login.json()["authorization_url"]).query)["state"][0]
         assert (
             client.get(
                 "/settings/extendlm/callback",
@@ -343,6 +353,18 @@ def test_routes_private_csrf_cookie_and_local_page(tmp_path, monkeypatch):
         )
         assert complete.status_code == 303
         assert client.get("/settings/extendlm/status").json()["signed_in"]
+        choices = client.post("/settings/extendlm/accounts", data={"csrf_token": token}).json()[
+            "accounts"
+        ]
+        assert client.post(
+            "/settings/extendlm/select", data={"csrf_token": token, "choice": choices[0]["id"]}
+        ).json() == {"selected": True}
+        assert (
+            client.post("/settings/extendlm/notebooks", data={"csrf_token": token}).json()["items"][
+                0
+            ]["id"]
+            == "notebook-1"
+        )
         outsider = TestClient(app)
         assert outsider.get("/settings/extendlm/status").json() == {"signed_in": False}
         assert (
@@ -377,3 +399,17 @@ def test_pdf_source_upload_preserves_pdf_and_waits_for_indexing(tmp_path):
         assert provider.add_calls[-1]["split_mode"] == "single"
         service.check_sources(key, job)
         assert service.jobs(key)[0]["status"] == "ready"
+
+
+def test_stale_account_choice_cannot_select_a_different_browser(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        original = service.accounts(key)[0]["id"]
+        assert service.accounts(key)[0]["id"] == original
+        provider.connection = "different_browser_0001"
+        replacement = service.accounts(key)[0]["id"]
+        assert replacement != original
+        with pytest.raises(api.ExtendLMError, match="Refresh connections"):
+            service.select(key, original)
+        service.select(key, replacement)
+        assert service.selection(key)["extension_connection"] == provider.connection

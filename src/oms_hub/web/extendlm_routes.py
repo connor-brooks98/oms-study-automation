@@ -60,7 +60,7 @@ def page(request: Request, lecture_id: int | None = None) -> HTMLResponse:
 @router.post("/connect")
 def connect(
     request: Request, csrf_token: str = Form(), lecture_id: int | None = Form(default=None)
-) -> RedirectResponse:
+) -> JSONResponse:
     require_form_csrf(request, csrf_token)
     settings = request.app.state.settings
     host = request.url.hostname
@@ -72,7 +72,7 @@ def connect(
             service(request).session_key(cookie, owner(request)), write=True
         ) as data:
             data["lecture_id"] = lecture_id
-    result = RedirectResponse(url, status_code=303, headers={"Cache-Control": "no-store"})
+    result = JSONResponse({"authorization_url": url}, headers={"Cache-Control": "no-store"})
     result.set_cookie(
         COOKIE,
         cookie,
@@ -142,7 +142,7 @@ def accounts(request: Request, csrf_token: str = Form()) -> JSONResponse:
 
 @router.post("/select")
 def select(
-    request: Request, choice: str = Form(max_length=20), csrf_token: str = Form()
+    request: Request, choice: str = Form(max_length=64), csrf_token: str = Form()
 ) -> JSONResponse:
     require_form_csrf(request, csrf_token)
     service(request).select(key(request), choice)

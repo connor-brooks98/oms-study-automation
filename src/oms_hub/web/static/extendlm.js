@@ -94,6 +94,14 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
       timer = setTimeout(() => refresh().catch((e) => { message.textContent = e.message; }), 4000);
     }
   }
+  find("connect-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    action(async () => {
+      const data = await post("/connect", new FormData(event.target));
+      // Explicit navigation respects the Hub's same-origin form-action policy.
+      window.location.assign(data.authorization_url);
+    });
+  });
   find("accounts").addEventListener("click", () => action(async () => {
     notebook.replaceChildren(option("", "Choose a notebook")); notebook.disabled = true;
     find("more").hidden = true; account.disabled = true;

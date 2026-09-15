@@ -11,7 +11,7 @@
     <h2 id="connect-heading">1. Connect this computer</h2>
     <p>Use a supported desktop browser with ExtendLM installed. Sign into ExtendLM and Google in that same profile, then enable MCP in ExtendLM Settings and confirm “Connected”. Keep that browser open while uploads run.</p>
     <p><a href="https://chromewebstore.google.com/detail/extendlm-notebooklm-exten/jefclkefiknlccjcjmkkhlcfkdgcmgcm" target="_blank" rel="noopener noreferrer">Install ExtendLM</a> · <a href="https://extendlm.com/" target="_blank" rel="noopener noreferrer">Sign in to ExtendLM</a> · <a href="https://notebook.google.com/" target="_blank" rel="noopener noreferrer">Sign in to Google / open NotebookLM</a> · <a href="https://extendlm.com/support/mcp" target="_blank" rel="noopener noreferrer">MCP setup guide</a></p>
-    <form method="post" action="/settings/extendlm/connect">
+    <form method="post" action="/settings/extendlm/connect" data-connect-form>
       <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       {% if lecture %}<input type="hidden" name="lecture_id" value="{{ lecture.id }}">{% endif %}
       <button class="sh-btn sh-btn--primary" type="submit">Sign in and authorize Hub uploads</button>
