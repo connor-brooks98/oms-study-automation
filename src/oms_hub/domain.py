@@ -34,7 +34,6 @@ class V2StepName(StrEnum):
     def first_release(cls) -> tuple["V2StepName", ...]:
         return (
             *tuple(cls)[:11],
-            cls.SUMMARY_FILED,
             cls.QUIZ_PUBLISHED,
         )
 
