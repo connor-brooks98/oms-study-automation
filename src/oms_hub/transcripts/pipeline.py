@@ -24,6 +24,7 @@ from oms_hub.ingestion.domain import (
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.staging import UploadRejected, decode_utf8_transcript
 from oms_hub.llm.domain import CleanResult
+from oms_hub.processes import ProcessHeld, checkpoint
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import (
     build_transcript_destination,
@@ -128,6 +129,7 @@ class TranscriptPipeline:
             )
 
             approved_prompt = self.prompt.current()
+            checkpoint()
             cleaned_sha256, model_result = self._ensure_cleaned(
                 raw_text,
                 cleaned_path,
@@ -165,6 +167,7 @@ class TranscriptPipeline:
                     output_tokens=model_result.output_tokens,
                     cost_microusd=model_result.cost_microusd,
                 )
+            checkpoint()
             with self.writes.claim(revision.lecture_id, "transcript-filing") as claim:
                 claim.assert_owned()
                 if self.repository.has_other_current_revision(
@@ -254,7 +257,7 @@ class TranscriptPipeline:
                         if backup is not None:
                             backup.unlink(missing_ok=True)
         except Exception as error:
-            if isinstance(error, (ArtifactWriteContended, ArtifactWriteClaimLost)):
+            if isinstance(error, (ArtifactWriteContended, ArtifactWriteClaimLost, ProcessHeld)):
                 raise
             self._set_steps(
                 revision.lecture_id,

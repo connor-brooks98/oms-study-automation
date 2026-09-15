@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Processes · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell sh-container" data-processes>
+  <header class="page-heading sh-header"><div>
+    <p class="sh-eyebrow">Your workspace</p><h1 class="sh-title">Processes</h1>
+    <p class="sh-subtitle">See uploads, transcript cleanup, quiz generation, and imports as they happen.</p>
+  </div><button class="sh-btn sh-btn--secondary" type="button" data-process-refresh>Refresh</button></header>
+  <div class="process-filters">
+    <label class="sh-field-label">Find a process<input class="sh-input" type="search" placeholder="Search lecture, filename, or task" data-process-search></label>
+    <label class="sh-field-label">Show<select class="sh-select" data-process-filter><option value="active">Ongoing and needs attention</option><option value="complete">Completed</option><option value="all">All processes</option></select></label>
+  </div>
+  <p class="field-help">Pause takes effect at a safe stopping point. Restart resumes retained work where possible. Remove stops or hides an event while keeping its files and history.</p>
+  <p data-process-scope hidden></p><a href="/processes" data-process-all hidden>Show all lectures</a>
+  <p role="status" aria-live="polite" data-process-message>Loading processes…</p>
+  <div class="process-grid" data-process-list></div>
+  <p class="card sh-card" data-process-empty hidden>No processes match this view.</p>
+  <noscript><p>Enable JavaScript to view and control processes.</p></noscript>
+</section>
+{% endblock %}
+{% block scripts %}
+<link rel="stylesheet" href="/static/processes.css?v=20260915.1">
+<script src="/static/study_generation.js?v=20260915.2" defer></script>
+<script src="/static/processes.js?v=20260915.1" defer></script>
+{% endblock %}

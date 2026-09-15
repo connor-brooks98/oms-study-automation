@@ -39,6 +39,10 @@
         {% endif %}
         {% if slide_revision %}
         <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ slide_revision.id }}/original">Download original</a>
+        <form method="post" action="/lectures/{{ lecture.id }}/materials/{{ slide_revision.id }}/remove">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+          <button class="sh-btn sh-btn--secondary" type="submit">Remove materials</button>
+        </form>
         {% endif %}
       </div>
     </section>
@@ -55,6 +59,10 @@
         {% endif %}
         {% if transcript_revision %}
         <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ transcript_revision.id }}/cleaned/download">Download Transcript</a>
+        <form method="post" action="/lectures/{{ lecture.id }}/materials/{{ transcript_revision.id }}/remove">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+          <button class="sh-btn sh-btn--secondary" type="submit">Remove transcript</button>
+        </form>
         {% endif %}
       </div>
     </section>
@@ -98,6 +106,36 @@
     {% endif %}
   </div>
   </div>
+
+  {% for revision in proposed_revisions %}
+  <section class="sh-card review-card">
+    <div>
+      <h2>{{ 'Transcript' if revision.kind.value == 'transcripts' else 'Lecture materials' }} replacement ready</h2>
+      <p>Your current file stays available until you approve the replacement.</p>
+    </div>
+    <a class="sh-btn sh-btn--primary" href="/review#replacement-{{ revision.id }}">Review replacement</a>
+  </section>
+  {% endfor %}
+
+  {% if removed_materials %}
+  <details class="sh-card t-accordion">
+    <summary>Removed files ({{ removed_materials|length }})</summary>
+    <p>Original files are retained. Restore reconnects an unchanged saved copy. Upload a changed file to use new materials; identical files use Restore.</p>
+    {% for revision in removed_materials %}
+    <div class="review-card">
+      <p>{{ 'Transcript' if revision.kind.value == 'transcripts' else 'Lecture materials' }} · {{ revision.immutable_source_path.name }}</p>
+      <div class="file-actions">
+        <a class="sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/{{ 'raw' if revision.kind.value == 'transcripts' else 'original' }}">Open original</a>
+        {% if revision.kind.value == 'transcripts' %}<a class="sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/cleaned/download">Download transcript</a>{% endif %}
+        <form method="post" action="/lectures/{{ lecture.id }}/materials/{{ revision.id }}/restore">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+          <button class="sh-btn sh-btn--secondary" type="submit">Restore</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </details>
+  {% endif %}
 
   <details class="pass-tracker sh-card t-accordion" id="pass-tracker" data-pass-tracker open>
     <summary class="lecture-panel-summary pass-tracker-summary">
@@ -151,6 +189,7 @@
   <details class="pipeline-card sh-panel" aria-labelledby="pipeline-heading" {% if status in ('failed', 'quarantined', 'needs_review') %}open{% endif %}>
     <summary><span class="mono-label" id="pipeline-heading">Materials processing</span><strong>{{ status_label }} · {{ progress_percent }}%</strong></summary>
     <div class="pipeline-card__body">
+    <p><a href="/processes?lecture_id={{ lecture.id }}">View this lecture's processes</a></p>
     <div class="pipeline-status">
       {% set status_tone = "sh-pill--ok" if status in ("complete", "completed", "ready", "configured", "connected", "skipped") else "sh-pill--info" if status in ("processing", "queued", "running", "pending", "in_progress") else "sh-pill--warn" if status in ("needs_review", "review") else "sh-pill--err" if status in ("failed", "quarantined") else "sh-pill--bare" %}
       <strong class="status-text status-{{ status }} sh-pill {{ status_tone }}">{{ status_label }}</strong>
@@ -163,7 +202,7 @@
       {% if status == "complete" %}Slides, transcript, summary, and quiz are ready.
       {% elif status in ("needs_review", "quarantined") %}One or more files need your review.
       {% elif status == "failed" %}Processing stopped with an actionable error.
-      {% elif status == "processing" %}The NUC is working through the available files.
+      {% elif status == "processing" %}Some material steps are incomplete. Open this lecture's processes to see active work.
       {% else %}Waiting for lecture files to be uploaded.{% endif %}
     </p>
     </div>

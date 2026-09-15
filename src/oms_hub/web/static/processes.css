@@ -1,0 +1,11 @@
+.process-filters { display: grid; grid-template-columns: minmax(0, 2fr) minmax(14rem, 1fr); gap: 1rem; margin-block: 1rem; }
+.process-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr)); gap: 1rem; }
+.process-card { display: flex; flex-direction: column; gap: .8rem; min-width: 0; padding: 1.25rem; }
+.process-card h2 { font-size: 1.15rem; overflow-wrap: anywhere; margin: 0; }
+.process-card p { margin: 0; overflow-wrap: anywhere; }
+.process-card > .sh-pill { align-self: flex-start; }
+.process-card-meta { font-size: .85rem; color: var(--muted); }
+.process-card-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: auto; }
+.process-card-error { padding: .7rem; border-inline-start: 3px solid var(--brand); background: var(--surface); }
+.process-card-reasons { font-size: .85rem; color: var(--muted); }
+@media (max-width: 640px) { .process-filters { grid-template-columns: 1fr; } }

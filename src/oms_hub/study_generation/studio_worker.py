@@ -11,6 +11,7 @@ from oms_hub.files.office import OfficeConverter
 from oms_hub.files.pdf import inspect_pdf
 from oms_hub.files.trusted_paths import is_indirection
 from oms_hub.llm.domain import DiagnosticSource
+from oms_hub.processes import ProcessHeld, process_operation
 from oms_hub.study_generation.notebook import NOTEBOOKLM_UPLOAD_ONLY, StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
@@ -92,28 +93,36 @@ class StudioWorker:
             return False
         from oms_hub.study_generation.practice_domain import QuizWorkflowKind
 
-        if run.workflow_kind is QuizWorkflowKind.LECTURE_GENERATION:
-            if self.gpt_worker is None:
+        try:
+            with process_operation(self.repository.database, "studio", run.id):
+                if run.workflow_kind is QuizWorkflowKind.LECTURE_GENERATION:
+                    if self.gpt_worker is None:
+                        from oms_hub.llm.codex_session import SessionError
+
+                        self.repository.stop_gpt_run(run.id, SessionError("capability_unverified"))
+                    else:
+                        self.gpt_worker.run(run)
+                    return True
+                if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
+                    if self.import_worker is None:
+                        self.repository.fail_run(
+                            run.id,
+                            DiagnosticSource.STUDY_HUB.value,
+                            "direct-import worker is not configured",
+                        )
+                    else:
+                        self.import_worker.run(run)
+                    return True
+                self.repository.fail_run(
+                    run.id, DiagnosticSource.VALIDATION.value, NOTEBOOKLM_UPLOAD_ONLY, paused=True
+                )
+                return True
+        except ProcessHeld:
+            if run.workflow_kind is QuizWorkflowKind.LECTURE_GENERATION:
                 from oms_hub.llm.codex_session import SessionError
 
-                self.repository.stop_gpt_run(run.id, SessionError("capability_unverified"))
-            else:
-                self.gpt_worker.run(run)
+                self.repository.stop_gpt_run(run.id, SessionError("interrupted"))
             return True
-        if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
-            if self.import_worker is None:
-                self.repository.fail_run(
-                    run.id,
-                    DiagnosticSource.STUDY_HUB.value,
-                    "direct-import worker is not configured",
-                )
-            else:
-                self.import_worker.run(run)
-            return True
-        self.repository.fail_run(
-            run.id, DiagnosticSource.VALIDATION.value, NOTEBOOKLM_UPLOAD_ONLY, paused=True
-        )
-        return True
 
     def _run_source_operation(
         self,

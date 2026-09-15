@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  {% set shell_asset_version = "20260914.3" %}
+  {% set shell_asset_version = "20260915.2" %}
   <link rel="stylesheet" href="/static/reset.css?v={{ shell_asset_version }}">
   <link rel="stylesheet" href="/static/tokens.css?v={{ shell_asset_version }}">
   <link rel="stylesheet" href="/static/study-hub.css?v={{ shell_asset_version }}">
@@ -18,7 +18,7 @@
 <body class="sh-app">
   <a class="skip-link" href="#main-content">Skip to main content</a>
   {% set current_path = request.url.path %}
-  {% set more_active = current_path.startswith('/study/') or current_path.startswith('/question-bank') or current_path.startswith('/uploads') or current_path.startswith('/quarantine') or current_path.startswith('/review') or current_path.startswith('/settings') %}
+  {% set more_active = current_path.startswith('/processes') or current_path.startswith('/study/') or current_path.startswith('/question-bank') or current_path.startswith('/quarantine') or current_path.startswith('/review') or current_path.startswith('/settings') %}
   <header class="site-header sh-topbar">
     <div class="sh-topbar__inner">
       <a class="brand sh-wordmark" href="/">
@@ -32,6 +32,7 @@
         <a class="sh-nav__link {% if current_path.startswith('/studio') %}sh-nav__link--active{% endif %}" href="/studio" {% if current_path.startswith('/studio') %}aria-current="page"{% endif %}>Quiz Builder</a>
         <a class="sh-nav__link {% if current_path.startswith('/public/quizzes') %}sh-nav__link--active{% endif %}" href="/public/quizzes" {% if current_path.startswith('/public/quizzes') %}aria-current="page"{% endif %}>Quizzes</a>
         <a class="sh-nav__link {% if current_path.startswith('/public/practice-questions') %}sh-nav__link--active{% endif %}" href="/public/practice-questions" {% if current_path.startswith('/public/practice-questions') %}aria-current="page"{% endif %}>Practice Questions</a>
+        <a class="sh-btn sh-btn--primary sh-upload-nav" href="/uploads" {% if current_path.startswith("/uploads") %}aria-current="page"{% endif %}>Upload Materials</a>
         <details class="sh-more">
           <summary class="sh-nav__link sh-more__trigger {% if more_active %}sh-nav__link--active{% endif %}" aria-expanded="false" {% if more_active %}aria-current="page"{% endif %}>More <span class="sh-more__chevron" aria-hidden="true">▾</span></summary>
           <div class="sh-more__menu t-dropdown" data-origin="top-right">
@@ -39,7 +40,7 @@
             <a href="/study/progress">Study progress</a>
             <a href="/study/review">Missed or guessed</a>
             <a href="/question-bank">Question bank imports</a>
-            <a href="/uploads">Upload materials</a>
+            <a href="/processes">Processes</a>
             <a href="/quarantine">Unmatched uploads</a>
             <a href="/review">Review</a>
             <a href="/settings">Settings</a>
@@ -75,6 +76,7 @@
       <a href="/question-bank" data-command-item>Question bank imports <span>Import results and review questions</span></a>
       <a href="/study/progress" data-command-item>Study progress <span>Review recorded attempts</span></a>
       <a href="/study/chat" data-command-item>Study chat <span>Ask about selected lecture sources</span></a>
+      <a href="/processes" data-command-item>Processes <span>Pause, restart, or remove work</span></a>
       <a href="/uploads" data-command-item>Upload materials <span>Add slides, documents, and transcripts</span></a>
       <a href="/quarantine" data-command-item>Unmatched uploads <span>Choose the matching lecture</span></a>
       <a href="/review" data-command-item>Review <span>Resolve stopped workflows</span></a>
@@ -94,7 +96,8 @@
             <a href="/study/progress">Study progress</a>
             <a href="/study/review">Missed or guessed</a>
             <a href="/question-bank">Question bank imports</a>
-      <a href="/uploads">Upload materials</a>
+      <a href="/processes">Processes</a>
+      <a href="/uploads">Upload Materials</a>
       <a href="/quarantine">Unmatched uploads</a><a href="/review">Review</a><a href="/settings">Settings</a>
     </nav>
   </dialog>

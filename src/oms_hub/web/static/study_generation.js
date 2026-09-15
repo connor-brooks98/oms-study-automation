@@ -293,6 +293,7 @@
 
   const api = { objectives, errorMessage, statusText, csrfToken, post, safeLink, runPresentation, initializeRun, initializePresets, initialize };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
+  root.StudyGeneration = api;
   if (root.document) {
     if (root.document.readyState === "loading") root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });
     else initialize(root.document);

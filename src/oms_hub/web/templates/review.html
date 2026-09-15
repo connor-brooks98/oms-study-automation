@@ -7,13 +7,14 @@
       <p class="eyebrow sh-eyebrow">Human checkpoint</p>
       <h1 class="sh-title">Review</h1>
       <p class="page-summary sh-subtitle">Approve replacements and resolve anything that stopped the pipeline.</p>
+      <p><a href="/processes">View processes and failed uploads</a></p>
     </div>
   </div>
 
   <section class="review-section">
     <div class="review-section__heading"><h2>Proposed replacements</h2><p>Compare a newer source with the current lecture file.</p></div>
     {% for revision in proposed_revisions %}
-    <article class="card sh-card review-card">
+    <article class="card sh-card review-card" id="replacement-{{ revision.id }}">
       <div>
         <p class="mono-label">{{ revision.kind.value }} · Revision {{ revision.id }}</p>
         <h3>{{ proposed_revision_labels.get(revision.id, "Lecture unavailable") }}</h3>
@@ -28,10 +29,12 @@
         <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/cleaned">Preview transcript</a>
         {% endif %}
         <form method="post" action="/review/replacements/{{ revision.id }}/approve">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
           <button class="button primary sh-btn sh-btn--primary" type="submit">{% if revision.state == "promoting" %}Resume recovery{% else %}Approve replacement{% endif %}</button>
         </form>
         {% if revision.state != "promoting" %}
         <form method="post" action="/review/replacements/{{ revision.id }}/keep">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
           <button class="button secondary sh-btn sh-btn--secondary" type="submit">Keep current file</button>
         </form>
         {% endif %}

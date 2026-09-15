@@ -15,6 +15,7 @@ from oms_hub.domain import (
 )
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.lecture_materials import LectureMaterials
 from oms_hub.models import LectureModel, LecturePassModel
 from oms_hub.naming import display_title
 from oms_hub.progress import overall_status
@@ -246,6 +247,14 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
             else 0,
             "release_steps": release_steps,
             "slide_revision": slide_revision,
+            "proposed_revisions": tuple(
+                revision for revision in IngestionRepository(
+                    request.app.state.database
+                ).list_proposed_revisions() if revision.lecture_id == lecture_id
+            ),
+            "removed_materials": LectureMaterials(
+                request.app.state.database, request.app.state.settings
+            ).list_removed(lecture_id),
             "slide_problem": revision_readiness_problem(slide_revision),
             "transcript_revision": transcript_revision,
             "transcript_problem": revision_readiness_problem(

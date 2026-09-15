@@ -22,6 +22,7 @@ from oms_hub.models import (
     BankReviewQuestionModel,
     BankReviewRunModel,
     LectureModel,
+    ProcessControlModel,
     PublishedQuizMediaModel,
     PublishedQuizModel,
     StudioImportRunSourceModel,
@@ -36,6 +37,7 @@ from oms_hub.models import (
     StudioSourceOperationModel,
     StudyRevisionModel,
 )
+from oms_hub.processes import claim_allowed, recover_hold
 from oms_hub.study_generation.domain import NativeQuiz
 from oms_hub.study_generation.native_quiz import (
     image_requirements,
@@ -338,6 +340,7 @@ class StudioRepository:
                     .where(
                         StudioSourceModel.purpose == StudioSourcePurpose.NOTEBOOK.value,
                         StudioSourceModel.state == StudioSourceState.PENDING.value,
+                        claim_allowed("source", StudioSourceModel.id),
                         or_(
                             StudioSourceModel.source_type == StudioSourceType.URL.value,
                             StudioSourceModel.payload_path.is_not(None),
@@ -358,6 +361,7 @@ class StudioRepository:
                     .where(
                         StudioSourceModel.id == model.id,
                         StudioSourceModel.state == StudioSourceState.PENDING.value,
+                        claim_allowed("source", StudioSourceModel.id),
                     )
                     .values(
                         state=StudioSourceState.ATTACHING.value,
@@ -402,6 +406,8 @@ class StudioRepository:
                     StudioSourceOperationModel.state.in_(
                         {"queued", "reconciling", "deleting"}
                     ),
+                    or_(StudioSourceOperationModel.state != "queued",
+                        claim_allowed("source", StudioSourceOperationModel.source_id)),
                     or_(
                         StudioSourceOperationModel.lease_owner.is_(None),
                         StudioSourceOperationModel.lease_expires_at.is_(None),
@@ -423,6 +429,8 @@ class StudioRepository:
                 .where(
                     StudioSourceOperationModel.id == operation.id,
                     StudioSourceOperationModel.state == claimed_state,
+                    or_(StudioSourceOperationModel.state != "queued",
+                        claim_allowed("source", StudioSourceOperationModel.source_id)),
                     or_(
                         StudioSourceOperationModel.lease_owner.is_(None),
                         StudioSourceOperationModel.lease_expires_at.is_(None),
@@ -1004,6 +1012,8 @@ class StudioRepository:
                 select(StudioRunModel).where(StudioRunModel.state == StudioRunState.RUNNING.value)
             ).all()
             for run_model in run_models:
+                if recover_hold(session, "studio", str(run_model.id)):
+                    continue
                 if run_model.backend == "codex_subscription":
                     run_model.state = StudioRunState.INTERRUPTED.value
                     run_model.error = "GPT operation interrupted; explicit recovery required"
@@ -1017,6 +1027,7 @@ class StudioRepository:
                 StudioRunModel.state == "interrupted",
             )):
                 self._acknowledge_gpt_stop(session, run_id)
+                recover_hold(session, "studio", run_id)
             return len(source_models) + len(interrupted_operations) + len(run_models)
 
     @staticmethod
@@ -1523,6 +1534,17 @@ class StudioRepository:
             previous = json.loads(stored.payload_json) if stored else {}
             if action == "resume" and previous.get("worker_stopping"):
                 raise ValueError("Cancelled worker is still stopping; resume after it stops.")
+            if action == "resume":
+                hold = session.get(ProcessControlModel, ("studio", run_id))
+                if hold is not None and hold.requested_action:
+                    if hold.requested_action == "remove" or not hold.acknowledged_at:
+                        raise ValueError("Process hold must stop before it can resume.")
+                    hold.requested_action = None
+                    hold.acknowledged_at = None
+                    hold.events_json = json.dumps(json.loads(hold.events_json) + [{
+                        "action": "restart", "owner_id": owner_id,
+                        "at": datetime.now(UTC).isoformat(), "source": "gpt_progress",
+                    }])
             payload = json.dumps({"cancelled": action == "cancel", "resume": action == "resume",
                 "worker_stopping": action == "cancel" and (
                     run.state == "running" or bool(previous.get("worker_stopping"))),
@@ -1885,6 +1907,7 @@ class StudioRepository:
             model = session.scalar(
                 select(StudioRunModel)
                 .where(
+                    claim_allowed("studio", StudioRunModel.id),
                     StudioRunModel.state.in_(
                         {
                             StudioRunState.QUEUED.value,
@@ -1904,6 +1927,7 @@ class StudioRepository:
             claimed = session.execute(
                 update(StudioRunModel)
                 .where(
+                    claim_allowed("studio", StudioRunModel.id),
                     StudioRunModel.id == model.id,
                     StudioRunModel.state.in_(
                         {

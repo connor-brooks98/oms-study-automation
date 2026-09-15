@@ -21,6 +21,7 @@ from oms_hub.document_processing.domain import (
     SourceSnapshot,
 )
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, LLMTask
+from oms_hub.processes import ProcessHeld, checkpoint
 from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.notebook_errors import NotebookGatewayError
 from oms_hub.study_generation.practice_answers import AnswerResolutionScope
@@ -180,9 +181,13 @@ class QuizImportWorker:
         if run is None:
             return
         try:
+            checkpoint()
             sources, roles = self._sources(run)
+            checkpoint()
             parsed = self._parse(run, sources, roles)
+            checkpoint()
             extracted = self._extract(run, parsed, sources, roles)
+            checkpoint()
             drafts = self._pair(run, extracted, sources, roles)
             if (
                 any(isinstance(draft, MatchingQuestionDraft) for draft in drafts)
@@ -190,10 +195,15 @@ class QuizImportWorker:
             ):
                 raise ValueError("matching questions require practice-question content")
             if any(_requires_review_before_resolution(draft) for draft in drafts):
+                checkpoint()
                 self._review(run, drafts, sources, roles)
                 return
+            checkpoint()
             resolved = self._resolve_answers(run, drafts, sources, roles)
+            checkpoint()
             self._review(run, resolved, sources, roles)
+        except ProcessHeld:
+            raise
         except ExtractionError as error:
             metadata = error.provider_metadata
             provider = metadata[-1] if metadata else None

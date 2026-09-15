@@ -41,7 +41,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 41
+LATEST_SCHEMA_VERSION = 42
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -2773,6 +2773,19 @@ def _validate_quiz_instruction_presets_v41(database: "Database") -> None:
         raise RuntimeError("schema v41 quiz preset owner/name constraint is missing")
 
 
+def _validate_process_controls_v42(database: "Database") -> None:
+    inspector = inspect(database.engine)
+    table = "process_controls"
+    required = {"family", "job_id", "owner_id", "requested_action", "acknowledged_at",
+                "hidden_at", "events_json", "updated_at"}
+    if not inspector.has_table(table) or not required <= {
+        column["name"] for column in inspector.get_columns(table)
+    }:
+        raise RuntimeError("schema v42 process controls are missing")
+    if set(inspector.get_pk_constraint(table)["constrained_columns"]) != {"family", "job_id"}:
+        raise RuntimeError("schema v42 process control identity is missing")
+
+
 def migrate_database(database: "Database") -> None:
     # A populated current schema is an integrity check, not an opportunity to
     # rewrite persisted identities.  Keep this branch read-only.
@@ -2824,6 +2837,7 @@ def migrate_database(database: "Database") -> None:
             _validate_ingestion_backend_v35(database)
             _validate_topic_suggestions_v40(database)
             _validate_quiz_instruction_presets_v41(database)
+            _validate_process_controls_v42(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -2880,6 +2894,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_generation_backend_v39(database)
     _validate_topic_suggestions_v40(database)
     _validate_quiz_instruction_presets_v41(database)
+    _validate_process_controls_v42(database)
     _validate_ingestion_backend_v35(database)
     _validate_gpt_platform_v32(database)
     _validate_study_chat_v33(database)

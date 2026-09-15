@@ -17,6 +17,7 @@ from oms_hub.ingestion.repository import (
     TranscriptAdmissionPending,
 )
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
+from oms_hub.processes import ProcessHeld, acknowledge_boundary, checkpoint, process_operation
 from oms_hub.transcripts.pipeline import TranscriptValidationError
 
 logger = logging.getLogger(__name__)
@@ -67,18 +68,23 @@ class IngestionWorker:
                 pipeline = self.gpt_transcript_pipeline
             elif job.backend != "legacy_api":
                 raise ValueError("unsupported ingestion backend")
-            result = pipeline.process(job.upload_item_id)
+            with process_operation(self.repository.database, "ingestion", str(job.id)):
+                result = pipeline.process(job.upload_item_id)
+                checkpoint()
+                if self.on_filed is not None:
+                    try:
+                        self.on_filed(result)
+                    except Exception as error:  # noqa: BLE001 - optional sync must not fail filed work
+                        logger.warning(
+                            "Optional NotebookLM queue stopped for ingestion job %s (%s)",
+                            job.id, type(error).__name__,
+                        )
+        except ProcessHeld:
+            return True
         except Exception as error:  # noqa: BLE001 - job boundary records all failures
             self._handle_failure(job, error)
+            acknowledge_boundary(self.repository.database, "ingestion", str(job.id))
             return True
-        if self.on_filed is not None:
-            try:
-                self.on_filed(result)
-            except Exception as error:  # noqa: BLE001 - optional sync must not fail filed work
-                logger.warning(
-                    "Optional NotebookLM queue stopped for ingestion job %s (%s)",
-                    job.id, type(error).__name__,
-                )
         return True
 
     def _handle_failure(self, job: IngestionJob, error: Exception) -> None:

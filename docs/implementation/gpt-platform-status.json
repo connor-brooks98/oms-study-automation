@@ -3,7 +3,7 @@
   "schema_version": 1,
   "program": "gpt-study-platform-2026-09-11",
   "base_commit": "96ceec56c4b8f9df0018fe090710631adb29a2a2",
-  "integration_branch": "codex/hub-intake-ux-2026-09-14",
+  "integration_branch": "codex/processes-and-material-controls-2026-09-15",
   "integration_worktree": "/Users/connor/Developer/worktrees/oms-hub-intake-ux",
   "orchestrator": {
     "thread_id": "01a09271-e627-7712-a2fc-ff675db23a8b",
@@ -1244,5 +1244,14 @@
       "ui": "pass tracker moved below three panels; 35 focused tests and actual browser inspection passed",
       "next_action": "Compact redundant prompt metadata, implement complete source/image batching and supported Mac preparation, then rerun this authorized lecture trial without silently dropping evidence."
     }
-  ]
+  ],
+  "latest_ux_followup": {
+    "date": "2026-09-15",
+    "state": "accepted_local_release_prepared",
+    "handoff": "docs/implementation/gpt-platform-handoffs/O-process-controls-20260915.md",
+    "scope": "process controls, recoverable material removal, replacement links, blue Upload Materials navigation",
+    "deployment_evidence": "/Users/connor/Developer/release-evidence/process-controls-20260915",
+    "provider_acceptance": "unchanged; Windows generation remains gated",
+    "review": "PASS; lineage, paid replay, and GPT pause/resume race findings closed"
+  }
 }

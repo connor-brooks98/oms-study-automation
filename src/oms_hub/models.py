@@ -12,6 +12,20 @@ class Base(DeclarativeBase):
     pass
 
 
+class ProcessControlModel(Base):
+    """User holds and history visibility; the original job remains authoritative."""
+
+    __tablename__ = "process_controls"
+    family: Mapped[str] = mapped_column(String(20), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(320))
+    requested_action: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    acknowledged_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    hidden_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    events_json: Mapped[str] = mapped_column(Text, default="[]")
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
 class SchemaVersionModel(Base):
     __tablename__ = "schema_version"
 

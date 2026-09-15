@@ -39,6 +39,7 @@ from oms_hub.models import (
     UploadBatchModel,
     UploadItemModel,
 )
+from oms_hub.processes import claim_allowed, recover_hold
 from oms_hub.study_generation.domain import (
     GenerationJob,
     GenerationKind,
@@ -509,6 +510,7 @@ class GenerationRepository:
             model = session.scalar(
                 select(GenerationJobModel)
                 .where(
+                    claim_allowed("generation", GenerationJobModel.id),
                     GenerationJobModel.state == GenerationState.QUEUED.value,
                     or_(
                         GenerationJobModel.next_attempt_at.is_(None),
@@ -523,6 +525,7 @@ class GenerationRepository:
             result = session.execute(
                 update(GenerationJobModel)
                 .where(
+                    claim_allowed("generation", GenerationJobModel.id),
                     GenerationJobModel.id == model.id,
                     GenerationJobModel.state == GenerationState.QUEUED.value,
                 )
@@ -592,6 +595,8 @@ class GenerationRepository:
                 )
             ).all()
             for model in models:
+                if recover_hold(session, "generation", str(model.id)):
+                    continue
                 if model.backend == "codex_subscription":
                     model.state = GenerationState.PAUSED.value
                     model.error = "GPT operation interrupted; explicit recovery required"

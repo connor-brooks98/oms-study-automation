@@ -9,6 +9,7 @@ from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.llm.codex_session import SessionError
 from oms_hub.llm.domain import DiagnosticSource
+from oms_hub.processes import ProcessHeld, acknowledge_boundary, checkpoint, process_operation
 from oms_hub.study_generation.domain import (
     GenerationKind,
     GenerationStage,
@@ -79,10 +80,13 @@ class GenerationWorker:
             f"{job.kind.value.title()} generation is running",
         )
         try:
-            if getattr(job, "backend", "notebooklm") == "codex_subscription":
-                self._run_gpt_outline(job)
-            else:
-                self._run(job)
+            with process_operation(self.repository.database, "generation", job.id):
+                if getattr(job, "backend", "notebooklm") == "codex_subscription":
+                    self._run_gpt_outline(job)
+                else:
+                    self._run(job)
+        except ProcessHeld:
+            return True
         except Exception as error:  # noqa: BLE001 - durable boundary sanitizes content
             if getattr(job, "backend", "notebooklm") == "codex_subscription":
                 replacement = isinstance(error, ImportedOutlineReplacementRequired)
@@ -134,6 +138,8 @@ class GenerationWorker:
                     ),
                     safe,
                 )
+        finally:
+            acknowledge_boundary(self.repository.database, "generation", job.id)
         return True
 
     def _run_gpt_outline(self, job: Any) -> None:
@@ -170,6 +176,7 @@ class GenerationWorker:
             if event.phase == "dispatching" and sources() != (pdf, transcript):
                 raise SourceIsolationError("outline source binding changed")
 
+        checkpoint()
         answer = self.gpt_outline.generate(job, prompt, pdf, transcript, on_lifecycle=lifecycle)
         if sources() != (pdf, transcript):
             raise SourceIsolationError("outline sources changed before filing")
@@ -178,6 +185,7 @@ class GenerationWorker:
                          lecture.lecture_number, lecture.topic)
         job = self.repository.advance(job.id, GenerationStage.PDF)
         review = self.repository.imported_outline_replacement_review(job.lecture_id, job.id)
+        checkpoint()
         self.outline.file(job, key, answer, replacement_review=review)
         self.repository.complete(job.id)
         self.catalog.set_step_status(job.lecture_id, V2StepName.SUMMARY_FILED,

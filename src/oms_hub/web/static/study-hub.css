@@ -499,6 +499,7 @@ body { overflow-x: clip; }
   color: var(--text-2);
 }
 .sh-topbar .sh-nav__link--active { background: var(--brand-tint); color: var(--brand); }
+.sh-topbar .sh-upload-nav { font-size: inherit; padding-inline: var(--sp-3); white-space: nowrap; }
 .sh-topbar__actions { margin-inline-start: auto; display: flex; align-items: center; gap: var(--sp-2); }
 .sh-pill--compact { padding-block: 4px; }
 .sh-more { position: relative; }
@@ -658,12 +659,12 @@ body { overflow-x: clip; }
   .sh-command__results a:hover { background: var(--surface); color: var(--brand); }
 }
 
-@media (max-width: 74rem) {
+@media (max-width: 84rem) {
   .sh-topbar .sh-pill--compact { display: none; }
   .sh-topbar .sh-nav__link { padding-inline: var(--sp-2); }
 }
 
-@media (max-width: 58rem) {
+@media (max-width: 66rem) {
   .sh-topbar__nav,
   .sh-command-trigger { display: none !important; }
   .sh-mobile-trigger { display: inline-flex; }

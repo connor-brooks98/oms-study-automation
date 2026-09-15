@@ -110,6 +110,7 @@ from oms_hub.anki.replay_inputs import PreparedStageReplayInputs, canonical_json
 from oms_hub.db import Database
 from oms_hub.llm.domain import DiagnosticSource, ProviderName
 from oms_hub.models import LectureModel, utc_now
+from oms_hub.processes import claim_allowed, recover_hold
 
 ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
     CurationState.QUEUED: {
@@ -1357,6 +1358,7 @@ class AnkiCurationRepository:
             stored = session.scalar(
                 select(AnkiCurationJobModel)
                 .where(
+                    claim_allowed("anki", AnkiCurationJobModel.id),
                     AnkiCurationJobModel.state.in_([state.value for state in _CLAIMABLE_STATES]),
                     or_(
                         AnkiCurationJobModel.available_at.is_(None),
@@ -1376,6 +1378,7 @@ class AnkiCurationRepository:
             claimed = session.execute(
                 update(AnkiCurationJobModel)
                 .where(
+                    claim_allowed("anki", AnkiCurationJobModel.id),
                     AnkiCurationJobModel.id == stored.id,
                     AnkiCurationJobModel.state == stored.state,
                     or_(
@@ -1834,6 +1837,7 @@ class AnkiCurationRepository:
                 job.lease_owner = None
                 job.lease_expires_at = None
                 job.error = "resumable after an interrupted Hub process"
+                recover_hold(session, "anki", str(job.id))
             return len(stored)
 
     def start_stage(

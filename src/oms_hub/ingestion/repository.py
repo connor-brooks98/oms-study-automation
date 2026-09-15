@@ -36,6 +36,7 @@ from oms_hub.models import (
     UploadItemModel,
     utc_now,
 )
+from oms_hub.processes import claim_allowed, recover_hold
 
 
 class TranscriptAdmissionPending(RuntimeError):
@@ -595,6 +596,7 @@ class IngestionRepository:
             job = session.scalar(
                 select(IngestionJobModel)
                 .where(
+                    claim_allowed("ingestion", IngestionJobModel.id),
                     IngestionJobModel.state == UploadState.QUEUED.value,
                     or_(
                         IngestionJobModel.next_attempt_at.is_(None),
@@ -609,6 +611,7 @@ class IngestionRepository:
             claimed = session.execute(
                 update(IngestionJobModel)
                 .where(
+                    claim_allowed("ingestion", IngestionJobModel.id),
                     IngestionJobModel.id == job.id,
                     IngestionJobModel.state == UploadState.QUEUED.value,
                 )
@@ -647,6 +650,8 @@ class IngestionRepository:
                 )
             ).all()
             for job in jobs:
+                if recover_hold(session, "ingestion", str(job.id)):
+                    continue
                 gpt = job.backend == "codex_subscription"
                 job.state = (UploadState.NEEDS_REVIEW if gpt else UploadState.QUEUED).value
                 job.next_attempt_at = None
@@ -834,6 +839,11 @@ class IngestionRepository:
                 )
                 session.add(revision)
                 session.flush()
+            if revision.state == "removed":
+                raise ValueError(
+                    "This exact material was removed. Restore the retained material on the "
+                    "lecture page, or upload a changed file."
+                )
             if item.kind == UploadKind.TRANSCRIPTS.value:
                 claimed = self._claim_transcript_cleaning(
                     session, item, source_revision=revision
@@ -1365,6 +1375,17 @@ class IngestionRepository:
         session: Session,
         item: UploadItemModel,
     ) -> None:
+        removed = session.scalar(select(StudyRevisionModel.id).where(
+            StudyRevisionModel.lecture_id == item.lecture_id,
+            StudyRevisionModel.kind == item.kind,
+            StudyRevisionModel.source_sha256 == item.sha256,
+            StudyRevisionModel.state == "removed",
+        ))
+        if removed is not None:
+            raise ValueError(
+                "This exact material was removed. Restore the retained material on the "
+                "lecture page, or upload a changed file."
+            )
         exact = session.scalar(
             select(StudyRevisionModel).where(
                 StudyRevisionModel.lecture_id == item.lecture_id,

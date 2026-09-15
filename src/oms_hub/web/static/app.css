@@ -2312,7 +2312,7 @@ details[open] > summary > .sh-disclose { transform: rotate(90deg); }
 /* Shared shell controls opt out of the legacy generic-button cascade. */
 button.sh-mobile-trigger { display: none; width: 44px; padding: 0; }
 button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-pill); }
-@media (max-width: 58rem) {
+@media (max-width: 66rem) {
   button.sh-mobile-trigger { display: inline-flex; }
 }
 

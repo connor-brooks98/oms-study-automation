@@ -33,6 +33,7 @@ from oms_hub.ingestion.domain import (
     UploadState,
 )
 from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.processes import ProcessHeld, checkpoint
 from oms_hub.progress import SLIDE_PIPELINE_STEPS
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import build_slide_destinations, expanded_path
@@ -133,6 +134,7 @@ class SlidePipeline:
                 StepStatus.COMPLETE,
                 "Original lecture material preserved and checksum verified",
             )
+            checkpoint()
             derived_sha256 = self._ensure_pdf(
                 revision.immutable_source_path,
                 derived,
@@ -151,6 +153,7 @@ class SlidePipeline:
                 canonical_derived_path=destinations.pdf,
                 icloud_path=destinations.icloud_pdf,
             )
+            checkpoint()
             with self.writes.claim(revision.lecture_id, "slide-promotion") as claim:
                 if self.repository.has_other_current_revision(
                     revision.lecture_id, UploadKind.SLIDES, revision.id
@@ -184,7 +187,7 @@ class SlidePipeline:
                 claim.assert_owned()
                 return self.repository.complete_promoted_revision(revision.id, item_id)
         except Exception as error:
-            if isinstance(error, (ArtifactWriteContended, ArtifactWriteClaimLost)):
+            if isinstance(error, (ArtifactWriteContended, ArtifactWriteClaimLost, ProcessHeld)):
                 raise
             self._mark_failed(revision.lecture_id, str(error))
             revision_state = None

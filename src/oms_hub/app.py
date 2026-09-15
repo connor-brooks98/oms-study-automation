@@ -179,6 +179,8 @@ from oms_hub.web.generation_routes import (
     router as generation_router,
 )
 from oms_hub.web.gpt_export_routes import router as gpt_export_router
+from oms_hub.web.material_routes import router as material_router
+from oms_hub.web.process_routes import router as process_router
 from oms_hub.web.public_quiz_routes import router as public_quiz_router
 from oms_hub.web.published_quiz_exports import router as published_quiz_export_router
 from oms_hub.web.published_quiz_routes import router as published_quiz_router
@@ -926,6 +928,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     else:
         app.state.anki_rehearsal_egress_guard = None
     app.state.database = database
+    from oms_hub.processes import ProcessService
+
+    app.state.process_service = ProcessService(database)
     app.state.runtime_settings = runtime_settings
     app.state.anki_runtime = (
         AnkiRuntime(
@@ -1489,6 +1494,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(anki_router)
     app.include_router(anki_agent_router)
     app.include_router(artifact_router)
+    app.include_router(material_router)
+    app.include_router(process_router)
     app.include_router(settings_router)
     app.include_router(settings_api_router)
     app.include_router(upload_router)

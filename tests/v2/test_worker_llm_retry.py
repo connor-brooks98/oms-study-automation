@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from oms_hub.artifact_writes import ArtifactWriteClaimLost, ArtifactWriteContended
+from oms_hub.db import Database
 from oms_hub.ingestion.domain import IngestionJob, UploadKind
 from oms_hub.ingestion.worker import IngestionWorker
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
@@ -47,10 +48,13 @@ def test_sqlite_busy_errors_are_retried():
 
 
 @pytest.mark.parametrize("error", [ArtifactWriteContended("held"), ArtifactWriteClaimLost("lost")])
-def test_claim_failures_are_deferred_after_ingestion_retry_limit(error):
+def test_claim_failures_are_deferred_after_ingestion_retry_limit(error, tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'retry.db'}")
+    database.migrate()
     job = IngestionJob(1, "item", UploadKind.TRANSCRIPTS, "process", 99, datetime.now(UTC))
     calls = []
     repository = SimpleNamespace(
+        database=database,
         claim_next_job=lambda now: job,
         retry_job=lambda item, detail, delay: calls.append((item, detail, delay)),
         fail_job=lambda *args, **kwargs: pytest.fail("must not become terminal"),
@@ -58,3 +62,4 @@ def test_claim_failures_are_deferred_after_ingestion_retry_limit(error):
     pipeline = SimpleNamespace(process=lambda item_id: (_ for _ in ()).throw(error))
     assert IngestionWorker(repository, pipeline, pipeline).run_once() is True
     assert calls and calls[0][0] is job
+    database.close()

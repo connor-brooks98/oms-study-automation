@@ -20,6 +20,7 @@ from oms_hub.anki.semantic.voyage import VoyageEmbeddingError
 from oms_hub.db import is_sqlite_busy
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
 from oms_hub.llm.structured import StructuredOutputError
+from oms_hub.processes import acknowledge_boundary
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,7 @@ class AnkiCurationWorker:
                 await renewal
             finally:
                 self.repository.release_lease(job.id, self.worker_id)
+                acknowledge_boundary(self.repository.database, "anki", str(job.id))
         return True
 
     async def start(self) -> None:
