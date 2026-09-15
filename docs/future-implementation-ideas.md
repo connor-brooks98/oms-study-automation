@@ -102,3 +102,11 @@ Make daily studying easier by improving resume behavior, lecture discovery, navi
 Start with useful Continue behavior, lecture search, hiding answer-bearing quiz metadata until submission, preserving course/exam context, and prioritizing study actions on lecture pages.
 
 Decide during implementation: persistence scope for recent study context, final navigation labels/layout, pass-goal semantics, and the deployment source of blocked analytics. The audit records untested accessibility, performance, and write workflows separately; it does not authorize implementation or deployment.
+
+### 2026-09-15 — Possible rented Linux server migration
+
+**Status:** Deferred for several months by Connor; continue Windows worker implementation now.
+
+Intent: potentially host the Study Hub on a rented server while keeping account access and exam notebooks available from any computer. Retain the existing worker/provider boundaries; do not implement migration infrastructure now.
+
+Decide when migration resumes: hosting provider, Linux document conversion replacing Windows Office, persistent storage/backups, private access, and supported managed ChatGPT login on the chosen host.

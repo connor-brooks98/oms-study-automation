@@ -178,19 +178,23 @@ def test_pinned_native_gpt55_no_environments_rejects_apply_patch(tmp_path):
     assert report["restrictions_verified"] is False and report["provider_verified"] is False
 
 
-def test_windows_account_startup_uses_supported_policy_without_enabling_generation(
-    tmp_path, monkeypatch
-):
+def test_windows_rejects_legacy_account_runtime_before_generation(tmp_path, monkeypatch):
     import oms_hub.llm.codex_session as session
 
     monkeypatch.setattr(session.sys, "platform", "win32")
-    client = CodexSessionClient(tmp_path / "codex.exe", tmp_path / "home", tmp_path / "work")
+    client = CodexSessionClient(
+        tmp_path / "codex.exe",
+        tmp_path / "home",
+        tmp_path / "work",
+        binary_sha256=session.INSPECTED_WINDOWS_BINARY_SHA256,
+    )
     assert 'approval_policy="on-request"' in client._command
     assert 'approval_policy="untrusted"' not in client._command
     assert 'windows.sandbox="elevated"' in client._command
     with pytest.raises(SessionError, match="not verified"):
         client.generate(
             SessionRequest("fixture", "gpt-5.5", "Fixture", "Fixture"),
-            cancelled=lambda: False, on_lifecycle=lambda _: None,
+            cancelled=lambda: False,
+            on_lifecycle=lambda _: None,
         )
     assert not client.session_home.exists()

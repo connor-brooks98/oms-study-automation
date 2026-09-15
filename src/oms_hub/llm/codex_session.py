@@ -30,7 +30,9 @@ PINNED_EXPERIMENTAL_SCHEMA_SHA256 = (
 ACCEPTED_MACOS_BINARY_SHA256 = "ecad78dbf98adb89ec475edac86630406cbe59d9f3070b17d88065f136b94bcb"
 ACCEPTED_MACOS_VERSION = "0.154.0-alpha.6.2"
 ACCEPTED_MACOS_SCHEMA_SHA256 = "24df528acec2952e6b96c1c2b061f98e60177d059e12c90cf318621380c9de9e"
-_RUNTIME_PINS = {"darwin": ACCEPTED_MACOS_BINARY_SHA256, "win32": INSPECTED_WINDOWS_BINARY_SHA256}
+ACCEPTED_WINDOWS_BINARY_SHA256 = "d6eb90b7409dc22f407a9dfa44ec629a8a5a6bf3ca001493aef13dd85a75dbda"
+ACCEPTED_WINDOWS_MODELS = frozenset({"gpt-5.5"})
+_RUNTIME_PINS = {"darwin": ACCEPTED_MACOS_BINARY_SHA256, "win32": ACCEPTED_WINDOWS_BINARY_SHA256}
 
 
 @dataclass(frozen=True)
@@ -233,15 +235,26 @@ class _Stdio:
         self, command: list[str], *, cwd: Path, env: dict[str, str], shutdown_timeout: float
     ):
         self.shutdown_timeout = shutdown_timeout
-        self.process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=cwd,
-            env=env,
-            shell=False,
-        )
+        if sys.platform == "win32":
+            from oms_hub.llm.windows_lpac import LpacProcess
+
+            self.process = LpacProcess(
+                command,
+                cwd=cwd,
+                env=env,
+                session_home=Path(env["CODEX_HOME"]),
+                shutdown_timeout=shutdown_timeout,
+            )
+        else:
+            self.process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=cwd,
+                env=env,
+                shell=False,
+            )
         self.incoming: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=128)
         self.outgoing: queue.Queue[tuple[bytes, threading.Event, list[bool]] | None] = queue.Queue(
             1
@@ -345,23 +358,27 @@ class _Stdio:
 
     def close(self) -> None:
         self.stopped.set()
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=self.shutdown_timeout)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=self.shutdown_timeout)
-        else:
-            self.process.wait()
-        for thread in self.threads:
-            thread.join(timeout=self.shutdown_timeout)
-        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
-            if stream is not None:
+        try:
+            if self.process.poll() is None:
+                self.process.terminate()
                 try:
-                    stream.close()
-                except OSError:
-                    pass
+                    self.process.wait(timeout=self.shutdown_timeout)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=self.shutdown_timeout)
+            else:
+                self.process.wait()
+            for thread in self.threads:
+                thread.join(timeout=self.shutdown_timeout)
+            for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+        finally:
+            if sys.platform == "win32":
+                self.process.close()
 
 
 class CodexSessionClient:
@@ -448,11 +465,13 @@ class CodexSessionClient:
             if self.binary_sha256 != _RUNTIME_PINS.get(sys.platform):
                 raise SessionError("capability_unverified")
             config = self.session_home / "config.toml"
-            if sys.platform == "darwin" and (config.exists() or config.is_symlink()):
+            if sys.platform in {"darwin", "win32"} and (config.exists() or config.is_symlink()):
                 raise SessionError("capability_unverified")
             with self.executable.open("rb") as binary:
                 if hashlib.file_digest(binary, "sha256").hexdigest() != self.binary_sha256:
                     raise SessionError("capability_unverified")
+            if sys.platform == "win32" and cwd == self.work_root:
+                cwd = self.work_root / "connection"
             home = self.session_home / "host-home"
             temporary = home / "tmp"
             roaming, local = home / "AppData" / "Roaming", home / "AppData" / "Local"
@@ -517,10 +536,17 @@ class CodexSessionClient:
                 deadline,
                 cancelled,
             )
+            expected_home = str(self.session_home)
+            if sys.platform == "win32":
+                from oms_hub.llm.windows_lpac import canonical_path
+
+                expected_home = canonical_path(self.session_home)
+                if not str(initialized.get("userAgent", "")).startswith("oms-study-hub/0.153.4 "):
+                    raise SessionError("capability_unverified")
             actual_home = initialized.get("codexHome")
             if not isinstance(actual_home, str) or os.path.normcase(
                 actual_home
-            ) != os.path.normcase(str(self.session_home)):
+            ) != os.path.normcase(expected_home):
                 raise SessionError("capability_unverified")
             if sys.platform == "darwin" and not str(initialized.get("userAgent", "")).startswith(
                 f"oms-study-hub/{ACCEPTED_MACOS_VERSION} "
@@ -620,8 +646,13 @@ class CodexSessionClient:
                                     and model.get("model") != "gpt-5.5"
                                 ):
                                     continue
+                                if (
+                                    self._windows_generation_ready()
+                                    and model.get("model") not in ACCEPTED_WINDOWS_MODELS
+                                ):
+                                    continue
                                 models.append(_identifier(model["model"]))
-                                if self._macos_generation_ready() and model_ready(
+                                if self._runtime_generation_ready() and model_ready(
                                     model, images=True
                                 ):
                                     image_models.append(_identifier(model["model"]))
@@ -635,7 +666,7 @@ class CodexSessionClient:
                         "account/rateLimits/read", None, deadline, self._closed.is_set
                     )
                     limited, reset = _limit_state(limits)
-                    ready = self._macos_generation_ready() and "gpt-5.5" in models
+                    ready = self._runtime_generation_ready() and bool(models)
                     return SessionStatus(
                         "connecting"
                         if self._pending_login
@@ -721,12 +752,18 @@ class CodexSessionClient:
     def _macos_generation_ready(self) -> bool:
         return sys.platform == "darwin" and self.binary_sha256 == ACCEPTED_MACOS_BINARY_SHA256
 
+    def _windows_generation_ready(self) -> bool:
+        return sys.platform == "win32" and self.binary_sha256 == ACCEPTED_WINDOWS_BINARY_SHA256
+
+    def _runtime_generation_ready(self) -> bool:
+        return self._macos_generation_ready() or self._windows_generation_ready()
+
     def _require_generation_ready(self, request: SessionRequest) -> None:
-        # Accepted 2026-09-14: pinned native empty-registry matrix, OS file boundaries,
-        # controlled interrupt, and one real synthetic text/image/schema subscription turn.
-        # Windows has no accepted equivalent. No setting can bypass this platform/model pin.
-        if not self._macos_generation_ready() or request.model != "gpt-5.5":
-            raise SessionError("capability_unverified")
+        if self._macos_generation_ready() and request.model == "gpt-5.5":
+            return
+        if self._windows_generation_ready() and request.model in ACCEPTED_WINDOWS_MODELS:
+            return
+        raise SessionError("capability_unverified")
 
     def _stage_images(self, request: SessionRequest, directory: Path) -> list[dict[str, str]]:
         from oms_hub.study_generation.quiz_images import MAX_QUIZ_IMAGE_BYTES, sanitize_quiz_image
@@ -786,7 +823,9 @@ class CodexSessionClient:
                 )
             ):
                 raise SessionError("invalid_output")
-            if request.model != "gpt-5.5":
+            if request.model != "gpt-5.5" and not (
+                self._windows_generation_ready() and request.model in ACCEPTED_WINDOWS_MODELS
+            ):
                 raise SessionError("model_unavailable")
             if self.binary_sha256 != _RUNTIME_PINS.get(sys.platform):
                 raise SessionError("capability_unverified")
@@ -845,7 +884,7 @@ class CodexSessionClient:
                     min(deadline, time.monotonic() + self.startup_timeout),
                     is_cancelled,
                 )
-                if sys.platform == "darwin":
+                if sys.platform in {"darwin", "win32"}:
                     account = self._rpc(
                         "account/read", {"refreshToken": False}, deadline, is_cancelled
                     ).get("account")
@@ -856,6 +895,32 @@ class CodexSessionClient:
                     )
                     if limited:
                         raise SessionError("rate_limited", reset_at=reset)
+                if sys.platform == "win32":
+                    # Catalog presence is a prerequisite, never evidence of native acceptance.
+                    cursor = None
+                    seen_cursors = set()
+                    advertised = False
+                    while True:
+                        page = self._rpc(
+                            "model/list", {"cursor": cursor, "limit": 100}, deadline, is_cancelled
+                        )
+                        models = page.get("data")
+                        if not isinstance(models, list):
+                            raise SessionError("protocol_error")
+                        advertised = advertised or any(
+                            isinstance(model, dict)
+                            and model.get("model") == request.model
+                            and model_ready(model, images=bool(images))
+                            for model in models
+                        )
+                        cursor = page.get("nextCursor")
+                        if cursor is None:
+                            break
+                        if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                            raise SessionError("protocol_error")
+                        seen_cursors.add(cursor)
+                    if not advertised:
+                        raise SessionError("model_unavailable")
                 thread = self._rpc(
                     "thread/start",
                     {
