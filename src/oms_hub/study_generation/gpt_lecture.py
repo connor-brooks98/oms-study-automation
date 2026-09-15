@@ -11,6 +11,7 @@ import json
 import os
 import re
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -100,6 +101,9 @@ class LectureGenerationError(SessionError):
 MAX_BATCH_OBJECTIVES = 25
 MAX_BATCH_IMAGES = 20
 MAX_SOURCE_CHARACTERS = 100_000
+_review_verified_images: ContextVar[set[tuple[str, str, int | None, int | None]] | None] = (
+    ContextVar("review_verified_images", default=None)
+)
 
 
 def _canonical(value: object) -> str:
@@ -482,9 +486,14 @@ def to_review_drafts(
     from oms_hub.study_generation.practice_review import _image_key
 
     validate_generated_quiz(quiz, inputs, require_images=inputs.image_required)
+    documents = quiz_instruction_documents(inputs)
     segments = {
         (document.source_id, segment.key): segment
-        for document in quiz_instruction_documents(inputs) for segment in document.segments
+        for document in documents for segment in document.segments
+    }
+    assets = {
+        (document.source_id, asset.key): asset
+        for document in documents for asset in document.assets
     }
     drafts = []
     for question in quiz.questions:
@@ -507,8 +516,8 @@ def to_review_drafts(
             correct_index=question.correct_index,
             rationale=question.rationale + "\n\n" + "\n\n".join(explanations),
             image_ref=QuizImageRef(_image_key(question.id), "Lecture slides",
-                source_asset(inputs, question.image.source_id,
-                    question.image.asset_key).locator.label, "Lecture source image")
+                assets[question.image.source_id, question.image.asset_key].locator.label,
+                "Lecture source image")
                 if question.image else None,
             source_refs=refs,
             answer_provenance=AnswerProvenance.GENERATED_BY_AI,
@@ -994,6 +1003,12 @@ def _verify_asset(asset: ParsedAsset) -> None:
     assert asset.path is not None
     if asset.path.stat().st_size > MAX_QUIZ_IMAGE_BYTES:
         raise ValueError("asset exceeds the quiz image size limit")
+    # Every lookup still hashes the current file. Only repeated normalization of
+    # those identical bytes/metadata is reusable during this one review request.
+    verified = _review_verified_images.get()
+    identity = (asset.sha256, asset.media_type, asset.width, asset.height)
+    if verified is not None and identity in verified:
+        return
     image = sanitize_quiz_image(asset.path.read_bytes())
     if (
         asset.media_type != image.media_type
@@ -1002,6 +1017,8 @@ def _verify_asset(asset: ParsedAsset) -> None:
         or asset.sha256 != image.sha256
     ):
         raise ValueError("asset does not match sanitized image evidence")
+    if verified is not None:
+        verified.add(identity)
 
 
 def parse_lecture_sources(
@@ -1274,12 +1291,14 @@ class GptLectureWorker:
                 hashlib.sha256(normalized.encode()).hexdigest(), normalized)
             review = PracticeReviewService(self.repository, self.image_service)
             if self.repository.run_artifact(run.id, "review:questions") is None:
+                assets = {(document.source_id, asset.key): asset
+                          for document in quiz_instruction_documents(inputs)
+                          for asset in document.assets}
                 questions = []
                 for generated, draft in zip(quiz.questions, drafts, strict=True):
                     candidate_id = None
                     if generated.image is not None:
-                        asset = source_asset(inputs, generated.image.source_id,
-                            generated.image.asset_key)
+                        asset = assets[generated.image.source_id, generated.image.asset_key]
                         assert asset.path is not None and draft.image_ref is not None
                         copied = self.image_service.copy_import_candidate(
                             run.id, draft.image_ref.key, draft.image_ref.source_title,
@@ -1305,15 +1324,28 @@ class GptLectureWorker:
     def validate_review(
         self, run_id: str, questions: tuple[ReviewQuestion, ...], session: Session | None = None
     ) -> None:
+        token = _review_verified_images.set(set())
+        try:
+            self._validate_review(run_id, questions, session)
+        finally:
+            _review_verified_images.reset(token)
+
+    def _validate_review(
+        self, run_id: str, questions: tuple[ReviewQuestion, ...], session: Session | None = None
+    ) -> None:
         from sqlalchemy import select
 
         from oms_hub.models import StudioQuizImageRequirementModel
-        from oms_hub.study_generation.practice_domain import AnswerProvenance, QuestionDraft
+        from oms_hub.study_generation.practice_domain import (
+            AnswerProvenance,
+            QuestionDraft,
+            QuestionSourceRef,
+        )
         from oms_hub.study_generation.practice_review import _candidate_id, _image_key
 
         if session is None:
             with self.repository.database.session() as owned:
-                self.validate_review(run_id, questions, owned)
+                self._validate_review(run_id, questions, owned)
             return
         self.repository.validate_gpt_manifest_in_session(session, run_id)
         inputs = self.load_inputs(self.repository.get_run(run_id))
@@ -1325,7 +1357,16 @@ class GptLectureWorker:
         ):
             raise ValueError("original GPT response or coverage evidence is missing")
         originals = {question.id: question for question in original.questions}
-        original_drafts = {draft.question_id: draft for draft in to_review_drafts(original, inputs)}
+        # _response already validated the original quiz and every source asset.
+        # Review only needs its source references, not another draft/image conversion.
+        segments = {(document.source_id, segment.key): segment
+                    for document in quiz_instruction_documents(inputs)
+                    for segment in document.segments}
+        original_refs = {question.id: tuple(
+            QuestionSourceRef(citation.source_id, citation.segment_key,
+                segments[citation.source_id, citation.segment_key].locator.label)
+            for citation in question.source_segments
+        ) for question in original.questions}
         revised = []
         for question in questions:
             draft = question.draft
@@ -1335,7 +1376,7 @@ class GptLectureWorker:
             if draft.correct_index is None or not draft.rationale:
                 raise ValueError("lecture answer and explanation are incomplete")
             if (
-                draft.source_refs != original_drafts[draft.question_id].source_refs
+                draft.source_refs != original_refs[draft.question_id]
                 or question.learning_objective != ", ".join(original_question.objective_ids)
                 or not draft.verification_required
                 or draft.answer_provenance not in {
