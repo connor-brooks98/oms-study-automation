@@ -47,7 +47,10 @@ rationales, or generated images. A later pass will write clinical vignettes with
 and explanations for every choice, grounded in the original eligible evidence.
 You receive all compact source text and an image inventory, but NO actual images in this pass.
 Select an actual source_id/asset_key only when the visual would materially help that question;
-otherwise image is null. Select at most one image per question and cite its associated page.
+otherwise image is null. Select at most one image per question. For EVERY selected image,
+source_segments MUST include a nonblank segment from that image's exact source and slide/page:
+use its citation_segment_key when present. Keep other contextual citations too. A citation to
+an adjacent slide discussing the same disease does NOT satisfy this image-page requirement.
 Inventory entries marked needs_preview have insufficient text to assess their visual content:
 request these where relevant so the later pass can inspect them, without inventing what they show.
 Every selected image must be inspected in that later pass before finalizing its question.

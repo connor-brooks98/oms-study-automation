@@ -109,10 +109,45 @@ def test_inventory_references_complete_page_text_without_opening_assets(tmp_path
     evidence = compact_evidence(inputs)
     asset = evidence["images"][0]
     assert asset["nearby_segment_keys"] == [image.key]
+    assert asset["citation_segment_key"] == body.key
     assert asset["locator"] == {"slide_number": body.locator.slide_number}
     assert asset.get("needs_preview", False) is False
     assert asset["width"] == 20 and asset["height"] == 20
     assert "path" not in asset and "text" not in asset
+
+
+@pytest.mark.parametrize("body_text,heading_text,expected", [
+    ("Actual caption on this image's page", "Page heading", "body"),
+    (" \n ", "Page heading", "heading"),
+    ("", " ", None),
+])
+def test_image_citation_anchor_uses_nonblank_same_page_source_text(
+    tmp_path, body_text, heading_text, expected,
+):
+    inputs = _inputs(tmp_path)
+    slides, transcript = inputs.documents
+    base = slides.segments[0]
+    segments = (
+        replace(base, key="elsewhere", text="Associated text on another page",
+                locator=DocumentLocator("slide 3", slide_number=3)),
+        replace(base, key="heading", kind=SegmentKind.HEADING, text=heading_text, asset_keys=()),
+        replace(base, key="image", kind=SegmentKind.IMAGE, text="Image placeholder"),
+        replace(base, key="body", text=body_text, asset_keys=()),
+    )
+    evidence = compact_evidence(replace(
+        inputs, documents=(replace(slides, segments=segments), transcript),
+    ))
+    image = evidence["images"][0]
+    assert image["nearby_segment_keys"] == ["elsewhere", "image"]
+    assert image.get("citation_segment_key") == expected
+    if expected is not None:
+        source = next(source for source in evidence["sources"]
+                      if source["source_id"] == image["source_id"])
+        anchor = next(segment for segment in source["segments"] if segment["key"] == expected)
+        assert anchor["text"].strip()
+        assert anchor["locator"]["slide_number"] == image["locator"]["slide_number"]
+    else:
+        assert "citation_segment_key" not in image
 
 
 def test_style_span_reconstructs_verbatim_emphasized_text(tmp_path):

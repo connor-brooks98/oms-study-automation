@@ -116,6 +116,10 @@ def compact_evidence(inputs: LectureInputs) -> dict[str, object]:
             if renders:
                 needs_preview = needs_preview and asset.key == renders[0]
             associated_keys = [segment.key for segment in nearby if asset.key in segment.asset_keys]
+            citation = min((segment for segment in nearby if (
+                _same_location(asset.locator, segment.locator)
+                and segment.text.strip() and segment.kind != SegmentKind.IMAGE
+            )), key=lambda segment: segment.kind == SegmentKind.HEADING, default=None)
             images.append({
                 "source_id": document.source_id,
                 "asset_key": asset.key,
@@ -123,6 +127,7 @@ def compact_evidence(inputs: LectureInputs) -> dict[str, object]:
                 **({"width": asset.width} if asset.width is not None else {}),
                 **({"height": asset.height} if asset.height is not None else {}),
                 **({"nearby_segment_keys": associated_keys} if associated_keys else {}),
+                **({"citation_segment_key": citation.key} if citation is not None else {}),
                 **({"needs_preview": True} if needs_preview else {}),
             })
 
@@ -174,6 +179,8 @@ def compact_evidence(inputs: LectureInputs) -> dict[str, object]:
             "Missing image needs_preview means false; missing nearby_segment_keys means []. "
             "Image nearby_segment_keys reference directly associated text in that source; "
             "all nearby text and keys are source segments matching the image's slide/page. "
+            "Image citation_segment_key points to nonblank text on that page in that source; "
+            "it anchors the image's page but does not prove a question's claim. "
             "needs_preview flags unavailable required OCR or fewer than 80 native body-text "
             "characters, excluding OCR. "
             "Prefer one full-page/slide render for preview, otherwise all local images. "
