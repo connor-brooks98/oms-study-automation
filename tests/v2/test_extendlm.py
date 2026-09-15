@@ -301,7 +301,8 @@ def test_restarted_service_retains_receipt_original_selection(tmp_path):
             recovered.close()
 
 
-def test_routes_private_csrf_cookie_and_local_page(tmp_path):
+def test_routes_private_csrf_cookie_and_local_page(tmp_path, monkeypatch):
+    monkeypatch.setattr("oms_hub.app.KeyringSecretStore", Secrets)
     with setup(tmp_path / "bridge") as (service, provider):
         app = create_app(
             Settings(
