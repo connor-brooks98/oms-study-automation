@@ -298,16 +298,28 @@ def _lecture_coverage_targets(inputs: Any) -> tuple[tuple[str, str], ...]:
     """One-click source coverage units, not invented faculty learning objectives."""
     from oms_hub.study_generation.gpt_lecture import quiz_instruction_documents
 
-    targets = tuple(
-        (f"source-{document_index + 1}-{index + 1}",
-         f"Assess the clinically relevant concepts in {segment.locator.label} "
-         f"(source {document.source_id}, source segment {segment.key}). "
-         "Cover the stated learning objectives and use the complete lecture sources for context.")
-        for document_index, document in enumerate(quiz_instruction_documents(inputs))
-        for index, segment in enumerate(document.segments)
-        if segment.text.strip() or segment.asset_keys
-    )
+    targets = []
+    for document_index, document in enumerate(quiz_instruction_documents(inputs)):
+        groups: dict[str, tuple[list[str], list[str]]] = {}
+        evidence = [
+            (segment.key, segment.locator, 0) for segment in document.segments
+            if segment.text.strip() or segment.asset_keys
+        ] + [(asset.key, asset.locator, 1) for asset in document.assets]
+        for key, locator, kind in evidence:
+            label = (f"slide {locator.slide_number}" if locator.slide_number else
+                     f"page {locator.page_number}" if locator.page_number else
+                     "unnumbered source content")
+            groups.setdefault(label, ([], []))[kind].append(key)
+        for index, (label, (segments, assets)) in enumerate(groups.items()):
+            targets.append((
+                f"source-{document_index + 1}-{index + 1}",
+                f"Assess the clinically relevant concepts in {label} "
+                f"(source {document.source_id}, source segments: {', '.join(segments)}). "
+                f"Source assets: {', '.join(assets) or 'none'}. "
+                "Cover the stated learning objectives and use the complete lecture sources "
+                "for context.",
+            ))
     if not targets or len(targets) > 500:
         raise GenerationPrerequisiteError(
             "Lecture source coverage requires 1–500 readable sections.")
-    return targets
+    return tuple(targets)

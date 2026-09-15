@@ -19,6 +19,7 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
+from pptx import Presentation
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from oms_hub.document_processing.domain import (
@@ -1034,11 +1035,17 @@ def parse_lecture_sources(
     styles = []
     for binding in bindings:
         snapshot = binding.snapshot
-        # Hash the source id rather than allowing it to become a filesystem path.
-        root = asset_root / hashlib.sha256(snapshot.id.encode()).hexdigest() / snapshot.sha256
+        # One hash binds both pins without exceeding Windows paths with nested hashes.
+        root = asset_root / _digest([snapshot.id, snapshot.sha256])
         document = router.parse(snapshot, root)
         if binding.role == "slides":
+            replaced_assets: tuple[ParsedAsset, ...] = ()
             if snapshot.path.suffix.casefold() == ".pptx":
+                replaced_assets = tuple(
+                    asset
+                    for asset in document.assets
+                    if asset.path is None or asset.locator.slide_number is None
+                )
                 styles.append(
                     extract_styled_text_run_sidecar(
                         snapshot.path, source_id=snapshot.id, source_sha256=snapshot.sha256
@@ -1050,6 +1057,37 @@ def parse_lecture_sources(
                     document,
                     assets=tuple(dict.fromkeys((*document.assets, *rendered.assets))),
                     warnings=(*document.warnings, *rendered.warnings),
+                )
+            if replaced_assets:
+                # Diagnostic and shared embedded images need unambiguous slide evidence.
+                slide_numbers = set(range(1, len(Presentation(str(snapshot.path)).slides) + 1))
+                rendered_slides = {
+                    asset.locator.slide_number
+                    for asset in document.assets
+                    if asset.origin == "full-slide-render" and asset.path is not None
+                }
+                if not slide_numbers or not slide_numbers <= rendered_slides:
+                    raise ValueError(
+                        "PowerPoint graphics require complete slide renders; "
+                        "check PowerPoint conversion and try again."
+                    )
+                for asset in replaced_assets:
+                    if asset.path is not None:
+                        _verify_asset(asset)
+                replaced_keys = {asset.key for asset in replaced_assets}
+                document = replace(
+                    document,
+                    assets=tuple(a for a in document.assets if a.key not in replaced_keys),
+                    segments=tuple(
+                        replace(segment, asset_keys=tuple(
+                            k for k in segment.asset_keys if k not in replaced_keys
+                        ))
+                        for segment in document.segments
+                    ),
+                    warnings=(
+                        *document.warnings,
+                        "Unsupported or shared embedded graphics use full-slide renders.",
+                    ),
                 )
         documents.append(document)
     parsed = replace(inputs, documents=tuple(documents), run_styles=tuple(styles))

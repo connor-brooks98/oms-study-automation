@@ -24,6 +24,42 @@ from oms_hub.study_generation.studio_repository import StudioRepository
 from tests.study_generation.test_gpt_lecture import _isolated_native_check
 
 
+def test_automatic_coverage_groups_fragments_without_losing_source_references(tmp_path):
+    from dataclasses import replace
+
+    from oms_hub.document_processing.domain import DocumentLocator
+    from oms_hub.study_generation.service import _lecture_coverage_targets
+    from tests.study_generation.test_gpt_lecture import _inputs
+
+    inputs = _inputs(tmp_path)
+    slides, transcript = inputs.documents
+    slides = replace(slides, segments=tuple(
+        replace(slides.segments[0], key=f"fragment-{i}",
+                locator=DocumentLocator(f"slide {i % 12 + 1}", slide_number=i % 12 + 1)
+                if i < 500 else DocumentLocator(f"block {i}", block_index=i))
+        for i in range(600)
+    ))
+    transcript = replace(transcript, segments=tuple(
+        replace(transcript.segments[0], key=f"spoken-{i}",
+                locator=DocumentLocator(f"block {i + 1}", block_index=i + 1))
+        for i in range(199)
+    ))
+    slides = replace(slides, assets=(*slides.assets, replace(
+        slides.assets[0], key="image-only-slide",
+        locator=DocumentLocator("slide 13", slide_number=13),
+    )))
+    inputs = replace(inputs, documents=(slides, transcript))
+    targets = _lecture_coverage_targets(inputs)
+    assert len(targets) == 15  # 13 slides and each source's unnumbered context.
+    assert any("slide 13" in text and "image-only-slide" in text for _, text in targets)
+    refs = [text.split("source segments: ")[1].split(").")[0].split(", ")
+            for _, text in targets]
+    assert sorted(key for group in refs for key in group if key) == sorted(
+        segment.key for document in inputs.documents for segment in document.segments
+    )
+    assert inputs.documents == (slides, transcript)
+
+
 def test_gpt_queue_freezes_sources_without_google_and_rechecks_scope(tmp_path, request):
     if _isolated_native_check(request):
         return

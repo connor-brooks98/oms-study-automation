@@ -49,8 +49,10 @@ def test_lecture_omits_study_actions_and_keeps_materials_and_pass_tracker(tmp_pa
     assert len(document.css(".file-card-grid .file-card")) == 2
     assert document.css_first(".file-card-grid .lecture-quiz-panel") is not None
     assert document.css_first("#pass-tracker [data-pass-count]").text(strip=True) == "0/5"
-    pipeline = document.css_first(".pipeline-card")
-    assert pipeline.tag == "details" and "open" not in pipeline.attributes
+    assert document.css_first(".pipeline-card") is None
+    checklist = document.css_first("[data-processing-checklist]")
+    assert checklist is not None
+    assert checklist.css_first(f'a[href="/processes?lecture_id={lecture_id}"]') is not None
     assert (
         document.css_first("[data-pass-count]")
         .parent.text(strip=True)

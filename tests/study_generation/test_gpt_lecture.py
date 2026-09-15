@@ -1383,3 +1383,61 @@ def test_resume_passes_only_intact_completed_planner_receipt(gpt_review_run, mon
         assert captured[0]["planning_completion"] == SessionLifecycle(
             request_id, "completed", "plan-thread", "plan-turn"
         )
+
+
+@pytest.mark.parametrize("render_count", [0, 1, 2])
+def test_pptx_diagnostic_and_shared_images_use_complete_slide_renders(tmp_path, render_count):
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    from oms_hub.document_processing.anydoc_adapter import AnydocProcessor
+    from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher
+    from oms_hub.document_processing.presentation_render import PresentationRenderResult
+    from oms_hub.study_generation.gpt_lecture import lecture_inputs_from_manifest
+    from tests.document_processing.pptx_factory import SlideFixture, build_pptx
+
+    inputs = _inputs(tmp_path)
+    path = build_pptx(tmp_path / "lecture.pptx", slides=(
+        SlideFixture("First", "First mechanism explained in source text.", image=True),
+        SlideFixture("Second", "Second mechanism explained in source text.", image=True),
+    ))
+    presentation = Presentation(path)
+    gif = BytesIO()
+    Image.new("RGB", (20, 20), "red").save(gif, format="GIF")
+    gif.seek(0)
+    presentation.slides[0].shapes.add_picture(gif, Inches(2), Inches(2))
+    presentation.save(path)
+    snapshot = replace(inputs.bindings[0].snapshot, path=path,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        sha256=sha256(path.read_bytes()).hexdigest())
+    inputs = replace(inputs, documents=(), image_required=False,
+        bindings=(replace(inputs.bindings[0], snapshot=snapshot), inputs.bindings[1]))
+    router = DocumentProcessorRouter(AnydocProcessor(PptxLocatorEnricher()),
+        (TextProcessor(),), ParserMode.ANYDOC)
+    original = router.parse(snapshot, tmp_path / "original-assets")
+    assert any(asset.path is None for asset in original.assets)
+    assert any(asset.path is not None and asset.locator.slide_number is None
+               for asset in original.assets)
+    # Real sanitized files stand in for the converter's complete slide PNGs.
+    reference = _inputs(tmp_path, 2).documents[0].assets[0]
+    rendered = tuple(replace(reference, key=f"slide-{i}-render",
+        locator=DocumentLocator(f"slide {i} render", slide_number=i), origin="full-slide-render")
+        for i in range(1, render_count + 1))
+
+    class Renderer:
+        def render(self, snapshot, root, **kwargs):
+            return PresentationRenderResult(rendered, ())
+
+    if render_count < 2:
+        with pytest.raises(ValueError, match="complete slide renders"):
+            parse_lecture_sources(inputs, router, tmp_path / "parsed", renderer=Renderer())
+        return
+    parsed = parse_lecture_sources(inputs, router, tmp_path / "parsed", renderer=Renderer())
+    assert parsed.documents[0].assets == rendered
+    assert all(set(segment.asset_keys) <= {asset.key for asset in rendered}
+               for segment in parsed.documents[0].segments)
+    assert any("image/gif" in warning for warning in parsed.documents[0].warnings)
+    assert lecture_inputs_from_manifest(source_manifest(parsed)) == parsed
+    rendered[0].path.unlink()
+    with pytest.raises(ValueError, match="asset file is missing"):
+        validate_lecture_inputs(parsed)
