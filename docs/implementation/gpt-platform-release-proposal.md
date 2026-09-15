@@ -1,17 +1,34 @@
 # GPT Study Hub candidate — release proposal
 
-## Latest trial finding — whole real lecture remains blocked
+## Current candidate — selective original lecture images
 
-The pass tracker now sits directly below the three lecture panels at source
-`8d0e8a5bbf5e2e25927c32da96da634eaa1dacf4`; 35 focused tests and actual browser inspection passed.
-The requested 15-question Lecture 26 trial extracted all 17 embedded images, but
-stopped before GPT: 64 images with full-slide renders and 431,820 serialized source
-characters exceed current per-batch limits. Even slides without transcript/renders
-exceed the character ceiling. Mac production OCR also needs resolution.
-**No quiz was generated; the earlier synthetic acceptance does not establish
-whole real-lecture readiness.** [Exact trial and next work](gpt-platform-handoffs/O-myeloid-quiz-trial-20260914.md).
+Branch: `codex/hub-intake-ux-2026-09-14`.
+Reviewed source: `db472f54366782580a58f23c288683e4a44b7831`.
+[Exact implementation and acceptance handoff](gpt-platform-handoffs/O-selective-images-20260914.md).
 
-## Current lecture QoL candidate — 2026-09-14
+The quiz pipeline now inventories figures and plans questions from complete compact
+text before loading selected original images. Sparse pages receive mandatory visual
+previews before final questions are written. Historical v1 runs remain compatible;
+request caps, integrity checks and mandatory answer review remain enforced.
+
+The real Lecture 26 subscription trial completed: **15 reviewed questions, eight
+original figures**, all correct grades, JSON/ZIP and individual/exam PDF exports.
+[Try the local quiz](http://127.0.0.1:55496/public/quizzes/458eac28979a70f5fd03d8a8f1a9f08a56061a864a57d337aff51c33d0389f8b).
+Independent code/content reviews, 241 regression tests (one opt-in skip), the final
+114 affected checks (one skip), and actual browser/PDF checks passed. Final review
+validation improved from 22.1 to 2.6 seconds with freshness checks retained.
+
+This acceptance uses a hash-verified native PDF manually prepared from the original
+PowerPoint; automatic native Mac Office conversion remains unverified. The raw quiz
+needed review edits to wording and answer order; automatic balancing is not claimed.
+Provider-returned model metadata remains unverified. Windows production acceptance,
+final release packaging and approved live cutover remain separate. The live Hub is
+unchanged. The isolated preview has background workers disabled.
+
+The earlier whole-lecture preflight failures and rejected plans are preserved in the
+handoff and status history; they no longer block this bounded Mac trial.
+
+## Earlier lecture QoL acceptance — 2026-09-14
 
 Branch: `codex/hub-intake-ux-2026-09-14`.
 Reviewed source commit: `1aadfe4fa99638045e2b2fb22c174395b6bb75ff`.
@@ -108,7 +125,7 @@ This replaces the required Google path for new lecture quizzes with an explicitl
 
 | Capability | Local candidate scope | External/operational limit |
 | --- | --- | --- |
-| Full lecture-image quiz | Full approved slides and cleaned transcript, frozen objective coverage, source locators, original sanitized images, native review and publication | Synthetic Windows Office/image/export subset accepted; subscription generation and forced-timeout cleanup pending; conservative request ceiling: 20 images and 100,000 serialized source characters |
+| Full lecture-image quiz | Full approved slides and cleaned transcript, frozen objective coverage, source locators, original sanitized images, native review and publication | Bounded real Mac Lecture 26 subscription workflow accepted; native Mac Office automation and Windows production provider workflow pending; per-request ceiling: 20 images and 100,000 serialized source characters |
 | Retained outlines | Existing outlines remain readable; lecture-page outline generation is removed | NotebookLM inference is disabled; historical artifacts and review are preserved |
 | Native JSON/ZIP/PDF exports | Same native payload and original PNGs; source/objective manifest; embedded-font PDF with unsupported-text rejection; private download parity reviewed | Actual Windows18 export checks passed; no private lecture evidence used; UNC and symlink/junction cases unaccepted |
 | Lecture/general chat | Owner-scoped current source snapshots, citations, durable history, cancellation/ambiguous-turn protection | Same runtime/account activation gate |
@@ -118,7 +135,7 @@ This replaces the required Google path for new lecture quizzes with an explicitl
 | Custom/cumulative blocks | Accepted native questions across selected course/exams, reviewed topic filters, immutable source/version identity and resume; grounded suggestions require explicit acceptance | Results-only vendor entries cannot become playable content; model suggestions share runtime activation gate |
 | AMBOSS integration | Deferred by Connor on 2026-09-14; excluded from this release | No access work or follow-up planned; existing unavailable-state handling retained |
 
-The lecture pipeline fails before dispatch with `context_limit` and affected objective/count diagnostics when full evidence exceeds 20 images or 100,000 serialized source characters. It does not truncate sources or silently claim complete coverage. Automatic partitioning has not been accepted. These conservative ceilings are local implementation limits, not verified model context limits.
+The v2 lecture pipeline compacts redundant metadata without dropping eligible text, inventories images, then partitions the exact question plan into valid batches with selected figures and mandatory previews. Every batch retains full compact text and must fit 20 images and 100,000 serialized source characters. If no legal partition exists, generation stops rather than truncating evidence. Local uneven-partition regressions passed; this real lecture required one final batch. These ceilings are local implementation limits, not verified model context limits.
 
 ## Runtime continuation after local login
 

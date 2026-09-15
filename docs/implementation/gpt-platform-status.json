@@ -336,12 +336,12 @@
       "bounded_windows_startup_and_path_tests": "accepted; LPAC version/initialize and two native arg0 unit tests",
       "production_runtime_restrictions": "Macaccepted and integrated; Windowsdiagnostic15tool/file/interruptproofaccepted, productionlauncher pending",
       "subscription_provider": "Macactualsynthetictext/image/schema and2turnlecturegenerationaccepted; Windowsaccount/providerpending",
-      "lecture_image_quiz_workflow": "accepted_mac_synthetic: actual transcriptcleanup/imagequiz/answerreview/publication/grading/JSONZIPPDF exports; fixtureOfficeconverter only. NativeWindows provider workflow pending.",
+      "lecture_image_quiz_workflow": "accepted bounded Mac real Lecture 26 subscription workflow; Windows production provider workflow pending",
       "deployment": "not_authorized; final package and rollback/cutover review follow runtime/provider acceptance",
       "bounded_windows_runtime_restrictions": "accepted:15exacttoolrejections,current3capability5fileoperations,controlledinterrupt,cleanup/preservation; productionlauncher separate",
-      "real_lecture_generation": "blocked_local_preflight; 17 extracted images intact, whole-source evidence exceeds current limits; zero provider calls"
+      "real_lecture_generation": "accepted_bounded_mac_real_lecture: 15 reviewed questions, 8 original figures, grading and JSON/ZIP/PDF exports; manually prepared native PDF, automatic Mac Office conversion unverified"
     },
-    "next_action": "Resolve real-lecture evidence size and Mac preparation blockers, rerun authorized Lecture 26 trial; Windows production launcher/account/provider acceptance and final deployment package remain separate.",
+    "next_action": "Windows production launcher/account/provider acceptance, then final package/rollback review; optional AMBOSS deferred and vendor samples independent.",
     "evidence_archives": [
       {
         "path": "docs/implementation/gpt-platform-evidence/windows-runtime-restrictions-20260914.zip",
@@ -354,7 +354,7 @@
         "review": "PASS independent829entries"
       }
     ],
-    "current_source_candidate": "8d0e8a5bbf5e2e25927c32da96da634eaa1dacf4"
+    "current_source_candidate": "db472f54366782580a58f23c288683e4a44b7831"
   },
   "provider_verified": false,
   "windows_verified": false,
@@ -1197,24 +1197,52 @@
     "deployment": "not_deployed"
   },
   "lecture_real_trial": {
-    "state": "blocked_local_preflight",
+    "state": "accepted_bounded_mac_real_lecture",
     "date": "2026-09-14",
-    "source_commit": "8d0e8a5bbf5e2e25927c32da96da634eaa1dacf4",
-    "handoff": "docs/implementation/gpt-platform-handoffs/O-myeloid-quiz-trial-20260914.md",
+    "source_commit": "db472f54366782580a58f23c288683e4a44b7831",
+    "generation_commit": "0cc7b6bdd64b82fed41d68184ab011d437a6dc6c",
+    "handoff": "docs/implementation/gpt-platform-handoffs/O-selective-images-20260914.md",
     "lecture": "Heme/Lymph Exam 3 Lecture 26 - Pathology of Myeloid Neoplasms I",
     "requested_questions": 15,
-    "generated_questions": 0,
-    "provider_calls": 0,
-    "slides": 47,
-    "embedded_images": 17,
-    "full_evidence_images": 64,
-    "full_evidence_characters": 431820,
-    "blockers": [
-      "Mac production OCR unavailable on slides 4/11",
-      "64 images exceed 20-image batch ceiling",
-      "Redundant source/style serialization exceeds 100000-character batch ceiling even without transcript or renders"
-    ],
-    "ui": "pass tracker moved below three panels; 35 focused tests and actual browser inspection passed",
-    "next_action": "Compact redundant prompt metadata, implement complete source/image batching and supported Mac preparation, then rerun this authorized lecture trial without silently dropping evidence."
-  }
+    "generated_questions": 15,
+    "attached_original_images": 8,
+    "inventory_images": 64,
+    "provider_calls": 5,
+    "planning_images_sent": 0,
+    "final_images_sent": 16,
+    "run_id": "114fd0dd-fc17-479b-882d-e35c7a6eefa7",
+    "preview_url": "http://127.0.0.1:55496/public/quizzes/458eac28979a70f5fd03d8a8f1a9f08a56061a864a57d337aff51c33d0389f8b",
+    "review": "PASS /root/selective_review after exact q4 attribution correction",
+    "acceptance": "Actual subscription cleanup/planning/final generation; reviewed publication, 15 correct grades, eight image downloads, JSON/ZIP/private/public/exam PDF exports and browser/PDF checks passed",
+    "native_mac_office_verified": false,
+    "provider_returned_model_verified": false,
+    "windows_verified": false,
+    "deployed": false,
+    "evidence_root": "/Users/connor/Library/Application Support/OMSStudyHub/myeloid-quiz-trial-20260914/pipeline-v2",
+    "receipt_sha256": "21d5eafaf6e8796fd93739e2dee8d6709ebddeaa12f04007f3bb25092f7d691a",
+    "next_action": "Windows production launcher/account/provider acceptance, then final package/rollback review; optional AMBOSS deferred and vendor samples independent."
+  },
+  "lecture_real_trial_history": [
+    {
+      "state": "blocked_local_preflight",
+      "date": "2026-09-14",
+      "source_commit": "8d0e8a5bbf5e2e25927c32da96da634eaa1dacf4",
+      "handoff": "docs/implementation/gpt-platform-handoffs/O-myeloid-quiz-trial-20260914.md",
+      "lecture": "Heme/Lymph Exam 3 Lecture 26 - Pathology of Myeloid Neoplasms I",
+      "requested_questions": 15,
+      "generated_questions": 0,
+      "provider_calls": 0,
+      "slides": 47,
+      "embedded_images": 17,
+      "full_evidence_images": 64,
+      "full_evidence_characters": 431820,
+      "blockers": [
+        "Mac production OCR unavailable on slides 4/11",
+        "64 images exceed 20-image batch ceiling",
+        "Redundant source/style serialization exceeds 100000-character batch ceiling even without transcript or renders"
+      ],
+      "ui": "pass tracker moved below three panels; 35 focused tests and actual browser inspection passed",
+      "next_action": "Compact redundant prompt metadata, implement complete source/image batching and supported Mac preparation, then rerun this authorized lecture trial without silently dropping evidence."
+    }
+  ]
 }
