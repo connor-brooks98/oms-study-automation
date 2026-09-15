@@ -523,6 +523,8 @@ def test_gpt_backend_selection_preserves_existing_queued_ingestion(tmp_path: Pat
     )
     _add(gpt, tmp_path, "gpt")
     gpt.set_manual_assignment("gpt", second_lecture)
+    # Switching new uploads back to task providers does not rewrite either job.
+    gpt.transcript_backend = "legacy_api"
     first = gpt.claim_next_job(datetime.now(UTC))
     second = gpt.claim_next_job(datetime.now(UTC))
     assert first is not None and first.upload_item_id == "legacy"

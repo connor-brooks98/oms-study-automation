@@ -116,7 +116,7 @@
           <button class="button primary sh-btn sh-btn--primary" type="button" data-notebook-connect>Connect Notebook</button>
           <button class="button secondary sh-btn sh-btn--secondary" type="button" data-notebook-test>Test connection</button>
         </div>
-        <p class="field-message" data-notebook-status aria-live="polite">Connect your account to enable Gemini Notebook generation.</p>
+        <p class="field-message" data-notebook-status aria-live="polite">Connect your account to upload reference files to NotebookLM.</p>
       </article>
     </section>
   </details>
@@ -126,7 +126,7 @@
       <span class="settings-disclosure-summary">
         <span class="mono-label">Per-task routing</span>
         <h2 id="assignments-heading" class="settings-disclosure-title">Task Assignments</h2>
-        <span class="settings-disclosure-description">Choose the configured provider and model for each part of the pipeline.</span>
+        <span class="settings-disclosure-description">Choose providers for transcript cleanup, imported question extraction, and other supporting tasks. Main lecture generation uses ChatGPT.</span>
       </span>
     </summary>
     <section class="settings-section settings-disclosure-content" aria-labelledby="assignments-heading">
@@ -134,6 +134,7 @@
         {% set task_labels = {"transcripts": "Transcript cleaning", "anki_curation": "Anki curation", "accuracy_review": "Accuracy review", "quiz_extraction": "Quiz question extraction", "quiz_answer_generation": "Missing-answer generation"} %}
         {% for row in assignments %}
         <article class="card sh-card provider-card" data-assignment-row data-task="{{ row.task }}">
+          {% if row.task == "quiz_answer_generation" %}<p class="field-help">Missing-answer generation is currently unavailable. This assignment is retained for future use.</p>{% endif %}
           <div class="provider-card-heading">
             <div><p class="provider-kicker">Task</p><h3>{{ task_labels.get(row.task, row.task) }}</h3></div>
             <span class="credential-state sh-pill {{ 'sh-pill--ok' if row.key_configured else '' }}" data-assignment-key>{{ "Key configured" if row.key_configured else "Key not configured" }}</span>
@@ -250,6 +251,6 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/gpt.js?v=20260911" defer></script>
+<script src="/static/study_generation.js?v=20260915.1" defer></script>
 <script src="/static/settings.js?v=20260828.5" defer></script>
 {% endblock %}

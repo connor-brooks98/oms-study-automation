@@ -993,7 +993,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(
         database,
-        transcript_backend=resolved.study_backend,
+        # Transcript cleaning honors its separate provider/model task assignment.
+        # Already queued subscription jobs retain their recorded backend.
+        transcript_backend="legacy_api",
         artifact_v2_root=expanded_path(resolved.data_dir) / "artifacts" / "v2",
         study_root=expanded_path(resolved.study_root),
         icloud_root=(

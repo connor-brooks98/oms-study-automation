@@ -11,7 +11,8 @@ class ManagedFixture:
     def __init__(self, *args, **kwargs):
         self.calls = []
 
-    def start_login(self):
+    def start_login(self, *, device_code):
+        assert device_code is True
         self.calls.append('login')
         return LoginChallenge('fixture-login', 'https://auth.openai.com/codex/device', 'TEST-CODE')
 

@@ -116,9 +116,9 @@ def test_template_layout_matrix_uses_locked_containers_and_headers() -> None:
         "notebook_studio.html",
         "tracker_preview.html",
         "public_quiz_library.html",
+        "uploads.html",
     )
     narrow = (
-        "uploads.html",
         "quarantine.html",
         "review.html",
         "artifact_text.html",
@@ -169,7 +169,7 @@ def test_public_library_separates_public_identity_while_players_remain_focus_mod
 
 
 def test_presentational_contracts_cover_forms_and_deferred_review_hooks() -> None:
-    assert 'class="page-shell sh-container--narrow upload-page"' in source("uploads.html")
+    assert 'class="page-shell sh-container upload-page"' in source("uploads.html")
     assert "lecture_picker(" in source("quarantine.html")
     assert "sh-select" in source("components/lecture_picker.html")
     assert "sh-select" in source("settings.html")

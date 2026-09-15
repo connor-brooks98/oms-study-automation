@@ -203,7 +203,13 @@
         buttons.forEach((item) => { item.disabled = true; });
         const action = button.dataset.gptAction;
         message.textContent = "Working…";
+        let loginWindow = null;
         try {
+          // Reserve the tab during the click so asynchronous login does not trigger popup blocking.
+          if (action === "login") {
+            loginWindow = documentRef.defaultView.open("about:blank", "_blank");
+            if (loginWindow) loginWindow.opener = null;
+          }
           const body = action === "model" ? { model: model.value } : action === "cancel" ? { login_id: loginId } : {};
           const payload = await post(documentRef, fetchImpl, `/settings/generation/codex/${action}`, body);
           if (action === "login") {
@@ -213,7 +219,8 @@
             find("[data-gpt-code]").textContent = payload.user_code || "";
             find("[data-gpt-code-row]").hidden = !payload.user_code;
             find("[data-gpt-challenge]").hidden = false;
-            message.textContent = "Open the sign-in link, then check connection when finished.";
+            if (loginWindow && !loginWindow.closed) loginWindow.location.replace(find("[data-gpt-login-link]").href);
+            message.textContent = "Sign in in the new tab on this device, or open the link below. Enter the code if asked, then check connection.";
           } else if (action === "status") {
             find("[data-gpt-status]").textContent = statusText(payload);
             const selected = payload.selected_model || model.value;
@@ -241,6 +248,7 @@
             message.textContent = "Sign-in canceled.";
           } else message.textContent = "Model saved.";
         } catch (error) {
+          if (loginWindow && !loginWindow.closed) loginWindow.close();
           message.textContent = error.message || "Request failed.";
         } finally {
           busy = false;

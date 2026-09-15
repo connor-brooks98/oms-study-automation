@@ -359,7 +359,7 @@ def codex_login(request: Request) -> JSONResponse:
 
     _private_owner(request)
     try:
-        challenge = _codex(request).start_login()
+        challenge = _codex(request).start_login(device_code=True)
     except SessionError as error:
         raise HTTPException(409, str(error)) from error
     return JSONResponse(asdict(challenge), headers={"Cache-Control": "no-store"})

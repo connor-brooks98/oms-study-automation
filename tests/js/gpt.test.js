@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const gpt = require("../../src/oms_hub/web/static/gpt.js");
+const gpt = require("../../src/oms_hub/web/static/study_generation.js");
 
 test("objectives omit blank lines and preserve exact learner text in ordered JSON", () => {
   assert.deepEqual(gpt.objectives("  Explain anemia\r\n\n Compare <Hb> & iron  "), [
@@ -156,4 +156,40 @@ test("single lecture button sends optional instructions without required fields 
   form.elements = {instructions: {value: "  Only slides 2–6  "}};
   await submitHandler({preventDefault() {}});
   assert.deepEqual(JSON.parse(request.options.body), {instructions: "Only slides 2–6"});
+});
+
+test("Connect opens on the current device, keeps a popup fallback, and closes failed sign-in tabs", async () => {
+  for (const outcome of ["opened", "blocked", "failed"]) {
+    const nodes = Object.fromEntries(["message", "model", "login-link", "code", "code-row", "challenge"].map(name => [`[data-gpt-${name}]`, {}]));
+    const button = { dataset: { gptAction: "login" }, addEventListener(_, fn) { this.click = fn; } };
+    const settings = { querySelector: selector => nodes[selector], querySelectorAll: () => [button], setAttribute() {} };
+    const popup = { opener: {}, location: { replace(url) { this.url = url; } }, close() { this.closed = true; } };
+    const order = [];
+    const doc = {
+      baseURI: "https://studyhub.example/settings", cookie: "study_hub_csrf=token",
+      querySelector: selector => selector === "[data-gpt-settings]" ? settings : null,
+      defaultView: { open(url, target) { order.push("open"); assert.equal(url, "about:blank"); assert.equal(target, "_blank"); return outcome === "blocked" ? null : popup; } },
+    };
+    gpt.initialize(doc, async () => {
+      order.push("request");
+      return { ok: outcome !== "failed", json: async () => outcome === "failed" ? { detail: "Runtime unavailable" } : {
+        login_id: "login-1", url: "https://auth.openai.com/codex/device", user_code: "TEST-CODE",
+      } };
+    });
+    await button.click();
+    assert.deepEqual(order, ["open", "request"]);
+    assert.equal(button.disabled, false);
+    if (outcome === "failed") {
+      assert.equal(popup.closed, true);
+      assert.equal(nodes["[data-gpt-message]"].textContent, "Runtime unavailable");
+    } else {
+      assert.equal(nodes["[data-gpt-login-link]"].href, "https://auth.openai.com/codex/device");
+      assert.equal(nodes["[data-gpt-code]"].textContent, "TEST-CODE");
+      assert.equal(nodes["[data-gpt-challenge]"].hidden, false);
+      if (outcome === "opened") {
+        assert.equal(popup.opener, null);
+        assert.equal(popup.location.url, nodes["[data-gpt-login-link]"].href);
+      }
+    }
+  }
 });

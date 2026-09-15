@@ -1,10 +1,16 @@
-.upload-page .selected-file { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(12rem, auto) auto; align-items: center; gap: .75rem; }
-.upload-page .selected-file-name { overflow-wrap: anywhere; }
-.upload-page .selected-file-role { width: 100%; }
+.upload-page .upload-workbench { grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem); }
+.upload-page .upload-form, .upload-page .selected-files { min-width: 0; }
+.upload-page .selected-file { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; }
+.upload-page .selected-file-name { grid-column: 1 / -1; overflow-wrap: anywhere; }
+.upload-page .selected-file-role { width: 100%; max-width: 18rem; min-width: 0; justify-self: end; }
 .upload-page .field-help { margin-block: .75rem; }
+@media (max-width: 58rem) {
+  .upload-page .upload-workbench { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 640px) {
   .upload-page .selected-file { grid-template-columns: minmax(0, 1fr) auto; }
-  .upload-page .selected-file-role { grid-column: 1; min-width: 0; }
+  .upload-page .selected-file-size { grid-column: 1 / -1; text-align: left; }
+  .upload-page .selected-file-role { max-width: none; }
 }
 .upload-assignment { margin-block-end: 1rem; }
 .upload-assignment > summary { padding-block: .75rem; cursor: pointer; font-weight: 600; }

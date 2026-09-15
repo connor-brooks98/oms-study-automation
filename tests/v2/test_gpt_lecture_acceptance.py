@@ -232,6 +232,9 @@ def _build_app(tmp_path, monkeypatch):
     monkeypatch.setattr(app.state.medical_accuracy_gate, "validate", paid_or_google)
     monkeypatch.setattr(app.state.studio_worker.gateway, "ask_studio", paid_or_google)
     monkeypatch.setattr(app.state.notebook_connection, "invalidate", paid_or_google)
+    # This fixture also exercises retained subscription transcript jobs. New app
+    # uploads use the independent Transcript cleaning task assignment.
+    app.state.ingestion_repository.transcript_backend = "codex_subscription"
     lecture_id = app.state.catalog_repository.upsert_lecture(
         LectureInput("Heme", 3, 1, "Synthetic structures", "Fixture teacher", None)
     )

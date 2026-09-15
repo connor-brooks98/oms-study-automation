@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const gpt = require("../../src/oms_hub/web/static/gpt.js");
+const gpt = require("../../src/oms_hub/web/static/study_generation.js");
 
 function setup(fetchImpl) {
   const element = () => ({ value: "", children: [], events: {}, disabled: false,
