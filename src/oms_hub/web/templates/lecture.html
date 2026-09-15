@@ -97,50 +97,7 @@
     </section>
     {% endif %}
   </div>
-  <details class="pipeline-card sh-panel" aria-labelledby="pipeline-heading" {% if status in ('failed', 'quarantined', 'needs_review') %}open{% endif %}>
-    <summary><span class="mono-label" id="pipeline-heading">Materials processing</span><strong>{{ status_label }} · {{ progress_percent }}%</strong></summary>
-    <div class="pipeline-card__body">
-    <div class="pipeline-status">
-      {% set status_tone = "sh-pill--ok" if status in ("complete", "completed", "ready", "configured", "connected", "skipped") else "sh-pill--info" if status in ("processing", "queued", "running", "pending", "in_progress") else "sh-pill--warn" if status in ("needs_review", "review") else "sh-pill--err" if status in ("failed", "quarantined") else "sh-pill--bare" %}
-      <strong class="status-text status-{{ status }} sh-pill {{ status_tone }}">{{ status_label }}</strong>
-      <span>{{ progress_percent }}%</span>
-    </div>
-    <div class="progress-track" role="progressbar" aria-label="Lecture processing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ progress_percent }}">
-      <span class="progress-fill status-{{ status }}" style="width: {{ progress_percent }}%"></span>
-    </div>
-    <p class="pipeline-note">
-      {% if status == "complete" %}Slides, transcript, summary, and quiz are ready.
-      {% elif status in ("needs_review", "quarantined") %}One or more files need your review.
-      {% elif status == "failed" %}Processing stopped with an actionable error.
-      {% elif status == "processing" %}The NUC is working through the available files.
-      {% else %}Waiting for lecture files to be uploaded.{% endif %}
-    </p>
-    </div>
-  </details>
-
   </div>
-
-  <details class="checklist-card sh-card t-accordion" data-processing-checklist>
-    {% set all_complete = release_steps and (release_steps|selectattr('status', 'equalto', 'complete')|list|length == release_steps|length) %}
-    {% set release_completed = release_steps|selectattr('status', 'equalto', 'complete')|list|length %}
-    <summary class="lecture-panel-summary">
-      <span class="lecture-panel-summary__copy">
-        <span class="mono-label">First release</span>
-        <strong>Processing checklist</strong>
-      </span>
-      <span class="sh-pill {% if all_complete %}sh-pill--ok{% else %}sh-pill--bare{% endif %}">{% if all_complete %}{{ release_steps|length }}/{{ release_steps|length }} complete{% else %}{{ release_completed }}/{{ release_steps|length }} complete{% endif %}</span>
-    </summary>
-    <ol class="compact-checklist lecture-panel-body">
-      {% for step in release_steps %}
-      {% set step_tone = "sh-pill--ok" if step.status in ("complete", "completed", "ready", "configured", "connected", "skipped") else "sh-pill--info" if step.status in ("processing", "queued", "running", "pending", "in_progress") else "sh-pill--warn" if step.status in ("needs_review", "review") else "sh-pill--err" if step.status in ("failed", "quarantined") else "" %}
-      <li class="sh-step {% if step.status == 'complete' %}sh-step--ok{% endif %}">
-        <span class="status-dot sh-dot {{ step_tone.replace('pill', 'dot') }} status-{{ step.status }}" aria-hidden="true"></span>
-        <span>{% if step.name == "summary_filed" %}Lecture Summary{% elif step.name == "quiz_published" %}Lecture Quiz Generation{% elif step.name == "icloud_pdf_staged" %}iCloud PDF Staged{% elif step.name == "pdf_converted" %}PDF Converted{% else %}{{ step.name.replace('_', ' ').title() }}{% endif %}</span>
-        <span class="status-pill sh-pill {{ step_tone }} status-{{ step.status }}">{{ step.status.replace('_', ' ').title() }}</span>
-      </li>
-      {% endfor %}
-    </ol>
-  </details>
 
   <details class="pass-tracker sh-card t-accordion" id="pass-tracker" data-pass-tracker open>
     <summary class="lecture-panel-summary pass-tracker-summary">
@@ -190,6 +147,50 @@
       <p class="sr-only" role="status" aria-live="polite" data-pass-feedback data-toast-source></p>
     </div>
   </details>
+
+  <details class="pipeline-card sh-panel" aria-labelledby="pipeline-heading" {% if status in ('failed', 'quarantined', 'needs_review') %}open{% endif %}>
+    <summary><span class="mono-label" id="pipeline-heading">Materials processing</span><strong>{{ status_label }} · {{ progress_percent }}%</strong></summary>
+    <div class="pipeline-card__body">
+    <div class="pipeline-status">
+      {% set status_tone = "sh-pill--ok" if status in ("complete", "completed", "ready", "configured", "connected", "skipped") else "sh-pill--info" if status in ("processing", "queued", "running", "pending", "in_progress") else "sh-pill--warn" if status in ("needs_review", "review") else "sh-pill--err" if status in ("failed", "quarantined") else "sh-pill--bare" %}
+      <strong class="status-text status-{{ status }} sh-pill {{ status_tone }}">{{ status_label }}</strong>
+      <span>{{ progress_percent }}%</span>
+    </div>
+    <div class="progress-track" role="progressbar" aria-label="Lecture processing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ progress_percent }}">
+      <span class="progress-fill status-{{ status }}" style="width: {{ progress_percent }}%"></span>
+    </div>
+    <p class="pipeline-note">
+      {% if status == "complete" %}Slides, transcript, summary, and quiz are ready.
+      {% elif status in ("needs_review", "quarantined") %}One or more files need your review.
+      {% elif status == "failed" %}Processing stopped with an actionable error.
+      {% elif status == "processing" %}The NUC is working through the available files.
+      {% else %}Waiting for lecture files to be uploaded.{% endif %}
+    </p>
+    </div>
+  </details>
+
+  <details class="checklist-card sh-card t-accordion" data-processing-checklist>
+    {% set all_complete = release_steps and (release_steps|selectattr('status', 'equalto', 'complete')|list|length == release_steps|length) %}
+    {% set release_completed = release_steps|selectattr('status', 'equalto', 'complete')|list|length %}
+    <summary class="lecture-panel-summary">
+      <span class="lecture-panel-summary__copy">
+        <span class="mono-label">First release</span>
+        <strong>Processing checklist</strong>
+      </span>
+      <span class="sh-pill {% if all_complete %}sh-pill--ok{% else %}sh-pill--bare{% endif %}">{% if all_complete %}{{ release_steps|length }}/{{ release_steps|length }} complete{% else %}{{ release_completed }}/{{ release_steps|length }} complete{% endif %}</span>
+    </summary>
+    <ol class="compact-checklist lecture-panel-body">
+      {% for step in release_steps %}
+      {% set step_tone = "sh-pill--ok" if step.status in ("complete", "completed", "ready", "configured", "connected", "skipped") else "sh-pill--info" if step.status in ("processing", "queued", "running", "pending", "in_progress") else "sh-pill--warn" if step.status in ("needs_review", "review") else "sh-pill--err" if step.status in ("failed", "quarantined") else "" %}
+      <li class="sh-step {% if step.status == 'complete' %}sh-step--ok{% endif %}">
+        <span class="status-dot sh-dot {{ step_tone.replace('pill', 'dot') }} status-{{ step.status }}" aria-hidden="true"></span>
+        <span>{% if step.name == "summary_filed" %}Lecture Summary{% elif step.name == "quiz_published" %}Lecture Quiz Generation{% elif step.name == "icloud_pdf_staged" %}iCloud PDF Staged{% elif step.name == "pdf_converted" %}PDF Converted{% else %}{{ step.name.replace('_', ' ').title() }}{% endif %}</span>
+        <span class="status-pill sh-pill {{ step_tone }} status-{{ step.status }}">{{ step.status.replace('_', ' ').title() }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </details>
+
 
   <details class="metadata-panel sh-card">
     <summary><span class="sh-disclose" aria-hidden="true">▸</span> Edit lecture details</summary>

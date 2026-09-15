@@ -58,7 +58,7 @@ def test_stylesheet_order_and_system_font_contract() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260914.2" %}' in base
+    assert '{% set shell_asset_version = "20260914.3" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
@@ -537,7 +537,9 @@ def test_option_a_pass_tracker_keeps_the_three_lecture_panels_in_order() -> None
     processing_position = lecture.index("data-processing-checklist")
     tracker_position = lecture.index("data-pass-tracker")
     metadata_position = lecture.index('class="metadata-panel')
-    assert processing_position < tracker_position < metadata_position
+    quiz_position = lecture.index('class="lecture-quiz-panel')
+    pipeline_position = lecture.index('class="pipeline-card')
+    assert quiz_position < tracker_position < pipeline_position < processing_position < metadata_position
     assert "<section" not in lecture[metadata_position:]
 
     for position in (processing_position, tracker_position):

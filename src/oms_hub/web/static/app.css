@@ -2349,7 +2349,7 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 /* Lecture sources stay compact; quiz generation has its own full-width workspace. */
 .lecture-workbench { margin-block-end: var(--sp-5); }
 .lecture-workbench > .file-card-grid { margin: 0; gap: var(--sp-5); }
-.lecture-workbench > .pipeline-card { margin: var(--sp-4) 0 0; padding: var(--sp-3) var(--sp-5); }
+.lecture-page > .pipeline-card { margin: 0 0 var(--sp-4); padding: var(--sp-3) var(--sp-5); }
 .pipeline-card.sh-panel { border: 1px solid var(--border); }
 .lecture-page .file-card { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-5); border-color: var(--border); background: var(--card); box-shadow: none; }
 .lecture-page .file-card-title h2 { margin: 0; font-size: var(--fs-h2); }
