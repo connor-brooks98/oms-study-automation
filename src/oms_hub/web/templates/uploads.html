@@ -15,6 +15,7 @@
     </div>
   </div>
 
+  <p class="field-help"><a href="/settings/extendlm">Send PDFs and transcripts to NotebookLM with ExtendLM</a></p>
   <div class="upload-workbench">
   <form class="upload-form" action="/uploads/slides" method="post" enctype="multipart/form-data" data-upload-form data-default-kind="{{ kind.value if kind else '' }}" data-lecture-id="{{ selected_lecture.id if selected_lecture else '' }}">
     <details class="upload-assignment"{% if selected_lecture %} open{% endif %}>

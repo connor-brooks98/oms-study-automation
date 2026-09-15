@@ -8,6 +8,7 @@
     <span>Exam {{ lecture.exam_number }}</span>
   </nav>
   <nav class="file-actions" aria-label="Lecture navigation">
+    <a class="sh-btn sh-btn--secondary" href="/settings/extendlm?lecture_id={{ lecture.id }}">Send to NotebookLM</a>
     {% if previous_lecture %}<a class="button secondary sh-btn sh-btn--secondary" href="/lectures/{{ previous_lecture.id }}">Previous lecture</a>{% endif %}
     {% if next_lecture %}<a class="button secondary sh-btn sh-btn--secondary" href="/lectures/{{ next_lecture.id }}">Next lecture</a>{% endif %}
   </nav>

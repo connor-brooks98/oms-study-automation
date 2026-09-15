@@ -73,6 +73,8 @@ from oms_hub.document_processing.router import DocumentProcessorRouter, ParserMo
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator, LegacyPptxProcessor
 from oms_hub.document_processing.text_adapter import TextProcessor
 from oms_hub.document_processing.web_adapter import WebProcessor
+from oms_hub.extendlm import ExtendLMError
+from oms_hub.extendlm_service import ExtendLMService
 from oms_hub.files.office import SerialOfficeConverter
 from oms_hub.files.trusted_paths import trusted_managed_path
 from oms_hub.ingestion.matcher import UploadMatcher
@@ -170,6 +172,7 @@ from oms_hub.transcripts.prompt import PromptLoader as V2PromptLoader
 from oms_hub.web.anki_agent_routes import router as anki_agent_router
 from oms_hub.web.anki_routes import router as anki_router
 from oms_hub.web.artifact_routes import router as artifact_router
+from oms_hub.web.extendlm_routes import router as extendlm_router
 from oms_hub.web.generation_routes import (
     anki_prompt_router,
     lecture_router,
@@ -557,6 +560,7 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await asyncio.to_thread(app.state.extendlm.close)
         codex_client = getattr(app.state, "codex_session", None)
         if codex_client is not None:
             await asyncio.to_thread(codex_client.close)
@@ -951,6 +955,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if resolved.anki_rehearsal_mode != "off"
             else KeyringSecretStore()
         )
+    app.state.extendlm = ExtendLMService(resolved.data_dir / "extendlm", app.state.secrets)
+
+    @app.exception_handler(ExtendLMError)
+    async def extendlm_error(request: Request, error: ExtendLMError) -> JSONResponse:
+        return JSONResponse({"detail": str(error)}, status_code=409,
+                            headers={"Cache-Control": "private, no-store",
+                                     "Referrer-Policy": "no-referrer"})
+
     app.state.notebook_storage_migration_error = None
     if resolved.anki_rehearsal_mode == "off":
         try:
@@ -1496,6 +1508,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(artifact_router)
     app.include_router(material_router)
     app.include_router(process_router)
+    app.include_router(extendlm_router)
     app.include_router(settings_router)
     app.include_router(settings_api_router)
     app.include_router(upload_router)
