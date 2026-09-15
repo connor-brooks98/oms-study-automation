@@ -338,9 +338,10 @@
       "subscription_provider": "Macactualsynthetictext/image/schema and2turnlecturegenerationaccepted; Windowsaccount/providerpending",
       "lecture_image_quiz_workflow": "accepted_mac_synthetic: actual transcriptcleanup/imagequiz/answerreview/publication/grading/JSONZIPPDF exports; fixtureOfficeconverter only. NativeWindows provider workflow pending.",
       "deployment": "not_authorized; final package and rollback/cutover review follow runtime/provider acceptance",
-      "bounded_windows_runtime_restrictions": "accepted:15exacttoolrejections,current3capability5fileoperations,controlledinterrupt,cleanup/preservation; productionlauncher separate"
+      "bounded_windows_runtime_restrictions": "accepted:15exacttoolrejections,current3capability5fileoperations,controlledinterrupt,cleanup/preservation; productionlauncher separate",
+      "real_lecture_generation": "blocked_local_preflight; 17 extracted images intact, whole-source evidence exceeds current limits; zero provider calls"
     },
-    "next_action": "Windows production launcher integration, then separately scoped Windows account/provider acceptance and final deployment package/rollback review.",
+    "next_action": "Resolve real-lecture evidence size and Mac preparation blockers, rerun authorized Lecture 26 trial; Windows production launcher/account/provider acceptance and final deployment package remain separate.",
     "evidence_archives": [
       {
         "path": "docs/implementation/gpt-platform-evidence/windows-runtime-restrictions-20260914.zip",
@@ -352,7 +353,8 @@
         "sha256": "b0c3ecaa8ffff00258b21872f9fc644d8ef4905f66746edc1a4d2f026ff057f3",
         "review": "PASS independent829entries"
       }
-    ]
+    ],
+    "current_source_candidate": "8d0e8a5bbf5e2e25927c32da96da634eaa1dacf4"
   },
   "provider_verified": false,
   "windows_verified": false,
@@ -1193,5 +1195,26 @@
     "provider_acceptance": "not_run_for_this_change",
     "windows_acceptance": "not_run_for_this_change",
     "deployment": "not_deployed"
+  },
+  "lecture_real_trial": {
+    "state": "blocked_local_preflight",
+    "date": "2026-09-14",
+    "source_commit": "8d0e8a5bbf5e2e25927c32da96da634eaa1dacf4",
+    "handoff": "docs/implementation/gpt-platform-handoffs/O-myeloid-quiz-trial-20260914.md",
+    "lecture": "Heme/Lymph Exam 3 Lecture 26 - Pathology of Myeloid Neoplasms I",
+    "requested_questions": 15,
+    "generated_questions": 0,
+    "provider_calls": 0,
+    "slides": 47,
+    "embedded_images": 17,
+    "full_evidence_images": 64,
+    "full_evidence_characters": 431820,
+    "blockers": [
+      "Mac production OCR unavailable on slides 4/11",
+      "64 images exceed 20-image batch ceiling",
+      "Redundant source/style serialization exceeds 100000-character batch ceiling even without transcript or renders"
+    ],
+    "ui": "pass tracker moved below three panels; 35 focused tests and actual browser inspection passed",
+    "next_action": "Compact redundant prompt metadata, implement complete source/image batching and supported Mac preparation, then rerun this authorized lecture trial without silently dropping evidence."
   }
 }

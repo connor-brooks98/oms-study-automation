@@ -1,5 +1,16 @@
 # GPT Study Hub candidate — release proposal
 
+## Latest trial finding — whole real lecture remains blocked
+
+The pass tracker now sits directly below the three lecture panels at source
+`8d0e8a5bbf5e2e25927c32da96da634eaa1dacf4`; 35 focused tests and actual browser inspection passed.
+The requested 15-question Lecture 26 trial extracted all 17 embedded images, but
+stopped before GPT: 64 images with full-slide renders and 431,820 serialized source
+characters exceed current per-batch limits. Even slides without transcript/renders
+exceed the character ceiling. Mac production OCR also needs resolution.
+**No quiz was generated; the earlier synthetic acceptance does not establish
+whole real-lecture readiness.** [Exact trial and next work](gpt-platform-handoffs/O-myeloid-quiz-trial-20260914.md).
+
 ## Current lecture QoL candidate — 2026-09-14
 
 Branch: `codex/hub-intake-ux-2026-09-14`.
