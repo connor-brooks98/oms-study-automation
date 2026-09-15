@@ -144,7 +144,7 @@ class FixtureSession:
         if request.request_id.startswith("transcript:"):
             text = json.dumps({"text": request.source_text.split("\n", 1)[1]})
         else:
-            assert ":batch-" in request.request_id, "outline/chat work was not requested"
+            assert ":batch-" in request.request_id or request.request_id.endswith(":plan")
             evidence = json.loads(request.source_text)
             slides = next(source for source in evidence["sources"] if source["role"] == "slides")
             image = evidence["images"][0]
@@ -185,6 +185,12 @@ class FixtureSession:
                         else None,
                     }
                 )
+            if request.request_id.endswith(":plan"):
+                assert not request.image_paths
+                questions = [{"id": q["id"], "focus": q["stem"],
+                              "objective_ids": q["objective_ids"],
+                              "source_segments": q["source_segments"], "image": q["image"]}
+                             for q in questions]
             text = json.dumps({"title": "Synthetic lecture quiz", "questions": questions})
         on_lifecycle(
             SessionLifecycle(request.request_id, "completed", "fixture-thread", "fixture-turn")
@@ -332,7 +338,7 @@ def test_upload_clean_generate_review_publish_and_public_grade_without_google(
         )
         assert answer.status_code == 200 and answer.json()["correct"] is True
         assert "rationale" in answer.json()
-        assert len(session.requests) == 2  # One cleaning turn and one quiz turn; no outline.
+        assert len(session.requests) == 3  # Cleaning, text-only plan, selected-image quiz.
         published = app.state.generation_repository.published_quiz(token)
         reviewed = app.state.practice_review.to_native_quiz(run_id, title=published.quiz.title)
         assert reviewed == published.quiz
@@ -397,7 +403,8 @@ def test_lecture_routes_block_invalid_or_missing_evidence(tmp_path, monkeypatch,
             assert run.state.value == "failed" and run.diagnostic_source == "invalid_output"
         assert client.post(f"/studio/runs/{run_id}/publication").status_code == 409
         assert app.state.studio_repository.get_run(run_id).published_token is None
-        assert len(session.requests) == (1 if failure == "source_changed" else 2)
+        assert len(session.requests) == {"source_changed": 1, "invalid_citation": 2,
+                                         "missing_image": 3}[failure]
     finally:
         client.close()
         app.state.database.close()

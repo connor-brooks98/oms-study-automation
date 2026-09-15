@@ -253,4 +253,4 @@ def test_scoped_citations_resolve_original_red_runs_or_pdf_pages(tmp_path, suffi
         assert original.headers["content-disposition"].startswith("inline;")
         assert original.body == evidence.sources[0].path.read_bytes()
     assert evidence.sources[0].path.read_bytes() == inputs.bindings[0].snapshot.path.read_bytes()
-    assert len(fake.requests) == 1  # The source preview never dispatches generation.
+    assert len(fake.requests) == 2  # Planning + final generation; preview adds no requests.

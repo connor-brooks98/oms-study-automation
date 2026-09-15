@@ -68,8 +68,8 @@ def test_lecture_page_shows_five_pass_ledger_rows_between_expandable_panels(tmp_
     assert tracker is not None and tracker.tag == "details"
     assert metadata is not None and metadata.tag == "details"
     assert (
-        page.text.index("data-processing-checklist")
-        < page.text.index("data-pass-tracker")
+        page.text.index("data-pass-tracker")
+        < page.text.index("data-processing-checklist")
         < page.text.index("metadata-panel")
     )
 

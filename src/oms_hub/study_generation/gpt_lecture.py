@@ -248,20 +248,40 @@ def generate_lecture_quiz(
     if not request_id.strip() or not model.strip():
         raise SessionError("invalid_output")
     manifest = source_manifest(inputs)
-    batches, assets = _batch_sources(inputs)
     prompt = _quiz_prompt()
     schema = GeneratedLectureQuiz.model_json_schema()
+    root = (artifact_root or client.work_root / "gpt-artifacts") / hashlib.sha256(
+        request_id.encode()
+    ).hexdigest()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    if inputs.prompt_version == "gpt-lecture-v2":
+        from oms_hub.study_generation.quiz_selection import prepare_selected_batches
+
+        selected_batches = prepare_selected_batches(
+            client, request_id, model, inputs, manifest, root=root,
+            cancelled=cancelled, on_lifecycle=on_lifecycle, resume=resume,
+        )
+        content = prompt.content + (
+            "\nFollow question_plan: return exactly those question ids and their assigned "
+            "objective ids. Inspect the supplied images before finalizing each question; "
+            "inventory labels alone are not visual evidence. Use image references only "
+            "from the images table, whose input_index maps to the supplied pixels. "
+            "Some supplied images are required previews of otherwise unreadable source "
+            "content; inspect these too. Do not expose an answer through figure labels.\n"
+        )
+        prompt = replace(
+            prompt, content=content, sha256=hashlib.sha256(content.encode()).hexdigest()
+        )
+    else:
+        batches, assets = _batch_sources(inputs)
+        selected_batches = [(batch, source, assets) for batch, source in batches]
     binding = {
         "manifest_sha256": manifest["sha256"],
         "prompt_sha256": prompt.sha256,
         "requested_model": model,
         "schema_sha256": _digest(schema),
     }
-    root = (artifact_root or client.work_root / "gpt-artifacts") / hashlib.sha256(
-        request_id.encode()
-    ).hexdigest()
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    root.chmod(0o700)
     descriptors = [
         {
             **binding,
@@ -269,7 +289,7 @@ def generate_lecture_quiz(
             "batch_index": index,
             "request_id": f"{request_id}:batch-{index + 1:04d}",
         }
-        for index, (_, source) in enumerate(batches)
+        for index, (_, source, _) in enumerate(selected_batches)
     ]
     questions: list[GeneratedQuestion] = []
     titles: list[str] = []
@@ -289,8 +309,8 @@ def generate_lecture_quiz(
         _write_record(root / "manifest.json", manifest)
         verified_atomic_write(prompt.content.encode(), root / "prompt.txt")
         (root / "prompt.txt").chmod(0o600)
-        for index, ((batch_inputs, source), descriptor) in enumerate(
-            zip(batches, descriptors, strict=True)
+        for index, ((batch_inputs, source, assets), descriptor) in enumerate(
+            zip(selected_batches, descriptors, strict=True)
         ):
             if cancelled():
                 raise SessionError("interrupted")
@@ -391,6 +411,10 @@ def generate_lecture_quiz(
                         raise ValueError("provider response exceeds the raw artifact ceiling")
                     quiz = GeneratedLectureQuiz.model_validate_json(raw)
                     validate_generated_quiz(quiz, batch_inputs, require_images=False)
+                    if inputs.prompt_version == "gpt-lecture-v2":
+                        from oms_hub.study_generation.quiz_selection import validate_planned_result
+
+                        validate_planned_result(quiz, source)
                 except ValueError as error:
                     missing = uncovered_objectives(
                         tuple(key for key, _ in batch_inputs.objectives),
@@ -416,6 +440,10 @@ def generate_lecture_quiz(
                     },
                 )
             assert quiz is not None
+            if inputs.prompt_version == "gpt-lecture-v2":
+                from oms_hub.study_generation.quiz_selection import validate_planned_result
+
+                validate_planned_result(quiz, source)
             titles.append(quiz.title)
             questions.extend(
                 question.model_copy(update={"id": "q-" + _digest([batch_key, question.id])})
@@ -831,7 +859,19 @@ def validate_lecture_inputs(inputs: LectureInputs) -> None:
             raise ValueError("parsed source hash does not match selected revision")
         if not document.parser_name.strip() or not document.parser_version.strip():
             raise ValueError("parser identity and version are required")
-        if any(warning.lstrip().startswith("BLOCKER:") for warning in document.warnings):
+        blockers = [warning for warning in document.warnings
+                    if warning.lstrip().startswith("BLOCKER:")]
+        if inputs.prompt_version == "gpt-lecture-v2" and binding.role == "slides":
+            # The selective path supplies these images as mandatory visual previews.
+            # Preserve the warning in the manifest; no OCR text is fabricated.
+            blockers = [warning for warning in blockers if not (
+                (match := re.fullmatch(
+                    r"BLOCKER: OCR is required but unavailable or empty for (slide|page) (\d+)",
+                    warning,
+                )) and any(getattr(asset.locator, match[1] + "_number") == int(match[2])
+                           for asset in document.assets)
+            )]
+        if blockers:
             raise ValueError("source parser reported a BLOCKER: " + "; ".join(document.warnings))
         if not any(segment.text.strip() for segment in document.segments):
             raise ValueError("source text is empty")

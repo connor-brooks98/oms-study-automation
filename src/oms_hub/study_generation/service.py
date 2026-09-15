@@ -240,6 +240,7 @@ class GptLectureService:
             objectives if objectives is not None else (
                 ("source-all", "Cover the complete lecture sources."),), (),
             bindings=tuple(bindings), image_required=bool(require_images),
+            prompt_version="gpt-lecture-v2",
             instructions=instructions)
         inputs = parse_lecture_sources(inputs, self.router, self.work_root / run_id,
             renderer=self.renderer)

@@ -262,7 +262,14 @@ def test_empty_instructions_preserve_legacy_manifest_and_guidance_changes_plan(t
 class _ScopedClient(_QuizClient):
     def generate(self, request, **kwargs):
         result = super().generate(request, **kwargs)
-        return replace(result, text=_payload(self.inputs).model_dump_json())
+        payload = _payload(self.inputs).model_dump(mode="json")
+        if request.request_id.endswith(":plan"):
+            payload["questions"] = [
+                {"id": q["id"], "focus": q["stem"], "objective_ids": q["objective_ids"],
+                 "source_segments": q["source_segments"], "image": q["image"]}
+                for q in payload["questions"]
+            ]
+        return replace(result, text=json.dumps(payload))
 
 
 def test_red_only_real_parser_queue_fake_generation_review_publication_and_export(tmp_path):
@@ -326,7 +333,7 @@ def test_red_only_real_parser_queue_fake_generation_review_publication_and_expor
     run = repository.claim_next_run()
     worker.run(run)
     assert repository.get_run(run.id).state == "awaiting_review"
-    assert len(client.requests) == 1
+    assert len(client.requests) == 2
     assert "Black excluded" not in client.requests[0].source_text
     assert "Spoken excluded" not in client.requests[0].source_text
     review = PracticeReviewService(repository, images, lecture_validator=worker.validate_review)
@@ -354,4 +361,4 @@ def test_red_only_real_parser_queue_fake_generation_review_publication_and_expor
         for value in provenance["questions"].values()
         for ref in value["source_refs"]
     )
-    assert len(client.requests) == 1
+    assert len(client.requests) == 2

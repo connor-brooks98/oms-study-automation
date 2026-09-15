@@ -75,6 +75,19 @@ class _QuizClient:
         for question in payload["questions"]:
             question["objective_ids"] = objective_ids
             question["stem"] += " Batch " + request.request_id
+        if request.request_id.endswith(":plan"):
+            payload = {"title": payload["title"], "questions": [
+                {"id": question["id"], "focus": question["stem"],
+                 "objective_ids": question["objective_ids"],
+                 "source_segments": question["source_segments"], "image": question["image"]}
+                for question in payload["questions"]
+            ]}
+        elif "question_plan" in source:
+            for question, planned in zip(
+                payload["questions"], source["question_plan"], strict=True
+            ):
+                question["id"] = planned["id"]
+                question["objective_ids"] = planned["objective_ids"]
         return SessionResult(
             "thread", "turn", "broken JSON" if self.invalid else json.dumps(payload)
         )
