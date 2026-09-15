@@ -126,16 +126,30 @@ def test_selected_image_requires_same_page_source_citation(tmp_path):
     assert "associated" in (tmp_path / "invalid.json").read_text()
 
 
-def test_blank_evidence_requires_selected_needs_preview_image(tmp_path):
+@pytest.mark.parametrize("needs_preview", [False, True])
+def test_blank_evidence_accepts_associated_selected_image(tmp_path, needs_preview):
     source = evidence()
     source["sources"][0]["segments"][0]["text"] = ""
+    source["images"][0]["needs_preview"] = needs_preview
     payload = output()
     for question in payload["questions"]:
         question["image"] = deepcopy(payload["questions"][0]["image"])
-    with pytest.raises(SessionError):
-        run(Provider(payload), tmp_path / "no-preview", source)
-    source["images"][0]["needs_preview"] = True
-    assert len(run(Provider(payload), tmp_path / "preview", source).questions) == 3
+    assert len(run(Provider(payload), tmp_path, source).questions) == 3
+
+
+@pytest.mark.parametrize("selected_image", [None, {"source_id": "slides", "asset_key": "a1"}])
+def test_blank_evidence_rejects_absent_or_wrong_page_selected_image(tmp_path, selected_image):
+    source = evidence()
+    source["sources"][0]["segments"][0]["text"] = ""
+    source["sources"][0]["segments"][0]["asset_keys"] = []
+    source["images"][0]["locator"]["page_number"] = 2
+    payload = output()
+    for question in payload["questions"]:
+        question["image"] = selected_image
+    with pytest.raises(SessionError) as error:
+        run(Provider(payload), tmp_path, source)
+    assert error.value.code == "invalid_output"
+    assert "no meaningful text or selected image" in (tmp_path / "invalid.json").read_text()
 
 
 def test_started_request_and_failed_observer_never_replay(tmp_path):

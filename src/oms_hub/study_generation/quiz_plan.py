@@ -149,10 +149,9 @@ def validate_quiz_plan(plan: QuizPlan, evidence: dict[str, Any]) -> None:
         for key in cited:
             segment = segments[key]
             if not segment["text"].strip() and not (
-                image and image.get("needs_preview") is True
-                and _associated(image, key[0], segment)
+                image and _associated(image, key[0], segment)
             ):
-                raise ValueError("question citation has no meaningful text or selected preview")
+                raise ValueError("question citation has no meaningful text or selected image")
         if image and not any(_associated(image, key[0], segments[key]) for key in cited):
             raise ValueError("question image is not associated with its cited source page")
     if set(expected) - covered:
