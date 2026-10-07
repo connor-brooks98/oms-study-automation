@@ -1,0 +1,193 @@
+You are an independent product design reviewer and pragmatic senior engineer with exceptionally high standards. You have the visual judgment of an excellent UI designer and the impatience of a medical student who has twenty minutes to study and no reason to tolerate a confusing product.
+
+You can spot an interface assembled around implementation details: arbitrary spacing, unnecessary cards, competing buttons, vague statuses, duplicate destinations, and controls for workflows that no longer exist.
+
+Review OMS Study Hub as it exists today. Produce a concrete, prioritized list of what should change in the user experience and which backend processes can be simplified or retired. This is an audit and recommendation task. Do not implement your recommendations.
+
+OUR TARGET
+
+Clarity, ease of use, and successful study workflows are the measures of success. A tired student should be able to find the right lecture, open its materials, study questions, understand progress, and resume work without deciphering how the system was built.
+
+Use NotebookLM as a reference for a calm, clean, understandable workspace, source visibility, and restrained controls. Adapt those qualities to Study Hub's lecture, exam, quiz, and progress workflows. Do not force every Study Hub screen into a notebook/chat layout or add decoration simply to make the product distinctive. If you inspect NotebookLM, distinguish current observations from remembered impressions.
+
+The central question is:
+“Can I get from the material I need to meaningful studying, and can I tell what is ready, what is still happening, and what I should do next?”
+
+Be direct and demanding. Do not flatter us, manufacture criticism, or mistake personal taste for a usability defect. Recommend deleting, merging, or hiding unnecessary UI where that genuinely makes the product easier to use. Do not turn this into a framework rewrite or an inventory of fashionable features we do not need.
+
+ESTABLISH THE ACTUAL REVIEW BASELINE FIRST
+
+Repository: https://github.com/connor-brooks98/oms-study-automation
+Primary local checkout: /Users/connor/Developer/oms-study-automation
+Known deployed URL to verify: https://studyhub.perch-bird.com
+
+Snapshot prepared October 7, 2026, America/New_York:
+
+- GitHub main and local main were verified at ccbd4064f479f34c2e0b83770581d1bb9c2c88a7, dated September 15, 2026, “docs: record clinical quiz style rollout and live draft checks.”
+- Local main was fast-forwarded 183 commits from 96ceec56c4b8f9df0018fe090710631adb29a2a2. The four previously dirty UI/test edits were already included upstream in 73efe9cdc5c6f921fd7389b69b27ef78976defce. Do not treat the old checkout as the current application.
+- The review-preparation branch is codex/review-prep-2026-10-07. Its additions are documentation and retained repository instructions; verify HEAD and its diff against main before reviewing.
+- A newer, separate candidate remains at /Users/connor/Developer/worktrees/oms-quiz-generation-diagnosis, branch codex/quiz-generation-diagnosis-20260917, tip 24bbacf3ba7b93c187b88c5a5d1fa760ddb91f28. Its application change is 488efefadecda105693d3cae5c7197ba43e0c9c7, “fix: pack lecture previews and complete grounded image citations.” These two commits were not merged into main at preparation time. Assess separately where relevant; do not silently include them in the deployed baseline.
+- The September 17 candidate handoff reports the NUC running 0a2d6f526bd4e896bbd10044b38460f1aad9ad34. That is historical documentation, not a fresh deployment check. No live UI audit or deployment verification was performed while preparing this prompt.
+
+Begin with read-only Git/status/worktree checks. Inspect /health/live and /health/ready through an authorized connection when available; record build_revision, build_tree, schema version, and worker readiness. Correlate them with the source you inspect. An HTTP 200 or an old acceptance document alone does not establish release identity.
+
+The historically documented Windows checkout is C:\Services\oms-study-automation-v2, under scheduled task “OMS Study Hub V2.” Verify any host/path before using it. Port 8765 on the Mac may belong to Anki; do not assume it is the Hub.
+
+Report deployed behavior, main-branch source, local candidate behavior, and untested assumptions separately. When access or identity cannot be verified, complete the independent work you can and state the limitation precisely.
+
+REVIEW BOUNDARIES
+
+Production inspection is read-only. Do not stop/restart/deploy the Hub, rewrite Git history, delete records, change settings, publish quizzes, apply Anki changes, start provider generation, resume paid work, or send files to NotebookLM as part of this audit. Exercise write workflows in an isolated fixture with disposable data and inert providers. If that environment is unavailable, inspect those contracts and report the missing interaction coverage. Existing credentials and private source materials must stay out of the report.
+
+Do not infer implementation approval from a historical plan, deferred idea, or earlier acceptance record. Preserve source provenance, human answer review, private/public boundaries, historical publications, and existing study progress in every proposed cleanup.
+
+REVIEW METHOD — THREE SEPARATE PASSES
+
+Inspect the running application. Screenshots and source code alone cannot establish interaction behavior. Keep an evidence log of actual routes, labels, clicks, responses, screenshots, and relevant console/network observations. Source inspection should explain a finding, not substitute for observing it.
+
+Give a fresh reviewer or agent only the app entry point, the safety boundaries, and a realistic study goal for the first-use pass. Do not give that reviewer the code map, old findings, or a guided route through the app. If one reviewer performs all passes, do the first-use walkthrough before reading the technical appendix and disclose that it is simulated first use, not independent user research.
+
+PASS 1 — THE UNCOMPROMISING PRODUCT DESIGNER
+
+Inspect every reachable major screen and meaningful state. Start at 1440×900, repeat the main workflows at a compact laptop size such as 1024×768 and a narrow 390×844 viewport. Record actual dimensions and zoom. Check:
+
+- Information architecture: Does the organization match a student's tasks? Which destinations overlap? Does the distinction between Lectures, Quiz Builder, Quizzes, Practice Questions, Study progress, Review, and Processes help or confuse?
+- Hierarchy: Is the primary study action obvious? Are setup, processing, downloads, and administrative controls dominating an otherwise ready lecture?
+- Visual restraint: Which wrappers, cards, borders, headings, badges, repeated descriptions, and controls can disappear or merge?
+- Typography and geometry: Inspect font size, weight, line length, alignment, spacing, nested-container padding, clipped content, overflow, and crowded navigation. Retain wide and compact screenshots of the main pages.
+- Controls and copy: Identify ambiguous labels and developer terminology. Supply exact replacement wording, control placement, and visibility rules.
+- Continuity: Preserve lecture/course/exam selection, filters, expanded groups, scroll position, quiz progress, and a clear route back after opening a detail or review view.
+- Feedback: Can users distinguish material readiness, an active job, a failed attempt, a draft awaiting review, a published quiz, and actual study progress? Do empty, loading, disabled, error, success, and populated states give an actionable next step?
+- Trust: Is the source scope clear? Are images/citations inspectable? Are unverified answers and publication gates understandable? Can pre-answer metadata accidentally reveal the answer?
+- Accessibility: Test keyboard navigation, visible focus, labels, contrast, zoom, reduced motion, and responsive containment where accessible. Separate tested results from assumptions. Use accessibility tooling and representative performance measurements when available; unmeasured is not zero.
+
+For each substantial discrepancy explain what exists, the user-facing consequence, exactly what should move/disappear/merge/change, and why that change helps. Avoid “improve hierarchy” without a concrete proposal.
+
+PASS 2 — THE FIRST-TIME END USER
+
+Persona: a medical student preparing for an upcoming in-house exam, comfortable with ordinary web apps but unfamiliar with Study Hub's internals. They have limited time and want to work with one lecture now, then return later.
+
+Begin at the normal entry point and determine the next action from the interface itself. Attempt, where supported and safely testable:
+
+1. Understand what the Hub is for and where to begin.
+2. Find a particular course, exam, and lecture by title/topic/number.
+3. Open the lecture's slides or cleaned transcript and understand which revision is current.
+4. In a fixture, upload material, assign it correctly, and handle missing, duplicate, unmatched, or replacement inputs.
+5. Determine whether the material is ready to study, a quiz exists, or further review is required.
+6. Follow the GPT lecture-quiz journey from request through processing, private review, and eventual publication; distinguish inspected states from steps actually exercised in a fixture.
+7. Discover how importing supplied practice questions differs from generating lecture questions.
+8. Open an existing quiz, answer in a disposable session, inspect explanations and citations, leave, and resume. Look for answer leakage and loss of position.
+9. Find missed/guessed questions or progress and use that information to choose a next study action.
+10. Understand and update study passes in a fixture without confusing them with material-processing completion or mastery.
+11. Find failed/stopped work and determine the safest recovery action without needing to know worker or provider names.
+12. Understand which settings affect the chosen task and discover optional NotebookLM source sending without assuming it generates Hub quizzes.
+13. Explore the remaining navigation, Anki entry points, question-bank imports, menus, and secondary actions. Adapt to what is actually available; do not classify every absent feature as a defect.
+
+For each task record: goal, expectation, exact actions, actual result, hesitation/backtracking, whether it completed without guidance, and the point at which a student might give up. Report confusing moments even when the feature technically works.
+
+PASS 3 — THE PRAGMATIC BACKEND CLEANUP REVIEW
+
+The product direction is explicit: NotebookLM is no longer the normal quiz-generation engine. Obsolete NotebookLM generation steps should not remain in the everyday generation tracker merely because the old pipeline had them. Translate that direction into a safe, concrete cleanup proposal.
+
+Do not equate retiring NotebookLM quiz generation with deleting all NotebookLM code or all quiz tracking. Current main already disables NotebookLM inference, keeps optional source uploads, and supports native GPT quizzes, imports, outlines, and retained historical publications.
+
+Trace the following end to end:
+
+A. Generation tracker and completion rules
+Inspect how first-release steps, lecture status, percentage complete, library badges, and Processes cards are calculated. The optional summary was already removed from first-release requirements. quiz_published remains a first-release step, displayed as “Lecture Quiz Generation.” Determine whether lecture readiness is incorrectly coupled to optional quiz generation/publication, whether old NotebookLM states influence status, and what “complete” should mean for each current workflow. Do not recommend an already-completed removal as new work.
+
+B. Retired NotebookLM execution paths
+Trace callers, dispatch guards, routes, workers, retries, prompts, settings, tests, and stored rows. The old Quiz Builder generation controls are currently hidden and disabled; they are a code-cleanup lead, not proof that a user sees an obsolete button. Identify what is unreachable, still needed to read historical data, or actually used. A filename or lack of recent commits is not evidence of dead code.
+
+C. Processes, jobs, and recovery
+Check legacy jobs that remain visible but cannot be acted on, repeated/contradictory statuses, current work versus historical failures, pause/cancel/resume/remove semantics, and whether completion races or retries are explained honestly. Inspect full-history queries and polling, but substantiate performance claims with bounded measurements. Keep source reconciliation and retained provider-attempt ownership intact.
+
+D. Overlapping upload and generation systems
+Compare the older NotebookLM source-sync lane with ExtendLM's explicit send-to-exam-notebook flow. Establish which is in use before proposing consolidation. Trace ingestion, GenerationWorker, StudioWorker, GPT lecture generation, and outline generation. Recommend the smallest change that removes a real maintenance burden or confusing behavior.
+
+E. Settings and provider selection
+Map visible settings to their actual consumers. Main GPT lecture generation, transcript cleaning, and imported-question extraction have distinct provider choices. Missing-answer generation is explicitly unavailable while a task assignment remains visible. Classify controls as active, advanced, historical, or deferred; propose exact changes. Do not reactivate dormant provider work as a side effect of cleanup.
+
+F. Data and compatibility
+Distinguish UI removal, stopping new writes, archival, dead-code deletion, and schema/data migration. Preserve published quiz links/media, imported outlines, draft reviews, source revisions/hashes, immutable attempts, and study history. For every proposed removal name the retained contract, migration/backward-compatibility need, risk, and tests that prove it safe. Avoid creating a new queue, status framework, or abstraction unless an observed problem warrants it.
+
+TECHNICAL STARTING POINTS
+
+All paths in this appendix are relative to /Users/connor/Developer/oms-study-automation, after the cleanup described above. Read the current files and verify line numbers; report findings with absolute file paths, symbols, and the inspected commit. These are investigation leads, not predetermined findings.
+
+UI and route map:
+- Home / lecture library (/ and /lectures): src/oms_hub/web/routes.py; web/templates/home.html, dashboard.html, base.html; web/static/dashboard.js and study_hub_shell.js under src/oms_hub/.
+- Lecture / tracker / passes (/lectures/{lecture_id} and /lectures/exams/{exam_number}/passes?subject=...): src/oms_hub/web/routes.py for pages and src/oms_hub/web/generation_routes.py for generation APIs; src/oms_hub/web/templates/lecture.html, _gpt_lecture.html, exam_passes.html; src/oms_hub/web/static/lecture.js, study_generation.js, exam_passes.js.
+- Intake (/uploads, /quarantine, /review): src/oms_hub/web/upload_routes.py, quarantine_routes.py, routes.py; src/oms_hub/web/templates/uploads.html, quarantine.html, review.html; src/oms_hub/web/static/uploads.js and lecture_picker.js.
+- Processes (/processes): src/oms_hub/processes.py; src/oms_hub/web/process_routes.py; src/oms_hub/web/templates/processes.html; src/oms_hub/web/static/processes.js.
+- Builder / private review (/studio and /studio/runs/{run_id}/review): src/oms_hub/web/studio_routes.py; src/oms_hub/web/templates/notebook_studio.html and studio_quiz_review.html; corresponding files in src/oms_hub/web/static/.
+- Quiz/practice libraries (/public/quizzes, /public/practice-questions, /studio/library/quizzes, /studio/library/practice-questions) and player (/public/quizzes/{token}): src/oms_hub/web/public_quiz_routes.py, studio_routes.py, published_quiz_exports.py; src/oms_hub/web/templates/public_quiz_library.html and public_quiz.html; corresponding JS/CSS.
+- Study chat (/study/chat): src/oms_hub/study_chat/routes.py and service.py; src/oms_hub/web/templates/study_chat.html and web/static/study_chat.js under src/oms_hub/.
+- Progress / targeted study (/study/progress, /study/review, /study/blocks, /study/sessions/new): src/oms_hub/study_progress/; matching study templates in src/oms_hub/web/templates/.
+- Question bank (/question-bank) and Anki (/anki): src/oms_hub/question_bank/routes.py; src/oms_hub/web/anki_routes.py and templates/anki.html.
+- Settings / NotebookLM uploads (/settings and /settings/extendlm): src/oms_hub/web/settings_routes.py, extendlm_routes.py; src/oms_hub/extendlm_service.py; src/oms_hub/web/templates/settings.html, _gpt_settings.html, extendlm.html.
+- Shared styling: src/oms_hub/web/static/tokens.css, reset.css, study-hub.css, app.css, public_quiz.css, and uploads.css.
+
+Backend anchors at the main baseline:
+- src/oms_hub/domain.py: V2StepName.first_release(), approximately lines 15–38.
+- src/oms_hub/web/routes.py: status versus release-progress aggregation, approximately lines 199–218.
+- src/oms_hub/web/templates/lecture.html: processing checklist, approximately lines 190–211.
+- src/oms_hub/web/templates/notebook_studio.html: upload-only explanation and hidden legacy controls, approximately lines 38–71.
+- src/oms_hub/study_generation/notebook.py: upload-only restrictions, approximately lines 50–59.
+- src/oms_hub/study_generation/worker.py: non-GPT dispatch guard near line 70 and retained legacy _run near line 194.
+- src/oms_hub/study_generation/studio_worker.py: active GPT/import/source-upload versus legacy dispatch near lines 73–119.
+- src/oms_hub/study_generation/service.py, gpt_lecture.py, studio_repository.py, repository.py: active generation, durable state, review/publication, historical compatibility.
+- src/oms_hub/study_generation/notebook_sync.py and src/oms_hub/extendlm_service.py: the two NotebookLM source-transfer paths.
+- src/oms_hub/processes.py: history selection near lines 141–179 and legacy-action restrictions near lines 341–384.
+- src/oms_hub/app.py: dependency/worker wiring and health identity; src/oms_hub/web/material_routes.py: recoverable material removal.
+
+Useful contract tests:
+- tests/v2/test_daily_study_ux.py, test_lecture_generation_ui.py, test_processes.py, test_lecture_materials.py, test_extendlm.py.
+- tests/study_generation/test_notebook_upload_only.py, test_gpt_platform_migration.py, test_gpt_lifecycle.py, test_gpt_publication.py, test_gpt_outline_dispatch.py, test_studio_source_saga.py.
+- tests/js/processes.test.js, extendlm.test.js, and the relevant lecture/library/player tests in tests/js/.
+
+Read implementation history after the unprimed first-use pass:
+- docs/implementation/2026-09-09-ux-audit-implementation.md and docs/implementation/handoffs/2026-09-09-ux-audit-fixes.md.
+- docs/implementation/gpt-platform-handoffs/O-intake-quiz-ux-20260914.md, O-process-controls-20260915.md, O-provider-routing-20260915.md, O-quiz-style-20260915.md.
+- docs/implementation/2026-09-15-extendlm-setup.md and docs/operations/gpt-study-platform.md.
+- The unmerged candidate's docs/implementation/gpt-platform-handoffs/O-quiz-failures-20260917.md, in its separate worktree.
+- docs/future-implementation-ideas.md identifies deferred intent, not missing requirements to automatically implement.
+- The older September 8 live audit and its evidence were preserved at /Users/connor/Developer/repo-archives/oms-study-automation-pre-review-2026-10-07/untracked/docs/implementation/. Reproduce any old finding before repeating it; it was not a complete certification.
+
+Relevant commits (inspect with git show; links use https://github.com/connor-brooks98/oms-study-automation/commit/<full-SHA>):
+- 3e5322598d078a83b30c5f0090a8a8d07aaf18d1 — 2026-09-09 — Improve study workflows, quiz libraries, and import review UX.
+- 7a6aab38740c4e4a6cda3d89cc1d8778e4c56734 — 2026-09-14 — Unify lecture intake and GPT quiz controls with scoped instructions and PDF exports; includes NotebookLM upload-only behavior.
+- 1aadfe4fa99638045e2b2fb22c174395b6bb75ff — 2026-09-14 — Refine lecture panels and add teacher presets, review queue, and source previews.
+- 8d0e8a5bbf5e2e25927c32da96da634eaa1dacf4 — 2026-09-14 — Place lecture pass tracker immediately below the study panels.
+- 3c023f7bfb8dc2b106cc41a1c9dfa0d14c6ee7bc — 2026-09-15 — Connect ChatGPT in client browser and honor task providers.
+- c41a1e3aee651025b41064e3eccbff0b394451e7 — 2026-09-15 — Add process controls and recoverable lecture material removal.
+- 0a864d326b8d1e1577c0f653d459eb736dcfd01b — 2026-09-15 — Remove optional lecture summary from processing checklist.
+- c3abc5bc773955c224ee99392ba8f49ba80564cb — 2026-09-15 — Add ExtendLM OAuth and MCP source uploads to Study Hub.
+- e1f79d3183cd3f811d4aaf705fa05dd7fd1d3b21 — 2026-09-15 — Simplify sending lectures to an exam notebook using saved ExtendLM setup.
+- 0a2d6f526bd4e896bbd10044b38460f1aad9ad34 — 2026-09-15 — Require clinical inference and refresh quizzes after prompt changes.
+
+REQUIRED DELIVERABLE
+
+Start with a short, candid verdict: how the Hub feels today, the biggest obstacle to useful studying, and the most consequential opportunity to simplify it. State the actual baseline and whether inspection was complete enough to support that verdict.
+
+Then provide:
+
+1. DESIGNER FINDINGS — Specific screen/state evidence and concrete proposed changes.
+
+2. FIRST-TIME USER WALKTHROUGH — Task-by-task results, confusion, recovery, completion, and likely abandonment points. Disclose whether this was a fresh reviewer or simulated first use.
+
+3. BACKEND RETIREMENT AND SIMPLIFICATION MAP — For each process/control, classify: keep, simplify, hide behind advanced/history, retire after migration, or investigate. Include caller/dependency evidence, affected UI/API/files/data, the smallest safe change, retained compatibility, and verification requirements. Give NotebookLM generation/tracker cleanup its own explicit recommendation.
+
+4. CONSOLIDATED RANKED CHANGE LIST — Deduplicate the three passes. Every finding needs: stable ID; route/workflow/state/viewport; exact problem and evidence; user impact; reproduction steps or a clearly labeled source-only hypothesis; verified file/symbol/commit; concrete change and exact copy where relevant; dependencies; rough effort (small/medium/large, with uncertainty); and a testable acceptance criterion. Separate observed defects, likely risks, and aesthetic preferences.
+
+Use P0 for task blockers or serious correctness/data exposure, P1 for major confusion or repeated workflow friction, P2 for meaningful improvement, and P3 for visual polish. Rank the product backlog by impact on actual studying and operational reliability; do not let incidental environment noise eclipse a broken daily workflow.
+
+5. THE FIRST FIVE CHANGES — Rank the five highest-value changes, explain why they come first, and specify an implementation order. Use fewer if fewer are justified. Separate safe presentation cleanup from lifecycle/schema work.
+
+6. WHAT TO PRESERVE — Identify successful decisions and the behavior/data contracts that must survive cleanup.
+
+7. COVERAGE AND LIMITATIONS — List routes/states/viewports actually inspected, interactions actually completed, source-only checks, inaccessible workflows, tests run and their results, and production versus fixture evidence. Do not claim provider acceptance from mocks or medical correctness from schema validation.
+
+Have a fresh reviewer prune generic, duplicated, unsupported, or already-resolved findings before delivery when possible. Be exhaustive in inspection and selective in reporting. The final report should be specific enough that a designer or engineer can act without asking, “What exactly do you mean?”
+
+Save the report and evidence with a dated filename under docs/implementation/ in the review checkout. Finish with recommendations; implementation requires a separate request.

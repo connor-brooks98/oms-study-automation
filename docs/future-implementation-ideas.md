@@ -45,12 +45,15 @@ Core behavior:
 - Show the evidence behind each estimate, including question count and recent performance, so small samples are not overstated.
 - Prioritize weak or under-practiced areas for focused board review.
 
+**2026-09-15 refinement — Ora AI review:** Connor particularly likes Ora's Performance section. Use one personal attempt history with separate board and in-house exam views. Link supported UWorld/TrueLearn results and verified question identifiers to reviewed objectives, retaining source, product, date, and question version. Show right/wrong history, first attempts versus repeats, unique-question counts, recency, and untested objectives. Drill from a weak objective into focused practice and its supporting material. A bare provider QID does not establish objective coverage, and video/card completion does not establish question mastery. Keep NBOME competency/presentation dimensions and USMLE taxonomy separate. See the [feature review and screenshots](research/2026-09-15-ora-ai-feature-review.md).
+
 Decide during implementation:
 
 - Which official exam guide/version applies and how guide updates are handled.
 - Whether question-to-topic mapping comes from the question source, user tagging, or automated classification.
 - How recency, question difficulty, repeated questions, and minimum sample size affect strength estimates.
 - Where the tracker belongs in the Study Hub and how it relates to existing practice-question history.
+- Supported UWorld/TrueLearn result export or manual-entry fields; mapping review and correction workflow; which genuinely tested objectives receive evidence from a multi-topic question; and how the board and exam views share history without double-counting.
 
 Candidate dataset inspected on 2026-09-02:
 
@@ -78,6 +81,24 @@ Connor prefers the clinical-vignette flow and actual lecture images in the "Crea
 The current lecture-quiz generation path does not consume an outline, but Anki curation currently requires a current outline PDF. Connor explicitly deferred Anki curation on 2026-09-11; its outline dependency should not block the proposed quiz-first workflow. Preserve existing curation artifacts and revisit its input requirements when curation resumes. Also decide objective coverage, image selection/review, provider validation, and whether a compact internal coverage map is useful.
 
 Supplementary board practice may use verified question-bank records and AnKing question-ID mappings. Connor has school UWorld access and TrueLearn access for DO-focused practice; account ingestion/export and mapping methods remain undecided. The GitHub bank matches the local JSON, lacks its referenced images, and has unresolved answer selections; its historical IDs change between versions, so they are not verified UWorld/AnKing identifiers. Keep this separate from lecture-only quiz sourcing.
+
+**2026-09-15 refinement — in-house objective performance:** Extract each lecture's explicit objectives with stable identity, source revision and slide citations; retain course/exam/lecture scope. Tag generated questions to the objectives actually tested, and track right/wrong results throughout exam preparation. Make every objective visible, including no-question coverage gaps and objectives not yet attempted. Offer focused practice and direct source review from each row. In Ora, Connor's 23-page Cardiac Cycle upload displayed five source objectives and 4 linked videos, 45 questions and 76 cards, but the inspected management view did not expose item-to-objective coverage. Borrow the source viewer and resource preview; improve them with visible mapping evidence and reviewable corrections. Decide objective extraction review, cross-lecture duplicates, source updates, exam-window filtering, and mapping corrections before implementation. Counts are not coverage proof.
+
+### 2026-09-15 — Ora-inspired study flow refinements
+
+**Status:** Ideas; implementation deferred
+
+Connect performance drill-down, objective-filtered quizzes, source-linked answer review, and contextual tutoring. Reuse the approved GPT chat path with the selected lecture/question/objective as explicit context; do not add another AI backend. Consider a small daily session mixing weak, untested and due material within a chosen time budget and exam date, after objective tracking is trustworthy. Keep all objectives visible when narrowing today's workload. Anki remains the existing review system and its curation remains deferred.
+
+Decide during implementation: which behaviors already exist in the integrated Hub, the smallest navigation changes, source-context visibility, and a transparent daily-practice selection rule. The [Ora review](research/2026-09-15-ora-ai-feature-review.md) is research, not approval to implement or deploy.
+
+### 2026-09-15 — Optional NAS video references
+
+**Status:** Low-priority idea; implementation deferred
+
+Connor has an offline video library that may move to the NAS. Eventually link relevant videos or timestamps from lecture/objective pages. Start with a searchable metadata catalog and links to an existing media server/player; the Hub need not store or transcode the media itself.
+
+Decide during implementation: final NAS/media-server location, supported browser playback and authentication, stable identifiers, local versus remote availability, and whether transcripts/resume/timestamp links materially help. Do not make video integration a dependency of quiz or performance work.
 
 ### 2026-09-11 — AMBOSS-assisted AnKing candidate selection
 
