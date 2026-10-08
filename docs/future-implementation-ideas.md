@@ -4,6 +4,16 @@ This is the running backlog for ideas to consider after the current work. An ent
 
 ## Ideas
 
+### 2026-10-08 — Clinical Notebook becomes the primary notebook application
+
+**Status:** Direct Hub-to-Clinical Notebook file transfer requested now; full NotebookLM replacement is a future step.
+
+Connor intends Clinical Notebook to eventually overtake NotebookLM. The current cleanup should make Hub file completion independent of notebook delivery, keep ExtendLM available for NotebookLM, and add a seamless, explicit file-transfer API to Clinical Notebook.
+
+Future behavior: move the primary notebook workflow to Clinical Notebook after its file import, source provenance, reading/indexing, and everyday study flows are accepted. Preserve original lecture files, cleaned transcripts, course/exam mapping, and source identity during any migration.
+
+Decide when replacement is requested: migration of existing notebooks and sources, the default destination, cross-device access, retention of ExtendLM, source-grounded chat behavior, and whether any old remote content should be removed. This entry does not authorize a bulk migration, deletion of NotebookLM content, or retiring ExtendLM now.
+
 ### 2026-09-15 — NotebookLM resources for the Hub chatbot through ExtendLM MCP
 
 **Status:** Idea; chatbot integration deferred, retain MCP support in the upload workflow
