@@ -5,7 +5,7 @@ Status: proposed design for Connor's review; implementation has not started.
 
 ## Intent
 
-Finish Hub uploads when their Hub processing is finished, remove retired NotebookLM generation/connectors, preserve independent quiz builders and imports, simplify ExtendLM delivery, add direct file transfer to Clinical Notebook, and make mistaken unmatched uploads removable.
+Finish Hub uploads when their Hub processing is finished, remove retired NotebookLM generation/connectors, preserve independent quiz builders and imports, simplify ExtendLM delivery, add a reusable Clinical Notebook source API and direct Hub transfer, and make mistaken unmatched uploads removable.
 
 Notebook delivery is an explicit action separate from uploading and filing. Defaults in this proposal: remember one existing destination notebook per exam; send on the user's click; open Clinical Notebook on the current Mac. Connor was also offered queue-until-open behavior; that preference remains open until answered. No automatic whole-course transfer or automatic quiz/lesson generation is part of this work.
 
@@ -47,41 +47,29 @@ The browser extension remains a provider prerequisite. This change removes repea
 
 Primary implementation seams: `extendlm_service.py`, `web/extendlm_routes.py`, `web/static/extendlm.js`, `web/templates/extendlm.html`, and the lecture action area. Preserve the path-scoped cookie by keeping API calls under `/settings/extendlm`.
 
-## 3. Direct Clinical Notebook transfer
+## 3. Clinical Notebook source API, with Study Hub as its first client
 
-### Recommended transport
+**October 8 clarification:** Clinical Notebook must accept source imports and expose source reads/exports to other applications. The receiver must be reusable by other people who install the app. This supersedes the earlier proposal for a receiver specialized to Study Hub and its tailnet.
 
-Use an immutable export prepared by the Hub and fetched by the paired Mac app. Pair a device once with a narrowly scoped device credential, held in macOS Keychain and distinct from ExtendLM, Anki, and the native backend bearer. Restrict bridge routes to the intended private/Tailscale transport and its own authorization scope. Revoke a device from Hub Settings.
+The detailed [Clinical Notebook external source API design](2026-10-08-clinical-notebook-integration-api-design.md) owns the generic API boundary. Build a versioned, documented REST interface backed by existing Clinical Notebook services: list granted notebooks, import file/text sources, check imports, read source metadata/extracted text, and download originals. Clinical Notebook issues named, revocable per-application credentials with explicit notebook/capability grants. Import-only and read-only access are distinct. Keep the native administrative bearer private.
 
-The Hub action creates a durable transfer for the chosen exam notebook, then opens a registered Clinical Notebook URL carrying only an opaque transfer ID. The app authenticates independently and fetches the transfer from its configured Hub. The URL must not contain reusable credentials or arbitrary fetch URLs. The native app then calls its own local API through its existing supervisor-owned authentication. No new public listener on the Mac is required.
+General source identity, content revision, byte/hash validation, readiness, provenance, pagination, and replay behavior belong to the shared API. Course/exam/lecture mapping, choosing the current approved PDF/cleaned transcript, and the one-click send workflow belong to Study Hub. Hub-specific metadata is optional and namespaced; generic imports do not require lecture identities or slide/transcript pairs. A second unrelated client must pass the same contract tests without Hub metadata.
 
-During initial pairing, select the existing Clinical Notebook destination for the Hub exam and save its stable notebook ID under the paired device. Do not automatically create notebooks or match them by title. A deleted or inaccessible destination produces an actionable destination error. The device grant is limited to that owner's targeted transfers and their receipt/destination metadata; it grants no Anki, arbitrary filesystem, or unrelated Hub access. Revocation stops subsequent fetches.
+Use an OpenAPI contract owned by Clinical Notebook, proposed path `docs/contracts/source-api-v1.openapi.yaml`. Retain the old text-only `study-hub-send-v1.schema.json` as a historical proposal, not as the basis for a supposedly general interface. No application-specific receiver bypass is allowed. Initial external writes create/import sources; a changed existing external document returns a revision conflict for explicit owner review, rather than silently modifying a shared source. Source deletion or replacement does not automatically propagate between apps.
 
-When the app is unavailable, retain the pending transfer and offer Open/Resume. On startup, the paired app may recover explicitly queued transfers for that device. Do not add continuous background library synchronization. If Connor chooses queue-until-open, omit the launch step. Sending from a phone or another computer must say which paired Mac will receive it; a custom URL alone must not imply cross-device delivery.
+Source transfer and retrieval work without a NotebookLM or AI-provider key. Clinical Notebook access tokens are local integration credentials. Model-assisted extraction/indexing remains an explicitly approved processing policy, with stored/readable/indexed states reported separately. No transfer generates or adopts a lesson/quiz.
 
-Pairing needs a short-lived one-use code issued from an authenticated, CSRF-protected Hub action. Exchange and retrieval must use a reviewed private bridge route rather than reusing the Anki agent bearer or relaxing public Cloudflare Access checks. Confirm the actual Mac-to-NUC private route during implementation; browser Cloudflare cookies cannot simply be reused by the native client. If that route is unavailable, show a connection requirement rather than silently weakening authentication.
+### Hub workflow and connection
 
-### Transfer contract
+After one-time connection, remember an existing Clinical Notebook destination for the exam and show `Send to Clinical Notebook`. Send the actual current approved PDF and cleaned transcript, or only the available materials the user selected. Pin the exact bytes/revisions in an immutable export. Maintain per-file receipts and retry only failed/missing transfers; repeated sends of unchanged materials reuse their source IDs. Changed material requires explicit review. Never call partial delivery fully ready.
 
-Define a versioned file-transfer contract before implementing either side. Keep the existing proposed text-only `study-hub-send-v1.schema.json` unchanged; actual file attachments require a new contract. One canonical schema plus fixed contract fixtures must be checked by both repositories.
+Use the generic API over the installation's configured reachable connection. Desktop defaults remain local while the app is running; remote/self-hosted access is explicitly configured and authenticated. Tailscale can carry this installation's connection but is not a requirement of the source API or distributed app. Do not expose the entire internal backend or reuse Anki credentials. A supported remote path must be verified before cross-computer delivery is accepted.
 
-The new contract carries transfer ID, originating Hub identity, stable course/exam/lecture IDs and display names, device and notebook identity, and a per-file manifest: stable document ID, role (`slides` or `transcript`), material revision, original filename, MIME type, byte length, and SHA-256. Use validated slide PDF and cleaned transcript files from current approved Hub material. Preserve the PDF itself for figures/page citation and the cleaned transcript content; do not send merely a text summary. Carry existing cleanup provenance when available without inventing timestamps or page-level verification.
+If the Mac cannot accept inbound requests, a separate configured outbound adapter can fetch the Hub's immutable export and pass it through the same source import boundary as a named integration, subject to its current notebook/capability grants and revocation. It must not use the desktop administrative identity to bypass those grants. Keep that adapter outside the generic source model. A custom URL may open the app with an opaque transfer ID; never put credentials or arbitrary fetch URLs in it. Pending transfers belong to the sending client and remain visible until the receiver is available. No silent full-library synchronization is introduced.
 
-Only selected available material is sent. A slides-only lecture may be imported as slides-only with the missing transcript explicit; it must not pretend to satisfy the older paired-source lesson contract. No quiz content, quarantined files, draft revisions, arbitrary local paths, credentials, or executable flags enter a transfer. Hash and revalidate the exact exported bytes; source changes during preparation must fail cleanly rather than mix revisions.
+Opening the Mac app on Send remains the proposed default, with queue-until-open as the alternative already offered. This UI preference does not determine the core API architecture. Explicitly show which installation/notebook receives the material. The receiver's application lifecycle and remote reachability must not be hidden behind a successful browser launch.
 
-Use independent bounded binary file downloads, bounded by the receiver's file size/type limits; validate actual bytes as well as names and MIME declarations. Do not reuse the text-only contract's draft-character budget as a file-size or import limit. Snapshot the selected immutable material so a later lecture edit cannot change an already queued transfer.
-
-Identical transfer retries return the same source IDs. A reused key with different content is a conflict. Changed document revisions require an explicit replacement preview and expected source revision before replacing an existing source. Preserve source provenance and history. Deleting an upload in the Hub never deletes a Clinical Notebook or NotebookLM source implicitly.
-
-Persist receipts per file and retain the distinction between queued, transferring, accepted, reading/indexing, ready, partially failed, and failed. Accepting bytes is not readiness. Only report the whole transfer ready when every requested file is ready. Reuse Clinical Notebook's existing background extraction and source-readiness machinery. A changed source keeps the existing lesson-staleness rules. Transfer never triggers a model call to generate a quiz/lesson or grants automatic adoption.
-
-Retry only missing/failed files after partial success. An expired or unavailable export must be reported explicitly and require preparing a new transfer; never substitute a newer lecture revision under the original transfer ID. Receipt updates are themselves replay safe so interruption after receiver persistence cannot duplicate imported sources.
-
-### Why this approach
-
-Direct NUC-to-Mac push would require exposing and managing a stable authenticated Mac listener even when the app is closed. Extending the existing mirror scan would still omit cleaned transcripts and transfer receipts. A paired outbound pull uses the existing desktop lifecycle, supports exact file identities, and keeps one-click sending possible.
-
-Clinical Notebook implementation seams: `api/routers/study_hub.py`, a separate transfer service, native source processing/persistence, `desktop/GPTLM` app URL handling and existing API client, packaging URL registration, and Keychain-backed pairing. Keep manual mirror import available. Record the new boundary in that repo's decision log.
+Primary Clinical Notebook seams: a new versioned external router and public response models, scoped integration authorization and Connected Apps settings, existing source/native-import/readiness services, and desktop integration endpoint discovery. Keep the manual slide-mirror importer available. Add transport-specific wakeup/pull support only as required by the chosen Hub connection. The exact connection must preserve existing Cloudflare/private host access controls rather than assuming browser cookies are available to a native client.
 
 ## 4. Delete mistaken unmatched uploads
 
@@ -105,15 +93,16 @@ Primary implementation seams: `ingestion/service.py`, `ingestion/repository.py`,
 - File, text, and URL quiz imports still reach review/publication; missing answers stay unresolved/private without NotebookLM calls.
 - ExtendLM remembers the exam notebook, invalidates it on account changes, reuses repeated sends, isolates lecture history, and reports indexing truthfully.
 - Quarantine deletion preserves shared-batch siblings and all filed material; assignment/deletion races, missing files, path traversal/shared references, cleanup failures, CSRF, and owner isolation are exercised.
-- Both bridge implementations pass the same contract fixtures, including mismatched hashes, wrong role/type/size, unknown device/notebook, replay/conflicting payloads, changed source revision, and interrupted/partial transfers.
+- Clinical Notebook, Study Hub, and an unrelated sample client pass the same external API contract fixtures, including mismatched hashes, wrong type/size, grants and revocation, inaccessible notebooks, replay/conflicting payloads, changed source revision, and interrupted/partial transfers.
+- A fresh installation with no Hub configuration or AI-provider keys can issue separate import-only/read-only connections, import a generic document, read its available text, and export an original file within its grants. External reads neither reveal local paths nor change Recently Viewed.
 - A synthetic PDF and transcript make a full Hub-to-native-app trip with stable source IDs on retry and actual receiver readiness. Local mocks alone do not establish cross-computer acceptance.
 - Inspect relevant Hub pages at wide/compact widths and native import states in an isolated fixture. Record screenshots for action visibility, progress, failure and confirmation states.
 - Run affected Python and JavaScript suites plus existing Clinical Notebook import/runtime tests; retain independent final review and distinguish local verification from deployed/provider acceptance.
 
 ## Delivery and future scope
 
-Implement the Hub cleanup and Clinical Notebook bridge as independently reviewable changes with a shared contract. Do not mix source changes into the unrelated preexisting files or replace Clinical Notebook's accepted runtime work.
+Implement the Hub cleanup, reusable Clinical Notebook source API, and Study Hub client adapter as independently reviewable changes with one shared API contract. Do not mix source changes into the unrelated preexisting files or replace Clinical Notebook's accepted runtime work.
 
 Deployment/restart is a separate final step after verification, with the current live revision rechecked and rollback prepared. This design review does not authorize taking the running Hub offline, pairing accounts, sending real lecture files, or deleting the identified live upload. Those actions should be made concrete and scoped when the candidate is ready.
 
-Clinical Notebook eventually replacing NotebookLM is recorded in `docs/future-implementation-ideas.md`. Full migration, remote-source deletion, chatbot migration, and removal of ExtendLM itself are future decisions, not this implementation.
+Clinical Notebook eventually replacing NotebookLM is recorded in `docs/future-implementation-ideas.md`. Full migration, public app distribution, multi-user hosting, remote-source deletion, chatbot migration, and removal of ExtendLM itself are future decisions, not this implementation. The reusable external API and non-personal connection setup are part of the current design.

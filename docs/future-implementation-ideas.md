@@ -6,13 +6,15 @@ This is the running backlog for ideas to consider after the current work. An ent
 
 ### 2026-10-08 — Clinical Notebook becomes the primary notebook application
 
-**Status:** Direct Hub-to-Clinical Notebook file transfer requested now; full NotebookLM replacement is a future step.
+**Status:** Reusable Clinical Notebook source import/read API and the Study Hub client requested now; full NotebookLM replacement and sharing the app publicly are future steps.
 
 Connor intends Clinical Notebook to eventually overtake NotebookLM. The current cleanup should make Hub file completion independent of notebook delivery, keep ExtendLM available for NotebookLM, and add a seamless, explicit file-transfer API to Clinical Notebook.
 
+**2026-10-08 clarification:** Clinical Notebook's interface must work for other applications importing sources or reading/exporting them. Study Hub is the first client; course/exam/lecture metadata and the current private network must not be requirements of the receiver. Each future user should be able to connect their own applications with their own scoped credentials and notebook choices. Build that reusable boundary now; sharing the app does not itself request multi-tenant hosting or a public release.
+
 Future behavior: move the primary notebook workflow to Clinical Notebook after its file import, source provenance, reading/indexing, and everyday study flows are accepted. Preserve original lecture files, cleaned transcripts, course/exam mapping, and source identity during any migration.
 
-Decide when replacement is requested: migration of existing notebooks and sources, the default destination, cross-device access, retention of ExtendLM, source-grounded chat behavior, and whether any old remote content should be removed. This entry does not authorize a bulk migration, deletion of NotebookLM content, or retiring ExtendLM now.
+Decide when replacement/distribution is requested: migration of existing notebooks and sources, the default destination, supported deployment modes, packaging/signing and release support, cross-device access, retention of ExtendLM, source-grounded chat behavior, and whether any old remote content should be removed. This entry does not authorize public release, multi-user hosting, bulk migration, deletion of NotebookLM content, or retiring ExtendLM now.
 
 ### 2026-09-15 — NotebookLM resources for the Hub chatbot through ExtendLM MCP
 
