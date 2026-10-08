@@ -63,6 +63,8 @@ from oms_hub.anki.stages import (
 )
 from oms_hub.anki.tag_policy import TagPolicy
 from oms_hub.anki.worker import AnkiCurationWorker
+from oms_hub.clinical_notebook import ClinicalNotebookError
+from oms_hub.clinical_notebook_service import ClinicalNotebookService
 from oms_hub.config import Settings, get_settings
 from oms_hub.db import Database
 from oms_hub.document_processing.anydoc_adapter import AnydocProcessor
@@ -166,6 +168,7 @@ from oms_hub.transcripts.prompt import PromptLoader as V2PromptLoader
 from oms_hub.web.anki_agent_routes import router as anki_agent_router
 from oms_hub.web.anki_routes import router as anki_router
 from oms_hub.web.artifact_routes import router as artifact_router
+from oms_hub.web.clinical_notebook_routes import router as clinical_notebook_router
 from oms_hub.web.extendlm_routes import router as extendlm_router
 from oms_hub.web.generation_routes import (
     anki_prompt_router,
@@ -555,6 +558,7 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await asyncio.to_thread(app.state.extendlm.close)
+        await asyncio.to_thread(app.state.clinical_notebook.close)
         codex_client = getattr(app.state, "codex_session", None)
         if codex_client is not None:
             await asyncio.to_thread(codex_client.close)
@@ -950,6 +954,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else KeyringSecretStore()
         )
     app.state.extendlm = ExtendLMService(resolved.data_dir / "extendlm", app.state.secrets)
+
+    app.state.clinical_notebook = ClinicalNotebookService(
+        resolved.data_dir / "clinical-notebook", app.state.secrets
+    )
+
+    @app.exception_handler(ClinicalNotebookError)
+    async def clinical_notebook_error(
+        request: Request, error: ClinicalNotebookError
+    ) -> JSONResponse:
+        return JSONResponse({"detail": str(error)}, status_code=409,
+                            headers={"Cache-Control": "private, no-store"})
 
     @app.exception_handler(ExtendLMError)
     async def extendlm_error(request: Request, error: ExtendLMError) -> JSONResponse:
@@ -1484,6 +1499,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(material_router)
     app.include_router(process_router)
     app.include_router(extendlm_router)
+    app.include_router(clinical_notebook_router)
     app.include_router(settings_router)
     app.include_router(settings_api_router)
     app.include_router(upload_router)

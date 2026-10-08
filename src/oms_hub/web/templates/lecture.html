@@ -46,6 +46,27 @@
         {% endif %}
       </div>
     </section>
+    <section class="file-card sh-card" data-clinical-notebook data-csrf="{{ request.state.csrf_token }}" data-lecture-id="{{ lecture.id }}" aria-label="Clinical Notebook delivery">
+      <div class="file-card-title"><h2>Clinical Notebook</h2></div>
+      <p data-cn-destination>Checking this exam’s destination…</p>
+      <p data-cn-setup hidden><a href="/settings/clinical-notebook">Connect Clinical Notebook in Settings</a>, then choose this exam’s notebook here.</p>
+      <fieldset><legend>Materials to send</legend>
+        <label class="sh-check"><input type="checkbox" data-cn-slides{% if slide_revision and not slide_problem %} checked{% else %} disabled{% endif %}> Lecture PDF</label>
+        <label class="sh-check"><input type="checkbox" data-cn-transcript{% if transcript_revision and not transcript_problem %} checked{% else %} disabled{% endif %}> Cleaned transcript</label>
+      </fieldset>
+      <div class="file-actions">
+        <button class="sh-btn sh-btn--primary" type="button" data-cn-send disabled>Send to Clinical Notebook</button>
+        <button class="sh-btn sh-btn--secondary" type="button" data-cn-change hidden>Change destination</button>
+      </div>
+      <div data-cn-picker hidden>
+        <label for="clinical-notebook">Existing exam notebook</label><select id="clinical-notebook" data-cn-notebook disabled><option value="">Choose an existing notebook</option></select>
+        <button class="sh-btn sh-btn--secondary" type="button" data-cn-save disabled>Save for this exam</button>
+      </div>
+      <p class="field-help">Keep Clinical Notebook running. If it is unavailable, your prepared files remain here for an explicit retry.</p>
+      <p data-cn-message role="status" aria-live="polite"></p>
+      <details><summary>This lecture’s deliveries</summary><div data-cn-jobs aria-live="polite"></div></details>
+    </section>
+
     <section class="file-card sh-card" data-extendlm data-csrf="{{ request.state.csrf_token }}" data-lecture-id="{{ lecture.id }}" aria-label="NotebookLM delivery">
       <div class="file-card-title"><h2>NotebookLM delivery</h2></div>
       <p data-destination>Checking this exam’s destination…</p>
@@ -249,4 +270,5 @@
 <script src="/static/study_generation.js?v=20260915.1" defer></script>
 <script src="/static/lecture.js?v={{ shell_asset_version }}" defer></script>
 <script src="/static/extendlm.js?v=20261008.1" defer></script>
+<script src="/static/clinical_notebook.js?v=20261008.1" defer></script>
 {% endblock %}
