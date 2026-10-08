@@ -8,7 +8,6 @@
     <span>Exam {{ lecture.exam_number }}</span>
   </nav>
   <nav class="file-actions" aria-label="Lecture navigation">
-    <a class="sh-btn sh-btn--secondary" href="/settings/extendlm?lecture_id={{ lecture.id }}">Send to NotebookLM</a>
     {% if previous_lecture %}<a class="button secondary sh-btn sh-btn--secondary" href="/lectures/{{ previous_lecture.id }}">Previous lecture</a>{% endif %}
     {% if next_lecture %}<a class="button secondary sh-btn sh-btn--secondary" href="/lectures/{{ next_lecture.id }}">Next lecture</a>{% endif %}
   </nav>
@@ -47,6 +46,27 @@
         {% endif %}
       </div>
     </section>
+    <section class="file-card sh-card" data-extendlm data-csrf="{{ request.state.csrf_token }}" data-lecture-id="{{ lecture.id }}" aria-label="NotebookLM delivery">
+      <div class="file-card-title"><h2>NotebookLM delivery</h2></div>
+      <p data-destination>Checking this exam’s destination…</p>
+      <p data-setup-needed hidden><a href="/settings/extendlm">Finish ExtendLM setup in Settings</a>, then return here to send this lecture.</p>
+      <div class="file-actions">
+        <button class="sh-btn sh-btn--primary" type="button" data-lecture-upload disabled>Send to NotebookLM</button>
+        <button class="sh-btn sh-btn--secondary" type="button" data-change-destination hidden>Change destination</button>
+      </div>
+      <div data-destination-picker hidden>
+        <label for="extendlm-notebook">Existing exam notebook</label>
+        <select id="extendlm-notebook" data-notebook disabled><option value="">Choose an exam notebook</option></select>
+        <div class="file-actions">
+          <button class="sh-btn sh-btn--secondary" type="button" data-more hidden>Load more notebooks</button>
+          <button class="sh-btn sh-btn--secondary" type="button" data-save-destination disabled>Save for this exam</button>
+        </div>
+      </div>
+      <p class="field-help">Sends the available lecture PDF and cleaned transcript. Keep the selected ExtendLM browser open.</p>
+      <p data-message role="status" aria-live="polite"></p>
+      <details><summary>This lecture’s deliveries</summary><div data-jobs aria-live="polite"></div></details>
+    </section>
+
     <section class="file-card sh-card {{ 'ready' if transcript_revision and not transcript_problem else 'missing' }}">
       <div class="file-card-title">
         <h2>Transcript</h2>
@@ -228,4 +248,5 @@
 {% block scripts %}
 <script src="/static/study_generation.js?v=20260915.1" defer></script>
 <script src="/static/lecture.js?v={{ shell_asset_version }}" defer></script>
+<script src="/static/extendlm.js?v=20261008.1" defer></script>
 {% endblock %}

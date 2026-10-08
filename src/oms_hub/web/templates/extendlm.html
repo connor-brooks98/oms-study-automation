@@ -35,13 +35,22 @@
   <details class="settings-disclosure"><summary>Send files from this computer</summary>
   {% endif %}
   <section class="sh-card settings-card" aria-labelledby="files-heading">
-    <h2 id="files-heading">{{ "Choose an exam notebook" if lecture else "Send files to an exam notebook" }}</h2>
+    <h2 id="files-heading">{{ "Exam destination" if lecture else "Send files to an exam notebook" }}</h2>
+    {% if lecture %}
+    <p data-destination></p>
+    <div class="file-actions">
+      <button class="sh-btn sh-btn--primary" type="button" data-lecture-upload disabled>Send to NotebookLM</button>
+      <button class="sh-btn sh-btn--secondary" type="button" data-change-destination hidden>Change destination</button>
+    </div>
+    <div data-destination-picker hidden>
+    {% endif %}
     <label for="extendlm-notebook">Exam notebook</label>
     <select id="extendlm-notebook" data-notebook disabled><option value="">Choose an exam notebook</option></select>
     <button class="sh-btn sh-btn--secondary" type="button" data-more hidden>Load more notebooks</button>
     {% if lecture %}
-    <p>Send this lecture’s available slides and cleaned transcript to the selected exam notebook.</p>
-    <button class="sh-btn sh-btn--primary" type="button" data-lecture-upload disabled>Send to NotebookLM</button>
+    <button class="sh-btn sh-btn--secondary" type="button" data-save-destination disabled>Save for this exam</button>
+    </div>
+    <p>Send this lecture’s available slides and cleaned transcript. This exam’s destination is saved for the selected account.</p>
     {% else %}
     <form data-files-form>
       <label for="extendlm-files">Files from this computer</label>
@@ -55,8 +64,8 @@
   {% if not lecture %}</details>{% endif %}
   <p data-message role="status" aria-live="polite"></p>
   <section class="sh-card settings-card" aria-labelledby="receipts-heading">
-    <h2 id="receipts-heading">Upload history for this sign-in</h2>
-    <p>“Accepted” means NotebookLM received the file. Check indexing to confirm it is ready to use.</p>
+    <h2 id="receipts-heading">{{ "This lecture’s deliveries" if lecture else "Upload history for this sign-in" }}</h2>
+    <p>“Accepted” means NotebookLM received the file. Indexing checks run briefly while this page is open; use Refresh indexing if it needs longer.</p>
     <div data-jobs aria-live="polite"></div>
   </section>
   {% if not lecture %}
@@ -66,4 +75,4 @@
   {% endif %}
 </section>
 {% endblock %}
-{% block scripts %}<script src="/static/extendlm.js?v=20260915.2" defer></script>{% endblock %}
+{% block scripts %}<script src="/static/extendlm.js?v=20261008.1" defer></script>{% endblock %}

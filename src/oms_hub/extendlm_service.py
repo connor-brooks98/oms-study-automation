@@ -113,6 +113,19 @@ class ExtendLMService:
             token: str = tokens["access_token"]
             return token
 
+    def signed_in(self, key: str) -> bool:
+        with self.state(key, write=True) as state:
+            tokens = state.get("tokens", {})
+            connected = bool(
+                state.get("expires", 0) > time.time()
+                and tokens
+                and (tokens.get("expires_at", 0) > time.time() or tokens.get("refresh_token"))
+            )
+            if not connected:
+                state.pop("destinations", None)
+                state.pop("selection", None)
+            return connected
+
     @contextmanager
     def connection(self, key: str) -> Iterator[api.MCPClient]:
         token = self.token(key)
@@ -143,6 +156,7 @@ class ExtendLMService:
             with self.state(key, write=True) as state:
                 state.pop("tokens", None)
                 state.pop("selection", None)
+                state.pop("destinations", None)
                 state.pop("pending", None)
                 state["expires"] = 0
 
@@ -170,6 +184,11 @@ class ExtendLMService:
                 public.append({"id": choice_id, "label": label})
         with self.state(key, write=True) as state:
             state["choices"] = choices
+            state["choice_labels"] = {choice["id"]: choice["label"] for choice in public}
+            if state.get("selection") and state["selection"] not in choices.values():
+                state.pop("selection", None)
+                state.pop("destinations", None)
+                state["notebooks"] = {}
         return public
 
     def select(self, key: str, choice_id: str) -> None:
@@ -184,7 +203,14 @@ class ExtendLMService:
                     "Sign in to Gemini Notebook in the selected browser profile."
                 )
         with self.state(key, write=True) as state:
+            if state.get("choices", {}).get(choice_id) != selected:
+                raise api.ExtendLMError("Connections changed. Refresh and choose an account.")
+            if state.get("selection") != selected:
+                state.pop("destinations", None)
             state["selection"] = selected
+            state["account_label"] = state.get("choice_labels", {}).get(
+                choice_id, f"Selected browser · Account {selected['auth_user_id']}"
+            )
             state["notebooks"] = {}
 
     def selection(self, key: str) -> dict[str, str]:
@@ -208,10 +234,63 @@ class ExtendLMService:
             for item in result.get("items", []):
                 if not item.get("is_public"):
                     state["notebooks"][item["id"]] = item["title"]
+            if not result.get("next_cursor"):
+                state["destinations"] = {
+                    exam: destination
+                    for exam, destination in state.get("destinations", {}).items()
+                    if destination["notebook_id"] in state["notebooks"]
+                }
         return {
             "items": [i for i in result.get("items", []) if not i.get("is_public")],
             "next_cursor": result.get("next_cursor", ""),
         }
+
+    def save_destination(self, key: str, exam_key: str, notebook_id: str) -> dict[str, Any]:
+        self.token(key)
+        with self.state(key, write=True) as state:
+            selection = state.get("selection")
+            title = state.get("notebooks", {}).get(notebook_id)
+            if not selection or title is None:
+                raise api.ExtendLMError("Choose a destination from the selected account's list.")
+            destination = {
+                "notebook_id": notebook_id,
+                "notebook_title": title,
+                "selection": dict(selection),
+                "account_label": state.get("account_label", "Selected browser/account"),
+            }
+            state.setdefault("destinations", {})[exam_key] = destination
+            return dict(destination)
+
+    def destination(
+        self, key: str, exam_key: str, *, validate: bool = False
+    ) -> dict[str, Any] | None:
+        if not self.signed_in(key):
+            return None
+        with self.state(key) as state:
+            destination = state.get("destinations", {}).get(exam_key)
+            if not destination or destination["selection"] != state.get("selection"):
+                return None
+            destination = dict(destination)
+        if validate:
+            # Validate the exact ID before transferring bytes, with existing read scopes/tools.
+            cursor = ""
+            found = False
+            for _ in range(25):
+                page = self.notebooks(key, cursor)
+                found = any(i["id"] == destination["notebook_id"] for i in page["items"])
+                if found or not page.get("next_cursor") or page["next_cursor"] == cursor:
+                    break
+                cursor = page["next_cursor"]
+            if not found:
+                with self.state(key, write=True) as state:
+                    if state.get("destinations", {}).get(exam_key) == destination:
+                        state["destinations"].pop(exam_key, None)
+                raise api.ExtendLMError(
+                    "Saved destination is unavailable. Choose an accessible notebook again."
+                )
+            if self.selection(key) != destination["selection"]:
+                raise api.ExtendLMError("Account changed. Choose a destination again.")
+        return destination
 
     def enqueue(
         self,
@@ -220,11 +299,16 @@ class ExtendLMService:
         files: Sequence[tuple[str, BinaryIO]],
         *,
         lecture_id: int | None = None,
+        expected_selection: dict[str, str] | None = None,
+        source_revisions: Sequence[int] = (),
     ) -> str:
         self.token(key)
         selection = self.selection(key)
+        if expected_selection is not None and selection != expected_selection:
+            raise api.ExtendLMError("Account changed. Choose a destination again.")
         with self.state(key) as state:
             title = state.get("notebooks", {}).get(notebook_id)
+            account_label = state.get("account_label", "Original browser/account")
         if title is None:
             raise api.ExtendLMError("Choose a notebook from the loaded account's list.")
         if not 1 <= len(files) <= 20:
@@ -271,15 +355,29 @@ class ExtendLMService:
                     }
                 )
             fingerprint = json.dumps(
-                [selection, notebook_id, [(i["filename"], i["sha256"]) for i in inputs]],
+                [
+                    selection,
+                    notebook_id,
+                    lecture_id,
+                    [(i["filename"], i["sha256"]) for i in inputs],
+                ],
                 sort_keys=True,
             )
             job_id = hashlib.sha256(fingerprint.encode()).hexdigest()
+            previous_id = hashlib.sha256(
+                json.dumps(
+                    [selection, notebook_id, [(i["filename"], i["sha256"]) for i in inputs]],
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
             with self.state(key, write=True) as state:
                 if state.get("selection") != selection:
                     raise api.ExtendLMError(
                         "Account changed while preparing files. Choose it again."
                     )
+                previous = state["jobs"].get(previous_id)
+                if previous and previous.get("lecture_id") == lecture_id:
+                    job_id = previous_id
                 if job_id not in state["jobs"]:
                     for index, item in enumerate(inputs):
                         item["idempotency_key"] = f"hub-{job_id}-{index}"
@@ -288,6 +386,8 @@ class ExtendLMService:
                         "notebook_id": notebook_id,
                         "notebook_title": title,
                         "selection": selection,
+                        "account_label": account_label,
+                        "source_revisions": list(source_revisions),
                         "files": inputs,
                         "status": "queued",
                         "created_at": time.time(),
@@ -311,7 +411,7 @@ class ExtendLMService:
                 job = state.get("jobs", {}).get(job_id)
                 if not job:
                     raise api.ExtendLMError("Upload receipt not found for this browser sign-in.")
-                if job["status"] in {"accepted", "partial", "ready"}:
+                if job["status"] in {"accepted", "partial", "ready", "indexing_failed"}:
                     return
                 if sum(not f.done() for f in self.active.values()) >= 20:
                     raise api.ExtendLMError("The upload queue is full. Wait for current uploads.")
@@ -418,11 +518,13 @@ class ExtendLMService:
                 key, job_id, lambda j: j.update(status="needs_attention", message=message)
             )
 
-    def jobs(self, key: str) -> list[dict[str, Any]]:
+    def jobs(self, key: str, *, lecture_id: int | None = None) -> list[dict[str, Any]]:
         with self.state(key) as state:
             jobs = list(state.get("jobs", {}).values())
         result = []
         for job in reversed(jobs):
+            if lecture_id is not None and job.get("lecture_id") != lecture_id:
+                continue
             active = self.active.get((key, job["id"]))
             if job["status"] in {"queued", "uploading"} and (active is None or active.done()):
                 job.update(
@@ -431,6 +533,8 @@ class ExtendLMService:
             result.append(
                 {k: job[k] for k in ("id", "notebook_title", "status", "message")}
                 | {
+                    "lecture_id": job.get("lecture_id"),
+                    "account_label": job.get("account_label", "Original browser/account"),
                     "files": [
                         {k: i.get(k) for k in ("filename", "stage", "source_ids", "source_status")}
                         for i in job["files"]
