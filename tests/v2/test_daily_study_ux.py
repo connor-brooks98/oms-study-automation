@@ -41,12 +41,27 @@ def test_library_exposes_searchable_material_and_study_states(tmp_path):
     )
 
 
-def test_lecture_omits_study_actions_and_keeps_materials_and_pass_tracker(tmp_path):
+def test_lecture_keeps_materials_notebook_delivery_and_pass_tracker(tmp_path):
     app, lecture_id = app_with_lecture(tmp_path)
     document = HTMLParser(TestClient(app).get(f"/lectures/{lecture_id}").text)
 
     assert document.css_first(".lecture-study-actions") is None
-    assert len(document.css(".file-card-grid .file-card")) == 2
+    material_cards = document.css(
+        ".file-card-grid .file-card:not([data-clinical-notebook]):not([data-extendlm])"
+    )
+    assert [card.css_first("h2").text(strip=True) for card in material_cards] == [
+        "Lecture Materials",
+        "Transcript",
+    ]
+    for hook, send_hook, setup in (
+        ("data-clinical-notebook", "data-cn-send", "/settings/clinical-notebook"),
+        ("data-extendlm", "data-lecture-upload", "/settings/extendlm"),
+    ):
+        card = document.css_first(f".file-card-grid .file-card[{hook}]")
+        assert card is not None
+        assert card.attributes["data-lecture-id"] == str(lecture_id)
+        assert "disabled" in card.css_first(f"button[{send_hook}]").attributes
+        assert card.css_first(f'a[href="{setup}"]') is not None
     assert document.css_first(".file-card-grid .lecture-quiz-panel") is not None
     assert document.css_first("#pass-tracker [data-pass-count]").text(strip=True) == "0/5"
     assert document.css_first(".pipeline-card") is None
