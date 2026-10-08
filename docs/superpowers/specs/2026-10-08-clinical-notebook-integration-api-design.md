@@ -1,7 +1,7 @@
 # Clinical Notebook external source API
 
 Date: 2026-10-08
-Status: proposed design, revised from a Study Hub-specific bridge; no implementation claimed.
+Status: approved by Connor on 2026-10-08; implemented locally. See the implementation plan for verification and deployment status.
 
 ## Product requirement
 

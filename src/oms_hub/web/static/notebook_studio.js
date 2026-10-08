@@ -547,7 +547,7 @@
     list.querySelector("[data-import-empty]")?.remove();
     const empty = documentRef.createElement("li");
     empty.dataset.importEmpty = "true";
-    empty.textContent = "Add at least one local source.";
+    empty.textContent = "Add at least one source.";
     list.append(empty);
   };
 
@@ -744,7 +744,7 @@
         if (!importSourceList.children.length) {
           const empty = documentRef.createElement("li");
           empty.dataset.importEmpty = "true";
-          empty.textContent = "Add at least one local source.";
+          empty.textContent = "Add at least one source.";
           importSourceList.append(empty);
         }
         updateImportSourceSelection(importSourceList, importSelectionToggle);
