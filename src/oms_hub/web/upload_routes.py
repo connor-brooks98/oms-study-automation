@@ -18,7 +18,7 @@ from oms_hub.ingestion.domain import (
     UploadManifestSlot,
     UploadState,
 )
-from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.ingestion.repository import CLEANUP_PENDING, IngestionRepository
 from oms_hub.ingestion.service import IngestionService
 from oms_hub.ingestion.staging import (
     StagingService,
@@ -26,12 +26,11 @@ from oms_hub.ingestion.staging import (
     UploadRejected,
 )
 from oms_hub.repositories import CatalogRepository
+from oms_hub.web.csrf import require_form_csrf
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-templates = Jinja2Templates(
-    directory=str(Path(__file__).parent / "templates")
-)
+templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
 @router.get("/uploads", response_class=HTMLResponse)
@@ -242,6 +241,11 @@ def batch_status(batch_id: str, request: Request) -> JSONResponse:
     payload = batch.public_dict()
     items = cast(list[dict[str, object]], payload["items"])
     for item in items:
+        item_id = str(item["id"])
+        item["can_delete_upload"] = _repository(request).can_delete_unmatched(item_id)
+        item["cleanup_pending"] = (
+            item["state"] == UploadState.DISCARDED.value and item["error"] == CLEANUP_PENDING
+        )
         if item["state"] != UploadState.AWAITING_CONFIRMATION.value:
             continue
         lecture_id = item.get("lecture_id")
@@ -280,14 +284,43 @@ def confirm_transcript(
 def discard_transcript(
     item_id: str,
     request: Request,
-) -> dict[str, str]:
+) -> dict[str, object]:
     try:
-        item = _ingestion(request).discard_item(item_id)
+        item = _ingestion(request).discard_item(
+            item_id,
+            expected_state=UploadState.AWAITING_CONFIRMATION,
+        )
     except KeyError as error:
         raise HTTPException(404, "upload item not found") from error
     except (OSError, UploadRejected, ValueError) as error:
         raise HTTPException(409, str(error)) from error
-    return _decision_payload(item.id, item.state)
+    result: dict[str, object] = dict(_decision_payload(item.id, item.state))
+    if item.error:
+        result["message"] = item.error
+        result["cleanup_pending"] = True
+    return result
+
+
+@router.post("/api/upload-items/{item_id}/delete")
+def delete_unmatched_upload(item_id: str, request: Request) -> dict[str, object]:
+    owner = getattr(request.state, "study_owner_id", None)
+    if not isinstance(owner, str) or not owner:
+        raise HTTPException(403, "Private Hub sign-in required.")
+    require_form_csrf(request, None)
+    try:
+        item = _ingestion(request).discard_item(
+            item_id,
+            expected_state=UploadState.QUARANTINED,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "upload item not found") from error
+    except (OSError, UploadRejected, ValueError) as error:
+        raise HTTPException(409, str(error)) from error
+    return {
+        **_decision_payload(item.id, item.state),
+        "cleanup_pending": item.error == CLEANUP_PENDING,
+        "message": item.error or "Upload deleted",
+    }
 
 
 @router.post("/api/upload-chunks", status_code=201)

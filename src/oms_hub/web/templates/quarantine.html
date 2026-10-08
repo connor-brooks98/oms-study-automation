@@ -10,20 +10,30 @@
       <h1 class="sh-title">Unmatched uploads</h1>
       <p class="page-summary sh-subtitle">Choose a lecture for files the Hub could not match confidently.</p>
     </div>
-    <span class="status-pill sh-pill {{ 'sh-pill--err' if items|length else 'sh-pill--bare' }} status-quarantined">{{ items|length }} waiting</span>
+    <span class="status-pill sh-pill {{ 'sh-pill--err' if items|length else 'sh-pill--bare' }} status-quarantined">{{ items|length }} to review</span>
   </div>
   {% for item in items %}
-  <section class="card sh-card quarantine-item">
+  <section class="card sh-card quarantine-item" data-upload-item="{{ item.id }}">
     <p class="mono-label">{{ item.kind.value }}</p>
     <h2>{{ item.original_filename }}</h2>
     <p class="page-summary">{{ item.size_bytes }} bytes</p>
     {% if item.evidence %}
     <ul>{% for evidence in item.evidence %}<li>{{ evidence }}</li>{% endfor %}</ul>
     {% endif %}
+    {% if item.state.value == 'discarded' %}
+    <p role="status" data-delete-status>Removed from uploads; file cleanup pending</p>
+    <button class="sh-btn sh-btn--secondary" type="button" data-delete-upload="{{ item.id }}" data-filename="{{ item.original_filename }}" data-cleanup-pending="true" data-lecture-id="{{ item.lecture_id or '' }}">Retry file cleanup</button>
+    {% elif item.lecture_id or item.id not in deletable_ids %}
+    <p>Processing history is retained for recovery.</p>
+    {% if item.lecture_id %}<a class="sh-btn sh-btn--secondary" href="/lectures/{{ item.lecture_id }}">Review lecture materials</a>{% endif %}
+    {% else %}
     <form method="post" action="/quarantine/{{ item.id }}/assign">
       {{ lecture_picker('quarantine-lecture-' ~ item.id, 'quarantine-lecture-catalog', required=true) }}
       <button class="button primary sh-btn sh-btn--primary" type="submit">Assign and process</button>
+      <button class="sh-btn sh-btn--danger" type="button" data-delete-upload="{{ item.id }}" data-filename="{{ item.original_filename }}">Delete upload</button>
     </form>
+    <p role="status" data-delete-status></p>
+    {% endif %}
   </section>
   {% else %}
   <section class="empty-state sh-empty">
@@ -34,4 +44,5 @@
 </section>
 <script id="quarantine-lecture-catalog" type="application/json">{{ lecture_catalog|tojson }}</script>
 <script src="/static/lecture_picker.js?v=20260914.1" defer></script>
+<script src="/static/quarantine.js?v=20261008.1" defer></script>
 {% endblock %}

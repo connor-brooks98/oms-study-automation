@@ -32,10 +32,14 @@ def test_quarantine_shares_one_catalog_and_keeps_single_lecture_assignment(tmp_p
                 original_filename=f"deck{index}.pdf",
                 size_bytes=12,
                 evidence=[],
+                lecture_id=None,
+                state=SimpleNamespace(value="quarantined"),
             )
             for index in range(2)
         ]
-        app.state.ingestion_repository = SimpleNamespace(list_quarantined=lambda: items)
+        app.state.ingestion_repository = SimpleNamespace(
+            list_quarantined=lambda: items, can_delete_unmatched=lambda item: True
+        )
         assignments = []
         app.state.ingestion_service = SimpleNamespace(
             assign=lambda item, lecture: assignments.append((item, lecture))
