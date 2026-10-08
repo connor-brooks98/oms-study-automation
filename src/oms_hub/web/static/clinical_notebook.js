@@ -35,13 +35,16 @@
   function element(tag,text) {const item=document.createElement(tag);item.textContent=text;return item;}
   async function loadNotebooks() {
     const data=await post('/notebooks');
+    const titleCounts=new Map();
+    data.items.forEach(item=>titleCounts.set(item.title,(titleCounts.get(item.title)||0)+1));
+    const label=item=>titleCounts.get(item.title)>1 ? `${item.title} — ${item.id}` : item.title;
     if (notebook) {
       const first=element('option','Choose an existing notebook'); first.value='';
       notebook.replaceChildren(first);
-      data.items.forEach(item=>{const option=element('option',item.title);option.value=item.id;notebook.append(option);});
+      data.items.forEach(item=>{const option=element('option',label(item));option.value=item.id;notebook.append(option);});
     }
     if (find('notebook-list')) {
-      find('notebook-list').replaceChildren(...data.items.map(item=>element('li',item.title)));
+      find('notebook-list').replaceChildren(...data.items.map(item=>element('li',label(item))));
       if (!data.items.length) find('notebook-list').textContent='No notebooks are granted. Update this connection in Clinical Notebook Connected Apps.';
     }
     loaded=true; availability();

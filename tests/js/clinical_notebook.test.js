@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 
-function page(status, {settings=false} = {}) {
+function page(status, {settings=false, notebooks=[{id:'notebook:exam3',title:'Cardio Exam 3'}]} = {}) {
   class Element {
     constructor() { this.children=[]; this.handlers={}; this.value=''; this.checked=true; this.hidden=false; }
     get options() { return this.children; }
@@ -19,7 +19,7 @@ function page(status, {settings=false} = {}) {
   vm.runInNewContext(fs.readFileSync(require.resolve('../../src/oms_hub/web/static/clinical_notebook.js'),'utf8'),{
     document:{querySelector:()=>root,createElement:()=>new Element()},FormData,
     window:{addEventListener:()=>{}},setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout:()=>{},
-    fetch:async (url,options={})=>{calls.push({url,options});return {ok:true,json:async()=>url.includes('/status')?status:url.endsWith('/notebooks')?{items:[{id:'notebook:exam3',title:'Cardio Exam 3'}]}:{saved:true,job_id:'job1'}};},
+    fetch:async (url,options={})=>{calls.push({url,options});return {ok:true,json:async()=>url.includes('/status')?status:url.endsWith('/notebooks')?{items:notebooks}:{saved:true,job_id:'job1'}};},
   });
   return {nodes,calls,timers};
 }
@@ -49,6 +49,38 @@ test('first use loads explicit notebook choices without sending',async()=>{
   nodes.notebook.value='notebook:exam3';
   await nodes.save.handlers.click();
   assert.equal(calls.find(x=>x.url.endsWith('/destination')).options.body.get('notebook_id'),'notebook:exam3');
+});
+
+const duplicateNotebooks=[
+  {id:'notebook:cardio-a',title:'Cardiology Exam 1'},
+  {id:'notebook:cardio-b',title:'Cardiology Exam 1'},
+  {id:'notebook:renal',title:'Renal Exam 1'},
+];
+const duplicateLabels=[
+  'Cardiology Exam 1 — notebook:cardio-a',
+  'Cardiology Exam 1 — notebook:cardio-b',
+  'Renal Exam 1',
+];
+
+test('duplicate notebook choices show stable IDs and save the selected ID',async()=>{
+  const {nodes,calls}=page({...saved,destination:null},{notebooks:duplicateNotebooks});
+  await new Promise(setImmediate);
+  assert.deepEqual(nodes.notebook.options.slice(1).map(option=>option.textContent),duplicateLabels);
+  assert.deepEqual(nodes.notebook.options.slice(1).map(option=>option.value),duplicateNotebooks.map(item=>item.id));
+  for (const id of ['notebook:cardio-b','notebook:cardio-a']) {
+    nodes.notebook.value=id;
+    nodes.notebook.handlers.change();
+    assert.equal(nodes.save.disabled,false);
+    await nodes.save.handlers.click();
+    assert.equal(calls.filter(call=>call.url.endsWith('/destination')).at(-1).options.body.get('notebook_id'),id);
+  }
+  assert.equal(calls.filter(call=>call.url.endsWith('/send')).length,0);
+});
+
+test('settings notebook list disambiguates duplicates and keeps unique titles unchanged',async()=>{
+  const {nodes}=page({...saved,destination:null},{settings:true,notebooks:duplicateNotebooks});
+  await new Promise(setImmediate);
+  assert.deepEqual(nodes['notebook-list'].children.map(item=>item.textContent),duplicateLabels);
 });
 
 test('offline or partial receipts never trigger automatic retransmission',async()=>{
