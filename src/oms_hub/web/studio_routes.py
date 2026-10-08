@@ -18,6 +18,7 @@ from oms_hub.study_generation.native_quiz import (
     public_quiz_content,
     serialize_native_quiz,
 )
+from oms_hub.study_generation.notebook_connection import LEGACY_NOTEBOOK_RETIRED
 from oms_hub.study_generation.practice_domain import (
     ImportSourceRole,
     ImportSourceSelection,
@@ -1120,6 +1121,8 @@ def delete_source(request: Request, source_id: str) -> JSONResponse:
     source = repository.get(source_id)
     if source is None:
         raise HTTPException(404, "Studio source was not found")
+    if source.purpose.value == "notebook" or source.remote_source_id:
+        raise HTTPException(410, LEGACY_NOTEBOOK_RETIRED)
     try:
         queued = repository.queue_source_delete(source_id)
     except ValueError as error:
@@ -1134,6 +1137,9 @@ def delete_source(request: Request, source_id: str) -> JSONResponse:
 def rerun(request: Request, run_id: str) -> JSONResponse:
     require_form_csrf(request, None)
     try:
+        previous = request.app.state.studio_repository.get_run(run_id)
+        if previous.workflow_kind is QuizWorkflowKind.NOTEBOOK_GENERATION:
+            raise HTTPException(410, LEGACY_NOTEBOOK_RETIRED)
         successor = request.app.state.studio_repository.rerun(run_id)
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
@@ -1174,34 +1180,7 @@ def unpublish(request: Request, run_id: str) -> JSONResponse:
 @router.post("/runs", status_code=202)
 def queue_run(request: Request, submission: StudioRunRequest) -> JSONResponse:
     require_form_csrf(request, None)
-    subject = _validated_subject(
-        request,
-        submission.subject,
-        submission.exam_number,
-    )
-    destination_subject = _validated_subject(
-        request,
-        submission.destination_subject,
-        submission.destination_exam_number,
-    )
-    try:
-        run = _service(request).queue_run(
-            subject,
-            submission.exam_number,
-            submission.prompt,
-            submission.source_ids,
-            submission.label,
-            destination_subject,
-            submission.destination_exam_number,
-        )
-    except ValueError as error:
-        raise HTTPException(422, str(error)) from error
-    return JSONResponse(
-        {"id": run.id, "state": run.state.value, "stage": run.stage.value},
-        status_code=202,
-        headers={"Cache-Control": "no-store"},
-    )
-
+    raise HTTPException(410, LEGACY_NOTEBOOK_RETIRED)
 
 def _service(request: Request) -> StudioService:
     return cast(StudioService, request.app.state.studio_service)
@@ -1336,20 +1315,7 @@ def add_file(
     csrf_token: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     require_form_csrf(request, csrf_token)
-    canonical_subject = _validated_subject(request, subject, exam_number)
-    service = _service(request)
-    payload = file.file.read(service.max_file_bytes + 1)
-    try:
-        source = service.add_file(
-            canonical_subject,
-            exam_number,
-            title,
-            file.filename or "source",
-            payload,
-        )
-    except ValueError as error:
-        raise HTTPException(422, str(error)) from error
-    return JSONResponse({"id": source.id, "state": source.state.value}, status_code=202)
+    raise HTTPException(410, LEGACY_NOTEBOOK_RETIRED)
 
 
 @router.post("/sources/image-url", status_code=202)
@@ -1362,17 +1328,7 @@ def add_image_url(
     csrf_token: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     require_form_csrf(request, csrf_token)
-    canonical_subject = _validated_subject(request, subject, exam_number)
-    try:
-        source = _service(request).add_image_url(
-            canonical_subject,
-            exam_number,
-            title,
-            url,
-        )
-    except ValueError as error:
-        raise HTTPException(422, str(error)) from error
-    return JSONResponse({"id": source.id, "state": source.state.value}, status_code=202)
+    raise HTTPException(410, LEGACY_NOTEBOOK_RETIRED)
 
 
 @router.post("/sources/text", status_code=202)
@@ -1385,17 +1341,7 @@ def add_text(
     csrf_token: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     require_form_csrf(request, csrf_token)
-    canonical_subject = _validated_subject(request, subject, exam_number)
-    try:
-        source = _service(request).add_text(
-            canonical_subject,
-            exam_number,
-            title,
-            text,
-        )
-    except ValueError as error:
-        raise HTTPException(422, str(error)) from error
-    return JSONResponse({"id": source.id, "state": source.state.value}, status_code=202)
+    raise HTTPException(410, LEGACY_NOTEBOOK_RETIRED)
 
 
 @router.post("/sources/url", status_code=202)
@@ -1408,14 +1354,4 @@ def add_url(
     csrf_token: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     require_form_csrf(request, csrf_token)
-    canonical_subject = _validated_subject(request, subject, exam_number)
-    try:
-        source = _service(request).add_url(
-            canonical_subject,
-            exam_number,
-            title,
-            url.strip(),
-        )
-    except ValueError as error:
-        raise HTTPException(422, str(error)) from error
-    return JSONResponse({"id": source.id, "state": source.state.value}, status_code=202)
+    raise HTTPException(410, LEGACY_NOTEBOOK_RETIRED)

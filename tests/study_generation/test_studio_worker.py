@@ -212,7 +212,7 @@ def test_previously_queued_notebook_run_pauses_and_retains_artifacts(tmp_path, r
     worker = StudioWorker(repository, gateway, object(), _FakeConnection(), publisher=object())
     assert worker.run_once()
     stopped = repository.get_run(run.id)
-    assert stopped.state is StudioRunState.PAUSED and "upload-only" in stopped.error
+    assert stopped.state is StudioRunState.PAUSED and "retired" in stopped.error
     assert stopped.raw_response == retained
     assert stopped.notebook_id == ("prior-notebook" if retained else None)
     assert gateway.ask_calls == 0
@@ -441,7 +441,7 @@ def test_worker_terminally_rejects_claim_when_another_run_owns_publication(
     assert gateway.ask_calls == 0
     assert rejected.state is StudioRunState.PAUSED
     assert rejected.diagnostic_source == "validation"
-    assert "upload-only" in rejected.error
+    assert "retired" in rejected.error
     assert publisher.published_quiz(publication.token) is not None
 
 
@@ -597,7 +597,7 @@ def _make_run_retry_due(repository: StudioRepository, run_id: str) -> None:
 
 
 
-def test_sqlite_busy_source_attach_failure_is_retried(tmp_path: Path) -> None:
+def test_retired_source_lane_never_reaches_busy_gateway(tmp_path: Path) -> None:
     database = _database(tmp_path)
     repository = StudioRepository(database)
     payload = tmp_path / "notes.txt"
@@ -617,10 +617,10 @@ def test_sqlite_busy_source_attach_failure_is_retried(tmp_path: Path) -> None:
         _FakeConnection(),
     )
 
-    assert worker.run_once() is True
+    assert worker.run_once() is False
 
     source = repository.list_sources()[0]
-    assert source.state is StudioSourceState.ATTACHING
+    assert source.state is StudioSourceState.PENDING
 
 
 def test_delayed_source_operation_does_not_starve_queued_studio_run(
@@ -653,7 +653,7 @@ def test_delayed_source_operation_does_not_starve_queued_studio_run(
     assert repository.get_run(run.id).state is StudioRunState.PAUSED
 
 
-def test_non_busy_source_attach_failure_is_not_retried(tmp_path: Path) -> None:
+def test_retired_source_lane_never_reaches_failing_gateway(tmp_path: Path) -> None:
     database = _database(tmp_path)
     repository = StudioRepository(database)
     payload = tmp_path / "notes.txt"
@@ -673,10 +673,10 @@ def test_non_busy_source_attach_failure_is_not_retried(tmp_path: Path) -> None:
         _FakeConnection(),
     )
 
-    assert worker.run_once() is True
+    assert worker.run_once() is False
 
     source = repository.list_sources()[0]
-    assert source.state.value == "failed"
+    assert source.state is StudioSourceState.PENDING
 
 
 def test_direct_import_run_is_delegated_without_changing_notebook_worker_behavior(

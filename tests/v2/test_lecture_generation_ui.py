@@ -42,8 +42,8 @@ def test_lecture_page_has_one_gpt_quiz_button_and_no_outline_generation(tmp_path
     assert f'href="/uploads/transcripts?lecture_id={lecture_id}"' not in page.text
     assert "Upload Lecture Transcript" not in page.text
     assert "Lecture Summary" not in page.text
-    assert "0/12 complete" in page.text
-    assert "Lecture Quiz Generation" in page.text
+    assert "0/11 complete" in page.text
+    assert "Lecture Quiz Generation" not in page.text
 
 
 def test_lecture_page_shows_five_pass_ledger_rows_between_expandable_panels(tmp_path):

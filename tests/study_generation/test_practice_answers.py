@@ -119,5 +119,5 @@ def test_missing_answer_stays_in_review_without_notebook_or_paid_fallback() -> N
     assert result.correct_index is None and result.answer_provenance is None
     assert result.verification_required and result.verified_at is None
     assert result.source_refs == original.source_refs
-    assert result.blocking_diagnostics and "upload-only" in result.blocking_diagnostics[-1]
+    assert result.blocking_diagnostics and "retired" in result.blocking_diagnostics[-1]
     assert resolver.resolve(result, _scope()) == result

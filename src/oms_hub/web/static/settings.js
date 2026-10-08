@@ -665,61 +665,6 @@
       });
     }
 
-    const notebookCard = documentRef.querySelector("[data-notebook-card]");
-    if (notebookCard) {
-      const connectButton = notebookCard.querySelector("[data-notebook-connect]");
-      const testButton = notebookCard.querySelector("[data-notebook-test]");
-      const message = notebookCard.querySelector("[data-notebook-status]");
-      let notebookPollTimer;
-
-      const refreshNotebook = () => getJson(fetchImpl, "/settings/notebook/status")
-        .then((status) => {
-          renderNotebookStatus(notebookCard, status);
-          if (status.state === "connecting") {
-            notebookPollTimer = root.setTimeout(refreshNotebook, 2000);
-          }
-        })
-        .catch((error) => {
-          message.textContent = error.message;
-        });
-      void refreshNotebook();
-
-      connectButton.addEventListener("click", async () => {
-        connectButton.disabled = true;
-        try {
-          const status = await postJson(
-            fetchImpl,
-            "/settings/notebook/connect",
-            {},
-            token(),
-          );
-          renderNotebookStatus(notebookCard, status);
-          root.clearTimeout(notebookPollTimer);
-          notebookPollTimer = root.setTimeout(refreshNotebook, 1500);
-        } catch (error) {
-          message.textContent = error.message;
-        } finally {
-          connectButton.disabled = false;
-        }
-      });
-
-      testButton.addEventListener("click", async () => {
-        testButton.disabled = true;
-        try {
-          const status = await postJson(
-            fetchImpl,
-            "/settings/notebook/test",
-            {},
-            token(),
-          );
-          renderNotebookStatus(notebookCard, status);
-        } catch (error) {
-          message.textContent = error.message;
-        } finally {
-          testButton.disabled = false;
-        }
-      });
-    }
 
   };
 

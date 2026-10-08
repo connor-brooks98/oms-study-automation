@@ -63,10 +63,10 @@
     const role = form.querySelector("[data-import-role]")?.value || "questions";
     const checkbox = form.querySelector("[data-import-notebook]");
     if (checkbox) {
-      checkbox.disabled = !importRoleAllowsNotebook(role);
-      if (checkbox.disabled) checkbox.checked = false;
+      checkbox.disabled = true;
+      checkbox.checked = false;
     }
-    return { role, attach_to_notebook: Boolean(checkbox?.checked) };
+    return { role, attach_to_notebook: false };
   };
 
   const buildImportSourceFormData = (
@@ -105,9 +105,7 @@
     ) || null;
   };
 
-  const selectedWorkflowFromUrl = (url) => (
-    url?.searchParams.get("workflow") === "import" ? "import" : "generate"
-  );
+  const selectedWorkflowFromUrl = () => "import";
 
   const toggleClass = (element, className, enabled) => {
     if (element.classList) {
@@ -313,7 +311,7 @@
         rerun.ariaLabel = "Re-run this quiz";
         rerun.title = "Re-run";
         rerun.setAttribute?.("aria-label", "Re-run this quiz");
-        actions.append(rerun);
+        if (run.workflow_kind === "direct_import") actions.append(rerun);
         const remove = documentRef.createElement("button");
         remove.type = "button";
         remove.className = "button danger compact sh-btn sh-btn--danger";
@@ -410,11 +408,7 @@
     sources: Array.from(rows).filter(importRowIsIncluded).map((row) => ({
       source_id: row.dataset.sourceId,
       role: row.querySelector("[data-import-row-role]")?.value || row.dataset.role,
-      attach_to_notebook: (() => {
-        const role = row.querySelector("[data-import-row-role]")?.value || row.dataset.role;
-        return importRoleAllowsNotebook(role)
-          && Boolean(row.querySelector("[data-import-row-notebook]")?.checked);
-      })(),
+      attach_to_notebook: false,
     })),
   });
 
@@ -462,22 +456,10 @@
       select.append(option);
     });
     roleLabel.append(select);
-    const notebook = documentRef.createElement("input");
-    notebook.type = "checkbox";
-    notebook.dataset.importRowNotebook = "true";
-    notebook.checked = attachToNotebook && importRoleAllowsNotebook(role);
-    notebook.disabled = !importRoleAllowsNotebook(role);
-    const notebookLabel = documentRef.createElement("label");
-    notebookLabel.className = "sh-check studio-import-row-notebook";
-    notebookLabel.append(notebook, documentRef.createTextNode(" Use in NotebookLM for missing answers"));
     const remove = documentRef.createElement("button");
     remove.type = "button"; remove.dataset.removeImportSource = "true"; remove.textContent = "Remove";
     remove.className = "sh-btn sh-btn--danger";
-    select.addEventListener("change", () => {
-      notebook.disabled = !importRoleAllowsNotebook(select.value);
-      if (notebook.disabled) notebook.checked = false;
-    });
-    row.append(sourceChoice, roleLabel, notebookLabel, remove);
+    row.append(sourceChoice, roleLabel, remove);
     list.append(row);
   };
 
@@ -590,10 +572,7 @@
     const picker = page.querySelector("[data-source-picker]");
     const sourceFilter = page.querySelector("[data-source-filter]");
     const selectAllButton = page.querySelector("[data-select-all-sources]");
-    const imageDropzone = page.querySelector("[data-image-dropzone]");
-    const imageDropMessage = page.querySelector("[data-image-drop-message]");
     const runList = page.querySelector("[data-run-list]");
-    const runForm = page.querySelector("[data-run-form]");
     const destinationCourse = page.querySelector("[data-destination-course]");
     const destinationExam = page.querySelector("[data-destination-exam]");
     const importRunForm = page.querySelector("[data-import-run-form]");
@@ -610,7 +589,7 @@
     let refreshGeneration = 0;
     let importDestinationExplicit = false;
 
-    let selectedWorkflow = "generate";
+    let selectedWorkflow = "import";
     const workflowTabs = Array.from(page.querySelectorAll("[data-workflow-tab]"));
     workflowTabs.forEach((tab, index) => {
       tab.addEventListener("click", () => {
@@ -675,9 +654,9 @@
         if (pollStatus) pollStatus.textContent = "";
         if (sourceStatus) sourceStatus.textContent = "";
         pollDelayMs = basePollDelayMs;
-        const activeSources = renderSources(documentRef, list, sourcePayload.sources || []);
-        renderSourcePicker(documentRef, picker, sourcePayload.sources || []);
-        filterSourcePicker(picker, sourceFilter.value);
+        const activeSources = list ? renderSources(documentRef, list, sourcePayload.sources || []) : false;
+        if (picker) renderSourcePicker(documentRef, picker, sourcePayload.sources || []);
+        if (picker) filterSourcePicker(picker, sourceFilter?.value || "");
         hydrateImportSources(documentRef, importSourceList, sourcePayload.sources || []);
         updateImportSourceSelection(importSourceList, importSelectionToggle);
         filterImportSources(importSourceList, importSourceFilter?.value || "");
@@ -700,8 +679,8 @@
       pollHandle = null;
       populateExams(documentRef, course, exam);
       clearImportSources(documentRef, importSourceList);
-      list.textContent = "Select an exam to view sources.";
-      picker.textContent = "Select a source course and exam first.";
+      if (list) list.textContent = "Select an exam to view sources.";
+      if (picker) picker.textContent = "Select a source course and exam first.";
       runList.textContent = "Select a source course and exam to view runs.";
       updateScopeUrl(course, exam, selectedWorkflow, navigation);
       syncDestinationFromScope(
@@ -719,7 +698,7 @@
         documentRef, course, exam, importDestinationCourse, importDestinationExam,
         importDestinationExplicit,
       );
-      if (exam.value) {
+      if (exam.value && list) {
         list.textContent = "";
         const loading = documentRef.createElement("li");
         loading.textContent = "Loading sources…";
@@ -728,7 +707,7 @@
       }
       return refresh();
     });
-    destinationCourse.addEventListener("change", () => {
+    destinationCourse?.addEventListener("change", () => {
       populateExams(documentRef, destinationCourse, destinationExam);
     });
     importDestinationCourse?.addEventListener("change", () => {
@@ -738,8 +717,8 @@
     importDestinationExam?.addEventListener("change", () => {
       importDestinationExplicit = true;
     });
-    sourceFilter.addEventListener("input", () => {
-      filterSourcePicker(picker, sourceFilter.value);
+    sourceFilter?.addEventListener("input", () => {
+      if (picker) filterSourcePicker(picker, sourceFilter?.value || "");
     });
     selectAllButton?.addEventListener("click", () => {
       selectAllAttachedSources(picker);
@@ -754,102 +733,6 @@
       updateImportSourceSelection(importSourceList, importSelectionToggle);
     });
 
-    const uploadDroppedImage = async (file) => {
-      if (!course.value || !exam.value) {
-        imageDropMessage.textContent = "Select a course and exam before dropping an image.";
-        return;
-      }
-      const token = csrf(documentRef);
-      const body = new FormData();
-      body.append("title", file.name.replace(/\.[^.]+$/, "") || "Dropped image");
-      body.append("file", file, file.name || "dropped-image.png");
-      body.append("subject", course.value);
-      body.append("exam_number", exam.value);
-      body.append("csrf_token", token);
-      imageDropMessage.textContent = "Uploading image source…";
-      try {
-        const response = await fetchImpl("/studio/sources/file", {
-          method: "POST",
-          headers: { "X-CSRF-Token": token },
-          body,
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.detail || "Image source could not be queued.");
-        imageDropMessage.textContent = "Image source queued for NotebookLM.";
-        await refresh();
-      } catch (error) {
-        imageDropMessage.textContent = error instanceof Error
-          ? error.message
-          : "Image source could not be queued.";
-      }
-    };
-
-    const uploadDroppedImageUrl = async (url) => {
-      if (!course.value || !exam.value) {
-        imageDropMessage.textContent = "Select a course and exam before dropping an image.";
-        return;
-      }
-      const token = csrf(documentRef);
-      const body = new FormData();
-      body.append("title", "Dropped Google image");
-      body.append("url", url);
-      body.append("subject", course.value);
-      body.append("exam_number", exam.value);
-      body.append("csrf_token", token);
-      imageDropMessage.textContent = "Downloading image source…";
-      try {
-        const response = await fetchImpl("/studio/sources/image-url", {
-          method: "POST",
-          headers: { "X-CSRF-Token": token },
-          body,
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.detail || "Image source could not be queued.");
-        imageDropMessage.textContent = "Image source queued for NotebookLM.";
-        await refresh();
-      } catch (error) {
-        imageDropMessage.textContent = error instanceof Error
-          ? error.message
-          : "Image source could not be queued.";
-      }
-    };
-
-    imageDropzone?.addEventListener("dragover", (event) => {
-      event.preventDefault();
-      imageDropzone.classList.add("is-dragging");
-    });
-    imageDropzone?.addEventListener("dragleave", () => {
-      imageDropzone.classList.remove("is-dragging");
-    });
-    imageDropzone?.addEventListener("drop", async (event) => {
-      event.preventDefault();
-      imageDropzone.classList.remove("is-dragging");
-      const images = Array.from(event.dataTransfer?.files || [])
-        .filter((file) => file.type.startsWith("image/"));
-      if (!images.length) {
-        const imageUrl = imageUrlFromDrop(documentRef, event.dataTransfer);
-        if (/^https?:\/\//i.test(imageUrl)) {
-          await uploadDroppedImageUrl(imageUrl);
-        } else {
-          imageDropMessage.textContent = "Drop a PNG, JPEG, WebP image, or an image URL.";
-        }
-        return;
-      }
-      for (const image of images) await uploadDroppedImage(image);
-    });
-    imageDropzone?.addEventListener("paste", async (event) => {
-      const images = Array.from(event.clipboardData?.files || [])
-        .filter((file) => file.type.startsWith("image/"));
-      if (!images.length) return;
-      event.preventDefault();
-      for (const image of images) await uploadDroppedImage(image);
-    });
-    imageDropzone?.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        page.querySelector("[data-source-type=file] input[type=file]")?.click();
-      }
-    });
     page.addEventListener("click", async (event) => {
       const deleteButton = event.target.closest?.("[data-delete-source]");
       const rerunButton = event.target.closest?.("[data-rerun]");
@@ -920,40 +803,6 @@
       }
     });
 
-    page.querySelectorAll("[data-source-form]").forEach((form) => {
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const message = form.querySelector("[data-form-message]");
-        if (!course.value || !exam.value) {
-          message.textContent = "Select a course and exam first.";
-          return;
-        }
-        const token = csrf(documentRef);
-        const body = new FormData(form);
-        body.append("subject", course.value);
-        body.append("exam_number", exam.value);
-        body.append("csrf_token", token);
-        const submitButton = form.querySelector('button[type="submit"]');
-        if (submitButton) submitButton.disabled = true;
-        try {
-          const response = await fetchImpl(`/studio/sources/${form.dataset.sourceType}`, {
-            method: "POST",
-            headers: { "X-CSRF-Token": token },
-            body,
-          });
-          const payload = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(payload.detail || "Source could not be queued.");
-          message.textContent = "Source queued for attachment.";
-          form.reset();
-          await refresh();
-        } catch (error) {
-          message.textContent = error instanceof Error ? error.message : "Source could not be queued.";
-        } finally {
-          if (submitButton) submitButton.disabled = false;
-        }
-      });
-    });
-
     page.querySelectorAll("[data-import-source-form]").forEach((form) => {
       applyImportRoleState(form);
       form.querySelector("[data-import-role]")?.addEventListener("change", () => {
@@ -993,36 +842,6 @@
           if (submitButton) submitButton.disabled = false;
         }
       });
-    });
-
-    runForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const message = runForm.querySelector("[data-run-message]");
-      if (!course.value || !exam.value || !destinationCourse.value || !destinationExam.value) {
-        message.textContent = "Select both the source and publication course/exam.";
-        return;
-      }
-      const token = csrf(documentRef);
-      const submitButton = runForm.querySelector('button[type="submit"]');
-      if (submitButton) submitButton.disabled = true;
-      try {
-        const response = await fetchImpl("/studio/runs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
-          body: JSON.stringify(
-            buildRunPayload(runForm, course, exam, destinationCourse, destinationExam),
-          ),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.detail || "Prompt run could not be queued.");
-        message.textContent = "Prompt queued in NotebookLM chat.";
-        runForm.elements.prompt.value = "";
-        await refresh();
-      } catch (error) {
-        message.textContent = error instanceof Error ? error.message : "Prompt run could not be queued.";
-      } finally {
-        if (submitButton) submitButton.disabled = false;
-      }
     });
 
     importRunForm?.addEventListener("submit", async (event) => {

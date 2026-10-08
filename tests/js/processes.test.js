@@ -21,3 +21,9 @@ test('cards render untrusted titles as text and reject external detail links', (
   assert.equal(controls[1].disabled,false);
   controls[1].click(); assert.equal(action,'restart');
 });
+test('retired optional uploads remain in completed history while real reviews stay active', () => {
+  const skipped = { title: 'Optional notebook copy', state: 'skipped' };
+  const review = { title: 'Unfinished lecture', state: 'needs_review' };
+  assert.deepEqual(processes.selectItems([skipped, review], '', 'active'), [review]);
+  assert.deepEqual(processes.selectItems([skipped, review], '', 'complete'), [skipped]);
+});

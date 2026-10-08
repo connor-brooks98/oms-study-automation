@@ -55,6 +55,7 @@ _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES = frozenset(
         "duplicate-supplied-answer",
         "missing-supplied-answer",
         "notebook-support-not-selected",
+        "answer-review-required",
         "notebook-generation-disabled",
         "supplied-answer-out-of-bounds",
         "unmatched-question",

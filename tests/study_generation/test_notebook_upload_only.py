@@ -26,7 +26,7 @@ from oms_hub.study_generation.studio_worker import StudioWorker
 def test_inference_gateway_stops_before_client_credentials_or_remote_mutations(method, args):
     # No instance dependencies exist: touching storage, repository or a client fails the test.
     gateway = object.__new__(StoredNotebookLMGateway)
-    with pytest.raises(NotebookGatewayError, match="upload-only") as failure:
+    with pytest.raises(NotebookGatewayError, match="retired") as failure:
         getattr(gateway, method)(*args)
     assert not failure.value.retryable
 
@@ -109,7 +109,7 @@ def test_upload_identity_conflict_or_stale_revision_is_not_requeued(filed):
 
 
 @pytest.mark.parametrize("changed", [False, True])
-def test_filed_upload_uses_existing_durable_lane_and_rechecks_hash(filed, changed):
+def test_retired_filed_upload_lane_never_dispatches(filed, changed):
     repository, ingestion = filed
     revision = ingestion.list_current_revisions(1)[0]
     source = repository.enqueue_lecture_upload(revision.id, connected=True)
@@ -128,24 +128,19 @@ def test_filed_upload_uses_existing_durable_lane_and_rechecks_hash(filed, change
     if changed:
         source.payload_path.write_bytes(b"changed")
     worker = StudioWorker(repository, Gateway(), object(), object())
-    assert worker.run_once()
-    stored = repository.get(source.id)
-    if changed:
-        assert not calls and stored.state is StudioSourceState.FAILED
-        assert "pinned artifact" in stored.error
-    else:
-        assert len(calls) == 2
-        assert stored.state is StudioSourceState.ATTACHED
-        assert stored.remote_source_id == "new-append-only-source"
     assert not worker.run_once()
+    stored = repository.get(source.id)
+    assert not calls
+    assert stored.state is StudioSourceState.PENDING
+    assert stored.attempts == 0 and stored.remote_source_id is None
 
 
-def test_optional_queue_failure_does_not_fail_completed_gpt_ingestion(caplog):
+def test_optional_queue_failure_does_not_fail_completed_gpt_ingestion(caplog, filed):
     job = IngestionJob(1, "item", UploadKind.TRANSCRIPTS, "process", 1, datetime.now(UTC),
                        backend="codex_subscription")
     events = []
     result = object()
-    repository = SimpleNamespace(claim_next_job=lambda now: job)
+    repository = SimpleNamespace(claim_next_job=lambda now: job, database=filed[0].database)
     pipeline = SimpleNamespace(process=lambda item: result)
 
     def stopped_queue(value):

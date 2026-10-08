@@ -1,4 +1,3 @@
-import threading
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -15,6 +14,7 @@ from oms_hub.study_generation.domain import (
     PromptKind,
 )
 from oms_hub.study_generation.notebook_connection import (
+    LEGACY_NOTEBOOK_RETIRED,
     NotebookConnectionService,
     NotebookConnectionStatus,
 )
@@ -287,30 +287,9 @@ def notebook_status(request: Request) -> JSONResponse:
 
 
 @notebook_router.post("/test")
-def test_notebook(request: Request) -> JSONResponse:
-    return JSONResponse(
-        _notebook_payload(_notebook(request).test()),
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@notebook_router.post("/connect", status_code=202)
-def connect_notebook(request: Request) -> JSONResponse:
-    thread = threading.Thread(
-        target=_notebook(request).start_interactive,
-        name="oms-notebook-connect",
-        daemon=True,
-    )
-    thread.start()
-    connecting = NotebookConnectionStatus(
-        "connecting",
-        "Complete Google sign-in in the browser window.",
-    )
-    return JSONResponse(
-        _notebook_payload(connecting),
-        status_code=202,
-        headers={"Cache-Control": "no-store"},
-    )
+@notebook_router.post("/connect")
+def retired_notebook(request: Request) -> JSONResponse:
+    raise HTTPException(410, LEGACY_NOTEBOOK_RETIRED)
 
 
 class ManagedModelUpdate(BaseModel):

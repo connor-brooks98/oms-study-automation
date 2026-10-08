@@ -1,6 +1,6 @@
 (function (root) {
   "use strict";
-  const complete = new Set(["complete", "completed", "ready", "attached", "discarded", "deleted", "canceled", "cancelled", "removed"]);
+  const complete = new Set(["complete", "completed", "ready", "attached", "discarded", "deleted", "canceled", "cancelled", "removed", "skipped"]);
   function selectItems(items, query, filter, lectureId = null) {
     const needle = query.trim().toLowerCase();
     return items.filter(item => (!lectureId || String(item.lecture_id) === lectureId)

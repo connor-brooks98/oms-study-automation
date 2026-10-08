@@ -130,16 +130,10 @@ from oms_hub.study_generation.gpt_lecture import GptLectureWorker
 from oms_hub.study_generation.gpt_outline import GptOutlineGenerator
 from oms_hub.study_generation.native_quiz import NativeQuizPublisher
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
-from oms_hub.study_generation.notebook_auth import NotebookCLIAuth
 from oms_hub.study_generation.notebook_connection import (
     NotebookConnectionService,
     retire_google_docs_credentials,
 )
-from oms_hub.study_generation.notebook_storage import (
-    NotebookStorageError,
-    migrate_encrypted_notebook_storage,
-)
-from oms_hub.study_generation.notebook_sync import LectureNotebookSync
 from oms_hub.study_generation.outline import OutlineService
 from oms_hub.study_generation.path_picker import (
     SystemPromptDirectoryPicker,
@@ -1035,30 +1029,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active_anki_prompt_directory,
     )
     notebook_storage_path = resolved.data_dir / "google" / "notebooklm-storage.json"
-    try:
-        app.state.notebook_storage_migrated = (
-            False
-            if resolved.anki_rehearsal_mode != "off"
-            else migrate_encrypted_notebook_storage(
-                notebook_storage_path.with_suffix(".enc"),
-                notebook_storage_path,
-                app.state.secrets,
-            )
-        )
-    except NotebookStorageError as error:
-        # NotebookLM is optional. Keep the encrypted rollback artifact and let
-        # the Hub start disconnected so Settings remains available to reconnect.
-        app.state.notebook_storage_migrated = False
-        app.state.notebook_storage_migration_error = str(error)
-    app.state.notebook_auth = NotebookCLIAuth(notebook_storage_path)
+    # Retired legacy sessions are retained at rest; startup never decrypts or signs in.
+    app.state.notebook_storage_migrated = False
+    app.state.notebook_auth = None
     app.state.notebook_connection = NotebookConnectionService(
-        app.state.generation_repository,
-        app.state.notebook_auth,
+        app.state.generation_repository, None,
     )
-    if app.state.notebook_storage_migration_error is not None:
-        app.state.notebook_connection.invalidate(
-            app.state.notebook_storage_migration_error
-        )
     app.state.prompt_path_picker = SystemPromptPathPicker()
     app.state.prompt_directory_picker = SystemPromptDirectoryPicker()
     app.state.upload_staging = StagingService(
@@ -1175,8 +1151,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      if app.state.codex_session is not None else None),
     )
     app.state.studio_repository = StudioRepository(database)
-    app.state.ingestion_worker.on_filed = LectureNotebookSync(
-        app.state.studio_repository, app.state.notebook_connection)
     app.state.practice_review = PracticeReviewService(app.state.studio_repository)
     app.state.generation_repository.practice_review = app.state.practice_review
     app.state.studio_service = StudioService(

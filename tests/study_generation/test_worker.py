@@ -216,7 +216,7 @@ def test_legacy_claims_pause_without_inference_or_losing_saved_answer(tmp_path, 
     worker._run = lambda _: pytest.fail("legacy generation must not start")
     assert worker.run_once()
     assert stopped[0][0] == job.id and stopped[0][2] is True
-    assert "upload-only" in stopped[0][1]
+    assert "retired" in stopped[0][1]
     assert repository.current.notebook_answer == QUIZ_JSON
     assert repository.current.stage is stage and not repository.advances
     assert not publisher.calls and not connection.invalidations

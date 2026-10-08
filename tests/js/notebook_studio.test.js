@@ -131,8 +131,8 @@ test("dynamic imported-source role select has a visible associated label", () =>
   assert.equal(roleLabel.htmlFor, roleSelect.id);
   assert.equal(roleSelect.id, "import-source-role-source-42");
   assert.match(roleSelect.className, /sh-select/);
-  assert.match(row.children[2].className, /sh-check/);
-  assert.match(row.children[3].className, /sh-btn--danger/);
+  assert.equal(row.querySelector("[data-import-row-notebook]"), null);
+  assert.match(row.children[2].className, /sh-btn--danger/);
 });
 
 test("import source toggle selects and deselects every source", () => {
@@ -183,7 +183,7 @@ test("role changes clear and disable NotebookLM use for question and answer-key 
   const form = { querySelector: (selector) => (selector === "[data-import-role]" ? role : checkbox) };
 
   assert.deepEqual(studio.applyImportRoleState(form), {
-    role: "supporting_reference", attach_to_notebook: true,
+    role: "supporting_reference", attach_to_notebook: false,
   });
   role.value = "questions";
   assert.deepEqual(studio.applyImportRoleState(form), {
@@ -217,10 +217,10 @@ test("file text and URL import forms submit selected role and Notebook defaults"
     );
 
     assert.deepEqual(roleState, {
-      role: "supporting_reference", attach_to_notebook: true,
+      role: "supporting_reference", attach_to_notebook: false,
     });
     assert.equal(body.get("role"), "supporting_reference");
-    assert.equal(body.get("attach_to_notebook"), "true");
+    assert.equal(body.get("attach_to_notebook"), "false");
     assert.equal(body.get("subject"), "Neuro");
     assert.equal(body.get("exam_number"), "1");
     assert.equal(body.get("csrf_token"), "csrf-token");
@@ -319,11 +319,11 @@ test("run history rerender moves focus to a surviving control when the focused a
   const container = new Element("div");
   const originalRuns = [{
     id: "run-1", label: "First", state: "complete", stage: "complete",
-    attempts: 1, error: null, workflow_kind: "generate", review_url: null,
+    attempts: 1, error: null, workflow_kind: "direct_import", review_url: null,
     image_review_url: null, published_url: "/quizzes/token", attempt_history: [],
   }, {
     id: "run-2", label: "Second", state: "complete", stage: "complete",
-    attempts: 1, error: null, workflow_kind: "generate", review_url: null,
+    attempts: 1, error: null, workflow_kind: "direct_import", review_url: null,
     image_review_url: null, published_url: null, attempt_history: [],
   }];
   studio.renderRuns(documentRef, container, originalRuns);
@@ -340,7 +340,7 @@ test("empty run history receives focus after its focused run is removed", () => 
   const container = new Element("div");
   studio.renderRuns(documentRef, container, [{
     id: "run-1", label: "First", state: "complete", stage: "complete",
-    attempts: 1, error: null, workflow_kind: "generate", review_url: null,
+    attempts: 1, error: null, workflow_kind: "direct_import", review_url: null,
     image_review_url: null, published_url: null, attempt_history: [],
   }]);
   container.querySelectorAll("[data-focus-key]")[0].focus();
@@ -354,7 +354,7 @@ test("a failed run action preserves history and restores its action focus", () =
   const container = new Element("div");
   studio.renderRuns(documentRef, container, [{
     id: "run-1", label: "First", state: "complete", stage: "complete",
-    attempts: 1, error: null, workflow_kind: "generate", review_url: null,
+    attempts: 1, error: null, workflow_kind: "direct_import", review_url: null,
     image_review_url: null, published_url: null, attempt_history: [],
   }]);
   const originalCard = container.children[0];
@@ -387,7 +387,7 @@ test("ready local-import rows hydrate on refresh and deduplicate by source id", 
   assert.equal(row.dataset.sourceId, "source-42");
   assert.equal(row.children[0].children[0].checked, false);
   assert.equal(row.children[1].children[0].children.find((option) => option.selected).value, "supporting_reference");
-  assert.equal(row.children[2].children[0].checked, true);
+  assert.equal(row.querySelector("[data-import-row-notebook]"), null);
 });
 
 test("initialize restores durable URL scope and fresh-page import rows", async () => {
@@ -506,8 +506,7 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
   assert.equal(row.children[0].children[0].checked, true);
   assert.equal(importSelectionToggle.textContent, "Deselect all");
   assert.equal(row.children[1].children[0].value, "questions");
-  assert.equal(row.children[2].children[0].checked, false);
-  assert.equal(row.children[2].children[0].disabled, true);
+  assert.equal(row.querySelector("[data-import-row-notebook]"), null);
   assert.match(replacedUrls.at(-1), /subject=neuro&exam=1&workflow=import/);
 
   course.value = "Cardio";
@@ -628,4 +627,14 @@ test("run attempt disclosure and keyed focus survive polling rerender", () => {
   const restored = container.querySelectorAll("details[data-state-key]")[0];
   assert.equal(restored.open, true);
   assert.equal(documentRef.activeElement, restored.children[0]);
+});
+
+test("retired notebook runs retain history without a rerun action", () => {
+  const container = new Element("div");
+  studio.renderRuns(documentRef, container, [{
+    id: "old-run", label: "Historical", state: "complete", workflow_kind: "notebook_generation",
+    stage: "complete", attempts: 1, attempt_history: [],
+  }]);
+  assert.equal(container.querySelectorAll("[data-focus-key]")
+    .some((element) => element.dataset.rerun === "old-run"), false);
 });

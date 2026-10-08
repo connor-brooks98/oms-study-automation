@@ -17,7 +17,7 @@ from oms_hub.document_processing.domain import (
 )
 from oms_hub.files.atomic import verified_atomic_write
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, ProviderName
-from oms_hub.models import StudioImportRunSourceModel, StudioSourceOperationModel
+from oms_hub.models import StudioSourceOperationModel
 from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.notebook_errors import NotebookGatewayError
 from oms_hub.study_generation.practice_contracts import (
@@ -769,240 +769,14 @@ def test_parse_cache_is_rebuilt_after_parser_version_change(tmp_path: Path) -> N
     assert artifact.signature_sha256 != old_signature
 
 
-def test_supporting_binding_is_attached_once_and_reused_for_answering(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    supporting = _ready_source(repository, tmp_path, "Reference")
-    run = repository.queue_import_run(
-        "Neuro",
-        1,
-        "Imported practice",
-        "Neuro",
-        1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            ImportSourceSelection(
-                supporting.id, ImportSourceRole.SUPPORTING_REFERENCE, attach_to_notebook=True
-            ),
-        ),
-    )
-    parser = _Parser()
-    answers = _ResolvedAnswers()
-    notebook = _AttachingNotebook()
-    worker = QuizImportWorker(
-        repository, parser, _QuestionExtractor(), answers, notebook, tmp_path / "assets"
-    )
-
-    worker.run(repository.claim_next_run())
-
-    assert repository.get_run(run.id).state is StudioRunState.AWAITING_REVIEW
-    assert [call[3] for call in notebook.calls] == ["Reference"]
-    assert answers.scopes[0].supporting_source_ids == ("remote-1",)
-    bindings = repository.import_sources(run.id)
-    assert bindings[0].remote_source_id is None
-    assert bindings[1].remote_notebook_id == "notebook-1"
-    assert bindings[1].remote_source_id == "remote-1"
-
-    worker.run(repository.get_run(run.id))
-    assert len(notebook.calls) == 1
 
 
-@pytest.mark.parametrize("pending_first", [False, True])
-def test_interrupted_direct_import_add_reconciles_without_duplicate_remote_source(
-    tmp_path: Path, pending_first: bool,
-) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    supporting = _ready_source(repository, tmp_path, "Reference")
-    run = repository.queue_import_run(
-        "Neuro",
-        1,
-        "Imported practice",
-        "Neuro",
-        1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            ImportSourceSelection(
-                supporting.id,
-                ImportSourceRole.SUPPORTING_REFERENCE,
-                attach_to_notebook=True,
-            ),
-        ),
-    )
-    notebook = _InterruptingNotebook()
-    worker = QuizImportWorker(
-        repository,
-        _Parser(),
-        _QuestionExtractor(),
-        _ResolvedAnswers(),
-        notebook,
-        tmp_path / "assets",
-    )
-
-    with pytest.raises(KeyboardInterrupt, match="simulated process termination"):
-        worker.run(repository.claim_next_run())
-
-    assert notebook.remote_ids == {"remote-1"}
-    assert repository.import_sources(run.id)[1].remote_source_id is None
-    with repository.database.session() as session:
-        operation = session.query(StudioSourceOperationModel).one()
-        assert operation.state == "executing"
-        assert operation.notebook_id == "notebook-1"
-        assert json.loads(operation.baseline_remote_ids_json) == []
-    assert repository.recover_interrupted_jobs() >= 2
-
-    if pending_first:
-        notebook.list_error = NotebookGatewayError(
-            "NotebookLM source is still processing.",
-            source=DiagnosticSource.SOURCE_PROCESSING,
-            retryable=True,
-        )
-        worker.run(repository.claim_next_run(datetime(2100, 1, 1, tzinfo=UTC)))
-        assert repository.get_run(run.id).state is StudioRunState.RETRYING
-        assert repository.import_sources(run.id)[1].remote_source_id is None
-        assert len(notebook.calls) == 1
-        notebook.list_error = None
-
-    worker.run(repository.claim_next_run(datetime(2100, 1, 1, tzinfo=UTC)))
-
-    assert repository.get_run(run.id).state is StudioRunState.AWAITING_REVIEW
-    assert notebook.list_calls == [("notebook-1", frozenset())] * (1 + pending_first)
-    assert notebook.remote_ids == {"remote-1"}
-    assert len(notebook.calls) == 1
-    assert repository.import_sources(run.id)[1].remote_source_id == "remote-1"
-    with repository.database.session() as session:
-        operation = session.query(StudioSourceOperationModel).one()
-        assert operation.state == "completed"
-        assert operation.remote_source_id == "remote-1"
 
 
-def test_ambiguous_direct_import_delta_stops_for_review_without_repeating_add(
-    tmp_path: Path,
-) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    supporting = _ready_source(repository, tmp_path, "Reference")
-    run = repository.queue_import_run(
-        "Neuro",
-        1,
-        "Imported practice",
-        "Neuro",
-        1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            ImportSourceSelection(
-                supporting.id,
-                ImportSourceRole.SUPPORTING_REFERENCE,
-                attach_to_notebook=True,
-            ),
-        ),
-    )
-    notebook = _AmbiguousInterruptingNotebook()
-    worker = QuizImportWorker(
-        repository,
-        _Parser(),
-        _QuestionExtractor(),
-        _ResolvedAnswers(),
-        notebook,
-        tmp_path / "assets",
-    )
-
-    with pytest.raises(KeyboardInterrupt):
-        worker.run(repository.claim_next_run())
-    repository.recover_interrupted_jobs()
-    worker.run(repository.claim_next_run(datetime(2100, 1, 1, tzinfo=UTC)))
-
-    assert repository.get_run(run.id).state is StudioRunState.FAILED
-    assert repository.get(supporting.id).state is StudioSourceState.NEEDS_REVIEW
-    assert len(notebook.calls) == 1
-    with repository.database.session() as session:
-        operation = session.query(StudioSourceOperationModel).one()
-        assert operation.state == "needs_review"
-        assert "ambiguous remote source delta" in operation.error
-    with pytest.raises(ValueError, match="pending source mutation"):
-        repository.queue_source_delete(supporting.id)
-    assert repository.get(supporting.id).state is StudioSourceState.NEEDS_REVIEW
 
 
-def test_direct_import_attachment_uses_durable_delete_saga(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    supporting = _ready_source(repository, tmp_path, "Reference")
-    repository.queue_import_run(
-        "Neuro",
-        1,
-        "Imported practice",
-        "Neuro",
-        1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            ImportSourceSelection(
-                supporting.id,
-                ImportSourceRole.SUPPORTING_REFERENCE,
-                attach_to_notebook=True,
-            ),
-        ),
-    )
-    worker = QuizImportWorker(
-        repository,
-        _Parser(),
-        _QuestionExtractor(),
-        _ResolvedAnswers(),
-        _AttachingNotebook(),
-        tmp_path / "assets",
-    )
-    worker.run(repository.claim_next_run())
-
-    attached = repository.get(supporting.id)
-    assert attached is not None
-    assert attached.state is StudioSourceState.READY
-    assert attached.remote_notebook_id == "notebook-1"
-    assert attached.remote_source_id == "remote-1"
-
-    deleting = repository.queue_source_delete(supporting.id)
-    assert deleting.state is StudioSourceState.DELETING
-    operation = repository.claim_next_source_operation()
-    assert operation is not None
-    assert operation[0].operation_kind == "delete"
-    assert operation[0].remote_source_id == "remote-1"
 
 
-def test_direct_import_delete_cannot_overtake_an_active_attachment(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    supporting = _ready_source(repository, tmp_path, "Reference")
-    run = repository.queue_import_run(
-        "Neuro",
-        1,
-        "Imported practice",
-        "Neuro",
-        1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            ImportSourceSelection(
-                supporting.id,
-                ImportSourceRole.SUPPORTING_REFERENCE,
-                attach_to_notebook=True,
-            ),
-        ),
-    )
-    operation = repository.ensure_import_source_attachment(run.id, supporting.id)
-    assert operation is not None and operation.state == "queued"
-
-    with pytest.raises(ValueError, match="pending source mutation"):
-        repository.queue_source_delete(supporting.id)
-
-    retained = repository.get(supporting.id)
-    assert retained is not None
-    assert retained.state is StudioSourceState.ATTACHING
-    claimed = repository.claim_source_operation(operation.id)
-    assert claimed is not None
-    assert claimed[0].state == "queued"
 
 
 def test_stale_ready_snapshot_cannot_resurrect_a_deleted_import_source(
@@ -1039,8 +813,8 @@ def test_stale_ready_snapshot_cannot_resurrect_a_deleted_import_source(
         tmp_path / "assets",
     )
 
-    with pytest.raises(ValueError, match="no longer available"):
-        worker._attach_supporting_source(run, stale_snapshot)
+    worker.run(repository.claim_next_run())
+    assert repository.get_run(run.id).state is StudioRunState.FAILED
 
     retained = repository.get(supporting.id)
     assert retained is not None and retained.state is StudioSourceState.DELETED
@@ -1109,7 +883,7 @@ def test_missing_answer_without_selected_notebook_source_finishes_awaiting_revie
     assert normalized is not None
     drafts = _drafts_from_json(normalized.payload_json)
     expected = (
-        "answer remains unresolved because no supporting reference was selected for NotebookLM"
+        "No answer was supplied. Enter and verify it during private review."
     )
     assert expected in drafts[0].blocking_diagnostics
 
@@ -1272,109 +1046,8 @@ class _CachedAnswers(_ResolvedAnswers):
         self.fallback = _Fallback(model)
 
 
-def test_answer_cache_invalidates_for_fallback_assignment_and_binding_identity(
-    tmp_path: Path,
-) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    supporting = _ready_source(repository, tmp_path, "Reference")
-    run = repository.queue_import_run(
-        "Neuro",
-        1,
-        "Imported practice",
-        "Neuro",
-        1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            ImportSourceSelection(
-                supporting.id, ImportSourceRole.SUPPORTING_REFERENCE, attach_to_notebook=True
-            ),
-        ),
-    )
-    answers = _CachedAnswers()
-    worker = QuizImportWorker(
-        repository,
-        _Parser(),
-        _QuestionExtractor(),
-        answers,
-        _AttachingNotebook(),
-        tmp_path / "assets",
-    )
-
-    worker.run(repository.claim_next_run())
-    assert len(answers.scopes) == 1
-
-    answers.fallback.settings.model = "fallback-b"
-    worker.run(repository.get_run(run.id))
-    assert len(answers.scopes) == 2
-
-    with repository.database.session() as session:
-        binding = (
-            session.query(StudioImportRunSourceModel)
-            .filter_by(run_id=run.id, source_id=supporting.id)
-            .one()
-        )
-        binding.remote_source_id = "remote-rebound"
-    worker.run(repository.get_run(run.id))
-    assert len(answers.scopes) == 3
-    assert answers.scopes[-1].supporting_source_ids == ("remote-rebound",)
 
 
-def test_attachment_arguments_are_exclusive_for_file_text_and_url(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    attachments = []
-    for source_type, title, final_url in (
-        (StudioSourceType.FILE, "File", None),
-        (StudioSourceType.TEXT, "Text", None),
-        (StudioSourceType.URL, "URL", "https://example.test/reference"),
-    ):
-        source = repository.create_source(
-            "Neuro", 1, source_type, title, purpose=StudioSourcePurpose.LOCAL_IMPORT
-        )
-        path = tmp_path / f"{source.id}.txt"
-        digest = verified_atomic_write(b"Reference", path)
-        attachments.append(
-            repository.mark_import_ready(
-                source.id, path, digest, media_type="text/plain", final_url=final_url
-            )
-        )
-    repository.queue_import_run(
-        "Neuro",
-        1,
-        "Imported practice",
-        "Neuro",
-        1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            *tuple(
-                ImportSourceSelection(
-                    source.id, ImportSourceRole.SUPPORTING_REFERENCE, attach_to_notebook=True
-                )
-                for source in attachments
-            ),
-        ),
-    )
-    notebook = _AttachingNotebook()
-    worker = QuizImportWorker(
-        repository,
-        _Parser(),
-        _QuestionExtractor(),
-        _ResolvedAnswers(),
-        notebook,
-        tmp_path / "assets",
-    )
-
-    worker.run(repository.claim_next_run())
-
-    assert [call[3] for call in notebook.calls] == ["File", "Text", "URL"]
-    assert [call[4] for call in notebook.calls] == [
-        {"path": attachments[0].payload_path},
-        {"text": "Reference"},
-        {"url": "https://example.test/reference"},
-    ]
 
 
 class _FailClosedAnswers:
@@ -1389,123 +1062,10 @@ class _FailClosedAnswers:
         )
 
 
-def test_foreign_reused_binding_fails_closed_before_any_fallback(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    supporting = _ready_source(repository, tmp_path, "Reference")
-    run = repository.queue_import_run(
-        "Neuro",
-        1,
-        "Imported practice",
-        "Neuro",
-        1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            ImportSourceSelection(
-                supporting.id, ImportSourceRole.SUPPORTING_REFERENCE, attach_to_notebook=True
-            ),
-        ),
-    )
-    repository.save_import_source_binding(
-        run.id, supporting.id, "foreign-notebook", "foreign-source"
-    )
-    answers = _FailClosedAnswers()
-    worker = QuizImportWorker(
-        repository,
-        _Parser(),
-        _QuestionExtractor(),
-        answers,
-        _AttachingNotebook(),
-        tmp_path / "assets",
-    )
-
-    worker.run(repository.claim_next_run())
-
-    assert repository.get_run(run.id).state is StudioRunState.FAILED
-    assert answers.fallback_calls == 0
 
 
-def test_partial_reused_binding_fails_closed_without_fallback(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    supporting = _ready_source(repository, tmp_path, "Reference")
-    run = repository.queue_import_run(
-        "Neuro",
-        1,
-        "Imported practice",
-        "Neuro",
-        1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            ImportSourceSelection(
-                supporting.id, ImportSourceRole.SUPPORTING_REFERENCE, attach_to_notebook=True
-            ),
-        ),
-    )
-    with repository.database.session() as session:
-        binding = (
-            session.query(StudioImportRunSourceModel)
-            .filter_by(run_id=run.id, source_id=supporting.id)
-            .one()
-        )
-        binding.remote_source_id = "orphaned-source"
-    answers = _FailClosedAnswers()
-    worker = QuizImportWorker(
-        repository,
-        _Parser(),
-        _QuestionExtractor(),
-        answers,
-        _AttachingNotebook(),
-        tmp_path / "assets",
-    )
-
-    worker.run(repository.claim_next_run())
-
-    assert repository.get_run(run.id).state is StudioRunState.FAILED
-    assert answers.fallback_calls == 0
 
 
-def test_url_attachment_rejects_missing_final_url(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    source = repository.create_source(
-        "Neuro", 1, StudioSourceType.URL, "URL", purpose=StudioSourcePurpose.LOCAL_IMPORT
-    )
-    path = tmp_path / "snapshot.txt"
-    digest = verified_atomic_write(b"Reference", path)
-    supporting = repository.mark_import_ready(
-        source.id, path, digest, media_type="text/plain", final_url=None
-    )
-    repository.queue_import_run(
-        "Neuro",
-        1,
-        "Imported practice",
-        "Neuro",
-        1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            ImportSourceSelection(
-                supporting.id, ImportSourceRole.SUPPORTING_REFERENCE, attach_to_notebook=True
-            ),
-        ),
-    )
-    notebook = _AttachingNotebook()
-    worker = QuizImportWorker(
-        repository,
-        _Parser(),
-        _QuestionExtractor(),
-        _ResolvedAnswers(),
-        notebook,
-        tmp_path / "assets",
-    )
-
-    worker.run(repository.claim_next_run())
-
-    assert repository.list_runs()[0].state is StudioRunState.FAILED
-    assert notebook.calls == []
 
 
 def test_artifact_serializers_round_trip_full_provenance(tmp_path: Path) -> None:
@@ -1631,87 +1191,6 @@ def test_artifact_serializers_round_trip_full_provenance(tmp_path: Path) -> None
     )
 
 
-@pytest.mark.parametrize("change_model", [False, True])
-def test_answer_retry_reuses_completed_questions_only_for_matching_inputs(
-    tmp_path: Path, change_model: bool,
-) -> None:
-    repository = _repository(tmp_path)
-    questions = _ready_source(repository, tmp_path, "Questions")
-    supporting = _ready_source(repository, tmp_path, "Reference")
-    run = repository.queue_import_run(
-        "Neuro", 1, "Partial answers", "Neuro", 1,
-        QuizContentKind.PRACTICE_QUESTIONS,
-        (
-            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
-            ImportSourceSelection(
-                supporting.id, ImportSourceRole.SUPPORTING_REFERENCE, attach_to_notebook=True
-            ),
-        ),
-    )
-
-    class ThreeQuestions(_QuestionExtractor):
-        def extract(self, documents) -> ExtractionResult:
-            result = super().extract(documents)
-            question = result.questions[0]
-            return replace(
-                result,
-                questions=(
-                    question,
-                    question.model_copy(update={
-                        "original_identifier": "2", "stem": "Question with a supplied answer?",
-                        "supplied_correct_index": 1, "rationale": "Supplied explanation.",
-                    }),
-                    question.model_copy(update={
-                        "original_identifier": "3", "stem": "Another missing answer?",
-                    }),
-                ),
-                question_source_refs=result.question_source_refs * 3,
-            )
-
-    class FailSecondMissingOnce(_CachedAnswers):
-        def __init__(self) -> None:
-            super().__init__()
-            self.calls: list[str | None] = []
-            self.failed = False
-
-        def resolve(self, draft, scope):
-            self.calls.append(draft.original_identifier)
-            if draft.original_identifier == "3" and not self.failed:
-                self.failed = True
-                raise NotebookGatewayError(
-                    "Temporary network failure", source=DiagnosticSource.NETWORK, retryable=True
-                )
-            return super().resolve(draft, scope)
-
-    answers = FailSecondMissingOnce()
-    worker = QuizImportWorker(
-        repository, _Parser(), ThreeQuestions(), answers, _AttachingNotebook(), tmp_path / "assets"
-    )
-    worker.run(repository.claim_next_run())
-    assert repository.get_run(run.id).state is StudioRunState.RETRYING
-    assert repository.run_artifact(run.id, "answered") is None
-    pair = repository.run_artifact(run.id, "pair")
-    assert pair is not None
-    original_drafts = _drafts_from_json(pair.payload_json)
-    first_key = f"answered:{original_drafts[0].question_id}"
-    partial = repository.run_artifact(run.id, first_key)
-    assert partial is not None
-    assert _drafts_from_json(partial.payload_json)[0].correct_index == 0
-    if change_model:
-        answers.fallback.settings.model = "fallback-b"
-
-    worker.run(repository.claim_next_run(datetime(2100, 1, 1, tzinfo=UTC)))
-
-    assert repository.get_run(run.id).state is StudioRunState.AWAITING_REVIEW
-    assert answers.calls == (["1", "3", "1", "3"] if change_model else ["1", "3", "3"])
-    aggregate = repository.run_artifact(run.id, "answered")
-    assert aggregate is not None
-    resolved = _drafts_from_json(aggregate.payload_json)
-    assert [draft.original_identifier for draft in resolved] == ["1", "2", "3"]
-    assert resolved[1] == original_drafts[1]
-    refreshed = repository.run_artifact(run.id, first_key)
-    assert refreshed is not None
-    assert (refreshed.signature_sha256 != partial.signature_sha256) is change_model
 
 
 @pytest.mark.parametrize(
@@ -1856,14 +1335,14 @@ def test_incomplete_matching_group_stops_before_any_answer_provider_call(tmp_pat
     ).payload_json
 
 
-def test_mixed_import_resolves_only_the_unanswered_mcq(tmp_path: Path) -> None:
+def test_mixed_import_keeps_unanswered_mcq_private_and_preserves_supplied_matches(
+    tmp_path: Path,
+) -> None:
     worker, repository, run, answers, _notebook = _mixed_worker_fixture(tmp_path)
 
     worker.run(repository.claim_next_run())
 
-    assert [
-        (draft.original_identifier, draft.stem) for draft, _scope in answers.calls
-    ] == [("2", "Which option is correct?")]
+    assert answers.calls == []
     drafts = _drafts_from_json(repository.run_artifact(run.id, "normalized").payload_json)
     matching = next(item for item in drafts if isinstance(item, MatchingQuestionDraft))
     assert tuple(prompt.correct_index for prompt in matching.prompts) == (1, 0)
@@ -1897,3 +1376,32 @@ def test_non_practice_direct_import_rejects_matching_before_review(tmp_path: Pat
     assert answers.calls == []
     assert rejected.state is StudioRunState.FAILED
     assert rejected.error == "matching questions require practice-question content"
+
+
+def test_retired_notebook_reference_selection_keeps_missing_answer_private(tmp_path):
+    repository = _repository(tmp_path)
+    question = _ready_source(repository, tmp_path, 'Questions')
+    reference = _ready_source(repository, tmp_path, 'Reference')
+    run = repository.queue_import_run('Neuro', 1, 'Retired reference', 'Neuro', 1,
+        QuizContentKind.PRACTICE_QUESTIONS, (
+            ImportSourceSelection(question.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(reference.id, ImportSourceRole.SUPPORTING_REFERENCE, True),
+        ))
+    worker = QuizImportWorker(repository, _Parser(), _QuestionExtractor(), _UnusedAnswers(),
+                              object(), tmp_path / 'assets')
+    worker.run(repository.claim_next_run())
+    stored = repository.get_run(run.id)
+    assert stored.state is StudioRunState.AWAITING_REVIEW
+    assert stored.published_token is None
+    review = PracticeReviewService(repository)
+    assert review.review(run.id)[0].draft.correct_index is None
+    assert review.blockers(run.id)
+    assert repository.run_artifact(run.id, 'answered') is None
+    question_id = review.review(run.id)[0].draft.question_id
+    review.update_question(run.id, question_id, {"correct_index": 0,
+        "rationale": "Verified against the supplied source."})
+    assert "answer-review-required" not in {
+        item.code for item in review.review(run.id)[0].draft.diagnostics
+    }
+    with repository.database.session() as session:
+        assert session.query(StudioSourceOperationModel).count() == 0
