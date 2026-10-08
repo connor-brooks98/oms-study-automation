@@ -986,24 +986,8 @@ class StoredNotebookLMGateway:
         raise NotebookGatewayError(
             LEGACY_NOTEBOOK_RETIRED, source=DiagnosticSource.VALIDATION, retryable=False
         )
-        active = _active_client.get()
-        if active is not None:
-            yield active
-            return
-        with self.storage.plaintext() as storage_path:
-            context = (
-                self.client_factory()
-                if self.client_factory is not None
-                else _stored_client_context(storage_path)
-            )
-            async with context as client:
-                yield client
-
-
-def _stored_client_context(storage_path: Path) -> Any:
-    from notebooklm import NotebookLMClient
-
-    return NotebookLMClient.from_storage(str(storage_path))
+        # Keep the async context-manager shape while rejecting before any client exists.
+        yield None  # pragma: no cover
 
 
 def _remote_ready(remote: Any) -> bool:

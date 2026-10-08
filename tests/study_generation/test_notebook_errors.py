@@ -1,14 +1,17 @@
 import pytest
-from notebooklm import AuthError, ConfigurationError, NetworkError
 
 from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
+    NotebookGatewayError,
+    NotebookScopeBusyError,
+    NotebookScopeLostError,
+    NotebookSourceNotFoundError,
     translate_notebook_error,
 )
 
 
-@pytest.mark.parametrize("error_type", [NetworkError, TimeoutError, ConnectionError])
+@pytest.mark.parametrize("error_type", [TimeoutError, ConnectionError])
 @pytest.mark.parametrize(
     "message",
     [
@@ -23,25 +26,24 @@ def test_network_errors_remain_retryable_despite_login_text(error_type, message)
     assert translated.source is DiagnosticSource.NETWORK
     assert translated.retryable is True
     assert not isinstance(translated, NotebookAuthenticationError)
+    assert str(translated) == "NotebookLM is temporarily unreachable."
 
 
-def test_configuration_failure_does_not_require_reconnect():
-    translated = translate_notebook_error(
-        ConfigurationError("Missing optional dependency for notebooklm login")
-    )
-
-    assert translated is not None
-    assert translated.source is DiagnosticSource.VALIDATION
-    assert translated.retryable is False
-    assert not isinstance(translated, NotebookAuthenticationError)
-    assert "configuration" in str(translated).lower()
-    assert "reconnect" not in str(translated).lower()
+@pytest.mark.parametrize("error", [
+    NotebookGatewayError("Configuration is invalid", source=DiagnosticSource.VALIDATION,
+                         retryable=False),
+    NotebookAuthenticationError(),
+    NotebookSourceNotFoundError(),
+    NotebookScopeBusyError(),
+    NotebookScopeLostError(),
+])
+def test_app_owned_errors_retain_identity_and_diagnostic_metadata(error):
+    assert translate_notebook_error(error) is error
 
 
 @pytest.mark.parametrize(
     "error",
     [
-        AuthError("Expired session"),
         RuntimeError(
             "Authentication expired or invalid. Redirected to: "
             "https://accounts.google.com/ Run 'notebooklm login' to re-authenticate."
@@ -62,7 +64,7 @@ def test_configuration_failure_does_not_require_reconnect():
         ),
     ],
 )
-def test_explicit_authentication_failures_still_require_login(error):
+def test_explicit_historical_authentication_failures_remain_classified(error):
     translated = translate_notebook_error(error)
 
     assert isinstance(translated, NotebookAuthenticationError)

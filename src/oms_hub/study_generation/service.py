@@ -10,8 +10,7 @@ from oms_hub.study_generation.domain import (
     GenerationState,
     PromptKind,
 )
-from oms_hub.study_generation.notebook_auth import NOTEBOOK_CHECK_UNVERIFIED
-from oms_hub.study_generation.notebook_errors import NotebookGatewayError
+from oms_hub.study_generation.notebook_connection import LEGACY_NOTEBOOK_RETIRED
 
 
 class GenerationPrerequisiteError(RuntimeError):
@@ -49,6 +48,8 @@ class GenerationService:
         lecture_id: int,
         kind: GenerationKind,
     ) -> GenerationJob:
+        if self.backend != "codex_subscription":
+            raise GenerationPrerequisiteError(LEGACY_NOTEBOOK_RETIRED)
         if self.catalog.get_lecture(lecture_id) is None:
             raise KeyError(lecture_id)
         revisions = {
@@ -72,49 +73,22 @@ class GenerationService:
                 "Current lecture PDF and cleaned transcript are required: "
                 + "; ".join(problems)
             )
-        if self.backend != "codex_subscription":
-            live_check = getattr(
-                self.notebook_connection,
-                "require_live",
-                None,
-            )
-            try:
-                notebook_status = (
-                    live_check()
-                    if live_check is not None
-                    else self.notebook_connection.status()
-                )
-            except NotebookGatewayError as error:
-                raise GenerationPrerequisiteError(str(error)) from error
-            except Exception as error:
-                raise GenerationPrerequisiteError(
-                    NOTEBOOK_CHECK_UNVERIFIED
-                ) from error
-            if notebook_status.state != "connected":
-                raise GenerationPrerequisiteError(
-                    "Connect Gemini Notebook in Settings before generating"
-                    if notebook_status.state in {"disconnected", "failed"}
-                    else NOTEBOOK_CHECK_UNVERIFIED
-                )
         prompt_kind = (
             PromptKind.OUTLINE
             if kind is GenerationKind.OUTLINE
             else PromptKind.QUIZ
         )
         prompt = self.prompts.inspect(prompt_kind)
-        if self.backend == "codex_subscription":
-            if not self.model.strip():
-                raise GenerationPrerequisiteError(
-                    "Select a GPT model in Settings before generating.")
-            try:
-                job = self.jobs.queue(lecture_id, kind,
-                                      backend=self.backend, codex_model=self.model)
-            except ValueError as error:
-                raise GenerationPrerequisiteError(str(error)) from error
-            if job.backend != self.backend:
-                raise GenerationPrerequisiteError("An existing outline operation is still active.")
-        else:
-            job = self.jobs.queue(lecture_id, kind)
+        if not self.model.strip():
+            raise GenerationPrerequisiteError(
+                "Select a GPT model in Settings before generating.")
+        try:
+            job = self.jobs.queue(lecture_id, kind,
+                                  backend=self.backend, codex_model=self.model)
+        except ValueError as error:
+            raise GenerationPrerequisiteError(str(error)) from error
+        if job.backend != self.backend:
+            raise GenerationPrerequisiteError("An existing outline operation is still active.")
         if job.state is GenerationState.PAUSED:
             job = self.jobs.requeue(job.id)
         if job.pdf_revision_id is not None:

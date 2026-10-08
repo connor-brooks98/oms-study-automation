@@ -1,18 +1,3 @@
-from notebooklm import (
-    AuthError,
-    ChatError,
-    ClientError,
-    ConfigurationError,
-    DecodingError,
-    NetworkError,
-    NotebookLimitError,
-    NotebookLMError,
-    RateLimitError,
-    ServerError,
-    SourceError,
-    ValidationError,
-)
-
 from oms_hub.llm.domain import DiagnosticSource
 
 
@@ -79,55 +64,13 @@ def translate_notebook_error(
 ) -> NotebookGatewayError | None:
     if isinstance(error, NotebookGatewayError):
         return error
-    if isinstance(error, AuthError):
-        return NotebookAuthenticationError()
-    if isinstance(error, ConfigurationError):
-        return NotebookGatewayError(
-            "NotebookLM configuration is invalid or a required dependency is missing. "
-            "Check the NotebookLM installation and configuration.",
-            source=DiagnosticSource.VALIDATION,
-            retryable=False,
-        )
-    if isinstance(error, SourceError):
-        return NotebookGatewayError(
-            "NotebookLM could not process a selected source.",
-            source=DiagnosticSource.SOURCE_PROCESSING,
-            retryable=True,
-        )
-    if isinstance(error, RateLimitError):
-        return NotebookGatewayError(
-            "NotebookLM rate limit reached; the job will retry.",
-            source=DiagnosticSource.QUOTA,
-            retryable=True,
-        )
-    if isinstance(error, NotebookLimitError):
-        return NotebookGatewayError(
-            "NotebookLM notebook quota is exhausted.",
-            source=DiagnosticSource.QUOTA,
-            retryable=False,
-        )
-    if isinstance(error, (NetworkError, TimeoutError, ConnectionError)):
+    if isinstance(error, (TimeoutError, ConnectionError)):
         return NotebookGatewayError(
             "NotebookLM is temporarily unreachable.",
             source=DiagnosticSource.NETWORK,
             retryable=True,
         )
-    if isinstance(error, (ValidationError, ClientError)):
-        return NotebookGatewayError(
-            "NotebookLM rejected the request.",
-            source=DiagnosticSource.VALIDATION,
-            retryable=False,
-        )
-    if isinstance(
-        error,
-        (ServerError, ChatError, DecodingError, NotebookLMError),
-    ):
-        return NotebookGatewayError(
-            "NotebookLM returned a service error; the job will retry.",
-            source=DiagnosticSource.SERVICE,
-            retryable=True,
-        )
-    # Older client paths raise untyped errors; match their explicit auth failures.
+    # Retained historical diagnostics can contain these explicit untyped auth failures.
     message = str(error).casefold().strip()
     if (
         message.startswith(
