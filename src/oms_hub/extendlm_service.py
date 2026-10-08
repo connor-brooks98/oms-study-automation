@@ -275,12 +275,19 @@ class ExtendLMService:
             # Validate the exact ID before transferring bytes, with existing read scopes/tools.
             cursor = ""
             found = False
-            for _ in range(25):
-                page = self.notebooks(key, cursor)
-                found = any(i["id"] == destination["notebook_id"] for i in page["items"])
-                if found or not page.get("next_cursor") or page["next_cursor"] == cursor:
-                    break
-                cursor = page["next_cursor"]
+            with self.connection(key) as client:
+                for _ in range(25):
+                    page = client.call(
+                        "list_notebooks",
+                        {**destination["selection"], "limit": 200, "cursor": cursor},
+                    )
+                    found = any(
+                        i["id"] == destination["notebook_id"] and not i.get("is_public")
+                        for i in page.get("items", [])
+                    )
+                    if found or not page.get("next_cursor") or page["next_cursor"] == cursor:
+                        break
+                    cursor = page["next_cursor"]
             if not found:
                 with self.state(key, write=True) as state:
                     if state.get("destinations", {}).get(exam_key) == destination:
@@ -301,6 +308,7 @@ class ExtendLMService:
         lecture_id: int | None = None,
         expected_selection: dict[str, str] | None = None,
         source_revisions: Sequence[int] = (),
+        source_hashes: Sequence[str | None] = (),
     ) -> str:
         self.token(key)
         selection = self.selection(key)
@@ -313,6 +321,8 @@ class ExtendLMService:
             raise api.ExtendLMError("Choose a notebook from the loaded account's list.")
         if not 1 <= len(files) <= 20:
             raise api.ExtendLMError("Choose between 1 and 20 files.")
+        if source_hashes and len(source_hashes) != len(files):
+            raise api.ExtendLMError("Material revisions do not match the prepared files.")
         directory = self.root / key / "files"
         directory.mkdir(parents=True, exist_ok=True)
         _restrict_owner_only(directory, directory=True)
@@ -320,7 +330,7 @@ class ExtendLMService:
         total = 0
         temporary: list[Path] = []
         try:
-            for filename, stream in files:
+            for index, (filename, stream) in enumerate(files):
                 api.validate_filename(filename)
                 path = directory / secrets.token_hex(16)
                 temporary.append(path)
@@ -345,6 +355,11 @@ class ExtendLMService:
                             "The selected slides are not a readable PDF."
                         ) from error
                 digest = sha256_file(path)
+                if source_hashes and source_hashes[index] and digest != source_hashes[index]:
+                    raise api.ExtendLMError(
+                        "Material changed while preparing the upload. "
+                        "Check the current lecture files."
+                    )
                 inputs.append(
                     {
                         "filename": filename,

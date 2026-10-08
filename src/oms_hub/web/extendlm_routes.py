@@ -241,6 +241,7 @@ def upload_lecture(
                 lecture_id=lecture_id,
                 expected_selection=destination["selection"],
                 source_revisions=[r.id for r in revisions if r.state == "current"],
+                source_hashes=[r.derived_sha256 for r in revisions if r.state == "current"],
             )
     except ArtifactError as error:
         raise HTTPException(

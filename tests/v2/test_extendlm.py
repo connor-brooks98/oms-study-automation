@@ -45,6 +45,7 @@ class Provider:
         self.source_status = "ready"
         self.notebooks = [{"id": "notebook-1", "title": "Exam 3"}]
         self.complete = True
+        self.notebook_pages = {}
 
     def handle(self, request):
         self.calls.append(request)
@@ -107,7 +108,10 @@ class Provider:
             assert args["auth_user_id"] == "0"
             result = {"authenticated": True, "capabilities": {}}
         elif name == "list_notebooks":
-            result = {"items": self.notebooks, "next_cursor": ""}
+            result = self.notebook_pages.get(args.get("cursor", "")) or {
+                "items": self.notebooks,
+                "next_cursor": "",
+            }
         elif name.startswith("prepare_"):
             result = {
                 "resource_id": "exp_0123456789abcdef",
@@ -453,6 +457,22 @@ def test_deleted_destination_never_matches_replacement_by_title(tmp_path):
         assert provider.put_count == 0
 
 
+def test_validating_saved_destination_preserves_another_tabs_paginated_choices(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        provider.notebook_pages = {
+            "": {"items": [{"id": "notebook-1", "title": "First exam"}], "next_cursor": "page2"},
+            "page2": {"items": [{"id": "notebook-2", "title": "Second exam"}], "next_cursor": ""},
+        }
+        service.notebooks(key)
+        service.notebooks(key, "page2")
+        service.save_destination(key, "cardio:3", "notebook-1")
+        assert service.destination(key, "cardio:3", validate=True)["notebook_id"] == "notebook-1"
+        service.save_destination(key, "cardio:4", "notebook-2")
+        assert service.destination(key, "cardio:4")["notebook_id"] == "notebook-2"
+
+
 def test_expired_grant_and_new_authorization_cannot_restore_destination(tmp_path):
     with setup(tmp_path) as (service, _):
         _, key, _ = sign_in(service)
@@ -584,6 +604,21 @@ def test_partial_import_stays_partial_after_accepted_sources_are_ready(tmp_path)
         assert service.jobs(key)[0]["status"] == "partial"
         service.resume(key, job)
         assert provider.put_count == 1
+
+
+def test_changed_material_snapshot_is_not_sent_as_approved_revision(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        with pytest.raises(api.ExtendLMError, match="changed while"):
+            service.enqueue(
+                key,
+                "notebook-1",
+                [("lecture.txt", io.BytesIO(b"Changed transcript."))],
+                source_hashes=[hashlib.sha256(b"Approved transcript.").hexdigest()],
+            )
+        assert provider.put_count == 0
+        assert list((tmp_path / key / "files").iterdir()) == []
 
 
 def test_destination_routes_share_only_the_catalog_exam_and_filter_lecture_receipts(
