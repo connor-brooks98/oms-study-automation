@@ -1,5 +1,7 @@
 # Notebook delivery cleanup: acceptance and rollout boundary
 
+> Implementation acceptance snapshot. The separately authorized production rollout is now complete; see [the deployment record](notebook-delivery-deployment-2026-10-08.md).
+
 October 8, 2026. User-approved implementation in `codex/notebook-upload-cleanup` (Study Hub) and `codex/source-integration-api` (Clinical Notebook). Clinical Notebook checkout: `/Users/connor/Developer/clinical-notebook-source-api`, commit `c61e1ed32b2adc151bfd5c8966b15f458feb6ee4`.
 
 ## Delivered behavior
