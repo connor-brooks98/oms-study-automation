@@ -36,7 +36,7 @@
         <span class="mono-label">Study progress</span>
         <strong>Pass tracker</strong>
       </span>
-      <span><span class="sh-pill {% if completed_passes == pass_total %}sh-pill--ok{% else %}sh-pill--info{% endif %}" data-pass-count>{{ completed_passes }}/{{ pass_total }}</span> <span class="pass-count-label">completed / configured</span></span>
+      <span class="pass-tracker-count"><span class="sh-pill {% if completed_passes == pass_total %}sh-pill--ok{% else %}sh-pill--info{% endif %}" data-pass-count>{{ completed_passes }}/{{ pass_total }}</span> <span class="pass-count-label">completed / configured</span></span>
     </summary>
     <div class="pass-tracker-body lecture-panel-body">
       <div class="pass-ledger-head" aria-hidden="true">

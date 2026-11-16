@@ -561,3 +561,38 @@ def test_removed_hash_remains_scoped_to_its_material_kind(tmp_path, kind):
     assert item.kind is other_kind and item.lecture_id == lecture
     assert repository.count_jobs(item.id, "process") == 1
     assert service.list_removed(lecture) == [removed]
+
+
+def test_ready_slides_has_only_available_actions_and_recoverable_trash(tmp_path):
+    from selectolax.parser import HTMLParser
+
+    app, _, lecture, revision = prepared(tmp_path, UploadKind.SLIDES)
+    document = HTMLParser(TestClient(app).get(f"/lectures/{lecture}").text)
+    panel = document.css_first('[data-material-panel][data-kind="slides"]')
+    actions = panel.css_first('[data-material-actions]')
+    assert [node.text(strip=True) for node in actions.css('a')] == [
+        'Download PPTX', 'Download PDF', 'View PDF',
+    ]
+    trash = actions.css_first('button[aria-label="Delete slides"]')
+    assert trash is not None
+    assert trash.css_first('svg[aria-hidden="true"]') is not None
+    form = actions.css_first('form')
+    assert form.attributes['action'] == f'/lectures/{lecture}/materials/{revision}/remove'
+    assert form.attributes['data-material-remove'] == 'slides'
+    assert actions.css('a, button')[-1].attributes['aria-label'] == 'Delete slides'
+    assert panel.css_first('[data-material-upload]') is None
+    assert panel.css_first('[data-material-dropzone]') is None
+    assert panel.css_first('.material-remove') is None
+    assert 'Upload Slides' not in panel.text()
+    assert 'Replace slides' not in panel.text()
+
+
+def test_tracker_count_has_aligned_group_without_changing_count_hook(tmp_path):
+    from selectolax.parser import HTMLParser
+
+    app, _, lecture, _ = prepared(tmp_path)
+    document = HTMLParser(TestClient(app).get(f'/lectures/{lecture}').text)
+    group = document.css_first('.pass-tracker-summary .pass-tracker-count')
+    assert group is not None
+    assert group.css_first('[data-pass-count]').text(strip=True) == '0/5'
+    assert group.css_first('.pass-count-label').text(strip=True) == 'completed / configured'

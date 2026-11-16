@@ -35,3 +35,21 @@ Screenshots: /tmp/studyhub-panels-refined-desktop.jpg and /tmp/studyhub-panels-r
 The preview helper serves synthetic fixtures only; upload processing is simulated and no real services or live database are started. Seven page/file routes plus remove/restore were checked with TestClient after adding functional fake downloads/views. Start it with the existing Python environment and `scripts/preview-lecture-material-panels.py --port 0` to select a free localhost port. Fixture 3 shows empty slides and a ready transcript; fixture 4 shows both ready; previous/next links navigate fixtures.
 
 The previous fixture server PID 72475 was no longer running after reconnect. A new review server was deliberately left running at http://127.0.0.1:62328 with PID 85208 for Connor's requested click-through review. No push, deployment, installs, live-data writes, or access/security configuration changes occurred.
+
+## Second review pass
+
+Starting from local commit `bec8d306`, the ready Slides panel now contains only available Download PPTX, Download PDF, View PDF actions followed by a trash icon. Its Replace slides drop zone, Upload slides button, and separate removal footer are absent. Empty slides retain the passive drop zone and sole bottom Upload Slides picker. Transcript markup and global navigation are unchanged.
+
+The trash and transcript options controls both measure 40 × 40 pixels with the same round border. The trash has the accessible name Delete slides and a verified 2-pixel keyboard focus outline. Synthetic browser checks confirmed cancellation preserves slides, removal reveals the empty uploader and Removed slides section, and Restore returns the ready actions without changing the transcript.
+
+The tracker count now uses a scoped flex group: count and label share the summary's vertical center on desktop (627.80px in the measured preview); mobile stacks the label below the count and aligns the group with the heading. Before the change the inline label wrapped around the count and expanded the mobile header to 133.67px; afterward it measures 95.59px. No count calculation, tracker JavaScript, endpoint, or persistence code changed.
+
+Browser checks used the normal 1920px desktop viewport and a 375 × 812 mobile override (360px content width after scrollbar). Neither overflowed horizontally. The override was reset and the refreshed both-ready fixture was left open for review at http://127.0.0.1:62328/lectures/4. Fixture 1 still has exactly one Slides picker and zero controls inside its passive drop zone. Fixture 3 had already been changed to ready slides through preview interaction, so it was not reset.
+
+Refreshed synthetic screenshots were uploaded and read back successfully from Library:
+- Desktop: `file_00000000e04081f59fde9b679bbf5ff8` (`/tmp/studyhub-slides-refined-desktop.jpg`).
+- Mobile: `file_00000000d4f081f59ef5c36f03dcd4f5` (`/tmp/studyhub-slides-refined-mobile.jpg`).
+
+Two new Python regressions failed before implementation (missing ready-slides trash and count alignment group), then passed. The cancellation test now covers both compact ready material types. Independent read-only review found no concrete issues and independently confirmed all 14 panel JavaScript tests pass.
+
+Final second-pass checks: **334 JavaScript passed, 0 failed**; **155 Python passed, 2 failed in 151.67 seconds** across the previous expanded selection plus `test_pass_tracker.py`. The only failures are the same two independently reproduced baseline shared-stylesheet hash/version assertions listed above. Ruff for the edited Python test and `git diff --check` passed. Original checkout diff SHA-256 is still `c3abf3ae8f5ad4c680871585dafc02630fb56846db39e8de9dda3e99769e5672`; its three modified files and untracked Claude outputs remain untouched. Logs: `/tmp/studyhub-second-pass-node.log` and `/tmp/studyhub-second-pass-python.log`.

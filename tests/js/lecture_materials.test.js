@@ -207,12 +207,12 @@ test("empty slides uses its bottom button to pick and auto-submits a chosen or d
   assert.equal(submissions, 2);
 });
 
-test("compact ready transcript initializes without an uploader and cancellation never removes", async () => {
-  const transcript = uiPanel("transcripts", "200");
+for (const kind of ["slides", "transcripts"]) test(`compact ready ${kind} initializes without an uploader and cancellation never removes`, async () => {
+  const transcript = uiPanel(kind, "200");
   const find = transcript.panel.querySelector;
   transcript.panel.querySelector = (selector) => ["upload", "file", "dropzone", "submit"].some((name) => selector === `[data-material-${name}]`) ? null : find(selector);
   const remove = new Node();
-  remove.dataset.materialRemove = "transcript";
+  remove.dataset.materialRemove = kind === "slides" ? "slides" : "transcript";
   const invoker = { focus() {} };
   transcript.panel.querySelectorAll = (selector) => selector === "form:not([data-material-upload])" ? [remove] : [];
   let requests = 0, confirmations = 0;

@@ -44,3 +44,15 @@
 .material-options-menu .sh-btn { white-space: nowrap; color: var(--failed); }
 
 .lecture-page .material-panel[data-kind="transcripts"].ready { align-self: start; }
+
+.material-trash { display: flex; flex: 0 0 40px; margin: 0; }
+.lecture-page .material-trash .sh-iconbtn { width: 40px; height: 40px; min-height: 40px; padding: 0; border: 1px solid var(--border); border-radius: var(--r-pill); }
+.material-trash .sh-iconbtn svg { flex: none; }
+.lecture-page .pass-tracker-count { display: flex; align-items: center; gap: 8px; margin-inline-start: auto; }
+.lecture-page .pass-tracker-count .sh-pill { flex: none; }
+.lecture-page .pass-tracker-count .pass-count-label { line-height: 1.35; }
+@media (max-width: 700px) {
+  .lecture-page .pass-tracker-summary { align-items: center; }
+  .lecture-page .pass-tracker-count { flex-direction: column; align-items: flex-end; gap: 4px; text-align: right; }
+  .lecture-page .pass-tracker-count .pass-count-label { max-width: 120px; font-size: var(--fs-xs); }
+}

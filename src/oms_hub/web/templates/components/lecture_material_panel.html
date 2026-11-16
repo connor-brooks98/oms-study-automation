@@ -29,6 +29,14 @@
     <a class="sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/pdf/download" download>Download PDF</a>
     <a class="sh-btn sh-btn--primary" href="/artifacts/{{ revision.id }}/pdf" target="_blank" rel="noopener noreferrer">View PDF</a>
     {% endif %}
+    {% if is_slides and ready %}
+    <form class="material-trash" method="post" action="/lectures/{{ lecture.id }}/materials/{{ revision.id }}/remove" data-material-remove="slides">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <button class="sh-iconbtn" type="submit" aria-label="Delete slides" title="Delete slides">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7"/></svg>
+      </button>
+    </form>
+    {% endif %}
     {% if 'cleaned' in roles %}
     <a class="sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/cleaned/download" download>Download TXT</a>
     <a class="sh-btn sh-btn--primary" href="/artifacts/{{ revision.id }}/cleaned" target="_blank" rel="noopener noreferrer">View TXT</a>
@@ -43,7 +51,7 @@
     </details>
     {% endif %}
   </div>
-  {% if not compact_transcript %}
+  {% if not ready %}
   <form class="material-upload" data-material-upload action="/uploads/{{ kind }}" method="post" enctype="multipart/form-data">
     <input type="hidden" name="lecture_id" value="{{ lecture.id }}">
     <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
@@ -59,7 +67,7 @@
     {% else %}<button class="sh-btn sh-btn--secondary" type="submit" data-material-submit>Upload {{ label|lower }}</button>{% endif %}
   </form>
   {% endif %}
-  {% if revision and not compact_transcript %}
+  {% if revision and not ready %}
   <form class="material-remove" method="post" action="/lectures/{{ lecture.id }}/materials/{{ revision.id }}/remove" data-material-remove="{{ label|lower }}">
     <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
     <button class="sh-btn sh-btn--secondary" type="submit">Remove {{ label|lower }}</button>
