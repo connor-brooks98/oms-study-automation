@@ -24,160 +24,11 @@
   {% set pass_total = lecture.passes|length %}
 
   <div class="lecture-workbench">
-
-  <div class="file-card-grid">
-    <section class="file-card sh-card {{ 'ready' if slide_revision and not slide_problem else 'missing' }}">
-      <div class="file-card-title">
-        <h2>Lecture Materials</h2>
-      </div>
-      <p class="file-caption">{% if slide_revision and slide_problem %}Lecture PDF {{ slide_problem }}. Download the original or upload a replacement.{% elif slide_revision %}{{ slide_revision.canonical_derived_path.name }}{% else %}Add slides or a reading document for this lecture.{% endif %}</p>
-      <div class="file-actions lecture-card-actions">
-        {% if slide_revision and not slide_problem %}
-        <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ slide_revision.id }}/pdf">Open Lecture PDF</a>
-        {% else %}
-        <a class="sh-btn sh-btn--secondary" href="/uploads?lecture_id={{ lecture.id }}&amp;kind=slides">Upload materials</a>
-        {% endif %}
-        {% if slide_revision %}
-        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ slide_revision.id }}/original">Download original</a>
-        <form method="post" action="/lectures/{{ lecture.id }}/materials/{{ slide_revision.id }}/remove">
-          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
-          <button class="sh-btn sh-btn--secondary" type="submit">Remove materials</button>
-        </form>
-        {% endif %}
-      </div>
-    </section>
-    <section class="file-card sh-card" data-clinical-notebook data-csrf="{{ request.state.csrf_token }}" data-lecture-id="{{ lecture.id }}" aria-label="Clinical Notebook delivery">
-      <div class="file-card-title"><h2>Clinical Notebook</h2></div>
-      <p data-cn-destination>Checking this exam’s destination…</p>
-      <p data-cn-setup hidden><a href="/settings/clinical-notebook">Connect Clinical Notebook in Settings</a>, then choose this exam’s notebook here.</p>
-      <fieldset><legend>Materials to send</legend>
-        <label class="sh-check"><input type="checkbox" data-cn-slides{% if slide_revision and not slide_problem %} checked{% else %} disabled{% endif %}> Lecture PDF</label>
-        <label class="sh-check"><input type="checkbox" data-cn-transcript{% if transcript_revision and not transcript_problem %} checked{% else %} disabled{% endif %}> Cleaned transcript</label>
-      </fieldset>
-      <div class="file-actions">
-        <button class="sh-btn sh-btn--primary" type="button" data-cn-send disabled>Send to Clinical Notebook</button>
-        <button class="sh-btn sh-btn--secondary" type="button" data-cn-change hidden>Change destination</button>
-      </div>
-      <div data-cn-picker hidden>
-        <label for="clinical-notebook">Existing exam notebook</label><select id="clinical-notebook" data-cn-notebook disabled><option value="">Choose an existing notebook</option></select>
-        <button class="sh-btn sh-btn--secondary" type="button" data-cn-save disabled>Save for this exam</button>
-      </div>
-      <p class="field-help">Keep Clinical Notebook running. If it is unavailable, your prepared files remain here for an explicit retry.</p>
-      <p data-cn-message role="status" aria-live="polite"></p>
-      <details><summary>This lecture’s deliveries</summary><div data-cn-jobs aria-live="polite"></div></details>
-    </section>
-
-    <section class="file-card sh-card" data-extendlm data-csrf="{{ request.state.csrf_token }}" data-lecture-id="{{ lecture.id }}" aria-label="NotebookLM delivery">
-      <div class="file-card-title"><h2>NotebookLM delivery</h2></div>
-      <p data-destination>Checking this exam’s destination…</p>
-      <p data-setup-needed hidden><a href="/settings/extendlm">Finish ExtendLM setup in Settings</a>, then return here to send this lecture.</p>
-      <div class="file-actions">
-        <button class="sh-btn sh-btn--primary" type="button" data-lecture-upload disabled>Send to NotebookLM</button>
-        <button class="sh-btn sh-btn--secondary" type="button" data-change-destination hidden>Change destination</button>
-      </div>
-      <div data-destination-picker hidden>
-        <label for="extendlm-notebook">Existing exam notebook</label>
-        <select id="extendlm-notebook" data-notebook disabled><option value="">Choose an exam notebook</option></select>
-        <div class="file-actions">
-          <button class="sh-btn sh-btn--secondary" type="button" data-more hidden>Load more notebooks</button>
-          <button class="sh-btn sh-btn--secondary" type="button" data-save-destination disabled>Save for this exam</button>
-        </div>
-      </div>
-      <p class="field-help">Sends the available lecture PDF and cleaned transcript. Keep the selected ExtendLM browser open.</p>
-      <p data-message role="status" aria-live="polite"></p>
-      <details><summary>This lecture’s deliveries</summary><div data-jobs aria-live="polite"></div></details>
-    </section>
-
-    <section class="file-card sh-card {{ 'ready' if transcript_revision and not transcript_problem else 'missing' }}">
-      <div class="file-card-title">
-        <h2>Transcript</h2>
-      </div>
-      <p class="file-caption">{% if transcript_revision and transcript_problem %}Cleaned transcript {{ transcript_problem }}. Upload a replacement to continue.{% elif transcript_revision %}{{ transcript_revision.canonical_derived_path.name }}{% else %}Add lecture notes or a transcript to use alongside the materials.{% endif %}</p>
-      <div class="file-actions lecture-card-actions">
-        {% if transcript_revision and not transcript_problem %}
-        <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open Transcript</a>
-        {% else %}
-        <a class="sh-btn sh-btn--secondary" href="/uploads?lecture_id={{ lecture.id }}&amp;kind=transcripts">Upload transcript</a>
-        {% endif %}
-        {% if transcript_revision %}
-        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ transcript_revision.id }}/cleaned/download">Download Transcript</a>
-        <form method="post" action="/lectures/{{ lecture.id }}/materials/{{ transcript_revision.id }}/remove">
-          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
-          <button class="sh-btn sh-btn--secondary" type="submit">Remove transcript</button>
-        </form>
-        {% endif %}
-      </div>
-    </section>
-    <section class="lecture-quiz-panel sh-panel" data-gpt-lecture="{{ lecture.id }}" data-kind="quiz" id="gpt-quiz-heading">
-      <div class="file-card-title">
-        <h2>Lecture Quiz</h2>
-      </div>
-      <p class="file-caption" data-generation-message aria-live="polite">
-        {% if quiz_output or gpt_quizzes %}Study Hub quiz is ready.
-        {% else %}Built from this lecture's materials and cleaned transcript only.{% endif %}
-      </p>
-      {% if gpt_quizzes or quiz_output %}
-      <div class="file-actions lecture-card-actions">
-        {% if gpt_quizzes %}
-        <a class="button primary sh-btn sh-btn--primary" href="/study/sessions/new?quiz_token={{ gpt_quizzes[0].token }}">Take Lecture Quiz</a>
-        {% elif quiz_output %}
-        <a class="button primary sh-btn sh-btn--primary" href="{{ quiz_output.url }}">Take Lecture Quiz</a>
-        {% endif %}
-      </div>
-      {% endif %}
-      {% include "_gpt_lecture.html" %}
-    </section>
-    {% if outline_output %}
-    <section class="file-card sh-card ready lecture-outline-panel">
-      <div class="file-card-title">
-        <h2>Lecture Outline (PDF)</h2>
-      </div>
-      <p class="file-caption" data-generation-message aria-live="polite">
-        {% if outline_output %}Lecture outline PDF is ready.
-        {% elif outline_job %}{{ outline_job.stage.value.replace('_', ' ').title() }}
-        {% else %}Generated from this lecture's PDF and cleaned transcript only.{% endif %}
-      </p>
-      <div class="file-actions lecture-card-actions{% if not outline_output %} lecture-card-actions--single{% endif %}">
-        {% if outline_output %}
-        <a class="button primary sh-btn sh-btn--primary" data-generation-link href="/artifacts/outlines/{{ outline_output.id }}">Open Lecture Outline</a>
-        <a class="button secondary sh-btn sh-btn--secondary" data-generation-download href="/artifacts/outlines/{{ outline_output.id }}/download">Download Lecture Outline</a>
-        {% endif %}
-      </div>
-
-    </section>
-    {% endif %}
-  </div>
-  </div>
-
-  {% for revision in proposed_revisions %}
-  <section class="sh-card review-card">
-    <div>
-      <h2>{{ 'Transcript' if revision.kind.value == 'transcripts' else 'Lecture materials' }} replacement ready</h2>
-      <p>Your current file stays available until you approve the replacement.</p>
+    <div class="file-card-grid material-panel-grid">
+      {% with kind='slides', revision=slide_revision %}{% include "components/lecture_material_panel.html" %}{% endwith %}
+      {% with kind='transcripts', revision=transcript_revision %}{% include "components/lecture_material_panel.html" %}{% endwith %}
     </div>
-    <a class="sh-btn sh-btn--primary" href="/review#replacement-{{ revision.id }}">Review replacement</a>
-  </section>
-  {% endfor %}
-
-  {% if removed_materials %}
-  <details class="sh-card t-accordion">
-    <summary>Removed files ({{ removed_materials|length }})</summary>
-    <p>Original files are retained. Restore reconnects an unchanged saved copy. Upload a changed file to use new materials; identical files use Restore.</p>
-    {% for revision in removed_materials %}
-    <div class="review-card">
-      <p>{{ 'Transcript' if revision.kind.value == 'transcripts' else 'Lecture materials' }} · {{ revision.immutable_source_path.name }}</p>
-      <div class="file-actions">
-        <a class="sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/{{ 'raw' if revision.kind.value == 'transcripts' else 'original' }}">Open original</a>
-        {% if revision.kind.value == 'transcripts' %}<a class="sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/cleaned/download">Download transcript</a>{% endif %}
-        <form method="post" action="/lectures/{{ lecture.id }}/materials/{{ revision.id }}/restore">
-          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
-          <button class="sh-btn sh-btn--secondary" type="submit">Restore</button>
-        </form>
-      </div>
-    </div>
-    {% endfor %}
-  </details>
-  {% endif %}
+  </div>
 
   <details class="pass-tracker sh-card t-accordion" id="pass-tracker" data-pass-tracker open>
     <summary class="lecture-panel-summary pass-tracker-summary">
@@ -252,6 +103,40 @@
   </details>
 
 
+  <div data-material-reviews>
+  {% for revision in proposed_revisions %}
+  <section class="sh-card review-card">
+    <div>
+      <h2>{{ 'Transcript' if revision.kind.value == 'transcripts' else 'Lecture materials' }} replacement ready</h2>
+      <p>Your current file stays available until you approve the replacement.</p>
+    </div>
+    <a class="sh-btn sh-btn--primary" href="/review#replacement-{{ revision.id }}">Review replacement</a>
+  </section>
+  {% endfor %}
+  </div>
+
+  {% if outline_output %}
+  <div class="file-card-grid lecture-secondary-materials">
+    <section class="file-card sh-card ready lecture-outline-panel">
+      <div class="file-card-title">
+        <h2>Lecture Outline (PDF)</h2>
+      </div>
+      <p class="file-caption" data-generation-message aria-live="polite">
+        {% if outline_output %}Lecture outline PDF is ready.
+        {% elif outline_job %}{{ outline_job.stage.value.replace('_', ' ').title() }}
+        {% else %}Generated from this lecture's PDF and cleaned transcript only.{% endif %}
+      </p>
+      <div class="file-actions lecture-card-actions{% if not outline_output %} lecture-card-actions--single{% endif %}">
+        {% if outline_output %}
+        <a class="button primary sh-btn sh-btn--primary" data-generation-link href="/artifacts/outlines/{{ outline_output.id }}">Open Lecture Outline</a>
+        <a class="button secondary sh-btn sh-btn--secondary" data-generation-download href="/artifacts/outlines/{{ outline_output.id }}/download">Download Lecture Outline</a>
+        {% endif %}
+      </div>
+
+    </section>
+  </div>
+  {% endif %}
+
   <details class="metadata-panel sh-card">
     <summary><span class="sh-disclose" aria-hidden="true">▸</span> Edit lecture details</summary>
     <form method="post" action="/lectures/{{ lecture.id }}/metadata">
@@ -267,8 +152,8 @@
 </article>
 {% endblock %}
 {% block scripts %}
+<link rel="stylesheet" href="/static/lecture_materials.css?v=20261116.1">
+<script src="/static/lecture_materials.js?v=20261116.1" defer></script>
 <script src="/static/study_generation.js?v=20260915.1" defer></script>
 <script src="/static/lecture.js?v={{ shell_asset_version }}" defer></script>
-<script src="/static/extendlm.js?v=20261008.1" defer></script>
-<script src="/static/clinical_notebook.js?v=20261008.2" defer></script>
 {% endblock %}

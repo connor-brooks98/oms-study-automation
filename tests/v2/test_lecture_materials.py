@@ -39,8 +39,10 @@ def prepared(tmp_path, kind=UploadKind.TRANSCRIPTS):
     source.write_bytes(b"retained source")
     derived = root / ("converted.pdf" if kind is UploadKind.SLIDES else "cleaned.txt")
     if kind is UploadKind.SLIDES:
+        from pptx import Presentation
         from reportlab.pdfgen.canvas import Canvas
 
+        Presentation().save(str(source))
         canvas = Canvas(str(derived))
         canvas.drawString(10, 50, "fixture")
         canvas.save()
@@ -233,6 +235,139 @@ def test_restore_never_displaces_a_new_current_revision(tmp_path):
     assert removed.immutable_source_path.is_file()
 
 
+def test_upload_of_removed_transcript_returns_restore_guidance(tmp_path):
+    app, service, lecture, revision = prepared(tmp_path)
+    removed = service.remove(lecture, revision)
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post(
+        "/uploads/transcripts",
+        data={"lecture_id": str(lecture)},
+        files=[("files", ("captions.txt", removed.immutable_source_path.read_bytes()))],
+    )
+    assert response.status_code == 409
+    assert "Restore the retained material" in response.json()["detail"]
+    assert service.list_removed(lecture) == [removed]
+    root = app.state.upload_staging.root
+    assert not list((root / "manifests").iterdir())
+    assert not list((root / "batches").iterdir())
+
+
+@pytest.mark.parametrize("kind", [UploadKind.SLIDES, UploadKind.TRANSCRIPTS])
+def test_panel_identical_readd_restore_and_active_duplicate(tmp_path, kind):
+    app, service, lecture, revision = prepared(tmp_path, kind)
+    saved = service.remove(lecture, revision)
+    payload = saved.immutable_source_path.read_bytes()
+    client = TestClient(app, raise_server_exceptions=False)
+    client.get(f"/lectures/{lecture}")
+    def upload():
+        return client.post(
+            f"/uploads/{kind.value}", data={"lecture_id": str(lecture)},
+            files={"files": (saved.immutable_source_path.name, payload)},
+        )
+    assert upload().status_code == 409
+    assert service.list_removed(lecture) == [saved]
+    assert saved.immutable_source_path.read_bytes() == payload
+    response = client.post(
+        f"/lectures/{lecture}/materials/{revision}/restore",
+        data={"csrf_token": client.cookies["study_hub_csrf"]}, follow_redirects=False,
+    )
+    assert response.status_code == 303
+    duplicate = upload()
+    assert duplicate.status_code == 202
+    batch = client.get(f"/api/upload-batches/{duplicate.json()['batch_id']}").json()
+    item = batch["items"][0]
+    assert item["state"] == "complete"
+    assert item["lecture_id"] == lecture
+    assert app.state.ingestion_repository.count_jobs(item["id"], "process") == 0
+    restored = app.state.ingestion_repository.get_study_revision(revision)
+    assert restored.source_sha256 == saved.source_sha256
+
+
+@pytest.mark.parametrize("kind", [UploadKind.SLIDES, UploadKind.TRANSCRIPTS])
+def test_removed_hash_does_not_block_other_lecture(tmp_path, kind):
+    app, service, lecture, revision = prepared(tmp_path, kind)
+    removed = service.remove(lecture, revision)
+    other = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Cardio", 1, 2, "Fixture two", "", None)
+    )
+    client = TestClient(app)
+    response = client.post(
+        f"/uploads/{kind.value}", data={"lecture_id": str(other)},
+        files={"files": (
+            removed.immutable_source_path.name, removed.immutable_source_path.read_bytes()
+        )},
+    )
+    assert response.status_code == 202
+    item = client.get(f"/api/upload-batches/{response.json()['batch_id']}").json()["items"][0]
+    assert item["lecture_id"] == other and item["kind"] == kind.value
+    assert item["state"] == "queued"
+    assert service.list_removed(lecture) == [removed]
+
+
+@pytest.mark.parametrize("kind", [UploadKind.SLIDES, UploadKind.TRANSCRIPTS])
+def test_material_panel_actions_are_independent_and_file_backed(tmp_path, kind):
+    from selectolax.parser import HTMLParser
+
+    app, service, lecture, revision = prepared(tmp_path, kind)
+    client = TestClient(app)
+    document = HTMLParser(client.get(f"/lectures/{lecture}").text)
+    panels = document.css("[data-material-panel]")
+    assert [panel.attributes["data-kind"] for panel in panels] == ["slides", "transcripts"]
+    panel = document.css_first(f'[data-material-panel][data-kind="{kind.value}"]')
+    assert panel.attributes["data-lecture-id"] == str(lecture)
+    links = {a.text(strip=True): a for a in panel.css("[data-material-actions] a")}
+    if kind is UploadKind.SLIDES:
+        assert set(links) == {"Download PPTX", "Download PDF", "View PDF"}
+        view = links["View PDF"]
+    else:
+        assert set(links) == {"Download TXT", "View TXT"}
+        view = links["View TXT"]
+    assert view.attributes["target"] == "_blank"
+    for name, link in links.items():
+        if name.startswith("Download"):
+            response = client.get(link.attributes["href"])
+            assert response.status_code == 200
+            assert response.headers["content-disposition"].startswith("attachment")
+    saved = app.state.ingestion_repository.get_study_revision(revision)
+    saved.canonical_derived_path.unlink()
+    changed = HTMLParser(client.get(f"/lectures/{lecture}").text)
+    changed_panel = changed.css_first(f'[data-material-panel][data-kind="{kind.value}"]')
+    labels = [a.text(strip=True) for a in changed_panel.css("[data-material-actions] a")]
+    assert labels == (["Download PPTX"] if kind is UploadKind.SLIDES else [])
+
+
+def test_pdf_original_does_not_offer_pptx_and_missing_original_hides_download(tmp_path):
+    from selectolax.parser import HTMLParser
+
+    app, _, lecture, revision = prepared(tmp_path, UploadKind.SLIDES)
+    saved = app.state.ingestion_repository.get_study_revision(revision)
+    with app.state.database.session() as session:
+        row = session.get(StudyRevisionModel, revision)
+        row.canonical_source_path = str(saved.canonical_derived_path)
+        row.source_sha256 = saved.derived_sha256
+    client = TestClient(app)
+    panel = HTMLParser(client.get(f"/lectures/{lecture}").text).css_first('[data-kind="slides"]')
+    assert "Download PPTX" not in panel.text()
+    assert "Download PDF" in panel.text()
+    with app.state.database.session() as session:
+        row = session.get(StudyRevisionModel, revision)
+        row.canonical_source_path = str(saved.canonical_source_path)
+    panel = HTMLParser(client.get(f"/lectures/{lecture}").text).css_first('[data-kind="slides"]')
+    assert "Download PPTX" not in panel.text()
+
+
+def test_pdf_download_retains_artifact_verification(tmp_path):
+    app, _, _, revision = prepared(tmp_path, UploadKind.SLIDES)
+    client = TestClient(app)
+    response = client.get(f"/artifacts/{revision}/pdf/download")
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].startswith("attachment")
+    saved = app.state.ingestion_repository.get_study_revision(revision)
+    assert response.content == saved.canonical_derived_path.read_bytes()
+    saved.canonical_derived_path.write_bytes(b"changed")
+    assert client.get(f"/artifacts/{revision}/pdf/download").status_code == 409
+
+
 def test_active_gpt_lecture_manifest_blocks_detachment(tmp_path):
     app, service, lecture, revision = prepared(tmp_path)
     from oms_hub.models import StudioRunArtifactModel, StudioRunModel
@@ -364,3 +499,65 @@ def test_different_source_after_removal_queues_without_replacement_review(tmp_pa
     assert started.id != revision and not started.current
     assert not repo.has_other_current_revision(lecture, kind, started.id)
     assert repo.get_study_revision(revision) == removed
+
+
+def test_ready_transcript_is_compact_with_recoverable_delete_menu(tmp_path):
+    from selectolax.parser import HTMLParser
+
+    app, _, lecture, revision = prepared(tmp_path)
+    document = HTMLParser(TestClient(app).get(f"/lectures/{lecture}").text)
+    panel = document.css_first('[data-material-panel][data-kind="transcripts"]')
+    actions = panel.css_first("[data-material-actions]")
+    assert [node.text(strip=True) for node in actions.css("a")] == ["Download TXT", "View TXT"]
+    menu = actions.css_first("details.material-options")
+    assert menu is not None
+    assert menu.css_first("summary").attributes["aria-label"] == "Transcript options"
+    delete = menu.css_first("button")
+    assert delete.text(strip=True) == "Delete transcript"
+    form = menu.css_first("form")
+    assert form.attributes["action"] == f"/lectures/{lecture}/materials/{revision}/remove"
+    assert form.attributes["data-material-remove"] == "transcript"
+    assert panel.css_first("[data-material-upload]") is None
+    assert panel.css_first(".sh-pill") is None
+    assert "Ready to use" not in panel.text()
+    assert document.css_first("[data-clinical-notebook]") is None
+    assert "clinical_notebook.js" not in document.html
+
+
+def test_empty_slides_bottom_upload_button_is_the_only_picker(tmp_path):
+    from selectolax.parser import HTMLParser
+
+    app, _, lecture, _ = prepared(tmp_path)
+    panel = HTMLParser(TestClient(app).get(f"/lectures/{lecture}").text).css_first(
+        '[data-material-panel][data-kind="slides"]'
+    )
+    dropzone = panel.css_first("[data-material-dropzone]")
+    assert dropzone.tag == "div"
+    assert dropzone.css("input, button, label") == []
+    picker = panel.css_first("[data-material-picker]")
+    assert picker.text(strip=True) == "Upload Slides"
+    assert picker.attributes["type"] == "button"
+    assert "hidden" in panel.css_first("[data-material-file]").attributes
+    assert len(panel.css("[data-material-upload] button")) == 1
+
+
+@pytest.mark.parametrize("kind", [UploadKind.SLIDES, UploadKind.TRANSCRIPTS])
+def test_removed_hash_remains_scoped_to_its_material_kind(tmp_path, kind):
+    app, service, lecture, revision = prepared(tmp_path, kind)
+    removed = service.remove(lecture, revision)
+    other_kind = UploadKind.TRANSCRIPTS if kind is UploadKind.SLIDES else UploadKind.SLIDES
+    repository = app.state.ingestion_repository
+    batch = repository.create_batch(other_kind)
+    repository.add_item(
+        other_kind,
+        StagedUpload(
+            batch, "other-kind", removed.immutable_source_path, removed.source_sha256,
+            removed.immutable_source_path.stat().st_size, removed.immutable_source_path.name,
+        ),
+    )
+    # Exercise repository admission only: source validation remains owned by staging.
+    repository.set_manual_assignment("other-kind", lecture)
+    item = repository.require_item("other-kind")
+    assert item.kind is other_kind and item.lecture_id == lecture
+    assert repository.count_jobs(item.id, "process") == 1
+    assert service.list_removed(lecture) == [removed]

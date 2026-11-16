@@ -18,7 +18,7 @@ from oms_hub.ingestion.domain import (
     UploadManifestSlot,
     UploadState,
 )
-from oms_hub.ingestion.repository import CLEANUP_PENDING, IngestionRepository
+from oms_hub.ingestion.repository import CLEANUP_PENDING, IngestionRepository, RemovedMaterialError
 from oms_hub.ingestion.service import IngestionService
 from oms_hub.ingestion.staging import (
     StagingService,
@@ -509,23 +509,24 @@ def _finalize_manifest(
             lecture_id=manifest.lecture_id,
             decisions=decisions,
         )
-    except Exception:
-        reverted = False
+    except Exception as error:
         try:
             # This is deliberately safe with an empty moved list: promotion
             # can fail after moving files but before returning that list.
             staging.revert_promoted_manifest(manifest_id, batch_id, moved)
-            reverted = True
         except Exception:  # noqa: BLE001 - retain pending recovery locator
             logger.exception(
                 "manifest rollback requires recovery: %s -> %s",
                 manifest_id,
                 batch_id,
             )
+        else:
+            staging.clear_manifest_finalization_outcome(manifest_id)
+            if isinstance(error, RemovedMaterialError):
+                staging.abandon_manifest_finalization(manifest_id)
+                raise HTTPException(409, str(error)) from error
         finally:
             staging.release_manifest_finalization(manifest_id)
-            if reverted:
-                staging.clear_manifest_finalization_outcome(manifest_id)
         raise
     # The repository transaction is the durable acceptance boundary.  Cleanup
     # and catalog progress are recoverable side effects and must never hide a

@@ -46,6 +46,14 @@ class TranscriptAdmissionPending(RuntimeError):
     pass
 
 
+class RemovedMaterialError(ValueError):
+    def __init__(self) -> None:
+        super().__init__(
+            "This exact material was removed. Restore the retained material on the "
+            "lecture page, or upload a changed file."
+        )
+
+
 CLEANUP_PENDING = "Removed from uploads; file cleanup pending"
 
 
@@ -962,10 +970,7 @@ class IngestionRepository:
                 session.add(revision)
                 session.flush()
             if revision.state == "removed":
-                raise ValueError(
-                    "This exact material was removed. Restore the retained material on the "
-                    "lecture page, or upload a changed file."
-                )
+                raise RemovedMaterialError()
             if item.kind == UploadKind.TRANSCRIPTS.value:
                 claimed = self._claim_transcript_cleaning(
                     session, item, source_revision=revision
@@ -1504,10 +1509,7 @@ class IngestionRepository:
             StudyRevisionModel.state == "removed",
         ))
         if removed is not None:
-            raise ValueError(
-                "This exact material was removed. Restore the retained material on the "
-                "lecture page, or upload a changed file."
-            )
+            raise RemovedMaterialError()
         exact = session.scalar(
             select(StudyRevisionModel).where(
                 StudyRevisionModel.lecture_id == item.lecture_id,

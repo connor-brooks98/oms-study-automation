@@ -6,7 +6,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from oms_hub.artifact_writes import ArtifactWriteCoordinator
-from oms_hub.artifacts import ArtifactError, ArtifactService
+from oms_hub.artifacts import ArtifactError, ArtifactRole, ArtifactService
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.domain import StepStatus, V2StepName
@@ -33,6 +33,24 @@ class LectureMaterials:
     def __init__(self, database: Database, settings: Settings):
         self.database, self.settings = database, settings
         self.repository = IngestionRepository(database)
+
+    def available_roles(self, revision: StudyRevision | None) -> set[str]:
+        """Expose each action only when its own retained/filed artifact verifies."""
+        if revision is None:
+            return set()
+        service = ArtifactService(self.database, self.settings)
+        available = set()
+        for role in (ArtifactRole.ORIGINAL, ArtifactRole.PDF, ArtifactRole.CLEANED):
+            try:
+                artifact = service.resolve(revision.id, role)
+                if artifact.text:
+                    artifact.path.read_text(encoding="utf-8")
+            except (ArtifactError, OSError, UnicodeError):
+                continue
+            available.add(role.value)
+            if role is ArtifactRole.ORIGINAL and artifact.path.suffix.casefold() == ".pptx":
+                available.add("pptx")
+        return available
 
     def list_removed(self, lecture_id: int) -> list[StudyRevision]:
         with self.database.session() as session:
