@@ -138,6 +138,18 @@ def artifact(
     )
 
 
+@router.get("/artifacts/{revision_id}/pdf/download")
+def download_lecture_pdf(request: Request, revision_id: int) -> FileResponse:
+    resolved = _resolve(request, revision_id, ArtifactRole.PDF)
+    return FileResponse(
+        resolved.path,
+        media_type=resolved.media_type,
+        filename=resolved.path.name,
+        content_disposition_type="attachment",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 @router.get("/artifacts/{revision_id}/cleaned/download")
 def download_cleaned_transcript(
     request: Request,

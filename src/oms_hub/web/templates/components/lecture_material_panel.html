@@ -1,0 +1,107 @@
+{% set is_slides = kind == 'slides' %}
+{% set label = 'Slides' if is_slides else 'Transcript' %}
+{% set roles = material_roles[kind] %}
+{% set ready = ('pdf' in roles) if is_slides else ('cleaned' in roles) %}
+{% set compact_transcript = ready and not is_slides %}
+{% set button_picker = is_slides and not revision %}
+{% set progress = namespace(active=false, failed=false) %}
+{% for step in lecture.steps %}
+  {% if (is_slides and (step.name.startswith('slides_') or step.name in ['pdf_converted', 'icloud_pdf_staged'])) or (not is_slides and step.name.startswith('transcript_')) %}
+    {% if step.status in ['queued', 'running'] %}{% set progress.active = true %}{% endif %}
+    {% if step.status in ['failed', 'needs_review'] %}{% set progress.failed = true %}{% endif %}
+  {% endif %}
+{% endfor %}
+<section class="file-card sh-card material-panel {{ 'ready' if ready else 'missing' }}" data-material-panel data-kind="{{ kind }}" data-lecture-id="{{ lecture.id }}" data-csrf="{{ request.state.csrf_token }}" aria-labelledby="material-{{ kind }}-title">
+  <div class="material-panel-heading">
+    <h2 id="material-{{ kind }}-title">{{ label }}</h2>
+    {% if not compact_transcript %}<span class="sh-pill {{ 'sh-pill--ok' if ready else 'sh-pill--bare' }}">{{ 'Ready' if ready else ('Processing' if progress.active else ('Needs attention' if progress.failed or revision else 'Not added')) }}</span>{% endif %}
+  </div>
+  {% if revision %}
+  <div class="material-file">
+    {% if not compact_transcript %}<span class="material-file-icon" aria-hidden="true">{{ 'PDF' if is_slides else 'TXT' }}</span>{% endif %}
+    <div><p class="material-filename">{{ revision.canonical_derived_path.name if revision.canonical_derived_path else revision.immutable_source_path.name }}</p>
+    {% if not compact_transcript %}<p class="field-help">{{ 'Lecture slides' if is_slides else 'Cleaned transcript' }} · {% if ready %}Ready to use{% else %}File needs attention{% endif %}</p>{% endif %}</div>
+  </div>
+  {% endif %}
+  <div class="material-actions{% if compact_transcript %} material-actions--transcript{% endif %}" data-material-actions>
+    {% if 'pptx' in roles %}<a class="sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/original" download>Download PPTX</a>{% endif %}
+    {% if 'pdf' in roles %}
+    <a class="sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/pdf/download" download>Download PDF</a>
+    <a class="sh-btn sh-btn--primary" href="/artifacts/{{ revision.id }}/pdf" target="_blank" rel="noopener noreferrer">View PDF</a>
+    {% endif %}
+    {% if is_slides and ready %}
+    <form class="material-trash" method="post" action="/lectures/{{ lecture.id }}/materials/{{ revision.id }}/remove" data-material-remove="slides">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <button class="sh-iconbtn" type="submit" aria-label="Delete slides" title="Delete slides">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7"/></svg>
+      </button>
+    </form>
+    {% endif %}
+    {% if 'cleaned' in roles %}
+    <a class="sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/cleaned/download" download>Download TXT</a>
+    <a class="sh-btn sh-btn--primary" href="/artifacts/{{ revision.id }}/cleaned" target="_blank" rel="noopener noreferrer">View TXT</a>
+    <details class="material-options">
+      <summary class="sh-iconbtn" aria-label="Transcript options"><span aria-hidden="true">⋯</span></summary>
+      <div class="material-options-menu">
+        <form method="post" action="/lectures/{{ lecture.id }}/materials/{{ revision.id }}/remove" data-material-remove="transcript">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+          <button class="sh-btn sh-btn--secondary" type="submit">Delete transcript</button>
+        </form>
+      </div>
+    </details>
+    {% endif %}
+  </div>
+  {% if not ready %}
+  <form class="material-upload" data-material-upload action="/uploads/{{ kind }}" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="lecture_id" value="{{ lecture.id }}">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    {% if button_picker %}<input type="file" name="files" accept=".pptx,.pdf" aria-label="Choose slides file" data-material-file hidden>{% endif %}
+    <{{ 'div' if button_picker else 'label' }} class="material-dropzone{% if button_picker %} material-dropzone--passive{% endif %}" data-material-dropzone>
+      <span class="material-upload-mark" aria-hidden="true">↑</span>
+      <strong>{{ 'Replace' if revision else 'Add' }} {{ 'slides' if is_slides else 'transcript' }}</strong>
+      <span>Drop {{ 'a PPTX or PDF' if is_slides else 'a TXT file' }} here{% if not button_picker %}, or choose a file{% endif %}</span>
+      {% if not button_picker %}<input class="sh-file" type="file" name="files" accept="{{ '.pptx,.pdf' if is_slides else '.txt' }}" aria-label="Choose {{ label|lower }} file" data-material-file required>{% endif %}
+      <small>For this lecture only · {{ 'Renamed and prepared as PDF' if is_slides else 'Renamed and cleaned automatically' }}</small>
+    </{{ 'div' if button_picker else 'label' }}>
+    {% if button_picker %}<button class="sh-btn sh-btn--secondary" type="button" data-material-picker>Upload Slides</button>
+    {% else %}<button class="sh-btn sh-btn--secondary" type="submit" data-material-submit>Upload {{ label|lower }}</button>{% endif %}
+  </form>
+  {% endif %}
+  {% if revision and not ready %}
+  <form class="material-remove" method="post" action="/lectures/{{ lecture.id }}/materials/{{ revision.id }}/remove" data-material-remove="{{ label|lower }}">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <button class="sh-btn sh-btn--secondary" type="submit">Remove {{ label|lower }}</button>
+    <span class="field-help">Originals retained for Restore.</span>
+  </form>
+  {% endif %}
+  <p class="material-status" data-material-status role="status" aria-live="polite">{% if progress.active %}Processing {{ label|lower }}. Follow progress below.{% elif progress.failed %}Processing needs attention. Check this lecture’s processes.{% elif revision and not ready %}The prepared file is missing or changed. Review the process or upload a replacement.{% endif %}</p>
+  <div class="material-actions" data-material-decision hidden>
+    <p>This lecture already has a transcript. Process this replacement? The current file stays available until you approve the prepared replacement.</p>
+    <button class="sh-btn sh-btn--secondary" type="button" data-material-confirm>Process replacement</button>
+    <button class="sh-btn sh-btn--secondary" type="button" data-material-discard>Keep current transcript</button>
+  </div>
+  <div class="material-recovery" data-material-recovery{% if not progress.active and not progress.failed and (not revision or ready) %} hidden{% endif %}>
+    <a href="/processes?lecture_id={{ lecture.id }}">View processes</a>
+    <a href="/lectures/{{ lecture.id }}" data-material-refresh>Refresh files</a>
+    <a href="/review">Review replacements</a>
+  </div>
+  {% set removed = removed_materials|selectattr('kind.value', 'equalto', kind)|list %}
+  {% if removed and not is_slides %}
+  <details class="material-removed" data-material-removed>
+    <summary>Removed {{ label|lower }} ({{ removed|length }})</summary>
+    <p class="field-help">Identical files use Restore. Original files and checksums are retained.</p>
+    {% for saved in removed %}
+    <div class="material-removed-file">
+      <p class="material-filename">{{ saved.immutable_source_path.name }}</p>
+      <div class="material-actions">
+        <a href="/artifacts/{{ saved.id }}/{{ 'original' if is_slides else 'raw' }}" target="_blank" rel="noopener noreferrer">View original</a>
+        <form method="post" action="/lectures/{{ lecture.id }}/materials/{{ saved.id }}/restore">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+          <button class="sh-btn sh-btn--secondary" type="submit">Restore {{ label|lower }}</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </details>
+  {% endif %}
+</section>

@@ -1,5 +1,6 @@
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -25,6 +26,7 @@ from oms_hub.ingestion.domain import (
     UploadState,
 )
 from oms_hub.models import (
+    Base,
     ExistingArtifactImportModel,
     GenerationJobModel,
     IngestionJobModel,
@@ -43,6 +45,17 @@ class TranscriptAdmissionPending(RuntimeError):
     """A durable cleaning owner exists; retry without making an LLM call."""
 
     pass
+
+
+class RemovedMaterialError(ValueError):
+    def __init__(self) -> None:
+        super().__init__(
+            "This exact material was removed. Restore the retained material on the "
+            "lecture page, or upload a changed file."
+        )
+
+
+CLEANUP_PENDING = "Removed from uploads; file cleanup pending"
 
 
 _LOGICAL_PROCESS_ACTIONS = ("process", "confirmed_process")
@@ -412,11 +425,12 @@ class IngestionRepository:
         *,
         lecture_id: int | None,
         decisions: dict[str, MatchDecision],
+        session: Session | None = None,
     ) -> None:
-        """Persist a fully preflighted manifest in one database transaction."""
+        """Persist a preflighted manifest; a supplied session owns its transaction."""
         if not staged_uploads:
             raise ValueError("upload manifest has no files")
-        with self.database.session() as session:
+        with (nullcontext(session) if session is not None else self.database.session()) as session:
             batch = UploadBatchModel(
                 id=batch_id,
                 kind=kind.value,
@@ -481,8 +495,11 @@ class IngestionRepository:
             models = session.scalars(
                 select(UploadItemModel)
                 .where(
-                    UploadItemModel.state
-                    == UploadState.QUARANTINED.value
+                    or_(
+                        UploadItemModel.state == UploadState.QUARANTINED.value,
+                        (UploadItemModel.state == UploadState.DISCARDED.value)
+                        & (UploadItemModel.error == CLEANUP_PENDING),
+                    )
                 )
                 .order_by(UploadItemModel.created_at, UploadItemModel.id)
             ).all()
@@ -494,9 +511,14 @@ class IngestionRepository:
         decision: MatchDecision,
     ) -> None:
         with self.database.session() as session:
-            item = session.get(UploadItemModel, item_id)
+            item = self._lock_item(session, item_id)
             if item is None:
                 raise KeyError(item_id)
+            if item.state not in {
+                UploadState.MATCHING.value,
+                UploadState.QUARANTINED.value,
+            }:
+                raise ValueError("upload is no longer awaiting assignment")
             if item.manual_assignment:
                 return
             item.lecture_id = decision.lecture_id
@@ -517,14 +539,17 @@ class IngestionRepository:
         lecture_id: int,
     ) -> None:
         with self.database.session() as session:
-            item = session.get(UploadItemModel, item_id)
+            item = self._lock_item(session, item_id)
             if item is None:
                 raise KeyError(item_id)
+            if item.state not in {
+                UploadState.MATCHING.value,
+                UploadState.QUARANTINED.value,
+            }:
+                raise ValueError("upload is no longer awaiting assignment")
             item.lecture_id = lecture_id
             item.confidence = 1.0
-            item.evidence_json = json.dumps(
-                ["Assigned manually in Quarantine"]
-            )
+            item.evidence_json = json.dumps(["Assigned manually in Quarantine"])
             item.manual_assignment = True
             item.state = UploadState.QUEUED.value
             item.error = None
@@ -552,16 +577,14 @@ class IngestionRepository:
 
     def confirm_processing(self, item_id: str) -> StoredUploadItem:
         with self.database.session() as session:
-            item = session.get(UploadItemModel, item_id)
+            item = self._lock_item(session, item_id)
             if item is None:
                 raise KeyError(item_id)
             if item.state == UploadState.AWAITING_CONFIRMATION.value:
                 item.state = UploadState.QUEUED.value
                 item.error = None
                 action = (
-                    "confirmed_process"
-                    if item.kind == UploadKind.TRANSCRIPTS.value
-                    else "process"
+                    "confirmed_process" if item.kind == UploadKind.TRANSCRIPTS.value else "process"
                 )
                 self._enqueue(session, item.id, action)
                 self._sync_batch_state(session, item.batch_id)
@@ -576,17 +599,124 @@ class IngestionRepository:
             session.flush()
             return self._stored_item(item)
 
-    def mark_discarded(self, item_id: str) -> StoredUploadItem:
+    @staticmethod
+    def _lock_item(session: Session, item_id: str) -> UploadItemModel | None:
+        # A write reserves SQLite's transaction before any state is read; the
+        # same row update also serializes admission on databases with row locks.
+        # All assign/match/confirm/discard paths share this admission boundary.
+        session.execute(
+            update(UploadItemModel)
+            .where(UploadItemModel.id == item_id)
+            .values(state=UploadItemModel.state, updated_at=UploadItemModel.updated_at)
+        )
+        return session.get(UploadItemModel, item_id)
+
+    @staticmethod
+    def _assert_unreferenced(session: Session, item: UploadItemModel) -> None:
+        if (
+            session.scalar(
+                select(IngestionJobModel.id)
+                .where(IngestionJobModel.upload_item_id == item.id)
+                .limit(1)
+            )
+            is not None
+            or session.scalar(
+                select(StudyRevisionModel.id)
+                .where(StudyRevisionModel.upload_item_id == item.id)
+                .limit(1)
+            )
+            is not None
+        ):
+            raise ValueError("upload has processing history; use lecture material recovery")
+        path = Path(item.staged_path).resolve()
+        others = session.scalars(select(UploadItemModel).where(UploadItemModel.id != item.id))
+        if any(Path(other.staged_path).resolve() == path for other in others):
+            raise ValueError("staged upload path is shared by another upload")
+        # Material and import records can also retain a path without an item
+        # foreign key. Check every persisted path column, including historical
+        # records, so a recovery copy cannot be deleted as an unmatched upload.
+        for table in Base.metadata.tables.values():
+            if table is UploadItemModel.__table__:
+                continue
+            columns = [
+                column
+                for column in table.columns
+                if column.name == "path" or column.name.endswith("_path")
+            ]
+            for column in columns:
+                value: str | None
+                for value in session.scalars(select(column).where(column.is_not(None))):
+                    if value and Path(value).resolve() == path:
+                        raise ValueError("staged upload has a downstream material reference")
+
+    def can_delete_unmatched(self, item_id: str) -> bool:
         with self.database.session() as session:
             item = session.get(UploadItemModel, item_id)
+            if item is None or item.state != UploadState.QUARANTINED.value or item.lecture_id:
+                return False
+            try:
+                self._assert_unreferenced(session, item)
+            except (ValueError, OSError):
+                return False
+            return True
+
+    def mark_discarded(
+        self,
+        item_id: str,
+        *,
+        validate_path: Callable[[Path], None],
+        expected_state: UploadState | None = None,
+    ) -> StoredUploadItem:
+        with self.database.session() as session:
+            item = self._lock_item(session, item_id)
             if item is None:
                 raise KeyError(item_id)
-            if item.state == UploadState.AWAITING_CONFIRMATION.value:
-                item.state = UploadState.DISCARDED.value
-                item.error = None
-                self._sync_batch_state(session, item.batch_id)
-            elif item.state != UploadState.DISCARDED.value:
+            if item.state == UploadState.DISCARDED.value:
+                if (expected_state is UploadState.QUARANTINED and item.lecture_id is not None) or (
+                    expected_state is UploadState.AWAITING_CONFIRMATION and item.lecture_id is None
+                ):
+                    raise ValueError("discarded upload belongs to a different workflow")
+                return self._stored_item(item)
+            if expected_state is not None and item.state != expected_state.value:
+                raise ValueError(f"upload is not {expected_state.value.replace('_', ' ')}")
+            unmatched = item.state == UploadState.QUARANTINED.value and item.lecture_id is None
+            if not unmatched and item.state != UploadState.AWAITING_CONFIRMATION.value:
                 raise ValueError("upload is not awaiting confirmation")
+            self._assert_unreferenced(session, item)
+            validate_path(Path(item.staged_path))
+            evidence = json.loads(item.evidence_json)
+            evidence.append(f"Discarded at {utc_now()}; previous state: {item.state}")
+            if item.error:
+                evidence.append(f"Previous upload error: {item.error}")
+            item.evidence_json = json.dumps(evidence)
+            item.state = UploadState.DISCARDED.value
+            item.error = CLEANUP_PENDING
+            self._sync_batch_state(session, item.batch_id)
+            session.flush()
+            return self._stored_item(item)
+
+    def cleanup_discarded(
+        self,
+        item_id: str,
+        cleanup: Callable[[Path], None],
+    ) -> StoredUploadItem:
+        # The tombstone was committed in a separate transaction. A crash here
+        # leaves a retryable record, and admission cannot resurrect the item.
+        with self.database.session() as session:
+            item = self._lock_item(session, item_id)
+            if item is None:
+                raise KeyError(item_id)
+            if item.state != UploadState.DISCARDED.value:
+                raise ValueError("upload is not discarded")
+            if item.error is None:
+                return self._stored_item(item)
+            try:
+                self._assert_unreferenced(session, item)
+                cleanup(Path(item.staged_path))
+            except (OSError, ValueError):
+                item.error = CLEANUP_PENDING
+            else:
+                item.error = None
             session.flush()
             return self._stored_item(item)
 
@@ -741,6 +871,8 @@ class IngestionRepository:
             for item in items:
                 if item.state in protected_states or item.state not in safe_states:
                     continue
+                if item.state == UploadState.DISCARDED.value:
+                    continue
                 if datetime.fromisoformat(item.updated_at).astimezone(UTC) > cutoff:
                     continue
                 revision = revision_by_item.get(item.id)
@@ -840,10 +972,7 @@ class IngestionRepository:
                 session.add(revision)
                 session.flush()
             if revision.state == "removed":
-                raise ValueError(
-                    "This exact material was removed. Restore the retained material on the "
-                    "lecture page, or upload a changed file."
-                )
+                raise RemovedMaterialError()
             if item.kind == UploadKind.TRANSCRIPTS.value:
                 claimed = self._claim_transcript_cleaning(
                     session, item, source_revision=revision
@@ -1382,10 +1511,7 @@ class IngestionRepository:
             StudyRevisionModel.state == "removed",
         ))
         if removed is not None:
-            raise ValueError(
-                "This exact material was removed. Restore the retained material on the "
-                "lecture page, or upload a changed file."
-            )
+            raise RemovedMaterialError()
         exact = session.scalar(
             select(StudyRevisionModel).where(
                 StudyRevisionModel.lecture_id == item.lecture_id,

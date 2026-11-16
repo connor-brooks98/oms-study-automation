@@ -1,0 +1,85 @@
+STUDY HUB LOCAL REPOSITORY CLEANUP
+October 7, 2026 — America/New_York
+
+Purpose
+Prepare a clean, current local baseline for an independent UI/UX and backend review. This cleanup does not implement the audit recommendations, merge the pending quiz candidate, or change the deployed Hub.
+
+Baseline
+Repository: /Users/connor/Developer/oms-study-automation
+Remote: https://github.com/connor-brooks98/oms-study-automation.git
+Previous local main: 96ceec56c4b8f9df0018fe090710631adb29a2a2
+Verified remote/current local main: ccbd4064f479f34c2e0b83770581d1bb9c2c88a7
+Local review-preparation branch: codex/review-prep-2026-10-07
+
+Recovery archive
+/Users/connor/Developer/repo-archives/oms-study-automation-pre-review-2026-10-07
+
+The archive directory is private (mode 0700). It contains:
+- repository-before.tar.gz: full pre-cleanup repository filesystem snapshot, including Git metadata and nested local copies.
+- all-refs.bundle: all original Git refs and reachable history; git bundle verify passed.
+- backup-checksums.json: SHA-256 and size of each backup.
+- refs-before.txt, branches-before.txt, worktrees-before.txt, status-before.txt, local-changes.patch.
+- The local, base, upstream, and merged copies of future-implementation-ideas.md.
+- moved-paths.json: exact source/destination mapping for archived untracked groups.
+- deleted-merged-branches.json and pruned-worktrees.txt: exact cleanup inventory.
+- git-fsck-after.txt: Git integrity verification output.
+- untracked/: preserved local audit documents/evidence, old source copies, generated outputs, temporary release receipts, code-map snapshot, and uv.lock.
+- private-research-evidence/ora-ai-2026-09-15/: 20 screenshots and 19 raw page captures; kept outside Git.
+
+Backup checksums
+repository-before.tar.gz
+SHA-256 2515f8568da5ab791d4224c61a8d7c97410f8785549d94f98361266714c6bf23
+Bytes 77937117
+
+all-refs.bundle
+SHA-256 137805b5c5611704f34429fce79ea099f107428b274dfd1ef739e7ffa8ed6baa
+Bytes 27771804
+
+Completed cleanup
+1. Fetched origin with pruning. One already-deleted remote-tracking ref was removed locally (origin/codex/exam-countdown-pass-dates). No remote branches were deleted.
+2. Moved 11 untracked file/directory groups to the private archive, verifying hashes for 6,990 files. The old nested source copies were preserved as files; their original Git metadata also remains in the full snapshot.
+3. Cleared four tracked UI/test diffs only after confirming that their exact changes were already committed in 73efe9cdc5c6f921fd7389b69b27ef78976defce. No duplicate implementation commit was created.
+4. Fast-forwarded local main by 183 commits to the verified remote tip.
+5. Deleted nine local branch names after verifying each tip was an ancestor of main and no worktree had it checked out:
+   codex/anki-v2-corrections-integration
+   codex/anki-v3-recovery
+   codex/fix-chatgpt-connect-2026-09-15
+   codex/fix-pending-chatgpt-login-2026-09-15
+   codex/gpt-runtime-activation
+   codex/hub-intake-ux-2026-09-14
+   codex/notebooklm-process-reliability
+   codex/pass-tracker
+   codex/study-hub-blue-workbench-review
+6. Pruned 22 registrations whose worktree locations no longer existed. Existing external worktree directories were not removed or changed. The registry now contains 51 worktrees.
+7. Created the review-preparation branch for documentation. Merged 21 unique local backlog lines into the newer upstream backlog, preserving all nonblank upstream lines in order and deduplicating the already-merged ExtendLM idea. Ora, objective-performance, and NAS ideas remain deferred.
+8. Retained the existing AGENTS.md instructions and Ora research report as documentation. Moved its private evidence outside Git, hash-verified all 39 files, and updated all 21 evidence links to the archive.
+9. Added the independent-review prompt beside this receipt. There are 90 local branch names after the nine deletions and creation of the review-preparation branch.
+
+Unmerged work deliberately preserved
+All 65 pre-existing local branches that were not ancestor-merged into main remain. Age and overlapping names did not establish that their unique work was disposable. Two checked-out branches are patch-equivalent to main but were also retained. Existing worktree files and any work belonging to other chats were not consolidated.
+
+The material pending candidate remains:
+Path: /Users/connor/Developer/worktrees/oms-quiz-generation-diagnosis
+Branch: codex/quiz-generation-diagnosis-20260917
+Application commit: 488efefadecda105693d3cae5c7197ba43e0c9c7
+Documentation tip: 24bbacf3ba7b93c187b88c5a5d1fa760ddb91f28
+Exactly two commits ahead of main. It was not merged, rebased, pushed, or deployed in this cleanup.
+
+Other preserved newer local-only work includes provider-isolation test evidence on codex/gpt-backend, chat review notes on codex/gpt-chat, and the NotebookLM import research note at 21c66324aed2f99a304b3dc98f58ccd5fd7bef8d. The divergent historical Gate 2B and grounded-learning branches remain in place.
+
+Verification
+- Git bundle verification passed.
+- Git fsck --full passed (exit 0); dangling historical objects are retained, not corruption.
+- Local main equals origin/main.
+- No application source, tests, scripts, package configuration, or CI changes relative to main.
+- Git diff --check passed.
+- No remaining registrations selected by git worktree prune --dry-run.
+- All 15 distinct commit IDs in the reviewer prompt resolve.
+- All research evidence links resolve locally.
+- Application tests were not rerun for this Git/documentation-only preparation; no application acceptance claim is made.
+- No provider requests, live application writes, process restarts, deployments, remote pushes, or published-history rewrites were performed.
+
+Recovery
+Read moved-paths.json to locate any moved file or directory. Use refs-before.txt/deleted-merged-branches.json to recover a deleted branch's exact tip from the verified bundle. Extract repository-before.tar.gz into a separate recovery directory to inspect original working files or Git metadata; do not overwrite a newer checkout as a casual restore step.
+
+The independent reviewer must still verify the actual deployed release and live behavior. Local main and historical acceptance receipts do not establish current production identity.

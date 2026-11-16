@@ -224,6 +224,7 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
     }
     slide_revision = revisions.get(UploadKind.SLIDES)
     transcript_revision = revisions.get(UploadKind.TRANSCRIPTS)
+    materials = LectureMaterials(request.app.state.database, request.app.state.settings)
     generation = GenerationRepository(request.app.state.database)
     outline = generation.current_outline(lecture_id)
     quiz = generation.current_quiz(lecture_id)
@@ -247,6 +248,10 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
             else 0,
             "release_steps": release_steps,
             "slide_revision": slide_revision,
+            "material_roles": {
+                "slides": materials.available_roles(slide_revision),
+                "transcripts": materials.available_roles(transcript_revision),
+            },
             "proposed_revisions": tuple(
                 revision for revision in IngestionRepository(
                     request.app.state.database

@@ -17,6 +17,9 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
   const find = (name) => root.querySelector(`[data-${name}]`);
   const message = find("message"), account = find("account"), notebook = find("notebook");
   let cursor = "", timer, busy = false, signedIn = false, notebooksLoaded = false;
+  let destination = null, choosing = false, accountsLoaded = false, closed = false;
+  const indexingChecks = new Map();
+  const lectureId = root.dataset.lectureId;
   const endpoint = "/settings/extendlm";
   async function post(path, fields = {}) {
     const body = fields instanceof FormData ? fields : new FormData();
@@ -34,13 +37,18 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
     if (account) account.disabled = busy || account.options.length < 2;
     notebook.disabled = busy || notebook.options.length < 2;
     if (find("upload")) find("upload").disabled = busy || !notebook.value;
-    if (find("lecture-upload")) find("lecture-upload").disabled = busy || !notebook.value;
+    if (find("lecture-upload")) find("lecture-upload").disabled = busy || !signedIn || !destination;
+    if (find("save-destination")) find("save-destination").disabled = busy || !notebook.value;
   }
   async function action(work) {
     if (busy) return;
     busy = true; availability(); message.textContent = "Working…";
     try { await work(); message.textContent = ""; }
-    catch (error) { message.textContent = error.message; }
+    catch (error) {
+      // A deleted destination or expired grant may have invalidated saved setup.
+      try { await refresh(false); } catch { /* Keep the original actionable failure. */ }
+      message.textContent = error.message;
+    }
     finally { busy = false; availability(); }
   }
   function option(value, text) {
@@ -53,12 +61,19 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
     cursor = data.next_cursor; find("more").hidden = !cursor; notebook.disabled = false;
     availability();
   }
+  async function loadAccounts() {
+    const data = await post("/accounts");
+    account.replaceChildren(option("", "Choose an account"));
+    data.accounts.forEach((item) => account.append(option(item.id, item.label)));
+    accountsLoaded = true;
+    if (!data.accounts.length) throw new Error("No connected browser. Open ExtendLM, sign into both accounts, and enable MCP.");
+  }
   function renderJobs(jobs) {
     const list = find("jobs"); list.replaceChildren();
     if (!jobs.length) { list.textContent = "No uploads yet."; return; }
     jobs.forEach((job) => {
       const article = document.createElement("article"); article.className = "settings-subsection";
-      const heading = document.createElement("h3"); heading.textContent = `${job.notebook_title} · ${job.status.replaceAll("_", " ")}`;
+      const heading = document.createElement("h3"); heading.textContent = `${job.notebook_title} · ${job.status.replaceAll("_", " ")}${job.account_label ? ` · ${job.account_label}` : ""}`;
       const status = document.createElement("p"); status.textContent = job.message;
       const files = document.createElement("ul");
       job.files.forEach((file) => {
@@ -71,7 +86,7 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
         ["accepted", "partial", "ready", "indexing_failed"].includes(job.status) ? "check" : null;
       if (operation) {
         const button = document.createElement("button"); button.type = "button"; button.className = "sh-btn sh-btn--secondary";
-        button.textContent = operation === "resume" ? "Resume this upload" : "Check indexing";
+        button.textContent = operation === "resume" ? "Resume this upload" : "Refresh indexing";
         button.addEventListener("click", () => action(async () => {
           await post(`/jobs/${encodeURIComponent(job.id)}/${operation}`); await refresh();
         })); article.append(button);
@@ -79,14 +94,16 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
       list.append(article);
     });
   }
-  async function refresh() {
+  async function refresh(checkIndexing = true) {
+    if (closed) return;
     clearTimeout(timer);
-    const response = await fetch(endpoint + "/status", { cache: "no-store" });
+    const response = await fetch(endpoint + "/status" + (lectureId ? `?lecture_id=${encodeURIComponent(lectureId)}` : ""), { cache: "no-store" });
     if (!response.ok) throw new Error("Hub sign-in is unavailable. Reload the page.");
     const data = await response.json();
     signedIn = data.signed_in;
     const configured = signedIn && data.selected;
-    if (find("auth-status")) find("auth-status").textContent = configured ? "Setup saved. Use Send to NotebookLM from any lecture and choose its exam notebook." : signedIn ? "Signed in. Choose your browser and Google account below to finish setup." : "Sign in to authorize uploads from this browser.";
+    destination = configured ? data.destination || null : null;
+    if (find("auth-status")) find("auth-status").textContent = configured ? `Setup saved · ${data.account_label || "Selected browser/account"}. Choose an exam destination from a lecture.` : signedIn ? "Signed in. Choose your browser and Google account below to finish setup." : "Sign in again to authorize uploads from this browser.";
     if (find("disconnect")) find("disconnect").hidden = !signedIn;
     if (find("setup-needed")) find("setup-needed").hidden = !!configured;
     if (!configured) {
@@ -94,14 +111,37 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
       notebooksLoaded = false;
       find("more").hidden = true;
     }
+    if (find("destination")) find("destination").textContent = destination ? `${destination.notebook_title} · ${destination.account_label || data.account_label || "Selected browser/account"}` : configured ? `Choose a destination for this exam · ${data.account_label || "Selected browser/account"}` : "";
+    if (find("lecture-upload")) find("lecture-upload").textContent = destination ? `Send to ${destination.notebook_title}` : "Send to NotebookLM";
+    if (find("change-destination")) find("change-destination").hidden = !destination;
+    if (find("destination-picker")) find("destination-picker").hidden = !configured || (!!destination && !choosing);
     renderJobs(data.jobs || []);
     availability();
-    if (configured && !notebooksLoaded) {
+    if (signedIn && account && !accountsLoaded) {
+      await loadAccounts();
+      return refresh(checkIndexing);
+    }
+    if (configured && !notebooksLoaded && (!lectureId || !destination || choosing)) {
       notebooksLoaded = true;
       await loadNotebooks();
     }
-    if ((data.jobs || []).some((j) => ["queued", "uploading"].includes(j.status))) {
-      timer = setTimeout(() => refresh().catch((e) => { message.textContent = e.message; }), 4000);
+    let indexingPending = false;
+    if (signedIn && checkIndexing) {
+      for (const job of data.jobs || []) {
+        const count = indexingChecks.get(job.id) || 0;
+        if (!["accepted", "partial"].includes(job.status) || count >= 15 ||
+            job.files.some(f => f.source_status === "failed") ||
+            job.files.every(f => f.source_status === "ready")) continue;
+        indexingChecks.set(job.id, count + 1);
+        await post(`/jobs/${encodeURIComponent(job.id)}/check`);
+        indexingPending = true;
+      }
+    }
+    if (signedIn && (indexingPending || (data.jobs || []).some((j) => ["queued", "uploading"].includes(j.status)))) {
+      timer = setTimeout(() => {
+        if (busy) { timer = setTimeout(() => refresh().catch((e) => { message.textContent = e.message; }), 4000); return; }
+        return refresh().catch((e) => { message.textContent = e.message; });
+      }, 4000);
     }
   }
   find("connect-form")?.addEventListener("submit", (event) => {
@@ -115,11 +155,9 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
   find("accounts")?.addEventListener("click", () => action(async () => {
     notebook.replaceChildren(option("", "Choose an exam notebook")); notebook.disabled = true;
     find("more").hidden = true; account.disabled = true;
-    const data = await post("/accounts");
-    account.replaceChildren(option("", "Choose an account"));
-    data.accounts.forEach((item) => account.append(option(item.id, item.label)));
-    account.disabled = !data.accounts.length;
-    if (!data.accounts.length) throw new Error("No connected browser. Open ExtendLM, sign into both accounts, and enable MCP.");
+    await loadAccounts();
+    notebooksLoaded = false;
+    await refresh();
   }));
   account?.addEventListener("change", () => action(async () => {
     notebook.replaceChildren(option("", "Choose an exam notebook")); notebook.disabled = true;
@@ -130,7 +168,7 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
   notebook.addEventListener("change", availability);
   find("more").addEventListener("click", () => action(() => loadNotebooks(cursor)));
   find("disconnect")?.addEventListener("click", () => action(async () => {
-    await post("/disconnect"); notebooksLoaded = false; notebook.replaceChildren(option("", "Choose an exam notebook"));
+    await post("/disconnect"); notebooksLoaded = false; accountsLoaded = false; notebook.replaceChildren(option("", "Choose an exam notebook"));
     account.replaceChildren(option("", "Choose an account")); account.disabled = true;
     notebook.disabled = true; find("more").hidden = true; await refresh();
   }));
@@ -143,7 +181,15 @@ if (typeof module !== "undefined") module.exports = { queueExtendLMFiles };
     });
   });
   if (find("lecture-upload")) find("lecture-upload").addEventListener("click", () => action(async () => {
-    await post(`/lectures/${root.dataset.lectureId}/upload`, { notebook_id: notebook.value }); await refresh();
+    await post(`/lectures/${lectureId}/upload`); await refresh();
   }));
+  find("save-destination")?.addEventListener("click", () => action(async () => {
+    const data = await post(`/lectures/${lectureId}/destination`, { notebook_id: notebook.value });
+    destination = data.destination; choosing = false; await refresh();
+  }));
+  find("change-destination")?.addEventListener("click", () => action(async () => {
+    choosing = true; notebooksLoaded = false; await refresh();
+  }));
+  window.addEventListener("pagehide", () => { closed = true; clearTimeout(timer); });
   refresh().catch((error) => { message.textContent = error.message; });
 })();

@@ -420,6 +420,35 @@
           error.textContent = itemErrorText(item);
           row.append(error);
         }
+        if (item.can_delete_upload || item.cleanup_pending) {
+          const remove = documentRef.createElement("button");
+          remove.type = "button";
+          remove.className = "sh-btn sh-btn--danger";
+          remove.textContent = item.cleanup_pending ? "Retry file cleanup" : "Delete upload";
+          remove.addEventListener("click", async () => {
+            remove.disabled = true;
+            try {
+              const result = await root.StudyHubUploads.runDelete(documentRef, remove, item, fetchImpl);
+              if (!result) return;
+              completedItems.set(item.id, {
+                ...item, state: result.state, can_delete_upload: false,
+                cleanup_pending: result.cleanup_pending,
+                error: result.cleanup_pending ? result.message : null,
+              });
+              renderBatch({ ...batch, items: [] });
+            } catch (error) {
+              state.textContent = error.message || "Could not delete upload.";
+            } finally {
+              remove.disabled = false;
+            }
+          });
+          row.append(remove);
+        } else if (item.state === "quarantined") {
+          const recovery = documentRef.createElement("a");
+          recovery.href = item.lecture_id ? `/lectures/${item.lecture_id}` : "/quarantine";
+          recovery.textContent = item.lecture_id ? "Review lecture materials" : "Review upload";
+          row.append(recovery);
+        }
         items.append(row);
       });
       status.textContent = `Batch ${batch.outcome.replaceAll("_", " ")}.`;

@@ -32,10 +32,8 @@ class V2StepName(StrEnum):
 
     @classmethod
     def first_release(cls) -> tuple["V2StepName", ...]:
-        return (
-            *tuple(cls)[:11],
-            cls.QUIZ_PUBLISHED,
-        )
+        # Material intake is complete independently of quiz or notebook delivery.
+        return tuple(cls)[:11]
 
 
 @dataclass(frozen=True, slots=True)

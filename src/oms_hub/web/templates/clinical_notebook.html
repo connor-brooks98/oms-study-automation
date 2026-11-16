@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Clinical Notebook connection · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell sh-container settings-page" data-clinical-notebook data-csrf="{{ request.state.csrf_token }}">
+  <header class="sh-header"><div><h1 class="sh-title">Clinical Notebook</h1><p class="sh-subtitle">Send lecture files to your own Clinical Notebook installation.</p></div></header>
+  <p><a href="/settings">Back to Settings</a></p>
+  <section class="sh-card settings-card">
+    <h2>Connect your installation</h2>
+    <p>In Clinical Notebook, open Settings → Connected Apps. Create a named Study Hub connection with notebook-list and source-import permissions, choose the allowed notebooks, then copy its API base URL and integration token here.</p>
+    <p class="field-help">A loopback URL works only when the Hub and Clinical Notebook run on the same computer. For another computer, use its explicitly configured HTTPS integration gateway. Keep Clinical Notebook running; this connection does not open the app.</p>
+    <form data-cn-connect method="post" action="/settings/clinical-notebook/connect">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <label for="clinical-label">Installation name</label><input id="clinical-label" name="label" maxlength="100" placeholder="Clinical Notebook on my Mac" required>
+      <label for="clinical-endpoint">API base URL</label><input id="clinical-endpoint" name="endpoint" type="url" placeholder="https://your-host/api/external/v1" required>
+      <label for="clinical-token">Integration token</label><input id="clinical-token" name="token" type="password" autocomplete="new-password" placeholder="cn_int_…" required>
+      <div class="file-actions"><button class="sh-btn sh-btn--primary" type="submit">Save connection</button><button class="sh-btn sh-btn--secondary" type="button" data-cn-disconnect hidden>Disconnect Hub</button></div>
+    </form>
+    <p data-cn-connection role="status">Checking connection…</p>
+    <p class="field-help">The token is encrypted on the Hub and is never returned to this page. To revoke the connection entirely, revoke it in Clinical Notebook Connected Apps.</p>
+  </section>
+  <section class="sh-card settings-card">
+    <h2>Granted notebooks</h2><button class="sh-btn sh-btn--secondary" type="button" data-cn-notebooks>Refresh notebooks</button><ul data-cn-notebook-list></ul>
+    <p>Open a lecture to save an existing destination for its exam and send the available PDF and cleaned transcript.</p>
+  </section>
+  <p data-cn-message role="status" aria-live="polite"></p>
+  <section class="sh-card settings-card"><h2>Delivery history</h2><div data-cn-jobs aria-live="polite"></div></section>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/clinical_notebook.js?v=20261008.2" defer></script>{% endblock %}

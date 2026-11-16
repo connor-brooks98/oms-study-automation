@@ -26,6 +26,7 @@ class StudioSourceState(StrEnum):
     DELETING = "deleting"
     NEEDS_REVIEW = "needs_review"
     DELETED = "deleted"
+    SKIPPED = "skipped"
 
 
 class StudioRunState(StrEnum):

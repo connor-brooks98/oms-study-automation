@@ -199,8 +199,8 @@ def test_daily_workbench_keeps_progress_labels_and_unavailable_actions_honest() 
     assert 'class="dashboard-workbench"' in dashboard
     assert 'class="lecture-workbench"' in lecture
     assert 'href="/uploads/slides" aria-disabled="true"' not in lecture
-    assert "Upload materials</a>" in lecture
-    assert "Upload transcript</a>" in lecture
+    assert "components/lecture_material_panel.html" in lecture
+    assert "data-material-upload" in source("components/lecture_material_panel.html")
     assert '<progress class="upload-progress" max="100" value="0"' in uploads
     assert "data-cancel-duplicate" in uploads
     assert "subject }} Lecture {{ \"%02d\"|format(lecture.lecture_number) }}" in review
@@ -227,35 +227,18 @@ def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
     assert ".file-card .lecture-card-actions--single" in app_css
     assert ".lecture-regenerate" in app_css
     assert "white-space: normal" in app_css
-    assert lecture.count('class="file-actions lecture-card-actions') == 4
-    assert lecture.index("Open Lecture PDF") < lecture.index("Download original")
-    assert lecture.index("Open Transcript") < lecture.index("Download Transcript")
-    assert lecture.index("Open Lecture Outline") < lecture.index(
-        "Download Lecture Outline"
-    )
-    assert "Upload Lecture PPTX" not in lecture
-    assert "Upload Lecture Transcript" not in lecture
-    assert (
-        'primary sh-btn sh-btn--primary" href="/artifacts/'
-        '{{ slide_revision.id }}/pdf">Open Lecture PDF'
-    ) in lecture
-    assert (
-        'secondary sh-btn sh-btn--secondary" href="/artifacts/'
-        '{{ slide_revision.id }}/original">Download original'
-    ) in lecture
-    assert (
-        'primary sh-btn sh-btn--primary" href="/artifacts/'
-        '{{ transcript_revision.id }}/cleaned">Open Transcript'
-    ) in lecture
-    assert (
-        'secondary sh-btn sh-btn--secondary" href="/artifacts/'
-        '{{ transcript_revision.id }}/cleaned/download">Download Transcript'
-    ) in lecture
+    panel = source("components/lecture_material_panel.html")
+    assert "Download PPTX" in panel and "Download PDF" in panel and "View PDF" in panel
+    assert "Download TXT" in panel and "View TXT" in panel
+    assert 'target="_blank" rel="noopener noreferrer"' in panel
+    assert 'data-material-dropzone' in panel
+    assert lecture.index("Open Lecture Outline") < lecture.index("Download Lecture Outline")
     assert "Regenerate lecture outline" not in lecture
     assert "Regenerate lecture quiz" not in lecture
     assert "touch-action: none" in library_css
-    assert "uploads.js?v=20260914.1" in uploads
-    assert "Download Transcript" in lecture
+    assert '<script src="/static/uploads.js?v=' in uploads
+    assert uploads.index('/static/quarantine.js?v=') < uploads.index('/static/uploads.js?v=')
+    assert "Download TXT" in panel
     assert "Download Lecture Outline" in lecture
 
 
@@ -286,7 +269,10 @@ def test_quiz_builder_import_forms_use_locked_controls_without_losing_hooks() ->
     assert "<legend" not in studio
     assert studio.count("data-import-source-form") == 3
     assert studio.count('class="studio-intake-form" data-import-source-form') == 3
-    assert studio.count('class="sh-check studio-intake-notebook"') == 3
+    for retired_hook in ("studio-intake-notebook", "data-import-notebook", "attach_to_notebook"):
+        assert retired_hook not in studio
+    for source_type in ("file", "text", "url"):
+        assert f'data-import-source-type="{source_type}"' in studio
     assert 'class="sh-validation" data-import-source-list' in studio
     for tag, required in (("select", "sh-select"), ("textarea", "sh-textarea")):
         assert all(required in line for line in studio.splitlines() if f"<{tag}" in line)
@@ -456,12 +442,14 @@ def test_shared_chrome_containers_and_settings_pills_resist_legacy_cascade() -> 
     assert "connection-button {% if" not in settings
     for hook in (
         "data-voyage-configured",
-        "data-notebook-badge",
         "data-assignment-key",
         "data-runtime-port-source",
     ):
         position = settings.index(hook)
         assert "credential-state sh-pill" in settings[position - 120 : position]
+    assert "data-notebook-badge" not in settings
+    for destination in ("/settings/extendlm", "/settings/clinical-notebook"):
+        assert f'href="{destination}"' in settings
 
 
 def test_player_and_dynamic_foundations_preserve_shared_components() -> None:
@@ -485,9 +473,9 @@ def test_player_and_dynamic_foundations_preserve_shared_components() -> None:
     assert '"sh-empty anki-empty-compact"' in anki_js
     assert '"sh-empty__title"' in anki_js
     assert '"1 Study Hub quiz is ready."' in lecture_js
-    assert "Study Hub quiz is ready." in lecture
-    assert "slide_revision.canonical_derived_path.name" in lecture
-    assert "transcript_revision.canonical_derived_path.name" in lecture
+    assert "Study Hub quiz is ready." not in lecture
+    panel = source("components/lecture_material_panel.html")
+    assert "revision.canonical_derived_path.name" in panel
 
 
 def test_final_visual_corrections_preserve_locked_chrome() -> None:
@@ -537,9 +525,8 @@ def test_option_a_pass_tracker_keeps_the_three_lecture_panels_in_order() -> None
     processing_position = lecture.index("data-processing-checklist")
     tracker_position = lecture.index("data-pass-tracker")
     metadata_position = lecture.index('class="metadata-panel')
-    quiz_position = lecture.index('class="lecture-quiz-panel')
-    pipeline_position = lecture.index('class="pipeline-card')
-    assert quiz_position < tracker_position < pipeline_position < processing_position < metadata_position
+    materials_position = lecture.index("material-panel-grid")
+    assert materials_position < tracker_position < processing_position < metadata_position
     assert "<section" not in lecture[metadata_position:]
 
     for position in (processing_position, tracker_position):

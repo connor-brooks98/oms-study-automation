@@ -337,7 +337,9 @@ def test_direct_import_with_supplied_answers_never_calls_notebook(tmp_path: Path
     assert review[0].answer_provenance is AnswerProvenance.PROVIDED_BY_SOURCE
 
 
-def test_generated_answer_cannot_publish_before_question_verification(tmp_path: Path) -> None:
+def test_missing_answer_stays_private_until_manual_review_without_remote_calls(
+    tmp_path: Path,
+) -> None:
     notebook = NoSupportNotebook()
     app = acceptance_app(
         tmp_path,
@@ -358,13 +360,14 @@ def test_generated_answer_cannot_publish_before_question_verification(tmp_path: 
         f"/studio/runs/{run_id}/questions/{question_id}/verify-answer",
         headers=headers,
     )
-    published = client.post(f"/studio/runs/{run_id}/publication", headers=headers)
     assert blocked.status_code == 409
-    assert verified.status_code == 200
+    assert verified.status_code == 409
+    assert notebook.attach_calls == notebook.answer_calls == notebook.no_support_results == 0
+    edited = client.patch(f"/studio/runs/{run_id}/questions/{question_id}", headers=headers,
+        json={"correct_index": 0, "rationale": "Manually verified from the supplied material."})
+    assert edited.status_code == 200
+    published = client.post(f"/studio/runs/{run_id}/publication", headers=headers)
     assert published.status_code == 200
-    assert notebook.attach_calls == 1
-    assert notebook.answer_calls == 1
-    assert notebook.no_support_results == 1
 
 
 def test_mixed_import_stays_grouped_through_review_publication_and_grading(

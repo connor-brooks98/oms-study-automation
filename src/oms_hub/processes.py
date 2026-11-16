@@ -52,6 +52,7 @@ _FINISHED = {
     "deleted",
     "canceled",
     "removed",
+    "skipped",
 }
 _OPERATION: ContextVar[tuple[Database, str, str] | None] = ContextVar(
     "process_operation", default=None
@@ -166,6 +167,7 @@ class ProcessService:
                 "deleted",
                 "canceled",
                 "removed",
+                "skipped",
             }
         ]
         completed = [item for item in items if item not in ongoing]
@@ -331,7 +333,9 @@ class ProcessService:
             "running": state.replace("_", " ").capitalize(),
         }
         blocked = ""
-        if source_busy:
+        if family == "source" and row.purpose == "notebook":
+            blocked = "Legacy NotebookLM delivery is retired; retained work requires review."
+        elif source_busy:
             blocked = "Remote source mutation must finish reconciliation first."
         elif family == "anki" and (
             state in {"envelope_pending", "applying_local", "syncing", "verifying", "v3_r12_apply"}

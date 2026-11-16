@@ -1,3 +1,5 @@
+> Historical rollout record. Its NotebookLM connector and quiz-generation instructions are retired as of October 8, 2026. Use [current notebook delivery and upload guidance](operations/notebook-delivery.md) for ExtendLM, Clinical Notebook and practice-question imports. The original acceptance record below is retained for history.
+
 # Public Quiz Library and Gemini Notebook NUC Rollout
 
 This rollout uses branch `codex/native-study-hub-quizzes`. It keeps the native

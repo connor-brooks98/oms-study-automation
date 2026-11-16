@@ -673,7 +673,7 @@ def test_upload_only_answer_can_be_manually_completed_verified_and_published(tmp
     )
     service.store("run-1", (unresolved,))
     publisher = GenerationRepository(service.repository.database, practice_review=service)
-    assert any("upload-only" in blocker for blocker in service.blockers("run-1"))
+    assert any("retired" in blocker for blocker in service.blockers("run-1"))
     with pytest.raises(ValueError):
         publisher.publish_reviewed_studio_quiz("run-1")
     with pytest.raises(ValueError, match="incomplete"):

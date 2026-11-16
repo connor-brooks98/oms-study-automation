@@ -43,6 +43,9 @@ class Provider:
         self.connection = "browser_connection_0001"
         self.pdf = False
         self.source_status = "ready"
+        self.notebooks = [{"id": "notebook-1", "title": "Exam 3"}]
+        self.complete = True
+        self.notebook_pages = {}
 
     def handle(self, request):
         self.calls.append(request)
@@ -105,7 +108,10 @@ class Provider:
             assert args["auth_user_id"] == "0"
             result = {"authenticated": True, "capabilities": {}}
         elif name == "list_notebooks":
-            result = {"items": [{"id": "notebook-1", "title": "Exam 3"}], "next_cursor": ""}
+            result = self.notebook_pages.get(args.get("cursor", "")) or {
+                "items": self.notebooks,
+                "next_cursor": "",
+            }
         elif name.startswith("prepare_"):
             result = {
                 "resource_id": "exp_0123456789abcdef",
@@ -130,6 +136,7 @@ class Provider:
                 "resource_id": args["resource_id"],
                 "source_id": "source-1",
                 "status": "added",
+                "complete": self.complete,
             }
             if self.pdf:
                 assert args["split_mode"] == "single"
@@ -413,6 +420,273 @@ def test_stale_account_choice_cannot_select_a_different_browser(tmp_path):
             service.select(key, original)
         service.select(key, replacement)
         assert service.selection(key)["extension_connection"] == provider.connection
+
+
+def test_saved_exam_destination_survives_restart_and_same_account_but_not_account_change(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        service.save_destination(key, "cardio:3", "notebook-1")
+        assert service.destination(key, "cardio:4") is None
+        select(service, key)
+        assert service.destination(key, "cardio:3")["notebook_title"] == "Exam 3"
+        recovered = ExtendLMService(tmp_path, service.secrets)
+        try:
+            assert (
+                recovered.destination(key, "cardio:3")["account_label"] == "Browser 1 · Account 0"
+            )
+        finally:
+            recovered.close()
+        provider.connection = "different_browser_0001"
+        select(service, key)
+        assert service.destination(key, "cardio:3") is None
+        provider.connection = "browser_connection_0001"
+        select(service, key)
+        assert service.destination(key, "cardio:3") is None
+
+
+def test_deleted_destination_never_matches_replacement_by_title(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        service.save_destination(key, "cardio:3", "notebook-1")
+        provider.notebooks = [{"id": "replacement", "title": "Exam 3"}]
+        with pytest.raises(api.ExtendLMError, match="destination"):
+            service.destination(key, "cardio:3", validate=True)
+        assert service.destination(key, "cardio:3") is None
+        assert provider.put_count == 0
+
+
+def test_validating_saved_destination_preserves_another_tabs_paginated_choices(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        provider.notebook_pages = {
+            "": {"items": [{"id": "notebook-1", "title": "First exam"}], "next_cursor": "page2"},
+            "page2": {"items": [{"id": "notebook-2", "title": "Second exam"}], "next_cursor": ""},
+        }
+        service.notebooks(key)
+        service.notebooks(key, "page2")
+        service.save_destination(key, "cardio:3", "notebook-1")
+        assert service.destination(key, "cardio:3", validate=True)["notebook_id"] == "notebook-1"
+        service.save_destination(key, "cardio:4", "notebook-2")
+        assert service.destination(key, "cardio:4")["notebook_id"] == "notebook-2"
+
+
+def test_expired_grant_and_new_authorization_cannot_restore_destination(tmp_path):
+    with setup(tmp_path) as (service, _):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        service.save_destination(key, "cardio:3", "notebook-1")
+        with service.state(key, write=True) as data:
+            data["expires"] = 0
+        assert service.destination(key, "cardio:3") is None
+        _, new_key, _ = sign_in(service)
+        select(service, new_key)
+        assert service.destination(new_key, "cardio:3") is None
+
+
+def test_expired_access_token_without_refresh_hides_saved_destination(tmp_path):
+    with setup(tmp_path) as (service, _):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        service.save_destination(key, "cardio:3", "notebook-1")
+        with service.state(key, write=True) as data:
+            data["tokens"] = {"access_token": "expired", "expires_at": 0}
+        assert service.destination(key, "cardio:3") is None
+
+
+def test_destination_changes_affect_future_jobs_and_preserve_original_bytes(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        provider.notebooks.append({"id": "notebook-2", "title": "Exam 3 replacement"})
+        select(service, key)
+        original = service.save_destination(key, "cardio:3", "notebook-1")
+        provider.lose_add_response = True
+        job = service.enqueue(
+            key,
+            original["notebook_id"],
+            [("lecture.txt", io.BytesIO(b"A lecture transcript."))],
+            lecture_id=1,
+            expected_selection=original["selection"],
+            source_revisions=[9],
+        )
+        wait(service, key, job)
+        service.save_destination(key, "cardio:3", "notebook-2")
+        service.resume(key, job)
+        wait(service, key, job)
+        with service.state(key) as state:
+            assert state["jobs"][job]["source_revisions"] == [9]
+            assert (
+                state["jobs"][job]["files"][0]["sha256"]
+                == hashlib.sha256(b"A lecture transcript.").hexdigest()
+            )
+        assert provider.add_calls[-1]["notebook_id"] == "notebook-1"
+        assert service.destination(key, "cardio:3")["notebook_id"] == "notebook-2"
+        provider.connection = "different_browser_0001"
+        select(service, key)
+        with pytest.raises(api.ExtendLMError, match="Account changed"):
+            service.enqueue(
+                key,
+                original["notebook_id"],
+                [("lecture.txt", io.BytesIO(b"A lecture transcript."))],
+                expected_selection=original["selection"],
+            )
+
+
+def test_lecture_receipts_are_isolated_and_pending_or_failed_indexing_never_resends(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        for lecture_id in (1, 2):
+            job = service.enqueue(
+                key,
+                "notebook-1",
+                [("lecture.txt", io.BytesIO(b"A lecture transcript."))],
+                lecture_id=lecture_id,
+            )
+            wait(service, key, job)
+        receipts = service.jobs(key, lecture_id=1)
+        assert len(receipts) == 1
+        assert receipts[0]["lecture_id"] == 1
+        assert receipts[0]["account_label"] == "Browser 1 · Account 0"
+        assert len(service.jobs(key, lecture_id=2)) == 1
+        assert len(service.jobs(key)) == 2
+        for status in ("processing", "failed"):
+            provider.source_status = status
+            service.check_sources(key, job)
+            duplicate = service.enqueue(
+                key,
+                "notebook-1",
+                [("lecture.txt", io.BytesIO(b"A lecture transcript."))],
+                lecture_id=2,
+            )
+            assert duplicate == job
+            assert provider.put_count == 2
+        assert service.jobs(key, lecture_id=2)[0]["status"] == "indexing_failed"
+
+
+def test_existing_receipts_from_before_lecture_scoped_keys_are_reused(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        job = service.enqueue(
+            key, "notebook-1", [("lecture.txt", io.BytesIO(b"A lecture transcript."))], lecture_id=7
+        )
+        wait(service, key, job)
+        digest = hashlib.sha256(b"A lecture transcript.").hexdigest()
+        legacy_id = hashlib.sha256(
+            json.dumps(
+                [service.selection(key), "notebook-1", [("lecture.txt", digest)]], sort_keys=True
+            ).encode()
+        ).hexdigest()
+        with service.state(key, write=True) as state:
+            receipt = state["jobs"].pop(job)
+            receipt["id"] = legacy_id
+            state["jobs"][legacy_id] = receipt
+        duplicate = service.enqueue(
+            key, "notebook-1", [("lecture.txt", io.BytesIO(b"A lecture transcript."))], lecture_id=7
+        )
+        assert duplicate == legacy_id
+        assert provider.put_count == 1
+
+
+def test_partial_import_stays_partial_after_accepted_sources_are_ready(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        provider.complete = False
+        job = service.enqueue(
+            key, "notebook-1", [("lecture.txt", io.BytesIO(b"A lecture transcript."))]
+        )
+        wait(service, key, job)
+        service.check_sources(key, job)
+        assert service.jobs(key)[0]["status"] == "partial"
+        service.resume(key, job)
+        assert provider.put_count == 1
+
+
+def test_changed_material_snapshot_is_not_sent_as_approved_revision(tmp_path):
+    with setup(tmp_path) as (service, provider):
+        _, key, _ = sign_in(service)
+        select(service, key)
+        with pytest.raises(api.ExtendLMError, match="changed while"):
+            service.enqueue(
+                key,
+                "notebook-1",
+                [("lecture.txt", io.BytesIO(b"Changed transcript."))],
+                source_hashes=[hashlib.sha256(b"Approved transcript.").hexdigest()],
+            )
+        assert provider.put_count == 0
+        assert list((tmp_path / key / "files").iterdir()) == []
+
+
+def test_destination_routes_share_only_the_catalog_exam_and_filter_lecture_receipts(
+    tmp_path, monkeypatch
+):
+    from oms_hub.repositories import LectureInput
+    from oms_hub.web.extendlm_routes import COOKIE
+
+    monkeypatch.setattr("oms_hub.app.KeyringSecretStore", Secrets)
+    with setup(tmp_path / "bridge") as (service, _):
+        app = create_app(
+            Settings(
+                _env_file=None, data_dir=tmp_path, database_url=f"sqlite:///{tmp_path / 'hub.db'}"
+            )
+        )
+        app.state.extendlm = service
+        ids = [
+            app.state.catalog_repository.upsert_lecture(
+                LectureInput(subject, exam, number, "Same lecture title", "", None)
+            )
+            for subject, exam, number in (
+                ("Cardio", 3, 1),
+                ("Cardio", 3, 2),
+                ("Cardio", 4, 1),
+                ("Renal", 3, 1),
+            )
+        ]
+        client = TestClient(app)
+        client.get("/settings/extendlm")
+        csrf = client.cookies.get(app.state.csrf.cookie_name)
+        login = client.post("/settings/extendlm/connect", data={"csrf_token": csrf})
+        state = parse_qs(urlsplit(login.json()["authorization_url"]).query)["state"][0]
+        client.get(
+            "/settings/extendlm/callback", params={"code": "c", "state": state, "iss": api.ISSUER}
+        )
+        choices = client.post("/settings/extendlm/accounts", data={"csrf_token": csrf}).json()[
+            "accounts"
+        ]
+        client.post(
+            "/settings/extendlm/select", data={"csrf_token": csrf, "choice": choices[0]["id"]}
+        )
+        client.post("/settings/extendlm/notebooks", data={"csrf_token": csrf})
+        path = f"/settings/extendlm/lectures/{ids[0]}/destination"
+        assert (
+            client.post(path, data={"notebook_id": "notebook-1", "csrf_token": "wrong"}).status_code
+            == 403
+        )
+        saved = client.post(path, data={"notebook_id": "notebook-1", "csrf_token": csrf})
+        assert saved.status_code == 200
+        assert saved.json()["destination"]["notebook_id"] == "notebook-1"
+        for lecture_id, expected in zip(ids, [True, True, False, False], strict=True):
+            status = client.get(f"/settings/extendlm/status?lecture_id={lecture_id}").json()
+            assert bool(status["destination"]) is expected
+            assert status["account_label"] == "Browser 1 · Account 0"
+        cookie = client.cookies.get(COOKIE)
+        # The app's trusted private-owner identity binds the encrypted browser grant.
+        assert cookie
+        session_key = service.session_key(cookie, "local-owner")
+        job = service.enqueue(
+            session_key,
+            "notebook-1",
+            [("lecture.txt", io.BytesIO(b"A lecture transcript."))],
+            lecture_id=ids[0],
+        )
+        wait(service, session_key, job)
+        assert len(client.get(f"/settings/extendlm/status?lecture_id={ids[0]}").json()["jobs"]) == 1
+        assert client.get(f"/settings/extendlm/status?lecture_id={ids[1]}").json()["jobs"] == []
+        assert client.get("/settings/extendlm/status?lecture_id=999999").status_code == 404
 
 
 def test_lecture_send_page_only_needs_exam_notebook_selection(tmp_path, monkeypatch):

@@ -35,6 +35,7 @@ from oms_hub.study_generation.domain import (
     SourceIsolationError,
     SourceKind,
 )
+from oms_hub.study_generation.notebook_connection import LEGACY_NOTEBOOK_RETIRED
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookGatewayError,
@@ -47,10 +48,8 @@ from oms_hub.study_generation.practice_domain import QuestionDraft
 from oms_hub.study_generation.repository import GenerationRepository
 
 logger = logging.getLogger(__name__)
-NOTEBOOKLM_UPLOAD_ONLY = (
-    "NotebookLM is upload-only. Study generation uses GPT; "
-    "retained NotebookLM work requires review."
-)
+# Compatibility name for retained generation diagnostics.
+NOTEBOOKLM_UPLOAD_ONLY = LEGACY_NOTEBOOK_RETIRED
 
 
 def reject_notebook_generation() -> None:
@@ -347,6 +346,9 @@ class StoredNotebookLMGateway:
             yield
 
     def ensure_notebook(self, subject: str, exam_number: int) -> NotebookRef:
+        raise NotebookGatewayError(
+            LEGACY_NOTEBOOK_RETIRED, source=DiagnosticSource.VALIDATION, retryable=False
+        )
         with self.mutation_scope(
             subject, exam_number, "notebook", str(uuid4())
         ):
@@ -364,6 +366,9 @@ class StoredNotebookLMGateway:
         pdf: RevisionSource,
         transcript: RevisionSource,
     ) -> LectureSourceSet:
+        raise NotebookGatewayError(
+            LEGACY_NOTEBOOK_RETIRED, source=DiagnosticSource.VALIDATION, retryable=False
+        )
         with self._remote_notebook_scope(notebook.id, "generation"):
             return cast(
                 LectureSourceSet,
@@ -427,6 +432,9 @@ class StoredNotebookLMGateway:
         text: str | None = None,
         url: str | None = None,
     ) -> tuple[str, str]:
+        raise NotebookGatewayError(
+            LEGACY_NOTEBOOK_RETIRED, source=DiagnosticSource.VALIDATION, retryable=False
+        )
         with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
             return cast(
                 tuple[str, str],
@@ -449,6 +457,9 @@ class StoredNotebookLMGateway:
         exam_number: int,
     ) -> tuple[str, frozenset[str]]:
         """Resolve the notebook and snapshot its sources before a durable add."""
+        raise NotebookGatewayError(
+            LEGACY_NOTEBOOK_RETIRED, source=DiagnosticSource.VALIDATION, retryable=False
+        )
         with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
             return cast(
                 tuple[str, frozenset[str]],
@@ -466,6 +477,9 @@ class StoredNotebookLMGateway:
         url: str | None = None,
     ) -> str:
         """Perform the effect only after the caller commits its operation intent."""
+        raise NotebookGatewayError(
+            LEGACY_NOTEBOOK_RETIRED, source=DiagnosticSource.VALIDATION, retryable=False
+        )
         with self._remote_notebook_scope(notebook_id, "studio"):
             return cast(
                 str,
@@ -487,6 +501,9 @@ class StoredNotebookLMGateway:
         *,
         baseline_ids: frozenset[str] | None = None,
     ) -> frozenset[str]:
+        raise NotebookGatewayError(
+            LEGACY_NOTEBOOK_RETIRED, source=DiagnosticSource.VALIDATION, retryable=False
+        )
         with self._remote_notebook_scope(notebook_id, "studio"):
             return cast(
                 frozenset[str],
@@ -529,6 +546,9 @@ class StoredNotebookLMGateway:
             )
 
     def delete_studio_source(self, notebook_id: str, source_id: str) -> bool:
+        raise NotebookGatewayError(
+            LEGACY_NOTEBOOK_RETIRED, source=DiagnosticSource.VALIDATION, retryable=False
+        )
         with self._remote_notebook_scope(notebook_id, "studio"):
             return cast(bool, _run(self._delete_studio_source(notebook_id, source_id)))
 
@@ -963,24 +983,11 @@ class StoredNotebookLMGateway:
 
     @asynccontextmanager
     async def _with_client(self) -> Any:
-        active = _active_client.get()
-        if active is not None:
-            yield active
-            return
-        with self.storage.plaintext() as storage_path:
-            context = (
-                self.client_factory()
-                if self.client_factory is not None
-                else _stored_client_context(storage_path)
-            )
-            async with context as client:
-                yield client
-
-
-def _stored_client_context(storage_path: Path) -> Any:
-    from notebooklm import NotebookLMClient
-
-    return NotebookLMClient.from_storage(str(storage_path))
+        raise NotebookGatewayError(
+            LEGACY_NOTEBOOK_RETIRED, source=DiagnosticSource.VALIDATION, retryable=False
+        )
+        # Keep the async context-manager shape while rejecting before any client exists.
+        yield None  # pragma: no cover
 
 
 def _remote_ready(remote: Any) -> bool:

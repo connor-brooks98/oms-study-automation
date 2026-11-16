@@ -73,7 +73,7 @@ def test_quiz_builder_keeps_generate_and_import_workflows(tmp_path) -> None:
 
     assert response.status_code == 200
     assert "Quiz Builder" in response.text
-    assert "Generate Quiz" in response.text
+    assert "workflow-panel-generate" not in response.text
     assert "Import Practice Questions" in response.text
     assert 'href="/studio/library/quizzes"' in response.text
     assert 'href="/studio/library/practice-questions"' in response.text
@@ -374,7 +374,7 @@ def test_all_import_source_forms_persist_checked_and_unchecked_defaults_across_r
     assert page.text.count('name="role" data-import-role') == 3
     assert page.text.count(
         'name="attach_to_notebook" value="true" data-import-notebook'
-    ) == 3
+    ) == 0
 
     submissions = tuple(
         (
@@ -436,7 +436,7 @@ def test_all_import_source_forms_persist_checked_and_unchecked_defaults_across_r
         assert record["import_defaults"] == expected_defaults[title]
 
 
-def test_remote_source_delete_is_queued_before_any_worker_effect(tmp_path) -> None:
+def test_retired_remote_source_delete_preserves_received_source(tmp_path) -> None:
     client = _client(tmp_path)
     source = client.app.state.studio_repository.create_source(
         "Neuro",
@@ -455,12 +455,19 @@ def test_remote_source_delete_is_queued_before_any_worker_effect(tmp_path) -> No
         headers=_csrf_headers(client),
     )
 
-    assert response.status_code == 202
-    assert response.json() == {"id": source.id, "state": "deleting"}
+    assert response.status_code == 410
+    assert "retired" in response.json()["detail"]
     stored = client.app.state.studio_repository.get(source.id)
     assert stored is not None
-    assert stored.state is StudioSourceState.DELETING
+    assert stored.state is StudioSourceState.ATTACHED
     assert stored.remote_source_id == "remote-1"
+    repository = client.app.state.studio_repository
+    run = repository.queue_run("Neuro", 1, "Retained prompt", [source.id],
+                               "Historical run", "Neuro", 1)
+    repository.fail_run(run.id, "legacy", "Retained error")
+    response = client.post(f"/studio/runs/{run.id}/rerun", headers=_csrf_headers(client))
+    assert response.status_code == 410
+    assert len(repository.list_runs()) == 1
 
 
 def test_import_endpoints_require_csrf_and_reject_invalid_source_ids(tmp_path) -> None:

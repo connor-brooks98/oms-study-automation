@@ -10,7 +10,9 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import OperationalError
 
+from oms_hub.artifact_writes import ArtifactWriteClaimLost, ArtifactWriteContended
 from oms_hub.document_processing.lecture_intake import SUPPORTED_LECTURE_SUFFIXES
 from oms_hub.ingestion.domain import (
     StagedUpload,
@@ -18,20 +20,20 @@ from oms_hub.ingestion.domain import (
     UploadManifestSlot,
     UploadState,
 )
-from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.ingestion.repository import CLEANUP_PENDING, IngestionRepository, RemovedMaterialError
 from oms_hub.ingestion.service import IngestionService
 from oms_hub.ingestion.staging import (
     StagingService,
     UploadManifestRejected,
     UploadRejected,
 )
+from oms_hub.lecture_materials import LectureMaterials, MaterialConflict
 from oms_hub.repositories import CatalogRepository
+from oms_hub.web.csrf import require_form_csrf
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-templates = Jinja2Templates(
-    directory=str(Path(__file__).parent / "templates")
-)
+templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
 @router.get("/uploads", response_class=HTMLResponse)
@@ -242,6 +244,11 @@ def batch_status(batch_id: str, request: Request) -> JSONResponse:
     payload = batch.public_dict()
     items = cast(list[dict[str, object]], payload["items"])
     for item in items:
+        item_id = str(item["id"])
+        item["can_delete_upload"] = _repository(request).can_delete_unmatched(item_id)
+        item["cleanup_pending"] = (
+            item["state"] == UploadState.DISCARDED.value and item["error"] == CLEANUP_PENDING
+        )
         if item["state"] != UploadState.AWAITING_CONFIRMATION.value:
             continue
         lecture_id = item.get("lecture_id")
@@ -280,14 +287,43 @@ def confirm_transcript(
 def discard_transcript(
     item_id: str,
     request: Request,
-) -> dict[str, str]:
+) -> dict[str, object]:
     try:
-        item = _ingestion(request).discard_item(item_id)
+        item = _ingestion(request).discard_item(
+            item_id,
+            expected_state=UploadState.AWAITING_CONFIRMATION,
+        )
     except KeyError as error:
         raise HTTPException(404, "upload item not found") from error
     except (OSError, UploadRejected, ValueError) as error:
         raise HTTPException(409, str(error)) from error
-    return _decision_payload(item.id, item.state)
+    result: dict[str, object] = dict(_decision_payload(item.id, item.state))
+    if item.error:
+        result["message"] = item.error
+        result["cleanup_pending"] = True
+    return result
+
+
+@router.post("/api/upload-items/{item_id}/delete")
+def delete_unmatched_upload(item_id: str, request: Request) -> dict[str, object]:
+    owner = getattr(request.state, "study_owner_id", None)
+    if not isinstance(owner, str) or not owner:
+        raise HTTPException(403, "Private Hub sign-in required.")
+    require_form_csrf(request, None)
+    try:
+        item = _ingestion(request).discard_item(
+            item_id,
+            expected_state=UploadState.QUARANTINED,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "upload item not found") from error
+    except (OSError, UploadRejected, ValueError) as error:
+        raise HTTPException(409, str(error)) from error
+    return {
+        **_decision_payload(item.id, item.state),
+        "cleanup_pending": item.error == CLEANUP_PENDING,
+        "message": item.error or "Upload deleted",
+    }
 
 
 @router.post("/api/upload-chunks", status_code=201)
@@ -469,30 +505,46 @@ def _finalize_manifest(
     try:
         staging.record_manifest_finalization(manifest_id, batch_id)
         moved = staging.promote_manifest(manifest_id, batch_id)
-        _repository(request).finalize_batch(
-            manifest.kind,
-            batch_id,
-            moved,
-            lecture_id=manifest.lecture_id,
-            decisions=decisions,
+        reused = (
+            manifest.kind is UploadKind.SLIDES and manifest.lecture_id is not None
+            and LectureMaterials(request.app.state.database, request.app.state.settings)
+            .accept_slide_reupload(_repository(request), batch_id, moved, manifest.lecture_id)
         )
-    except Exception:
-        reverted = False
+        if not reused:
+            _repository(request).finalize_batch(
+                manifest.kind,
+                batch_id,
+                moved,
+                lecture_id=manifest.lecture_id,
+                decisions=decisions,
+            )
+    except Exception as error:
         try:
             # This is deliberately safe with an empty moved list: promotion
             # can fail after moving files but before returning that list.
             staging.revert_promoted_manifest(manifest_id, batch_id, moved)
-            reverted = True
         except Exception:  # noqa: BLE001 - retain pending recovery locator
             logger.exception(
                 "manifest rollback requires recovery: %s -> %s",
                 manifest_id,
                 batch_id,
             )
+        else:
+            staging.clear_manifest_finalization_outcome(manifest_id)
+            if isinstance(error, (
+                RemovedMaterialError, MaterialConflict, ArtifactWriteContended,
+                ArtifactWriteClaimLost, OperationalError,
+            )):
+                staging.abandon_manifest_finalization(manifest_id)
+                detail = str(error)
+                if not isinstance(error, RemovedMaterialError):
+                    detail = (
+                        "Slides could not be re-added safely. Retained files must verify and "
+                        "lecture processes must be idle. No material was changed."
+                    )
+                raise HTTPException(409, detail) from error
         finally:
             staging.release_manifest_finalization(manifest_id)
-            if reverted:
-                staging.clear_manifest_finalization_outcome(manifest_id)
         raise
     # The repository transaction is the durable acceptance boundary.  Cleanup
     # and catalog progress are recoverable side effects and must never hide a

@@ -10,6 +10,7 @@ from oms_hub.document_processing.lecture_intake import (
     SUPPORTED_LECTURE_SUFFIXES,
     validate_lecture_source,
 )
+from oms_hub.files.trusted_paths import trusted_managed_path
 from oms_hub.ingestion.domain import (
     ChunkSession,
     StagedUpload,
@@ -575,14 +576,17 @@ class StagingService:
             manifest_owned=session.manifest_owned,
         )
 
-    def discard_file(self, path: Path) -> None:
-        resolved_root = self.root.resolve()
-        resolved = path.resolve()
-        if not resolved.is_relative_to(resolved_root):
+    def validate_discard_path(self, path: Path) -> None:
+        if not path.is_absolute() or not path.is_relative_to(self.root):
             raise UploadRejected("upload path escaped staging root")
-        if not resolved.is_file():
-            raise UploadRejected("staged upload file is missing")
-        resolved.unlink()
+        if not trusted_managed_path(path, self.root, require_regular_file=False):
+            raise UploadRejected("staged upload path is unsafe")
+
+    def discard_file(self, path: Path) -> None:
+        self.validate_discard_path(path)
+        # Missing files are successful retries, including a crash after unlink
+        # but before the cleanup acknowledgement was committed.
+        path.unlink(missing_ok=True)
 
     def collect_expired(
         self,

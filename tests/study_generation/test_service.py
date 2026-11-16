@@ -5,16 +5,10 @@ import pytest
 
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.ingestion.domain import UploadKind
-from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.study_generation.domain import (
     GenerationKind,
     GenerationState,
     PromptSnapshot,
-)
-from oms_hub.study_generation.notebook_connection import NotebookConnectionStatus
-from oms_hub.study_generation.notebook_errors import (
-    NotebookAuthenticationError,
-    NotebookGatewayError,
 )
 from oms_hub.study_generation.service import (
     GenerationPrerequisiteError,
@@ -76,7 +70,7 @@ class Jobs:
     def __init__(self):
         self.advanced = None
 
-    def queue(self, lecture_id, kind):
+    def queue(self, lecture_id, kind, *, backend, codex_model):
         return type(
             "Job",
             (),
@@ -84,6 +78,8 @@ class Jobs:
                 "id": "job-1",
                 "pdf_revision_id": None,
                 "kind": kind,
+                "backend": backend,
+                "codex_model": codex_model,
                 "state": GenerationState.QUEUED,
             },
         )()
@@ -98,7 +94,7 @@ class Jobs:
 
 
 class PausedJobs(Jobs):
-    def queue(self, lecture_id, kind):
+    def queue(self, lecture_id, kind, *, backend, codex_model):
         return type(
             "Job",
             (),
@@ -106,6 +102,8 @@ class PausedJobs(Jobs):
                 "id": "job-1",
                 "pdf_revision_id": 10,
                 "kind": kind,
+                "backend": backend,
+                "codex_model": codex_model,
                 "state": GenerationState.PAUSED,
             },
         )()
@@ -131,6 +129,7 @@ def test_outline_queue_requires_current_pdf_and_cleaned_transcript(tmp_path):
         Jobs(),
         Prompts(),
         google,
+        backend="codex_subscription", model="frozen-model",
     )
 
     with pytest.raises(GenerationPrerequisiteError) as error:
@@ -142,7 +141,7 @@ def test_outline_queue_requires_current_pdf_and_cleaned_transcript(tmp_path):
     )
 
 
-def test_quiz_queue_identifies_a_changed_pdf_checksum(tmp_path):
+def test_outline_queue_identifies_a_changed_pdf_checksum(tmp_path):
     pdf = tmp_path / "lecture.pdf"
     transcript = tmp_path / "transcript.txt"
     pdf.write_bytes(b"changed")
@@ -170,10 +169,11 @@ def test_quiz_queue_identifies_a_changed_pdf_checksum(tmp_path):
         Jobs(),
         Prompts(),
         Google(),
+        backend="codex_subscription", model="frozen-model",
     )
 
     with pytest.raises(GenerationPrerequisiteError) as error:
-        service.queue_quiz(4)
+        service.queue_outline(4)
 
     assert str(error.value) == (
         "Current lecture PDF and cleaned transcript are required: "
@@ -212,6 +212,7 @@ def test_queue_snapshots_current_revision_ids_and_prompt(tmp_path):
         jobs,
         Prompts(),
         google,
+        backend="codex_subscription", model="frozen-model",
     )
 
     service.queue_outline(4)
@@ -219,7 +220,7 @@ def test_queue_snapshots_current_revision_ids_and_prompt(tmp_path):
     assert jobs.advanced["pdf_revision_id"] == 10
     assert jobs.advanced["transcript_revision_id"] == 11
     assert jobs.advanced["prompt_sha256"] == "a" * 64
-    assert google.live_checks == 1
+    assert google.live_checks == 0
     assert catalog.steps[-1][:3] == (
         4,
         V2StepName.SUMMARY_FILED,
@@ -256,6 +257,7 @@ def test_retrying_paused_generation_returns_progress_to_queued(tmp_path):
         PausedJobs(),
         Prompts(),
         Google(),
+        backend="codex_subscription", model="frozen-model",
     )
 
     service.queue_outline(4)
@@ -265,52 +267,3 @@ def test_retrying_paused_generation_returns_progress_to_queued(tmp_path):
         V2StepName.SUMMARY_FILED,
         StepStatus.QUEUED,
     )
-
-
-@pytest.mark.parametrize("kind", ["outline", "quiz"])
-@pytest.mark.parametrize("raises", [True, False])
-@pytest.mark.parametrize(("failure", "expected"), [
-    (NotebookGatewayError("Connection check timed out. Try again.",
-                          source=DiagnosticSource.NETWORK, retryable=True), "timed out"),
-    (RuntimeError("SID=secret"), "could not be verified"),
-    (NotebookAuthenticationError(), "reconnect"),
-])
-def test_queue_only_requests_reconnect_for_authentication_errors(
-    tmp_path, kind, raises, failure, expected,
-):
-    import hashlib
-
-    revisions = []
-    for revision_id, upload_kind in enumerate((UploadKind.SLIDES, UploadKind.TRANSCRIPTS)):
-        path = tmp_path / upload_kind.value
-        path.write_bytes(b"source")
-        revisions.append(Revision(
-            revision_id, upload_kind, path, hashlib.sha256(b"source").hexdigest(),
-        ))
-
-    class FailedConnection(Google):
-        def require_live(self):
-            if raises:
-                raise failure
-            if isinstance(failure, NotebookAuthenticationError):
-                return NotebookConnectionStatus("failed")
-            return NotebookConnectionStatus("unverified")
-
-    jobs = Jobs()
-    service = GenerationService(
-        Catalog(), Ingestion(revisions), jobs, Prompts(), FailedConnection(),
-    )
-
-    with pytest.raises(GenerationPrerequisiteError) as error:
-        getattr(service, f"queue_{kind}")(4)
-
-    if raises:
-        assert expected in str(error.value).casefold()
-    elif not isinstance(failure, NotebookAuthenticationError):
-        assert "could not be verified" in str(error.value).casefold()
-    else:
-        assert "connect" in str(error.value).casefold()
-    assert "SID=" not in str(error.value)
-    if not isinstance(failure, NotebookAuthenticationError):
-        assert "reconnect" not in str(error.value).casefold()
-    assert jobs.advanced is None

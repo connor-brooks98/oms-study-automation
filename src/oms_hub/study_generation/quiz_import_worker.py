@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, replace
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Protocol, TypedDict, cast
+from typing import Any, Protocol
 
 from oms_hub.db import is_sqlite_busy
 from oms_hub.document_processing.domain import (
@@ -58,7 +56,7 @@ from oms_hub.study_generation.studio_domain import (
     StudioSource,
     StudioSourceState,
 )
-from oms_hub.study_generation.studio_repository import NotebookMutationBusy, StudioRepository
+from oms_hub.study_generation.studio_repository import StudioRepository
 
 _DOWNSTREAM_PREFIXES = {
     StudioRunStage.PARSE: ("extract", "pair", "answered", "normalized"),
@@ -107,16 +105,6 @@ class NotebookAttacher(Protocol):
         *,
         baseline_ids: frozenset[str] | None = None,
     ) -> frozenset[str]: ...
-
-
-class AttachmentArguments(TypedDict, total=False):
-    path: Path
-    text: str
-    url: str
-
-
-class _ImportAttachmentPending(RuntimeError):
-    """A durable remote effect must be reconciled before import can continue."""
 
 
 def stage_signature(
@@ -222,13 +210,6 @@ class QuizImportWorker:
                 str(error),
                 retry=False,
                 raw_response="\n".join(error.raw_responses),
-            )
-        except _ImportAttachmentPending as error:
-            self.repository.retry_run(
-                run.id,
-                DiagnosticSource.STUDY_HUB.value,
-                str(error),
-                timedelta(seconds=1),
             )
         except NotebookGatewayError as error:
             self._record_failure(run, error.source.value, str(error), retry=error.retryable)
@@ -452,267 +433,23 @@ class QuizImportWorker:
         sources: tuple[StudioSource, ...],
         roles: tuple[ImportSourceRole, ...],
     ) -> tuple[QuestionDraftValue, ...]:
-        missing = tuple(
-            draft
-            for draft in drafts
-            if isinstance(draft, QuestionDraft) and draft.correct_index is None
-        )
-        if not missing:
-            return drafts
-        if not any(
-            binding.attach_to_notebook
-            and binding.role
-            in {ImportSourceRole.SUPPORTING_REFERENCE, ImportSourceRole.COMBINED}
-            for binding in self.repository.import_sources(run.id)
-        ):
-            return tuple(
-                replace(
-                    draft,
-                    diagnostics=(
-                        *draft.diagnostics,
-                        DraftDiagnostic(
-                            "notebook-support-not-selected",
-                            (
-                                "answer remains unresolved because no supporting reference "
-                                "was selected for NotebookLM"
-                            ),
-                            DiagnosticSeverity.BLOCKER,
-                        ),
-                    ),
-                )
-                if isinstance(draft, QuestionDraft) and draft.correct_index is None
-                else draft
-                for draft in drafts
-            )
-        self.repository.set_run_stage(run.id, StudioRunStage.ANSWER_NOTEBOOK)
-        remote_ids = self._supporting_remote_ids(run, sources, roles)
-        binding_identities = self._supporting_binding_identities(run.id)
-        signature = stage_signature(
-            "answer",
-            source_hashes=tuple(source.snapshot_sha256 or "" for source in sources),
-            parser_versions=(),
-            provider_model=f"notebooklm+{self._answer_model()}",
-            prompt_version="practice-answer-resolution-v2",
-            artifact_hashes=(_artifact_hash(self.repository, run.id, "pair"),),
-            roles=tuple(role.value for role in roles),
-            binding_identities=binding_identities,
-        )
-        cached = self.repository.run_artifact(run.id, "answered")
-        if cached is not None and cached.signature_sha256 == signature:
-            return _drafts_from_json(cached.payload_json)
-        if cached is not None:
-            self.repository.invalidate_import_artifacts_after(
-                run.id, _DOWNSTREAM_PREFIXES[StudioRunStage.ANSWER_NOTEBOOK]
-            )
-        scope = AnswerResolutionScope(run.subject, run.exam_number, remote_ids)
-        resolved_drafts: list[QuestionDraftValue] = []
-        for draft in drafts:
-            if not isinstance(draft, QuestionDraft) or draft.correct_index is not None:
-                resolved_drafts.append(draft)
-                continue
-            key = f"answered:{draft.question_id}"
-            cached_answer = self.repository.run_artifact(run.id, key)
-            if cached_answer is not None and cached_answer.signature_sha256 == signature:
-                (resolved_draft,) = _drafts_from_json(cached_answer.payload_json)
-            else:
-                resolved_draft = _without_resolved_missing_answer_diagnostics(
-                    self.answers.resolve(draft, scope), was_missing=True,
-                )
-                self.repository.save_run_artifact(
-                    run.id, key, signature, _drafts_json((resolved_draft,))
-                )
-            resolved_drafts.append(resolved_draft)
-        resolved = tuple(resolved_drafts)
-        if any(draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI for draft in resolved):
-            self.repository.set_run_stage(run.id, StudioRunStage.ANSWER_FALLBACK)
-        self.repository.save_run_artifact(run.id, "answered", signature, _drafts_json(resolved))
-        return resolved
-
-    def _supporting_remote_ids(
-        self,
-        run: StudioRun,
-        sources: tuple[StudioSource, ...],
-        roles: tuple[ImportSourceRole, ...],
-    ) -> tuple[str, ...]:
-        bindings = self.repository.import_sources(run.id)
-        remote_ids: list[str] = []
-        for binding, source, role in zip(bindings, sources, roles, strict=True):
-            if not binding.attach_to_notebook:
-                continue
-            if role not in {ImportSourceRole.SUPPORTING_REFERENCE, ImportSourceRole.COMBINED}:
-                raise ValueError("question and answer-key sources must not attach to NotebookLM")
-            if bool(binding.remote_notebook_id) != bool(binding.remote_source_id):
-                raise ValueError("NotebookLM supporting source binding is incomplete")
-            if binding.remote_notebook_id and binding.remote_source_id:
-                remote_ids.append(binding.remote_source_id)
-                continue
-            remote_id = self._attach_supporting_source(run, source)
-            remote_ids.append(remote_id)
-        if not remote_ids:
-            raise ValueError("missing answers require an attached supporting reference")
-        if len(remote_ids) != len(set(remote_ids)):
-            raise ValueError("NotebookLM supporting source bindings are not distinct")
-        return tuple(remote_ids)
-
-    def _attach_supporting_source(self, run: StudioRun, source: StudioSource) -> str:
-        """Drive one durable add, reconciling an interrupted effect before retry."""
-        for _attempt in range(2):
-            try:
-                operation = self.repository.ensure_import_source_attachment(run.id, source.id)
-            except NotebookMutationBusy as error:
-                raise _ImportAttachmentPending(str(error)) from error
-            if operation is None:
-                binding = next(
-                    item
-                    for item in self.repository.import_sources(run.id)
-                    if item.source_id == source.id
-                )
-                if not binding.remote_source_id:
-                    raise ValueError("durable NotebookLM import binding is incomplete")
-                return binding.remote_source_id
-
-            claimed = self.repository.claim_source_operation(operation.id)
-            if claimed is None:
-                raise _ImportAttachmentPending(
-                    "NotebookLM source attachment is owned by another worker"
-                )
-            operation, claimed_source = claimed
-            if operation.state == "reconciling":
-                try:
-                    with self._notebook_scope(run, operation.id):
-                        if not operation.notebook_id:
-                            raise ValueError("durable source operation is missing its notebook")
-                        remote_ids = self.notebook.list_studio_source_ids(
-                            operation.notebook_id,
-                            baseline_ids=operation.baseline_remote_ids,
-                        )
-                    outcome = self.repository.reconcile_attach_operation(
-                        operation.id,
-                        set(remote_ids),
-                        import_run_id=run.id,
-                    )
-                except NotebookGatewayError as error:
-                    self.repository.mark_attach_reconciling(
-                        operation.id,
-                        error.source.value,
-                        str(error),
-                        during_reconciliation=True,
-                    )
-                    raise _ImportAttachmentPending(str(error)) from error
-                except Exception as error:
-                    self.repository.mark_attach_reconciling(
-                        operation.id,
-                        DiagnosticSource.STUDY_HUB.value,
-                        str(error),
-                        during_reconciliation=True,
-                    )
-                    raise _ImportAttachmentPending(str(error)) from error
-                if outcome == "adopted":
-                    binding = next(
-                        item
-                        for item in self.repository.import_sources(run.id)
-                        if item.source_id == source.id
-                    )
-                    assert binding.remote_source_id is not None
-                    return binding.remote_source_id
-                if outcome == "retry":
-                    continue
-                raise ValueError(
-                    "NotebookLM source attachment requires manual reconciliation"
-                )
-
-            remote_effect_started = False
-            try:
-                arguments = _attachment_arguments(claimed_source)
-                with self._notebook_scope(run, operation.id):
-                    notebook_id, baseline = self.notebook.prepare_studio_source_add(
-                        run.subject,
-                        run.exam_number,
-                    )
-                    self.repository.record_attach_baseline(
-                        operation.id,
-                        notebook_id,
-                        set(baseline),
-                    )
-                    remote_effect_started = True
-                    remote_id = self.notebook.add_studio_source_to_notebook(
-                        notebook_id,
-                        claimed_source.source_type.value,
-                        claimed_source.title,
-                        **arguments,
-                    )
-                self.repository.complete_attach_operation(
-                    operation.id,
-                    remote_id,
-                    import_run_id=run.id,
-                )
-                return remote_id
-            except NotebookMutationBusy as error:
-                self.repository.defer_attach_for_notebook(operation.id)
-                raise _ImportAttachmentPending(str(error)) from error
-            except NotebookGatewayError as error:
-                if remote_effect_started:
-                    self.repository.mark_attach_reconciling(
-                        operation.id,
-                        error.source.value,
-                        str(error),
-                    )
-                    raise _ImportAttachmentPending(str(error)) from error
-                self.repository.fail_attach_preparation(
-                    operation.id,
-                    error.source.value,
-                    str(error),
-                    retry=error.retryable,
-                )
-                raise
-            except Exception as error:
-                if remote_effect_started:
-                    self.repository.mark_attach_reconciling(
-                        operation.id,
-                        DiagnosticSource.STUDY_HUB.value,
-                        str(error),
-                    )
-                    raise _ImportAttachmentPending(str(error)) from error
-                self.repository.fail_attach_preparation(
-                    operation.id,
-                    DiagnosticSource.STUDY_HUB.value,
-                    str(error),
-                    retry=is_sqlite_busy(error),
-                )
-                raise
-        raise _ImportAttachmentPending(
-            "NotebookLM source attachment is queued after reconciliation"
-        )
-
-    def _notebook_scope(
-        self,
-        run: StudioRun,
-        operation_id: str,
-    ) -> AbstractContextManager[None]:
-        scope = getattr(self.notebook, "mutation_scope", None)
-        if not callable(scope):
-            return nullcontext()
-        return cast(
-            Callable[[str, int, str, str], AbstractContextManager[None]],
-            scope,
-        )(run.subject, run.exam_number, "studio", operation_id)
-
-    def _supporting_binding_identities(self, run_id: str) -> tuple[str, ...]:
-        bindings = self.repository.import_sources(run_id)
-        support_bindings = tuple(
-            binding
-            for binding in bindings
-            if binding.attach_to_notebook
-            and binding.role in {ImportSourceRole.SUPPORTING_REFERENCE, ImportSourceRole.COMBINED}
-        )
-        if any(
-            not binding.remote_notebook_id or not binding.remote_source_id
-            for binding in support_bindings
-        ):
-            raise ValueError("NotebookLM supporting source binding is incomplete")
+        # Historical bindings may request remote resolution. They are provenance only:
+        # imports never send reference copies or infer answers through the retired connector.
         return tuple(
-            f"{binding.position}:{binding.source_id}:{binding.remote_notebook_id}:{binding.remote_source_id}"
-            for binding in support_bindings
+            replace(
+                draft,
+                diagnostics=(
+                    *draft.diagnostics,
+                    DraftDiagnostic(
+                        "answer-review-required",
+                        "No answer was supplied. Enter and verify it during private review.",
+                        DiagnosticSeverity.BLOCKER,
+                    ),
+                ),
+            )
+            if isinstance(draft, QuestionDraft) and draft.correct_index is None
+            else draft
+            for draft in drafts
         )
 
     def _review(
@@ -723,14 +460,13 @@ class QuizImportWorker:
         roles: tuple[ImportSourceRole, ...],
     ) -> None:
         self.repository.set_run_stage(run.id, StudioRunStage.NORMALIZE)
-        pair_or_answer = "answered" if self.repository.run_artifact(run.id, "answered") else "pair"
         signature = stage_signature(
             "normalize",
             source_hashes=tuple(source.snapshot_sha256 or "" for source in sources),
             parser_versions=(),
             provider_model="local",
-            prompt_version="question-draft-review-v2",
-            artifact_hashes=(_artifact_hash(self.repository, run.id, pair_or_answer),),
+            prompt_version="question-draft-review-v3-local-answers",
+            artifact_hashes=(_artifact_hash(self.repository, run.id, "pair"),),
             roles=tuple(role.value for role in roles),
         )
         cached = self.repository.run_artifact(run.id, "normalized")
@@ -779,14 +515,6 @@ class QuizImportWorker:
             return f"{assignment.provider.value}:{assignment.model}"
         return "configured-extractor"
 
-    def _answer_model(self) -> str:
-        fallback = getattr(self.answers, "fallback", None)
-        settings = getattr(fallback, "settings", None)
-        if settings is not None:
-            assignment = settings.assignment(LLMTask.QUIZ_ANSWER_GENERATION)
-            return f"{assignment.provider.value}:{assignment.model}"
-        return "configured-answer-fallback"
-
 
 def _artifact_hash(repository: StudioRepository, run_id: str, key: str) -> str:
     artifact = repository.run_artifact(run_id, key)
@@ -826,20 +554,6 @@ def _extraction_failure_json(error: ExtractionError) -> str:
     )
 
 
-def _attachment_arguments(source: StudioSource) -> AttachmentArguments:
-    """Build one and only one NotebookLM payload argument from an immutable snapshot."""
-    assert source.payload_path is not None
-    if source.source_type.value == "file":
-        return {"path": source.payload_path}
-    if source.source_type.value == "text":
-        return {"text": source.payload_path.read_text(encoding="utf-8")}
-    if source.source_type.value == "url":
-        if not source.final_url:
-            raise ValueError("URL import source is missing its final URL snapshot")
-        return {"url": source.final_url}
-    raise ValueError("unsupported Studio source type for NotebookLM attachment")
-
-
 def _requires_review_before_resolution(draft: QuestionDraftValue) -> bool:
     """Only pairing's expected missing-answer markers are eligible for resolution."""
     if isinstance(draft, MatchingQuestionDraft):
@@ -850,21 +564,6 @@ def _requires_review_before_resolution(draft: QuestionDraftValue) -> bool:
         diagnostic.severity is DiagnosticSeverity.BLOCKER
         and diagnostic.code not in {"missing-supplied-answer", "unmatched-question"}
         for diagnostic in draft.diagnostics
-    )
-
-
-def _without_resolved_missing_answer_diagnostics(
-    draft: QuestionDraft, *, was_missing: bool
-) -> QuestionDraft:
-    if not was_missing:
-        return draft
-    return replace(
-        draft,
-        diagnostics=tuple(
-            diagnostic
-            for diagnostic in draft.diagnostics
-            if diagnostic.code not in {"missing-supplied-answer", "unmatched-question"}
-        ),
     )
 
 

@@ -75,15 +75,18 @@ class IngestionService:
         with self._decision_lock:
             return self.repository.confirm_processing(item_id)
 
-    def discard_item(self, item_id: str) -> StoredUploadItem:
-        with self._decision_lock:
-            item = self.repository.require_item(item_id)
-            if item.state is UploadState.DISCARDED:
-                return item
-            if item.state is not UploadState.AWAITING_CONFIRMATION:
-                raise ValueError("upload is not awaiting confirmation")
-            self.staging.discard_file(item.staged_path)
-            return self.repository.mark_discarded(item_id)
+    def discard_item(
+        self,
+        item_id: str,
+        *,
+        expected_state: UploadState | None = None,
+    ) -> StoredUploadItem:
+        self.repository.mark_discarded(
+            item_id,
+            validate_path=self.staging.validate_discard_path,
+            expected_state=expected_state,
+        )
+        return self.repository.cleanup_discarded(item_id, self.staging.discard_file)
 
     def collect_staging(
         self,
@@ -98,9 +101,7 @@ class IngestionService:
         for chunk in expired_chunks:
             if not chunk.manifest_owned and self.repository.get_batch(chunk.batch_id) is None:
                 removed += int(self.staging.discard_unreferenced_batch(chunk.batch_id))
-        for manifest_id, batch_id in self.staging.expired_pending_manifest_finalizations(
-            current
-        ):
+        for manifest_id, batch_id in self.staging.expired_pending_manifest_finalizations(current):
             committed = self.repository.get_batch(batch_id) is not None
             if not committed:
                 removed += int(self.staging.discard_unreferenced_batch(batch_id))
@@ -109,16 +110,14 @@ class IngestionService:
                     manifest_id, batch_id, committed=committed
                 )
             )
-        for path in self.repository.terminal_staging_paths_before(
-            current - terminal_retention
-        ):
+        for path in self.repository.terminal_staging_paths_before(current - terminal_retention):
             try:
+                existed = path.exists()
                 self.staging.discard_file(path)
             except UploadRejected:
-                # Missing files and paths outside staging are not cleanup
-                # candidates; a future collection remains safe/idempotent.
+                # Unsafe paths are never cleanup candidates.
                 continue
-            removed += 1
+            removed += int(existed)
         return removed
 
     def _complete_match_steps(

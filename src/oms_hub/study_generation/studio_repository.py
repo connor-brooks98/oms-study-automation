@@ -22,6 +22,7 @@ from oms_hub.models import (
     BankReviewQuestionModel,
     BankReviewRunModel,
     LectureModel,
+    NotebookScopeLeaseModel,
     ProcessControlModel,
     PublishedQuizMediaModel,
     PublishedQuizModel,
@@ -229,6 +230,51 @@ class StudioRepository:
             session.add(model)
             session.flush()
             return self._domain(model)
+
+    def retire_abandoned_notebook_sources(self) -> int:
+        """Retain audit/history while retiring only demonstrably unattempted optional work."""
+        with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+            rows = session.scalars(select(StudioSourceModel).where(
+                StudioSourceModel.purpose == StudioSourcePurpose.NOTEBOOK.value,
+                StudioSourceModel.state == StudioSourceState.NEEDS_REVIEW.value,
+                StudioSourceModel.diagnostic_source == "notebook_upload_unavailable",
+                StudioSourceModel.attempts == 0,
+                StudioSourceModel.remote_source_id.is_(None),
+                StudioSourceModel.remote_notebook_id.is_(None),
+                ~select(StudioSourceOperationModel.id).where(
+                    StudioSourceOperationModel.source_id == StudioSourceModel.id,
+                ).exists(),
+                ~select(NotebookScopeLeaseModel.owner_id).where(
+                    NotebookScopeLeaseModel.subject_key == StudioSourceModel.subject_key,
+                    NotebookScopeLeaseModel.exam_number == StudioSourceModel.exam_number,
+                ).exists(),
+            ).with_for_update()).all()
+            retired = 0
+            for row in rows:
+                control = session.get(ProcessControlModel, ("source", row.id))
+                # An unacknowledged hold may represent an in-flight claim from an old worker.
+                if control is not None and control.requested_action and not control.acknowledged_at:
+                    continue
+                if control is None:
+                    control = ProcessControlModel(family="source", job_id=row.id,
+                        owner_id="system:legacy-notebook-retirement", events_json="[]")
+                    session.add(control)
+                now = datetime.now(UTC).isoformat()
+                reason = "Optional legacy NotebookLM upload retired without uploading."
+                control.events_json = json.dumps([*json.loads(control.events_json), {
+                    "action": "retired_legacy_notebook", "at": now,
+                    "previous_state": row.state,
+                    "previous_diagnostic_source": row.diagnostic_source,
+                    "previous_error": row.error, "reason": reason,
+                }])
+                row.state = StudioSourceState.SKIPPED.value
+                row.diagnostic_source = "legacy_notebook_retired"
+                row.error = reason
+                row.next_attempt_at = None
+                retired += 1
+            return retired
 
     def list_sources(
         self,
@@ -977,37 +1023,7 @@ class StudioRepository:
 
     def recover_interrupted_jobs(self) -> int:
         with self.database.session() as session:
-            active_operations = session.scalars(
-                select(StudioSourceOperationModel).where(
-                    StudioSourceOperationModel.state.in_(
-                        {"queued", "executing", "reconciling", "deleting"}
-                    )
-                )
-            ).all()
-            interrupted_operations = [
-                operation
-                for operation in active_operations
-                if operation.state == "executing"
-            ]
-            for operation in interrupted_operations:
-                operation.state = (
-                    "reconciling" if operation.operation_kind == "add" else "deleting"
-                )
-            for operation in active_operations:
-                operation.lease_owner = None
-                operation.lease_expires_at = None
-            source_models = session.scalars(
-                select(StudioSourceModel).where(
-                    StudioSourceModel.state == StudioSourceState.ATTACHING.value
-                )
-            ).all()
-            operation_source_ids = {
-                operation.source_id for operation in active_operations
-            }
-            for source_model in source_models:
-                if source_model.id not in operation_source_ids:
-                    source_model.state = StudioSourceState.NEEDS_REVIEW.value
-                    source_model.error = "interrupted legacy source attach requires review"
+            # Never claim, unlock, reconcile, or requeue retained remote effects.
             run_models = session.scalars(
                 select(StudioRunModel).where(StudioRunModel.state == StudioRunState.RUNNING.value)
             ).all()
@@ -1028,7 +1044,7 @@ class StudioRepository:
             )):
                 self._acknowledge_gpt_stop(session, run_id)
                 recover_hold(session, "studio", run_id)
-            return len(source_models) + len(interrupted_operations) + len(run_models)
+            return len(run_models)
 
     @staticmethod
     def require_legacy_predecessor(session: Session, run_id: str | None) -> None:

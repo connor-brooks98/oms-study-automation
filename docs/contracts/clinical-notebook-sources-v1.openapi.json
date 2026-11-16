@@ -1,0 +1,1242 @@
+{
+  "components": {
+    "schemas": {
+      "Body_file_import_api_external_v1_notebooks__notebook_id__sources_file_post": {
+        "properties": {
+          "external_document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Document Id"
+          },
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "metadata": {
+            "default": "{}",
+            "title": "Metadata",
+            "type": "string"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "file",
+          "idempotency_key"
+        ],
+        "title": "Body_file_import_api_external_v1_notebooks__notebook_id__sources_file_post",
+        "type": "object"
+      },
+      "Capabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "extensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Extensions",
+            "type": "array"
+          },
+          "input_types": {
+            "items": {
+              "enum": [
+                "file",
+                "text"
+              ],
+              "type": "string"
+            },
+            "title": "Input Types",
+            "type": "array"
+          },
+          "max_file_bytes": {
+            "title": "Max File Bytes",
+            "type": "integer"
+          },
+          "max_text_bytes": {
+            "title": "Max Text Bytes",
+            "type": "integer"
+          },
+          "processing": {
+            "const": "local_only",
+            "title": "Processing",
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_version",
+          "input_types",
+          "extensions",
+          "max_file_bytes",
+          "max_text_bytes",
+          "processing"
+        ],
+        "title": "Capabilities",
+        "type": "object"
+      },
+      "ExtractionProvenance": {
+        "additionalProperties": false,
+        "properties": {
+          "figure_pages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Figure Pages"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "local_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Only"
+          },
+          "ocr_pages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ocr Pages"
+          },
+          "review_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Required"
+          }
+        },
+        "title": "ExtractionProvenance",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ImportReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "notebook_id": {
+            "title": "Notebook Id",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "accepted",
+              "ready",
+              "needs_attention"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "source_id",
+          "notebook_id",
+          "status",
+          "sha256"
+        ],
+        "title": "ImportReceipt",
+        "type": "object"
+      },
+      "NotebookInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "title": "NotebookInfo",
+        "type": "object"
+      },
+      "NotebookList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NotebookInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "NotebookList",
+        "type": "object"
+      },
+      "OriginalFile": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          }
+        },
+        "required": [
+          "filename",
+          "media_type"
+        ],
+        "title": "OriginalFile",
+        "type": "object"
+      },
+      "SourceContent": {
+        "additionalProperties": false,
+        "properties": {
+          "locators": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Locators",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source_id",
+          "revision",
+          "text",
+          "sha256",
+          "warnings"
+        ],
+        "title": "SourceContent",
+        "type": "object"
+      },
+      "SourceInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "indexed": {
+            "title": "Indexed",
+            "type": "boolean"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "notebook_id": {
+            "title": "Notebook Id",
+            "type": "string"
+          },
+          "original": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OriginalFile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "original_available": {
+            "title": "Original Available",
+            "type": "boolean"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/ExtractionProvenance"
+          },
+          "readable": {
+            "title": "Readable",
+            "type": "boolean"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "processing",
+              "ready",
+              "needs_attention"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "notebook_id",
+          "title",
+          "revision",
+          "status",
+          "readable",
+          "indexed",
+          "original_available",
+          "warnings"
+        ],
+        "title": "SourceInfo",
+        "type": "object"
+      },
+      "SourceList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SourceInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "SourceList",
+        "type": "object"
+      },
+      "TextImport": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 1000000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "external_document_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Document Id"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "idempotency_key",
+          "content"
+        ],
+        "title": "TextImport",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "integrationToken": {
+        "description": "Revocable cn_int_ token created by the owner in Connected Apps.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Notebook-scoped import, read and original-file export for independent applications. Authorization: Bearer <named integration token>. This API never uses the native owner credential. Import processing is local only; readiness does not imply embedding or semantic indexing.",
+    "title": "Clinical Notebook Source API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/external/v1/capabilities": {
+      "get": {
+        "operationId": "capabilities_api_external_v1_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capabilities"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Token missing, invalid or revoked"
+          },
+          "403": {
+            "description": "Required capability was not granted"
+          },
+          "404": {
+            "description": "Not found within the authorized notebook"
+          },
+          "409": {
+            "description": "Identity or revision conflict"
+          },
+          "413": {
+            "description": "Import exceeds limits"
+          },
+          "429": {
+            "description": "Rate limit: retry after Retry-After seconds"
+          }
+        },
+        "security": [
+          {
+            "integrationToken": []
+          }
+        ],
+        "summary": "Capabilities"
+      }
+    },
+    "/api/external/v1/imports/{import_id}": {
+      "get": {
+        "operationId": "import_status_api_external_v1_imports__import_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Token missing, invalid or revoked"
+          },
+          "403": {
+            "description": "Required capability was not granted"
+          },
+          "404": {
+            "description": "Not found within the authorized notebook"
+          },
+          "409": {
+            "description": "Identity or revision conflict"
+          },
+          "413": {
+            "description": "Import exceeds limits"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Rate limit: retry after Retry-After seconds"
+          }
+        },
+        "security": [
+          {
+            "integrationToken": []
+          }
+        ],
+        "summary": "Import Status"
+      }
+    },
+    "/api/external/v1/notebooks": {
+      "get": {
+        "operationId": "notebooks_api_external_v1_notebooks_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Cursor",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotebookList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Token missing, invalid or revoked"
+          },
+          "403": {
+            "description": "Required capability was not granted"
+          },
+          "404": {
+            "description": "Not found within the authorized notebook"
+          },
+          "409": {
+            "description": "Identity or revision conflict"
+          },
+          "413": {
+            "description": "Import exceeds limits"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Rate limit: retry after Retry-After seconds"
+          }
+        },
+        "security": [
+          {
+            "integrationToken": []
+          }
+        ],
+        "summary": "Notebooks"
+      }
+    },
+    "/api/external/v1/notebooks/{notebook_id}/sources": {
+      "get": {
+        "operationId": "sources_api_external_v1_notebooks__notebook_id__sources_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notebook_id",
+            "required": true,
+            "schema": {
+              "title": "Notebook Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Cursor",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Token missing, invalid or revoked"
+          },
+          "403": {
+            "description": "Required capability was not granted"
+          },
+          "404": {
+            "description": "Not found within the authorized notebook"
+          },
+          "409": {
+            "description": "Identity or revision conflict"
+          },
+          "413": {
+            "description": "Import exceeds limits"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Rate limit: retry after Retry-After seconds"
+          }
+        },
+        "security": [
+          {
+            "integrationToken": []
+          }
+        ],
+        "summary": "Sources"
+      }
+    },
+    "/api/external/v1/notebooks/{notebook_id}/sources/file": {
+      "post": {
+        "operationId": "file_import_api_external_v1_notebooks__notebook_id__sources_file_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notebook_id",
+            "required": true,
+            "schema": {
+              "title": "Notebook Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_file_import_api_external_v1_notebooks__notebook_id__sources_file_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Token missing, invalid or revoked"
+          },
+          "403": {
+            "description": "Required capability was not granted"
+          },
+          "404": {
+            "description": "Not found within the authorized notebook"
+          },
+          "409": {
+            "description": "Identity or revision conflict"
+          },
+          "413": {
+            "description": "Import exceeds limits"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Rate limit: retry after Retry-After seconds"
+          }
+        },
+        "security": [
+          {
+            "integrationToken": []
+          }
+        ],
+        "summary": "File Import"
+      }
+    },
+    "/api/external/v1/notebooks/{notebook_id}/sources/text": {
+      "post": {
+        "operationId": "text_import_api_external_v1_notebooks__notebook_id__sources_text_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notebook_id",
+            "required": true,
+            "schema": {
+              "title": "Notebook Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TextImport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Token missing, invalid or revoked"
+          },
+          "403": {
+            "description": "Required capability was not granted"
+          },
+          "404": {
+            "description": "Not found within the authorized notebook"
+          },
+          "409": {
+            "description": "Identity or revision conflict"
+          },
+          "413": {
+            "description": "Import exceeds limits"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Rate limit: retry after Retry-After seconds"
+          }
+        },
+        "security": [
+          {
+            "integrationToken": []
+          }
+        ],
+        "summary": "Text Import"
+      }
+    },
+    "/api/external/v1/notebooks/{notebook_id}/sources/{source_id}": {
+      "get": {
+        "operationId": "source_metadata_api_external_v1_notebooks__notebook_id__sources__source_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notebook_id",
+            "required": true,
+            "schema": {
+              "title": "Notebook Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Token missing, invalid or revoked"
+          },
+          "403": {
+            "description": "Required capability was not granted"
+          },
+          "404": {
+            "description": "Not found within the authorized notebook"
+          },
+          "409": {
+            "description": "Identity or revision conflict"
+          },
+          "413": {
+            "description": "Import exceeds limits"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Rate limit: retry after Retry-After seconds"
+          }
+        },
+        "security": [
+          {
+            "integrationToken": []
+          }
+        ],
+        "summary": "Source Metadata"
+      }
+    },
+    "/api/external/v1/notebooks/{notebook_id}/sources/{source_id}/content": {
+      "get": {
+        "operationId": "source_content_api_external_v1_notebooks__notebook_id__sources__source_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notebook_id",
+            "required": true,
+            "schema": {
+              "title": "Notebook Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceContent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Token missing, invalid or revoked"
+          },
+          "403": {
+            "description": "Required capability was not granted"
+          },
+          "404": {
+            "description": "Not found within the authorized notebook"
+          },
+          "409": {
+            "description": "Identity or revision conflict"
+          },
+          "413": {
+            "description": "Import exceeds limits"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Rate limit: retry after Retry-After seconds"
+          }
+        },
+        "security": [
+          {
+            "integrationToken": []
+          }
+        ],
+        "summary": "Source Content"
+      }
+    },
+    "/api/external/v1/notebooks/{notebook_id}/sources/{source_id}/file": {
+      "get": {
+        "operationId": "source_file_api_external_v1_notebooks__notebook_id__sources__source_id__file_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notebook_id",
+            "required": true,
+            "schema": {
+              "title": "Notebook Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Original source file"
+          },
+          "401": {
+            "description": "Token missing, invalid or revoked"
+          },
+          "403": {
+            "description": "Required capability was not granted"
+          },
+          "404": {
+            "description": "Not found within the authorized notebook"
+          },
+          "409": {
+            "description": "Identity or revision conflict"
+          },
+          "413": {
+            "description": "Import exceeds limits"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Rate limit: retry after Retry-After seconds"
+          }
+        },
+        "security": [
+          {
+            "integrationToken": []
+          }
+        ],
+        "summary": "Source File"
+      }
+    }
+  }
+}

@@ -1,20 +1,26 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from oms_hub.db import Database
 from oms_hub.ingestion.domain import IngestionJob, UploadKind
 from oms_hub.ingestion.worker import IngestionWorker
 
 
-def test_ingestion_uses_recorded_backend_without_paid_fallback():
+def test_ingestion_uses_recorded_backend_without_paid_fallback(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
     calls = []
     job = IngestionJob(1, 'item', UploadKind.TRANSCRIPTS, 'process', 1, datetime.now(UTC),
         backend='codex_subscription')
-    repository = SimpleNamespace(claim_next_job=lambda now: job)
+    repository = SimpleNamespace(claim_next_job=lambda now: job, database=database)
     legacy = SimpleNamespace(process=lambda item: calls.append('legacy'))
     gpt = SimpleNamespace(process=lambda item: calls.append('gpt'))
     worker = IngestionWorker(repository, legacy, legacy, gpt_transcript_pipeline=gpt)
-    assert worker.run_once()
-    assert calls == ['gpt']
+    try:
+        assert worker.run_once()
+        assert calls == ['gpt']
+    finally:
+        database.close()
 
 
 def test_gpt_lecture_backend_keeps_transcript_task_routing(tmp_path):

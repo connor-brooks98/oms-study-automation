@@ -11,7 +11,7 @@ from oms_hub.models import StudyRevisionModel
 from oms_hub.repositories import LectureInput
 
 
-def test_lecture_page_has_one_gpt_quiz_button_and_no_outline_generation(tmp_path):
+def test_lecture_page_has_material_panels_without_lecture_quiz_workflow(tmp_path):
     app = create_app(
         Settings(
             _env_file=None,
@@ -27,23 +27,29 @@ def test_lecture_page_has_one_gpt_quiz_button_and_no_outline_generation(tmp_path
     page = TestClient(app).get(f"/lectures/{lecture_id}")
 
     assert page.status_code == 200
-    assert page.text.count("Generate lecture quiz") == 1
-    assert "Generate Lecture Outline" not in page.text
-    assert "Create lecture quiz" not in page.text
-    assert "gpt-quiz-objectives" not in page.text
-    assert 'name="instructions"' in page.text
-    assert 'id="quiz-instructions"' in page.text
-    assert "Lecture Outline (PDF)" not in page.text
-    assert "Lecture Quiz" in page.text
-    assert "Built from this lecture's materials and cleaned transcript only." in page.text
-    assert "Gemini Quiz Gem" not in page.text
-    assert f'href="/uploads/slides?lecture_id={lecture_id}"' not in page.text
-    assert "Upload Lecture PPTX" not in page.text
-    assert f'href="/uploads/transcripts?lecture_id={lecture_id}"' not in page.text
-    assert "Upload Lecture Transcript" not in page.text
-    assert "Lecture Summary" not in page.text
-    assert "0/12 complete" in page.text
-    assert "Lecture Quiz Generation" in page.text
+    document = HTMLParser(page.text)
+    assert document.css_first("[data-gpt-lecture]") is None
+    assert document.css_first("[data-extendlm]") is None
+    assert document.css_first("[data-clinical-notebook]") is None
+    assert [p.attributes["data-kind"] for p in document.css("[data-material-panel]")] == [
+        "slides", "transcripts"
+    ]
+    for panel in document.css("[data-material-panel]"):
+        assert panel.attributes["data-lecture-id"] == str(lecture_id)
+        assert panel.css_first('input[name="lecture_id"]').attributes["value"] == str(lecture_id)
+        assert "multiple" not in panel.css_first('input[type="file"]').attributes
+        assert panel.css_first("[data-material-actions]").text(strip=True) == ""
+    slides = document.css_first('[data-kind="slides"] input[type="file"]')
+    assert slides.attributes["accept"] == ".pptx,.pdf"
+    transcript = document.css_first('[data-kind="transcripts"] input[type="file"]')
+    assert transcript.attributes["accept"] == ".txt"
+    assert (
+        page.text.index("material-panel-grid") < page.text.index("data-pass-tracker")
+        < page.text.index("data-processing-checklist") < page.text.index("metadata-panel")
+    )
+    assert document.css_first('nav[aria-label="Primary navigation"] a[href="/studio"]') is not None
+    assert document.css_first('nav[aria-label="Primary navigation"] a[href="/uploads"]') is not None
+    assert "0/11 complete" in page.text
 
 
 def test_lecture_page_shows_five_pass_ledger_rows_between_expandable_panels(tmp_path):
@@ -260,7 +266,7 @@ def test_lecture_page_does_not_mark_a_changed_pdf_as_ready(tmp_path):
     page = TestClient(app).get(f"/lectures/{lecture_id}")
 
     assert page.status_code == 200
-    assert "Lecture PDF file checksum does not match." in page.text
+    assert "The prepared file is missing or changed." in page.text
     assert "Open Lecture PDF" not in page.text
 
 

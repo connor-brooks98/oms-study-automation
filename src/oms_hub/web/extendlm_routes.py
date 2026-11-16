@@ -1,9 +1,9 @@
 """Private Hub surface for signing in and sending sources through ExtendLM."""
 
-import time
+import json
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -39,6 +39,22 @@ def key(request: Request) -> str:
 
 def response(data: object) -> JSONResponse:
     return JSONResponse(data, headers={"Cache-Control": "private, no-store"})
+
+
+def public_destination(destination: dict[str, Any] | None) -> dict[str, Any] | None:
+    if destination is None:
+        return None
+    return {
+        field: destination[field] for field in ("notebook_id", "notebook_title", "account_label")
+    }
+
+
+def exam_key(request: Request, lecture_id: int) -> str:
+    lecture = CatalogRepository(request.app.state.database).get_lecture(lecture_id)
+    if lecture is None:
+        raise HTTPException(404, "Lecture not found.")
+    # This pair is the catalog's exam identity; topic, dates and notebook titles are mutable.
+    return json.dumps([lecture.subject, lecture.exam_number], separators=(",", ":"))
 
 
 @router.get("", response_class=HTMLResponse)
@@ -111,17 +127,27 @@ def callback(
 
 
 @router.get("/status")
-def status(request: Request) -> JSONResponse:
+def status(request: Request, lecture_id: int | None = None) -> JSONResponse:
     owner(request)
+    exam = exam_key(request, lecture_id) if lecture_id is not None else None
     try:
         session_key = key(request)
     except ExtendLMError:
         return response({"signed_in": False})
+    connected = service(request).signed_in(session_key)
     with service(request).state(session_key) as state:
-        connected = bool(state.get("tokens") and state.get("expires", 0) > time.time())
-        selected = bool(state.get("selection"))
+        selected = connected and bool(state.get("selection"))
+        account_label = state.get("account_label") if selected else None
     return response(
-        {"signed_in": connected, "selected": selected, "jobs": service(request).jobs(session_key)}
+        {
+            "signed_in": connected,
+            "selected": selected,
+            "account_label": account_label,
+            "destination": public_destination(service(request).destination(session_key, exam))
+            if exam
+            else None,
+            "jobs": service(request).jobs(session_key, lecture_id=lecture_id),
+        }
     )
 
 
@@ -177,14 +203,18 @@ def upload(
 def upload_lecture(
     request: Request,
     lecture_id: int,
-    notebook_id: str = Form(max_length=512),
+    notebook_id: str = Form(default="", max_length=512),
     csrf_token: str = Form(),
 ) -> JSONResponse:
     require_form_csrf(request, csrf_token)
     session_key = key(request)
     database = request.app.state.database
-    if CatalogRepository(database).get_lecture(lecture_id) is None:
-        raise HTTPException(404, "Lecture not found.")
+    exam = exam_key(request, lecture_id)
+    if notebook_id:
+        service(request).save_destination(session_key, exam, notebook_id)
+    destination = service(request).destination(session_key, exam, validate=True)
+    if destination is None:
+        raise ExtendLMError("Choose and save a destination for this exam first.")
     revisions = IngestionRepository(database).list_current_revisions(lecture_id)
     artifacts = ArtifactService(database, request.app.state.settings)
     try:
@@ -205,7 +235,13 @@ def upload_lecture(
                     name = f"{resolved.path.stem}.txt"
                 files.append((name, stack.enter_context(resolved.path.open("rb"))))
             job_id = service(request).enqueue(
-                session_key, notebook_id, files, lecture_id=lecture_id
+                session_key,
+                destination["notebook_id"],
+                files,
+                lecture_id=lecture_id,
+                expected_selection=destination["selection"],
+                source_revisions=[r.id for r in revisions if r.state == "current"],
+                source_hashes=[r.derived_sha256 for r in revisions if r.state == "current"],
             )
     except ArtifactError as error:
         raise HTTPException(
@@ -214,6 +250,20 @@ def upload_lecture(
     result = response({"job_id": job_id})
     result.status_code = 202
     return result
+
+
+@router.post("/lectures/{lecture_id}/destination")
+def save_destination(
+    request: Request,
+    lecture_id: int,
+    notebook_id: str = Form(max_length=512),
+    csrf_token: str = Form(),
+) -> JSONResponse:
+    require_form_csrf(request, csrf_token)
+    destination = service(request).save_destination(
+        key(request), exam_key(request, lecture_id), notebook_id
+    )
+    return response({"destination": public_destination(destination)})
 
 
 @router.post("/jobs/{job_id}/resume")

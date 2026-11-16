@@ -53,9 +53,9 @@ def test_notebook_status_is_secret_safe_and_not_cacheable(tmp_path):
 def test_settings_shows_only_notebook_connection_card(tmp_path):
     page = TestClient(app(tmp_path)).get("/settings")
 
-    assert "Gemini Notebook" in page.text
-    assert "Connect Notebook" in page.text
-    assert "data-notebook-status" in page.text
+    assert "Gemini Notebook" not in page.text
+    assert "Connect Notebook" not in page.text
+    assert "data-notebook-status" not in page.text
     assert "Google Docs" not in page.text
     assert "OAuth client JSON" not in page.text
 
@@ -66,8 +66,8 @@ def test_connect_response_has_single_notebook_state(tmp_path):
         json={},
     )
 
-    assert response.status_code == 202
-    assert response.json()["state"] == "connecting"
+    assert response.status_code == 410
+    assert "retired" in response.json()["detail"]
     assert "surfaces" not in response.json()
 
 
@@ -118,8 +118,8 @@ def test_app_startup_migrates_existing_encrypted_notebook_session(
         )
     )
 
-    assert created.state.notebook_storage_migrated is True
-    assert "preserved-session" in plaintext_path.read_text(encoding="utf-8")
+    assert created.state.notebook_storage_migrated is False
+    assert not plaintext_path.exists()
     assert encrypted_path.is_file()
 
 
@@ -156,10 +156,10 @@ def test_app_starts_disconnected_when_encrypted_notebook_session_is_unreadable(
     )
 
     assert created.state.notebook_storage_migrated is False
-    assert "reconnect Google" in created.state.notebook_storage_migration_error
+    assert created.state.notebook_storage_migration_error is None
     status = created.state.notebook_connection.status()
-    assert status.state == "failed"
-    assert status.message == created.state.notebook_storage_migration_error
+    assert status.state == "retired"
+    assert "retired" in status.message
     assert not plaintext_path.exists()
     assert encrypted_path.read_bytes() == b"unreadable-session"
 
@@ -212,10 +212,10 @@ def test_app_starts_disconnected_when_credential_store_is_unavailable(
     )
 
     assert created.state.notebook_storage_migrated is False
-    assert "reconnect Google" in created.state.notebook_storage_migration_error
+    assert created.state.notebook_storage_migration_error is None
     status = created.state.notebook_connection.status()
-    assert status.state == "failed"
-    assert status.message == created.state.notebook_storage_migration_error
+    assert status.state == "retired"
+    assert "retired" in status.message
     assert encrypted_path.read_bytes() == encrypted_payload
     assert not plaintext_path.exists()
 
@@ -266,6 +266,6 @@ def test_retirement_failure_does_not_invalidate_plaintext_notebook_session(
     assert created.state.notebook_storage_migrated is False
     assert created.state.notebook_storage_migration_error is None
     status = created.state.notebook_connection.status()
-    assert status.state == "connected"
-    assert status.message is None
+    assert status.state == "retired"
+    assert "retired" in status.message
     assert plaintext_path.read_bytes() == plaintext_payload

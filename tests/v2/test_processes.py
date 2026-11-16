@@ -267,7 +267,7 @@ def test_ingestion_worker_acknowledges_at_boundary_without_failure(database):
     assert item["control_state"] == "paused" and item["error"] is None
 
 
-def test_source_hold_fences_queued_operations_but_never_reconciliation(database):
+def test_retired_source_work_cannot_be_restarted_or_hidden_during_reconciliation(database):
     from oms_hub.models import StudioSourceModel, StudioSourceOperationModel
 
     with database.session() as session:
@@ -289,12 +289,10 @@ def test_source_hold_fences_queued_operations_but_never_reconciliation(database)
             )
         )
     service = ProcessService(database)
-    item = service.action("source", "source", "pause", owner_id="owner")
-    assert item["control_state"] == "paused"
-    assert StudioRepository(database).claim_next_source_operation() is None
+    with pytest.raises(ValueError, match="retired"):
+        service.action("source", "source", "pause", owner_id="owner")
     with database.session() as session:
         session.get(StudioSourceOperationModel, "operation").state = "reconciling"
-    assert StudioRepository(database).claim_next_source_operation() is not None
     item = next(i for i in service.list("owner")["items"] if i["family"] == "source")
     assert not any(a["enabled"] for a in item["actions"].values())
 

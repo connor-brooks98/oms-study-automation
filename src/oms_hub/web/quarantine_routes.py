@@ -26,12 +26,17 @@ def _service(request: Request) -> IngestionService:
 
 @router.get("", response_class=HTMLResponse)
 def quarantine_page(request: Request) -> HTMLResponse:
+    repository = _repository(request)
+    items = repository.list_quarantined()
     lectures = CatalogRepository(request.app.state.database).list_lectures()
     return templates.TemplateResponse(
         request=request,
         name="quarantine.html",
         context={
-            "items": _repository(request).list_quarantined(),
+            "items": items,
+            "deletable_ids": {
+                item.id for item in items if repository.can_delete_unmatched(item.id)
+            },
             "lecture_catalog": [
                 {
                     "id": lecture.id,
@@ -56,4 +61,6 @@ def assign_item(
         _service(request).assign(item_id, lecture_id)
     except KeyError as error:
         raise HTTPException(404, "upload or lecture not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
     return RedirectResponse("/quarantine", status_code=303)

@@ -144,9 +144,6 @@ def settings_page(request: Request) -> HTMLResponse:
             ),
             "assignments": assignments,
             "openrouter": _openrouter_context(request),
-            "notebook_status": (
-                request.app.state.notebook_connection.status()
-            ),
             "prompt_settings": tuple(
                 {
                     "kind": kind.value,

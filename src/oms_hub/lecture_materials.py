@@ -1,17 +1,18 @@
 """Detach lecture materials without deleting their files or study history."""
 
 import json
+import logging
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from oms_hub.artifact_writes import ArtifactWriteCoordinator
-from oms_hub.artifacts import ArtifactError, ArtifactService
+from oms_hub.artifacts import ArtifactError, ArtifactRole, ArtifactService
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file
-from oms_hub.ingestion.domain import StudyRevision
+from oms_hub.ingestion.domain import StagedUpload, StudyRevision, UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.models import (
     GenerationJobModel,
@@ -24,6 +25,8 @@ from oms_hub.models import (
     UploadItemModel,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class MaterialConflict(ValueError):
     """The material cannot safely change until the stated prerequisite is resolved."""
@@ -33,6 +36,24 @@ class LectureMaterials:
     def __init__(self, database: Database, settings: Settings):
         self.database, self.settings = database, settings
         self.repository = IngestionRepository(database)
+
+    def available_roles(self, revision: StudyRevision | None) -> set[str]:
+        """Expose each action only when its own retained/filed artifact verifies."""
+        if revision is None:
+            return set()
+        service = ArtifactService(self.database, self.settings)
+        available = set()
+        for role in (ArtifactRole.ORIGINAL, ArtifactRole.PDF, ArtifactRole.CLEANED):
+            try:
+                artifact = service.resolve(revision.id, role)
+                if artifact.text:
+                    artifact.path.read_text(encoding="utf-8")
+            except (ArtifactError, OSError, UnicodeError):
+                continue
+            available.add(role.value)
+            if role is ArtifactRole.ORIGINAL and artifact.path.suffix.casefold() == ".pptx":
+                available.add("pptx")
+        return available
 
     def list_removed(self, lecture_id: int) -> list[StudyRevision]:
         with self.database.session() as session:
@@ -52,6 +73,46 @@ class LectureMaterials:
     def restore(self, lecture_id: int, revision_id: int) -> StudyRevision:
         return self._change(lecture_id, revision_id, restore=True)
 
+    def accept_slide_reupload(
+        self, repository: IngestionRepository, batch_id: str,
+        staged: list[StagedUpload], lecture_id: int,
+    ) -> bool:
+        """Atomically reuse verified removed slides for one explicitly targeted upload."""
+        if len(staged) != 1:
+            return False
+        upload = staged[0]
+        with self.database.session() as session:
+            revision_id = session.scalar(select(StudyRevisionModel.id).where(
+                StudyRevisionModel.lecture_id == lecture_id,
+                StudyRevisionModel.kind == UploadKind.SLIDES.value,
+                StudyRevisionModel.source_sha256 == upload.sha256,
+                StudyRevisionModel.state == "removed",
+            ))
+        if revision_id is None:
+            return False
+        committed = False
+        try:
+            with ArtifactWriteCoordinator(self.database, self.settings).claim(
+                lecture_id, "slide-reupload"
+            ) as claim:
+                claim.assert_owned()
+                with self.database.session() as session:
+                    session.execute(text("BEGIN IMMEDIATE"))
+                    self._change_in_session(session, lecture_id, revision_id, restore=True)
+                    repository.finalize_batch(
+                        UploadKind.SLIDES, batch_id, staged, lecture_id=lecture_id,
+                        decisions={}, session=session,
+                    )
+                    claim.assert_owned()
+                committed = True
+        except Exception:
+            if not committed:
+                raise
+            # Fence cleanup is after durable acceptance. Never undo staged files
+            # or report rejection once restoration and its batch have committed.
+            logger.exception("post-commit slide reupload claim cleanup failed: %s", batch_id)
+        return True
+
     def _change(self, lecture_id: int, revision_id: int, *, restore: bool) -> StudyRevision:
         if self.repository.get_study_revision(revision_id).lecture_id != lecture_id:
             raise KeyError(revision_id)
@@ -62,51 +123,56 @@ class LectureMaterials:
             with self.database.session() as session:
                 # Serialize admission with new uploads and worker claims, not just file writes.
                 session.execute(text("BEGIN IMMEDIATE"))
-                row = session.get(StudyRevisionModel, revision_id)
-                if row is None or row.lecture_id != lecture_id:
-                    raise KeyError(revision_id)
-                self._require_idle(session, lecture_id)
-                if restore:
-                    if row.state != "removed" or row.current:
-                        raise MaterialConflict("This material is not removed.")
-                    current = session.scalar(
-                        select(StudyRevisionModel.id).where(
-                            StudyRevisionModel.lecture_id == lecture_id,
-                            StudyRevisionModel.kind == row.kind,
-                            StudyRevisionModel.current.is_(True),
-                        )
-                    )
-                    if current is not None:
-                        raise MaterialConflict(
-                            "Remove the current material before restoring this one."
-                        )
-                    self._check_restore(self.repository._study_revision(row))
-                elif not row.current or row.state != "current":
-                    raise MaterialConflict(
-                        "Only the current, fully processed material can be removed."
-                    )
-                row.current = restore
-                row.state = "current" if restore else "removed"
-                prefix = "slides_" if row.kind == "slides" else "transcript_"
-                names = [step.value for step in V2StepName if step.value.startswith(prefix)]
-                if row.kind == "slides":
-                    names.extend(
-                        (V2StepName.PDF_CONVERTED.value, V2StepName.ICLOUD_PDF_STAGED.value)
-                    )
-                for step in session.scalars(
-                    select(LectureStepModel).where(
-                        LectureStepModel.lecture_id == lecture_id,
-                        LectureStepModel.name.in_(names),
-                    )
-                ):
-                    step.status = (StepStatus.COMPLETE if restore else StepStatus.WAITING).value
-                    step.detail = (
-                        "Retained material restored"
-                        if restore
-                        else "Material removed from lecture; files retained"
-                    )
+                self._change_in_session(session, lecture_id, revision_id, restore=restore)
                 claim.assert_owned()
             return self.repository.get_study_revision(revision_id)
+
+    def _change_in_session(
+        self, session: Session, lecture_id: int, revision_id: int, *, restore: bool
+    ) -> None:
+        row = session.get(StudyRevisionModel, revision_id)
+        if row is None or row.lecture_id != lecture_id:
+            raise KeyError(revision_id)
+        self._require_idle(session, lecture_id)
+        if restore:
+            if row.state != "removed" or row.current:
+                raise MaterialConflict("This material is not removed.")
+            current = session.scalar(
+                select(StudyRevisionModel.id).where(
+                    StudyRevisionModel.lecture_id == lecture_id,
+                    StudyRevisionModel.kind == row.kind,
+                    StudyRevisionModel.current.is_(True),
+                )
+            )
+            if current is not None:
+                raise MaterialConflict(
+                    "Remove the current material before restoring this one."
+                )
+            self._check_restore(self.repository._study_revision(row))
+        elif not row.current or row.state != "current":
+            raise MaterialConflict(
+                "Only the current, fully processed material can be removed."
+            )
+        row.current = restore
+        row.state = "current" if restore else "removed"
+        prefix = "slides_" if row.kind == "slides" else "transcript_"
+        names = [step.value for step in V2StepName if step.value.startswith(prefix)]
+        if row.kind == "slides":
+            names.extend(
+                (V2StepName.PDF_CONVERTED.value, V2StepName.ICLOUD_PDF_STAGED.value)
+            )
+        for step in session.scalars(
+            select(LectureStepModel).where(
+                LectureStepModel.lecture_id == lecture_id,
+                LectureStepModel.name.in_(names),
+            )
+        ):
+            step.status = (StepStatus.COMPLETE if restore else StepStatus.WAITING).value
+            step.detail = (
+                "Retained material restored"
+                if restore
+                else "Material removed from lecture; files retained"
+            )
 
     def _check_restore(self, revision: StudyRevision) -> None:
         service = ArtifactService(self.database, self.settings)

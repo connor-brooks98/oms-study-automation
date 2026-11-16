@@ -8,23 +8,18 @@ from pathlib import Path
 import pytest
 
 from oms_hub.db import Database
-from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.study_generation.domain import (
     NotebookMapping,
-    NotebookRef,
     NotebookSourceBinding,
     RevisionSource,
-    SourceKind,
 )
 from oms_hub.study_generation.notebook import (
-    NotebookAuthenticationError,
     NotebookQuestionContractError,
     NotebookQuestionResult,
     NotebookQuestionStatus,
     StoredNotebookLMGateway,
 )
 from oms_hub.study_generation.notebook_errors import (
-    NotebookGatewayError,
     NotebookScopeBusyError,
     NotebookScopeLostError,
 )
@@ -241,166 +236,16 @@ def _question() -> QuestionDraft:
     )
 
 
-def test_source_upload_uses_canonical_path_stem(tmp_path):
-    events = []
-    repository = FakeRepository(events)
-    client = FakeClient([], events)
-    gateway = _gateway(tmp_path, client, repository)
-    pdf = _revision(
-        tmp_path / "Lecture 02 - Demyelinating Disease.pdf",
-        2,
-        10,
-        SourceKind.LECTURE_PDF,
-        b"pdf",
-    )
-    transcript = _revision(
-        tmp_path / "Lecture 02 - Demyelinating Disease - Transcript.txt",
-        2,
-        11,
-        SourceKind.CLEANED_TRANSCRIPT,
-        b"transcript",
-    )
-
-    sources = gateway.ensure_sources(
-        NotebookRef("nb-1", "Neuro · Exam 1"),
-        2,
-        pdf,
-        transcript,
-    )
-
-    assert client.sources.upload_titles == [
-        "Lecture 02 - Demyelinating Disease",
-        "Lecture 02 - Demyelinating Disease - Transcript",
-    ]
-    assert sources.remote_ids == ["new-1", "new-2"]
 
 
-def test_gateway_translates_expired_storage_into_safe_auth_error(tmp_path):
-    gateway = StoredNotebookLMGateway(
-        tmp_path / "notebooklm-storage.json",
-        FakeRepository([]),
-        client_factory=ExpiredClientContext,
-    )
-
-    with pytest.raises(
-        NotebookAuthenticationError,
-        match="reconnect Google in Settings",
-    ) as error:
-        gateway.ensure_notebook("Neuro", 1)
-
-    assert "accounts.google.com" not in str(error.value)
 
 
-def test_studio_saga_gateway_snapshots_then_adds_to_known_notebook(tmp_path):
-    events = []
-    repository = FakeRepository(events)
-    client = FakeClient([FakeRemote("existing", "Existing")], events)
-    gateway = _gateway(tmp_path, client, repository)
-    payload = tmp_path / "notes.pdf"
-    payload.write_bytes(b"pdf")
-
-    notebook_id, baseline = gateway.prepare_studio_source_add("Neuro", 1)
-    remote_id = gateway.add_studio_source_to_notebook(
-        notebook_id,
-        "file",
-        "Notes",
-        path=payload,
-    )
-
-    assert notebook_id == "nb-1"
-    assert baseline == frozenset({"existing"})
-    assert remote_id == "new-1"
-    assert gateway.list_studio_source_ids("nb-1") == frozenset(
-        {"existing", "new-1"}
-    )
 
 
-@pytest.mark.parametrize("status", ["processing", "failed"])
-def test_source_reconciliation_waits_for_new_source_readiness(tmp_path, status):
-    events = []
-    pending = FakeRemote("existing", "Other upload", "processing")
-    added = FakeRemote("new", "Our upload", status)
-    client = FakeClient([pending, added], events)
-    gateway = _gateway(tmp_path, client, FakeRepository(events))
-    baseline = frozenset({"existing"})
-
-    assert gateway.list_studio_source_ids("nb-1") == frozenset({"existing", "new"})
-    with pytest.raises(NotebookGatewayError) as error:
-        gateway.list_studio_source_ids("nb-1", baseline_ids=baseline)
-    assert error.value.source is DiagnosticSource.SOURCE_PROCESSING
-    assert error.value.retryable is True
-
-    added.status = "ready"
-    assert gateway.list_studio_source_ids("nb-1", baseline_ids=baseline) == frozenset(
-        {"existing", "new"}
-    )
-    assert events == []
 
 
-@pytest.mark.parametrize("new_ids", [[], ["first", "second"]])
-def test_source_reconciliation_preserves_empty_and_ambiguous_deltas(tmp_path, new_ids):
-    events = []
-    ids = ["existing", *new_ids]
-    client = FakeClient([FakeRemote(item, item, "processing") for item in ids], events)
-    gateway = _gateway(tmp_path, client, FakeRepository(events))
-
-    assert gateway.list_studio_source_ids(
-        "nb-1", baseline_ids=frozenset({"existing"})
-    ) == frozenset(ids)
-    assert events == []
 
 
-def test_generation_notebook_creation_blocks_competing_studio_preparation(tmp_path):
-    create_started = threading.Event()
-    allow_create = threading.Event()
-    events = []
-
-    class EmptyRepository(FakeRepository):
-        def __init__(self):
-            super().__init__(events)
-            self.notebook = None
-
-        def notebook_mapping(self, subject_key, exam_number):
-            return self.notebook
-
-        def notebook_mapping_by_remote_id(self, remote_notebook_id):
-            return self.notebook
-
-    class BlockingNotebooks(FakeNotebooks):
-        async def create(self, title):
-            create_started.set()
-            assert allow_create.wait(timeout=5)
-            created = FakeRemote("nb-1", title)
-            self.items.append(created)
-            return created
-
-    repository = EmptyRepository()
-    client = FakeClient([], events)
-    client.notebooks = BlockingNotebooks([])
-    gateway = _gateway(tmp_path, client, repository)
-    generation_result = []
-
-    thread = threading.Thread(
-        target=lambda: generation_result.append(
-            gateway.ensure_notebook("Neuro", 1)
-        )
-    )
-    thread.start()
-    assert create_started.wait(timeout=5)
-
-    with pytest.raises(NotebookScopeBusyError):
-        gateway.prepare_studio_source_add("Neuro", 1)
-
-    allow_create.set()
-    thread.join(timeout=5)
-    assert not thread.is_alive()
-    assert generation_result == [NotebookRef("nb-1", "Neuro · Exam 1")]
-    assert len(client.notebooks.items) == 1
-
-    notebook_id, baseline = gateway.prepare_studio_source_add("Neuro", 1)
-    assert notebook_id == "nb-1"
-    assert baseline == frozenset()
-    assert len(client.notebooks.items) == 1
 
 
 def test_durable_scope_heartbeat_blocks_competitor_past_initial_expiry(tmp_path):
@@ -461,11 +306,9 @@ def test_durable_scope_heartbeat_blocks_competitor_past_initial_expiry(tmp_path)
     def upload() -> None:
         try:
             with first_gateway.mutation_scope("Neuro", 1, "studio", "op-1"):
-                result.append(
-                    first_gateway.add_studio_source_to_notebook(
-                        "nb-1", "file", "Notes", path=payload
-                    )
-                )
+                upload_started.set()
+                assert allow_upload.wait(timeout=5)
+                result.append("held")
         except BaseException as error:  # pragma: no cover - surfaced below
             failure.append(error)
 
@@ -485,7 +328,7 @@ def test_durable_scope_heartbeat_blocks_competitor_past_initial_expiry(tmp_path)
         thread.join(timeout=5)
         assert not thread.is_alive()
         assert failure == []
-        assert result == ["new-1"]
+        assert result == ["held"]
 
         with second_gateway.mutation_scope("Neuro", 1, "studio", "op-2"):
             pass
@@ -539,103 +382,13 @@ def test_durable_scope_reports_lost_owner_after_failed_renewal(tmp_path):
     releaser.start()
     with pytest.raises(NotebookScopeLostError, match="ownership was lost"):
         with gateway.mutation_scope("Neuro", 1, "studio", "op-1"):
-            gateway.add_studio_source_to_notebook(
-                "nb-1", "file", "Notes", path=payload
-            )
+            upload_started.set()
+            assert allow_upload.wait(timeout=5)
     releaser.join(timeout=5)
 
 
-def test_studio_saga_gateway_treats_remote_not_found_delete_as_success(tmp_path):
-    events = []
-    repository = FakeRepository(events)
-    client = FakeClient([], events)
-
-    async def missing(notebook_id, source_id):
-        raise RuntimeError("remote source not found")
-
-    client.sources.delete = missing
-    gateway = _gateway(tmp_path, client, repository)
-
-    assert gateway.delete_studio_source("nb-1", "missing") is False
 
 
-def test_changed_revision_binds_replacement_before_old_and_legacy_delete(tmp_path):
-    events = []
-    old = FakeRemote("remote-old", "Lecture 02 - Disease")
-    unrelated = FakeRemote("unrelated-upload", "Lecture 02 - Disease")
-    legacy = FakeRemote(
-        "legacy-old",
-        "OMS-2-lecture_pdf-0123456789abcdef",
-    )
-    other_lecture = FakeRemote(
-        "legacy-other",
-        "OMS-3-lecture_pdf-fedcba9876543210",
-    )
-    transcript_remote = FakeRemote(
-        "transcript-current",
-        "Lecture 02 - Disease - Transcript",
-    )
-    repository = FakeRepository(events)
-    repository.bindings[(1, 2, SourceKind.LECTURE_PDF)] = NotebookSourceBinding(
-        1,
-        1,
-        2,
-        9,
-        SourceKind.LECTURE_PDF,
-        "a" * 64,
-        "remote-old",
-        "Lecture 02 - Disease",
-        "ready",
-    )
-    repository.bindings[(1, 2, SourceKind.CLEANED_TRANSCRIPT)] = (
-        NotebookSourceBinding(
-            2,
-            1,
-            2,
-            11,
-            SourceKind.CLEANED_TRANSCRIPT,
-            hashlib.sha256(b"transcript").hexdigest(),
-            "transcript-current",
-            "Lecture 02 - Disease - Transcript",
-            "ready",
-        )
-    )
-    client = FakeClient(
-        [old, unrelated, legacy, other_lecture, transcript_remote],
-        events,
-    )
-    gateway = _gateway(tmp_path, client, repository)
-    pdf = _revision(
-        tmp_path / "Lecture 02 - Disease.pdf",
-        2,
-        10,
-        SourceKind.LECTURE_PDF,
-        b"new pdf",
-    )
-    transcript = _revision(
-        tmp_path / "Lecture 02 - Disease - Transcript.txt",
-        2,
-        11,
-        SourceKind.CLEANED_TRANSCRIPT,
-        b"transcript",
-    )
-
-    sources = gateway.ensure_sources(
-        NotebookRef("nb-1", "Neuro · Exam 1"),
-        2,
-        pdf,
-        transcript,
-    )
-
-    assert sources.remote_ids == ["new-1", "transcript-current"]
-    assert events.index(("upload", "new-1")) < events.index(("bind", "new-1"))
-    assert events.index(("bind", "new-1")) < events.index(
-        ("delete", "remote-old")
-    )
-    assert ("delete", "legacy-old") in events
-    assert ("delete", "legacy-other") not in events
-    assert ("delete", "unrelated-upload") not in events
-    assert unrelated in client.sources.items
 
 
 
