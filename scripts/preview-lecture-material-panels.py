@@ -105,7 +105,7 @@ def lecture(request: Request, lecture_id: int):
 async def upload(
     kind: str, lecture_id: Annotated[int, Form()], files: Annotated[UploadFile, File()]
 ):
-    if kind in REMOVED[lecture_id]:
+    if kind == "transcripts" and kind in REMOVED[lecture_id]:
         return JSONResponse(
             {
                 "detail": (
@@ -128,6 +128,7 @@ def batch(batch_id: str):
     complete = item["polls"] > 1
     if complete:
         STATES[item["lecture"]].add(item["kind"])
+        REMOVED[item["lecture"]].discard(item["kind"])
     return {
         "lifecycle": "terminal" if complete else "active",
         "items": [

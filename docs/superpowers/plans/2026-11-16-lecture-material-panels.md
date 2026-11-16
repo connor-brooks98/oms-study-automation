@@ -73,3 +73,11 @@ Interfaces: per-kind available role sets; existing /uploads/{kind}, manifest/chu
 - Fixture UI inspected at 1440x1050 and 390x844. Latest mobile check: no horizontal overflow, zero lecture Clinical Notebook boxes, exactly one visible empty-slides picker button, zero controls inside the passive drop zone, transcript actions in the approved order.
 - Screenshots saved to /tmp/studyhub-panels-refined-desktop.jpg and /tmp/studyhub-panels-refined-mobile.jpg.
 - Full Python repository suite is outside this bounded verification; targeted material, intake, manifest, lifecycle, duplicate, replacement, artifact-download and lecture UI suites are recorded in the verification report.
+
+## Final approved slide re-upload refinement
+
+- Reproduce identical-byte removal/re-upload with synthetic files and real upload routes.
+- Hide only the removed Slides disclosure; retain Transcript recovery UI and backend history.
+- Accept one explicitly targeted slide upload by reusing its exact lecture/type/hash removed revision after existing retained-file and idle/current checks. Commit restoration and upload admission together under the lecture artifact claim; keep active deduplication unchanged.
+- Verify failed admission rollback, post-commit cleanup, busy/current conflicts, changed retained files, other-lecture isolation, normal picker/drop behavior, and desktop/mobile layout.
+- Preserve the verified result in this isolated local branch, with no push/deploy/live-data change.

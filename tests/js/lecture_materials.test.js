@@ -215,17 +215,18 @@ for (const kind of ["slides", "transcripts"]) test(`compact ready ${kind} initia
   remove.dataset.materialRemove = kind === "slides" ? "slides" : "transcript";
   const invoker = { focus() {} };
   transcript.panel.querySelectorAll = (selector) => selector === "form:not([data-material-upload])" ? [remove] : [];
-  let requests = 0, confirmations = 0;
+  let requests = 0, confirmations = 0, confirmationMessage;
   const previous = global.StudyHubShell;
   global.StudyHubShell = { confirmAction: async (_doc, options) => {
     confirmations += 1;
-    assert.match(options.message, /retained.*Restore/);
+    confirmationMessage = options.message;
     return false;
   } };
   try {
     panels.initialize({ querySelectorAll: () => [transcript.panel] }, async () => { requests += 1; });
     await remove.dispatch("submit", { submitter: invoker });
     assert.equal(confirmations, 1);
+    assert.match(confirmationMessage, kind === "slides" ? /retained.*Upload Slides/ : /retained.*Restore/);
     assert.equal(requests, 0);
   } finally { global.StudyHubShell = previous; }
 });

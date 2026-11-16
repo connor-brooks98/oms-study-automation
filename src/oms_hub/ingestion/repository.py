@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -424,11 +425,12 @@ class IngestionRepository:
         *,
         lecture_id: int | None,
         decisions: dict[str, MatchDecision],
+        session: Session | None = None,
     ) -> None:
-        """Persist a fully preflighted manifest in one database transaction."""
+        """Persist a preflighted manifest; a supplied session owns its transaction."""
         if not staged_uploads:
             raise ValueError("upload manifest has no files")
-        with self.database.session() as session:
+        with (nullcontext(session) if session is not None else self.database.session()) as session:
             batch = UploadBatchModel(
                 id=batch_id,
                 kind=kind.value,

@@ -235,7 +235,9 @@
           setBusy(true);
           if (actionForm.dataset.materialRemove) {
             const label = actionForm.dataset.materialRemove;
-            const message = `Remove this ${label} from the lecture? Original files are retained and can be restored using Restore.`;
+            const message = label === "slides"
+              ? "Remove these slides from the lecture? Original files are retained. Use Upload Slides or drop the file to add slides again."
+              : `Remove this ${label} from the lecture? Original files are retained and can be restored using Restore.`;
             const accepted = root.StudyHubShell
               ? await root.StudyHubShell.confirmAction(documentRef, {
                 title: `Delete ${label}?`, message, confirmLabel: `Delete ${label}`, cancelLabel: "Keep it",

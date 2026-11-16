@@ -86,7 +86,7 @@
     <a href="/review">Review replacements</a>
   </div>
   {% set removed = removed_materials|selectattr('kind.value', 'equalto', kind)|list %}
-  {% if removed %}
+  {% if removed and not is_slides %}
   <details class="material-removed" data-material-removed>
     <summary>Removed {{ label|lower }} ({{ removed|length }})</summary>
     <p class="field-help">Identical files use Restore. Original files and checksums are retained.</p>

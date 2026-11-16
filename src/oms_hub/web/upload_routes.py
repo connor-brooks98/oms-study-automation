@@ -10,7 +10,9 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import OperationalError
 
+from oms_hub.artifact_writes import ArtifactWriteClaimLost, ArtifactWriteContended
 from oms_hub.document_processing.lecture_intake import SUPPORTED_LECTURE_SUFFIXES
 from oms_hub.ingestion.domain import (
     StagedUpload,
@@ -25,6 +27,7 @@ from oms_hub.ingestion.staging import (
     UploadManifestRejected,
     UploadRejected,
 )
+from oms_hub.lecture_materials import LectureMaterials, MaterialConflict
 from oms_hub.repositories import CatalogRepository
 from oms_hub.web.csrf import require_form_csrf
 
@@ -502,13 +505,19 @@ def _finalize_manifest(
     try:
         staging.record_manifest_finalization(manifest_id, batch_id)
         moved = staging.promote_manifest(manifest_id, batch_id)
-        _repository(request).finalize_batch(
-            manifest.kind,
-            batch_id,
-            moved,
-            lecture_id=manifest.lecture_id,
-            decisions=decisions,
+        reused = (
+            manifest.kind is UploadKind.SLIDES and manifest.lecture_id is not None
+            and LectureMaterials(request.app.state.database, request.app.state.settings)
+            .accept_slide_reupload(_repository(request), batch_id, moved, manifest.lecture_id)
         )
+        if not reused:
+            _repository(request).finalize_batch(
+                manifest.kind,
+                batch_id,
+                moved,
+                lecture_id=manifest.lecture_id,
+                decisions=decisions,
+            )
     except Exception as error:
         try:
             # This is deliberately safe with an empty moved list: promotion
@@ -522,9 +531,18 @@ def _finalize_manifest(
             )
         else:
             staging.clear_manifest_finalization_outcome(manifest_id)
-            if isinstance(error, RemovedMaterialError):
+            if isinstance(error, (
+                RemovedMaterialError, MaterialConflict, ArtifactWriteContended,
+                ArtifactWriteClaimLost, OperationalError,
+            )):
                 staging.abandon_manifest_finalization(manifest_id)
-                raise HTTPException(409, str(error)) from error
+                detail = str(error)
+                if not isinstance(error, RemovedMaterialError):
+                    detail = (
+                        "Slides could not be re-added safely. Retained files must verify and "
+                        "lecture processes must be idle. No material was changed."
+                    )
+                raise HTTPException(409, detail) from error
         finally:
             staging.release_manifest_finalization(manifest_id)
         raise

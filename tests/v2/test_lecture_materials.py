@@ -252,7 +252,7 @@ def test_upload_of_removed_transcript_returns_restore_guidance(tmp_path):
     assert not list((root / "batches").iterdir())
 
 
-@pytest.mark.parametrize("kind", [UploadKind.SLIDES, UploadKind.TRANSCRIPTS])
+@pytest.mark.parametrize("kind", [UploadKind.TRANSCRIPTS])
 def test_panel_identical_readd_restore_and_active_duplicate(tmp_path, kind):
     app, service, lecture, revision = prepared(tmp_path, kind)
     saved = service.remove(lecture, revision)
@@ -596,3 +596,165 @@ def test_tracker_count_has_aligned_group_without_changing_count_hook(tmp_path):
     assert group is not None
     assert group.css_first('[data-pass-count]').text(strip=True) == '0/5'
     assert group.css_first('.pass-count-label').text(strip=True) == 'completed / configured'
+
+
+def test_removed_slides_shows_only_normal_empty_uploader(tmp_path):
+    from selectolax.parser import HTMLParser
+
+    app, service, lecture, revision = prepared(tmp_path, UploadKind.SLIDES)
+    saved = service.remove(lecture, revision)
+    panel = HTMLParser(TestClient(app).get(f'/lectures/{lecture}').text).css_first(
+        '[data-material-panel][data-kind="slides"]'
+    )
+    assert panel.css_first('[data-material-picker]') is not None
+    assert panel.css_first('[data-material-dropzone]') is not None
+    assert panel.css_first('[data-material-removed]') is None
+    assert panel.css_first('[data-material-actions] a') is None
+    assert service.list_removed(lecture) == [saved]
+    assert saved.immutable_source_path.is_file()
+
+
+def test_slide_reupload_reuses_verified_removed_revision_and_keeps_active_dedup(tmp_path):
+    app, service, lecture, revision = prepared(tmp_path, UploadKind.SLIDES)
+    saved = service.remove(lecture, revision)
+    source = saved.immutable_source_path.read_bytes()
+    derived = saved.immutable_derived_path.read_bytes()
+    client = TestClient(app, raise_server_exceptions=False)
+    for _ in range(2):
+        response = client.post('/uploads/slides', data={'lecture_id': str(lecture)},
+                               files={'files': ('renamed.pptx', source)})
+        assert response.status_code == 202, response.text
+        batch = client.get(f"/api/upload-batches/{response.json()['batch_id']}").json()
+        item = batch['items'][0]
+        assert item['state'] == 'complete'
+        assert item['lecture_id'] == lecture
+        assert app.state.ingestion_repository.count_jobs(item['id'], 'process') == 0
+    current = app.state.ingestion_repository.get_study_revision(revision)
+    assert current.current and current.state == 'current'
+    assert current.source_sha256 == saved.source_sha256
+    assert current.upload_item_id == saved.upload_item_id
+    assert current.immutable_source_path.read_bytes() == source
+    assert current.immutable_derived_path.read_bytes() == derived
+    assert service.list_removed(lecture) == []
+    with app.state.database.session() as session:
+        assert len(session.scalars(select(StudyRevisionModel)).all()) == 1
+    assert 'Download PPTX' in client.get(f'/lectures/{lecture}').text
+
+
+@pytest.mark.parametrize('changed', ['immutable_source_path', 'immutable_derived_path',
+                                     'canonical_derived_path', 'icloud_path'])
+def test_slide_reupload_does_not_expose_changed_retained_files(tmp_path, changed):
+    app, service, lecture, revision = prepared(tmp_path, UploadKind.SLIDES)
+    saved = service.remove(lecture, revision)
+    payload = saved.immutable_source_path.read_bytes()
+    path = getattr(saved, changed)
+    path.write_bytes(b'external changed bytes')
+    response = TestClient(app, raise_server_exceptions=False).post(
+        '/uploads/slides', data={'lecture_id': str(lecture)},
+        files={'files': ('slides.pptx', payload)},
+    )
+    assert response.status_code == 409
+    assert service.list_removed(lecture) == [saved]
+    assert path.read_bytes() == b'external changed bytes'
+    root = app.state.upload_staging.root
+    assert not list((root / 'manifests').iterdir())
+    assert not list((root / 'batches').iterdir())
+
+
+def test_slide_reupload_restoration_and_admission_roll_back_together(tmp_path, monkeypatch):
+    from oms_hub.models import UploadItemModel
+
+    app, service, lecture, revision = prepared(tmp_path, UploadKind.SLIDES)
+    saved = service.remove(lecture, revision)
+    repository = app.state.ingestion_repository
+    finalize = repository.finalize_batch
+
+    def fail_after_admission(*args, **kwargs):
+        finalize(*args, **kwargs)
+        raise ValueError('synthetic failure before transaction commit')
+
+    monkeypatch.setattr(repository, 'finalize_batch', fail_after_admission)
+    response = TestClient(app, raise_server_exceptions=False).post(
+        '/uploads/slides', data={'lecture_id': str(lecture)},
+        files={'files': ('slides.pptx', saved.immutable_source_path.read_bytes())},
+    )
+    assert response.status_code == 500
+    assert service.list_removed(lecture) == [saved]
+    with app.state.database.session() as session:
+        assert len(session.scalars(select(UploadItemModel)).all()) == 1
+        steps = session.scalars(select(LectureStepModel).where(
+            LectureStepModel.lecture_id == lecture,
+            LectureStepModel.name.like('slides_%'),
+        )).all()
+        assert all(step.status == 'waiting' for step in steps)
+
+
+def test_slide_reupload_respects_lecture_write_claim(tmp_path):
+    app, service, lecture, revision = prepared(tmp_path, UploadKind.SLIDES)
+    saved = service.remove(lecture, revision)
+    with ArtifactWriteCoordinator(app.state.database, app.state.settings).claim(
+        lecture, 'synthetic-conflict'
+    ):
+        response = TestClient(app, raise_server_exceptions=False).post(
+            '/uploads/slides', data={'lecture_id': str(lecture)},
+            files={'files': ('slides.pptx', saved.immutable_source_path.read_bytes())},
+        )
+    assert response.status_code == 409
+    assert service.list_removed(lecture) == [saved]
+
+
+def test_slide_reupload_never_displaces_new_current_slides(tmp_path):
+    from oms_hub.models import UploadBatchModel, UploadItemModel
+
+    app, service, lecture, revision = prepared(tmp_path, UploadKind.SLIDES)
+    saved = service.remove(lecture, revision)
+    with app.state.database.session() as session:
+        session.add(UploadBatchModel(id='new', kind='slides', state='complete'))
+        session.flush()
+        session.add(UploadItemModel(
+            id='new', batch_id='new', kind='slides', original_filename='new.pptx',
+            staged_path='new.pptx', sha256='b' * 64, size_bytes=1, lecture_id=lecture,
+        ))
+        session.flush()
+        replacement = StudyRevisionModel(
+            upload_item_id='new', lecture_id=lecture, kind='slides',
+            source_sha256='b' * 64, immutable_source_path='new.pptx',
+            state='current', current=True,
+        )
+        session.add(replacement)
+        session.flush()
+        replacement_id = replacement.id
+    response = TestClient(app, raise_server_exceptions=False).post(
+        '/uploads/slides', data={'lecture_id': str(lecture)},
+        files={'files': ('slides.pptx', saved.immutable_source_path.read_bytes())},
+    )
+    assert response.status_code == 409
+    assert service.list_removed(lecture) == [saved]
+    assert app.state.ingestion_repository.get_study_revision(replacement_id).current
+
+
+def test_slide_reupload_stays_accepted_if_postcommit_claim_cleanup_fails(tmp_path, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from oms_hub.artifact_writes import ArtifactWriteClaim
+
+    app, service, lecture, revision = prepared(tmp_path, UploadKind.SLIDES)
+    saved = service.remove(lecture, revision)
+    release = ArtifactWriteClaim.release
+
+    def fail_release(claim):
+        release(claim)
+        raise OperationalError('synthetic release failure', {}, Exception('database is locked'))
+
+    monkeypatch.setattr(ArtifactWriteClaim, 'release', fail_release)
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post(
+        '/uploads/slides', data={'lecture_id': str(lecture)},
+        files={'files': ('slides.pptx', saved.immutable_source_path.read_bytes())},
+    )
+    assert response.status_code == 202, response.text
+    item = client.get(f"/api/upload-batches/{response.json()['batch_id']}").json()['items'][0]
+    stored = app.state.ingestion_repository.require_item(item['id'])
+    assert item['state'] == 'complete'
+    assert stored.staged_path.is_file()
+    assert app.state.ingestion_repository.get_study_revision(revision).current
